@@ -1,0 +1,1 @@
+{"name":"axios-worker","scripts":{"dev":"node worker.js"}}

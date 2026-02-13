@@ -1,0 +1,18 @@
+{
+  "out_dir": ".diffmind/corpus",
+  "fail_fast": true,
+  "cases": [
+    {
+      "name": "self",
+      "source": "..",
+      "ref": "HEAD",
+      "expect": {
+        "min_entities": 1,
+        "required_types": [
+          "RuntimeUnit"
+        ]
+      },
+      "analyze_flags": []
+    }
+  ]
+}

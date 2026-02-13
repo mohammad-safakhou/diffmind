@@ -1,0 +1,181 @@
+{
+  "cases": [
+    {
+      "name": "docker-only-runtime",
+      "status": "passed",
+      "entity_count": 2,
+      "counts_by_type": {
+        "RuntimeUnit": 2
+      }
+    },
+    {
+      "name": "github-actions-pipeline",
+      "status": "passed",
+      "entity_count": 3,
+      "counts_by_type": {
+        "PipelineStep": 3
+      }
+    },
+    {
+      "name": "gitlab-ci",
+      "status": "passed",
+      "entity_count": 1,
+      "counts_by_type": {
+        "PipelineStep": 1
+      }
+    },
+    {
+      "name": "go-gin-service",
+      "status": "passed",
+      "entity_count": 2,
+      "counts_by_type": {
+        "Endpoint": 1,
+        "RuntimeUnit": 1
+      }
+    },
+    {
+      "name": "go-http-client",
+      "status": "passed",
+      "entity_count": 2,
+      "counts_by_type": {
+        "ExternalCall": 1,
+        "RuntimeUnit": 1
+      }
+    },
+    {
+      "name": "go-viper-config",
+      "status": "passed",
+      "entity_count": 2,
+      "counts_by_type": {
+        "ConfigKey": 1,
+        "RuntimeUnit": 1
+      }
+    },
+    {
+      "name": "helm-chart",
+      "status": "passed",
+      "entity_count": 1,
+      "counts_by_type": {
+        "InfraResource": 1
+      }
+    },
+    {
+      "name": "java-requestmapping-any",
+      "status": "passed",
+      "entity_count": 2,
+      "counts_by_type": {
+        "Endpoint": 1,
+        "RuntimeUnit": 1
+      }
+    },
+    {
+      "name": "java-resttemplate-client",
+      "status": "passed",
+      "entity_count": 2,
+      "counts_by_type": {
+        "ExternalCall": 1,
+        "RuntimeUnit": 1
+      }
+    },
+    {
+      "name": "java-spring-controller",
+      "status": "passed",
+      "entity_count": 3,
+      "counts_by_type": {
+        "ConfigKey": 1,
+        "Endpoint": 1,
+        "RuntimeUnit": 1
+      }
+    },
+    {
+      "name": "jenkins-pipeline",
+      "status": "passed",
+      "entity_count": 1,
+      "counts_by_type": {
+        "PipelineStep": 1
+      }
+    },
+    {
+      "name": "k8s-manifest",
+      "status": "passed",
+      "entity_count": 1,
+      "counts_by_type": {
+        "InfraResource": 1
+      }
+    },
+    {
+      "name": "mixed-monorepo",
+      "status": "passed",
+      "entity_count": 7,
+      "counts_by_type": {
+        "Endpoint": 1,
+        "ExternalCall": 1,
+        "InfraResource": 1,
+        "PipelineStep": 2,
+        "RuntimeUnit": 2
+      }
+    },
+    {
+      "name": "node-axios-worker",
+      "status": "passed",
+      "entity_count": 3,
+      "counts_by_type": {
+        "ConfigKey": 1,
+        "ExternalCall": 1,
+        "RuntimeUnit": 1
+      }
+    },
+    {
+      "name": "node-env-indexed",
+      "status": "passed",
+      "entity_count": 2,
+      "counts_by_type": {
+        "ConfigKey": 1,
+        "RuntimeUnit": 1
+      }
+    },
+    {
+      "name": "node-express-api",
+      "status": "passed",
+      "entity_count": 3,
+      "counts_by_type": {
+        "Endpoint": 1,
+        "ExternalCall": 1,
+        "RuntimeUnit": 1
+      }
+    },
+    {
+      "name": "openapi-config-repo",
+      "status": "passed",
+      "entity_count": 1,
+      "counts_by_type": {
+        "RuntimeUnit": 1
+      }
+    },
+    {
+      "name": "python-main-getenv",
+      "status": "passed",
+      "entity_count": 2,
+      "counts_by_type": {
+        "ConfigKey": 1,
+        "RuntimeUnit": 1
+      }
+    },
+    {
+      "name": "python-service-docker",
+      "status": "passed",
+      "entity_count": 2,
+      "counts_by_type": {
+        "RuntimeUnit": 2
+      }
+    },
+    {
+      "name": "terraform-infra",
+      "status": "passed",
+      "entity_count": 1,
+      "counts_by_type": {
+        "InfraResource": 1
+      }
+    }
+  ]
+}

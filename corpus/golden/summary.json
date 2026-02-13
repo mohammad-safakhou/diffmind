@@ -1,0 +1,16 @@
+{
+  "cases": [
+    {
+      "name": "self",
+      "status": "passed",
+      "entity_count": 19,
+      "counts_by_type": {
+        "ConfigKey": 5,
+        "Endpoint": 2,
+        "ExternalCall": 3,
+        "PipelineStep": 5,
+        "RuntimeUnit": 4
+      }
+    }
+  ]
+}
