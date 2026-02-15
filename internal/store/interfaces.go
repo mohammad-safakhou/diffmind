@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"diffmind/internal/facts"
+	"diffmind/internal/graphschema"
 )
 
 type BlobStore interface {
@@ -18,4 +19,8 @@ type SnapshotMetadataStore interface {
 
 type FactBundleStore interface {
 	PersistBundle(ctx context.Context, bundle facts.Bundle) error
+}
+
+type GraphBundleStore interface {
+	PersistGraph(ctx context.Context, graph graphschema.Graph, artifactPath string) error
 }

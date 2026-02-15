@@ -1,0 +1,28 @@
+services:
+  - id: service-a
+    name: Service A
+    repo_path: /absolute/path/to/service-a
+    bundle_path: /absolute/path/to/service-a/.diffmind/bundle/intelligence_bundle.json
+    analyzer_bundle_path: /absolute/path/to/service-a/.diffmind/analyzers/bundle.json
+    base_urls:
+      - https://service-a.internal
+    queue_publishes:
+      - orders.events
+    queue_consumes: []
+    db_reads: []
+    db_writes:
+      - orders
+
+  - id: service-b
+    name: Service B
+    repo_path: /absolute/path/to/service-b
+    bundle_path: /absolute/path/to/service-b/.diffmind/bundle/intelligence_bundle.json
+    analyzer_bundle_path: /absolute/path/to/service-b/.diffmind/analyzers/bundle.json
+    base_urls:
+      - https://service-b.internal
+    queue_publishes: []
+    queue_consumes:
+      - orders.events
+    db_reads:
+      - orders
+    db_writes: []

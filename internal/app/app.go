@@ -21,6 +21,7 @@ var supportedCommands = map[string]func(context.Context, []string) error{
 	"serve":     orchestrator.RunServe,
 	"corpus":    orchestrator.RunCorpus,
 	"golden":    orchestrator.RunGolden,
+	"graph":     orchestrator.RunGraph,
 	"run":       orchestrator.RunPipeline,
 	"help":      func(context.Context, []string) error { return nil },
 	"--help":    func(context.Context, []string) error { return nil },
@@ -84,6 +85,7 @@ func printUsage() {
 	fmt.Println("  serve      Serve HTTP API for bundle query/diff")
 	fmt.Println("  corpus     Run acceptance corpus against multiple repos")
 	fmt.Println("  golden     Verify or update corpus golden summaries")
+	fmt.Println("  graph      Build and manage service graph artifacts")
 	fmt.Println("  run        Run full orchestrated pipeline")
 	fmt.Println("  version    Print version")
 }

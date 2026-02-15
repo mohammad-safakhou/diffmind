@@ -18,6 +18,7 @@ import (
 	"diffmind/internal/corpus"
 	"diffmind/internal/diff"
 	"diffmind/internal/golden"
+	"diffmind/internal/graph"
 	"diffmind/internal/httpapi"
 	"diffmind/internal/parser"
 	"diffmind/internal/query"
@@ -111,6 +112,10 @@ func RunCorpus(ctx context.Context, args []string) error {
 
 func RunGolden(ctx context.Context, args []string) error {
 	return golden.Run(ctx, args)
+}
+
+func RunGraph(ctx context.Context, args []string) error {
+	return graph.Run(ctx, args)
 }
 
 func RunPipeline(ctx context.Context, args []string) error {

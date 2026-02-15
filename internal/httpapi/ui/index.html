@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DiffMind Service Graph</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>DiffMind Service Graph</h1>
+    <button id="refreshBtn" type="button">Refresh Graphs</button>
+  </header>
+
+  <main class="layout">
+    <section class="panel">
+      <h2>Build Graph</h2>
+      <form id="buildForm">
+        <label>Mode
+          <select id="mode" name="mode">
+            <option value="auto">auto</option>
+            <option value="single">single</option>
+            <option value="multi">multi</option>
+          </select>
+        </label>
+        <label>Out Dir
+          <input id="outDir" name="out_dir" placeholder=".diffmind" />
+        </label>
+        <label>Manifest Path (multi)
+          <input id="manifestPath" name="manifest_path" placeholder="graph/services.yaml" />
+        </label>
+        <label>Sources (csv, auto-discover)
+          <input id="sources" name="sources" placeholder="/tmp/diffmind or /tmp/diffmind/repo-a,/tmp/diffmind/repo-b" />
+        </label>
+        <label>Service ID (single)
+          <input id="serviceID" name="service_id" placeholder="service.local" />
+        </label>
+        <label>Service Name (single)
+          <input id="serviceName" name="service_name" placeholder="Local Service" />
+        </label>
+        <label>Bundle Path (single)
+          <input id="bundlePath" name="bundle_path" placeholder=".diffmind/bundle/intelligence_bundle.json" />
+        </label>
+        <label>Analyzer Bundle Path (single)
+          <input id="analyzerPath" name="analyzer_bundle_path" placeholder=".diffmind/analyzers/bundle.json" />
+        </label>
+        <label>Base URLs (comma-separated)
+          <input id="baseURLs" placeholder="http://service.local,https://api.service.local" />
+        </label>
+        <label class="check">
+          <input id="persist" type="checkbox" /> Persist to Postgres
+        </label>
+        <button type="submit">Build</button>
+      </form>
+      <p id="buildStatus" class="muted"></p>
+    </section>
+
+    <section class="panel">
+      <h2>Graph Explorer</h2>
+      <div class="row">
+        <label>Graph
+          <select id="graphSelect"></select>
+        </label>
+        <label class="check">
+          <input id="includeInferred" type="checkbox" /> Include inferred
+        </label>
+      </div>
+
+      <div class="row">
+        <label>Edge Types (csv)
+          <input id="edgeTypes" placeholder="service_calls_service,service_calls_endpoint" />
+        </label>
+        <label>Service Filter
+          <input id="serviceFilter" placeholder="service-a" />
+        </label>
+      </div>
+      <div class="row">
+        <label>Repo Filter
+          <input id="repoFilter" placeholder="/repos/service-a" />
+        </label>
+        <label>Min Confidence
+          <input id="confidenceMin" type="range" min="0" max="1" step="0.05" value="0" />
+          <span id="confidenceMinLabel">0.00</span>
+        </label>
+      </div>
+
+      <div class="actions">
+        <button id="loadGraphBtn" type="button">Load Graph</button>
+        <button id="clearServiceFilterBtn" type="button">Clear Service Filter</button>
+        <button id="exportGraphBtn" type="button">Export Filtered Graph</button>
+      </div>
+      <div class="row">
+        <label>Layout
+          <select id="layoutMode">
+            <option value="grid">grid</option>
+            <option value="service_lanes">service lanes</option>
+          </select>
+        </label>
+        <label>View Controls
+          <div class="zoomRow">
+            <button id="zoomInBtn" type="button">+</button>
+            <button id="zoomOutBtn" type="button">-</button>
+            <button id="fitBtn" type="button">Fit</button>
+          </div>
+        </label>
+      </div>
+      <div class="actions">
+        <button id="clearFocusBtn" type="button">Clear Focus</button>
+      </div>
+
+      <div id="summary" class="summary"></div>
+      <div id="legend" class="legend"></div>
+      <div id="metrics" class="metrics"></div>
+      <div class="compareBox">
+        <h3>Compare Graphs</h3>
+        <div class="row">
+          <label>From Graph
+            <select id="compareFrom"></select>
+          </label>
+          <label>To Graph
+            <select id="compareTo"></select>
+          </label>
+        </div>
+        <div class="actions">
+          <button id="compareBtn" type="button">Compare</button>
+          <button id="exportCompareBtn" type="button">Export Compare</button>
+          <button id="refreshCompareHistoryBtn" type="button">Refresh History</button>
+        </div>
+        <label>Compare History
+          <select id="compareHistory"></select>
+        </label>
+        <div class="actions">
+          <button id="loadCompareHistoryBtn" type="button">Load Selected Compare</button>
+          <button id="deleteCompareHistoryBtn" type="button">Delete Selected Compare</button>
+          <button id="loadMoreCompareHistoryBtn" type="button">Load More History</button>
+          <button id="pruneCompareHistoryBtn" type="button">Keep Latest 20</button>
+        </div>
+        <div id="compareSummary" class="muted"></div>
+        <div id="compareResults" class="details"></div>
+      </div>
+      <svg id="graphSvg" viewBox="0 0 1200 520" preserveAspectRatio="xMidYMid meet"></svg>
+    </section>
+
+    <section class="panel">
+      <h2>Details</h2>
+      <div id="selectionDetails" class="details">Select an edge in the graph table to view evidence.</div>
+      <table id="edgesTable">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Type</th>
+            <th>Source</th>
+            <th>Target</th>
+            <th>Confidence</th>
+            <th>Evidence</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

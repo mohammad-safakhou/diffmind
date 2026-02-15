@@ -16,6 +16,8 @@ func TestAnalyzeProducesCoreFactTypes(t *testing.T) {
 
 	mustWrite(t, root, "go.mod", "module example.com/test\n")
 	mustWrite(t, root, "cmd/main.go", "package main\nimport \"net/http\"\nfunc main(){http.Get(\"https://example.com\")}\n")
+	mustWrite(t, root, "cmd/queue.go", "package main\nfunc q(){ writer.WriteMessages(ctx, kafka.Message{Topic:\"orders.events\"}); _,_ = ch.Consume(\"orders.events\", \"\", false, false, false, false, nil)}\n")
+	mustWrite(t, root, "cmd/db.go", "package main\nimport \"database/sql\"\nfunc db(){ db, _ := sql.Open(\"postgres\", dsn); _ = db.Query(\"select 1\"); _ = db.Exec(\"insert into t values (1)\") }\n")
 	mustWrite(t, root, "internal/http/routes.js", "app.get('/health', handler)\nfetch('https://api.example.com')\n")
 	mustWrite(t, root, "internal/config/app.go", "package config\nimport \"os\"\nfunc load(){ _ = os.Getenv(\"APP_ENV\") }\n")
 	mustWrite(t, root, ".github/workflows/ci.yml", "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n      - run: go test ./...\n")
@@ -45,6 +47,8 @@ func TestAnalyzeProducesCoreFactTypes(t *testing.T) {
 	assertFactType(t, bundle, "ConfigKey")
 	assertFactType(t, bundle, "PipelineStep")
 	assertFactType(t, bundle, "InfraResource")
+	assertExternalCallProtocol(t, bundle, "queue")
+	assertExternalCallProtocol(t, bundle, "db")
 }
 
 func assertFactType(t *testing.T, bundle facts.Bundle, factType string) {
@@ -55,6 +59,19 @@ func assertFactType(t *testing.T, bundle facts.Bundle, factType string) {
 		}
 	}
 	t.Fatalf("missing fact type %s", factType)
+}
+
+func assertExternalCallProtocol(t *testing.T, bundle facts.Bundle, protocol string) {
+	t.Helper()
+	for _, f := range bundle.Facts {
+		if f.Type != "ExternalCall" {
+			continue
+		}
+		if p, ok := f.Attributes["protocol"].(string); ok && p == protocol {
+			return
+		}
+	}
+	t.Fatalf("missing external call protocol %s", protocol)
 }
 
 func mustWrite(t *testing.T, root string, rel string, content string) {

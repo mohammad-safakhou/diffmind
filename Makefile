@@ -1,7 +1,7 @@
 BINARY=extractor
 GOCACHE?=$(CURDIR)/.gocache
 
-.PHONY: run snapshot scan parse analyze bundle query diff serve corpus corpus-self golden golden-update bench build test lint fmt migrate up down logs
+.PHONY: run snapshot scan parse analyze bundle query diff serve graph-build graph-serve graph-ui-build corpus corpus-self golden golden-update bench build test lint fmt migrate up down logs
 
 run:
 	mkdir -p $(GOCACHE)
@@ -37,7 +37,18 @@ diff:
 
 serve:
 	mkdir -p $(GOCACHE)
-	GOCACHE=$(GOCACHE) go run ./cmd/extractor serve --addr :8080 --bundle .diffmind/bundle/intelligence_bundle.json
+	GOCACHE=$(GOCACHE) go run ./cmd/extractor serve --addr :8080 --bundle .diffmind/bundle/intelligence_bundle.json --graph-root .diffmind/graph
+
+graph-build:
+	mkdir -p $(GOCACHE)
+	GOCACHE=$(GOCACHE) go run ./cmd/extractor graph build --mode single --service-id local --service-name local --bundle .diffmind/bundle/intelligence_bundle.json --analyzer-bundle .diffmind/analyzers/bundle.json --out .diffmind
+
+graph-serve:
+	mkdir -p $(GOCACHE)
+	GOCACHE=$(GOCACHE) go run ./cmd/extractor serve --addr :8080 --bundle .diffmind/bundle/intelligence_bundle.json --graph-root .diffmind/graph
+
+graph-ui-build:
+	@echo "Graph UI is embedded static assets under internal/httpapi/ui; no separate frontend build step required."
 
 corpus:
 	mkdir -p $(GOCACHE)

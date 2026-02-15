@@ -25,6 +25,25 @@ var (
 	reAxios        = regexp.MustCompile(`\baxios\.(get|post|put|patch|delete)\(\s*["']([^"']+)["']`)
 	reRestTemplate = regexp.MustCompile(`\brestTemplate\.(getForObject|postForObject|exchange)\(`)
 
+	reKafkaTopicAttr = regexp.MustCompile(`\bTopic\s*:\s*["']([^"']+)["']`)
+	reKafkaWrite     = regexp.MustCompile(`\bWriteMessages\(`)
+	reKafkaRead      = regexp.MustCompile(`\bReadMessage\(`)
+	reSaramaSend     = regexp.MustCompile(`\bSendMessage\(`)
+	reSaramaConsume  = regexp.MustCompile(`\bConsume(?:Partition|Claim)?\(`)
+	reAMQPPublish    = regexp.MustCompile(`\bPublish\(\s*["']([^"']*)["']\s*,\s*["']([^"']*)["']`)
+	reAMQPConsume    = regexp.MustCompile(`\bConsume\(\s*["']([^"']+)["']`)
+	reSQSSend        = regexp.MustCompile(`\b(?:sqsClient|sqs)\.SendMessage\(`)
+	reSQSReceive     = regexp.MustCompile(`\b(?:sqsClient|sqs)\.ReceiveMessage\(`)
+	reSNSPublish     = regexp.MustCompile(`\b(?:snsClient|sns)\.Publish\(`)
+	reAWSQueueURL    = regexp.MustCompile(`\bQueueUrl\s*:\s*["']([^"']+)["']`)
+	reAWSTopicARN    = regexp.MustCompile(`\bTopicArn\s*:\s*["']([^"']+)["']`)
+
+	reSQLOpen      = regexp.MustCompile(`\bsql\.Open\(\s*["']([^"']+)["']`)
+	rePGXConnect   = regexp.MustCompile(`\bpgx(?:pool)?\.Connect(?:Config)?\(`)
+	reGormOpen     = regexp.MustCompile(`\bgorm\.Open\(`)
+	reDBQueryRead  = regexp.MustCompile(`\.(Query|QueryRow|Select|Find|Get)\(`)
+	reDBQueryWrite = regexp.MustCompile(`\.(Exec|Create|Update|Delete|Insert)\(`)
+
 	reGetenvGo     = regexp.MustCompile(`os\.Getenv\(\s*"([A-Za-z0-9_\-\.]+)"\s*\)`)
 	reProcessEnv   = regexp.MustCompile(`process\.env\.([A-Za-z0-9_]+)`)
 	reProcessEnvIx = regexp.MustCompile(`process\.env\[\s*["']([A-Za-z0-9_\-\.]+)["']\s*\]`)
@@ -146,6 +165,119 @@ func detectConfigKeys(c *collector, file sourceFile) {
 	for _, m := range regexMatchesByLine(file.Lines, reViperGet) {
 		c.addFactWithEvidence("ConfigKey", map[string]any{"key": m.groups[0], "pattern": "viper.Get"}, file, m.line, m.col, m.text, func() { c.report.ConfigKeys++ })
 	}
+}
+
+func detectQueueAndDBCalls(c *collector, file sourceFile) {
+	for _, m := range regexMatchesByLine(file.Lines, reKafkaWrite) {
+		topic := nearestGroupOnLine(file.Lines, m.line, reKafkaTopicAttr)
+		if topic == "" {
+			topic = "kafka:unknown-topic"
+		}
+		c.addFactWithEvidence("ExternalCall", map[string]any{"protocol": "queue", "method": "PUBLISH", "target": topic, "library": "kafka-go", "queue_operation": "publish", "queue_kind": "kafka"}, file, m.line, m.col, m.text, func() { c.report.ExternalCalls++ })
+	}
+	for _, m := range regexMatchesByLine(file.Lines, reKafkaRead) {
+		topic := nearestGroupOnLine(file.Lines, m.line, reKafkaTopicAttr)
+		if topic == "" {
+			topic = "kafka:unknown-topic"
+		}
+		c.addFactWithEvidence("ExternalCall", map[string]any{"protocol": "queue", "method": "CONSUME", "target": topic, "library": "kafka-go", "queue_operation": "consume", "queue_kind": "kafka"}, file, m.line, m.col, m.text, func() { c.report.ExternalCalls++ })
+	}
+	for _, m := range regexMatchesByLine(file.Lines, reSaramaSend) {
+		topic := nearestGroupOnLine(file.Lines, m.line, reKafkaTopicAttr)
+		if topic == "" {
+			topic = "kafka:unknown-topic"
+		}
+		c.addFactWithEvidence("ExternalCall", map[string]any{"protocol": "queue", "method": "PUBLISH", "target": topic, "library": "sarama", "queue_operation": "publish", "queue_kind": "kafka"}, file, m.line, m.col, m.text, func() { c.report.ExternalCalls++ })
+	}
+	for _, m := range regexMatchesByLine(file.Lines, reSaramaConsume) {
+		topic := nearestGroupOnLine(file.Lines, m.line, reKafkaTopicAttr)
+		if topic == "" {
+			topic = "kafka:unknown-topic"
+		}
+		c.addFactWithEvidence("ExternalCall", map[string]any{"protocol": "queue", "method": "CONSUME", "target": topic, "library": "sarama", "queue_operation": "consume", "queue_kind": "kafka"}, file, m.line, m.col, m.text, func() { c.report.ExternalCalls++ })
+	}
+	for _, m := range regexMatchesByLine(file.Lines, reAMQPPublish) {
+		target := strings.TrimSpace(m.groups[1])
+		if target == "" {
+			target = strings.TrimSpace(m.groups[0])
+		}
+		if target == "" {
+			target = "rabbitmq:unknown"
+		}
+		c.addFactWithEvidence("ExternalCall", map[string]any{"protocol": "queue", "method": "PUBLISH", "target": target, "library": "amqp", "queue_operation": "publish", "queue_kind": "rabbitmq"}, file, m.line, m.col, m.text, func() { c.report.ExternalCalls++ })
+	}
+	for _, m := range regexMatchesByLine(file.Lines, reAMQPConsume) {
+		target := strings.TrimSpace(m.groups[0])
+		if target == "" {
+			target = "rabbitmq:unknown"
+		}
+		c.addFactWithEvidence("ExternalCall", map[string]any{"protocol": "queue", "method": "CONSUME", "target": target, "library": "amqp", "queue_operation": "consume", "queue_kind": "rabbitmq"}, file, m.line, m.col, m.text, func() { c.report.ExternalCalls++ })
+	}
+	for _, m := range regexMatchesByLine(file.Lines, reSQSSend) {
+		target := nearestGroupOnLine(file.Lines, m.line, reAWSQueueURL)
+		if target == "" {
+			target = "sqs:unknown-queue"
+		}
+		c.addFactWithEvidence("ExternalCall", map[string]any{"protocol": "queue", "method": "PUBLISH", "target": target, "library": "aws-sdk-sqs", "queue_operation": "publish", "queue_kind": "sqs"}, file, m.line, m.col, m.text, func() { c.report.ExternalCalls++ })
+	}
+	for _, m := range regexMatchesByLine(file.Lines, reSQSReceive) {
+		target := nearestGroupOnLine(file.Lines, m.line, reAWSQueueURL)
+		if target == "" {
+			target = "sqs:unknown-queue"
+		}
+		c.addFactWithEvidence("ExternalCall", map[string]any{"protocol": "queue", "method": "CONSUME", "target": target, "library": "aws-sdk-sqs", "queue_operation": "consume", "queue_kind": "sqs"}, file, m.line, m.col, m.text, func() { c.report.ExternalCalls++ })
+	}
+	for _, m := range regexMatchesByLine(file.Lines, reSNSPublish) {
+		target := nearestGroupOnLine(file.Lines, m.line, reAWSTopicARN)
+		if target == "" {
+			target = "sns:unknown-topic"
+		}
+		c.addFactWithEvidence("ExternalCall", map[string]any{"protocol": "queue", "method": "PUBLISH", "target": target, "library": "aws-sdk-sns", "queue_operation": "publish", "queue_kind": "sns"}, file, m.line, m.col, m.text, func() { c.report.ExternalCalls++ })
+	}
+
+	for _, m := range regexMatchesByLine(file.Lines, reSQLOpen) {
+		target := strings.TrimSpace(m.groups[0])
+		if target == "" {
+			target = "db:unknown"
+		}
+		c.addFactWithEvidence("ExternalCall", map[string]any{"protocol": "db", "method": "CONNECT", "target": target, "library": "database/sql", "db_operation": "connect"}, file, m.line, m.col, m.text, func() { c.report.ExternalCalls++ })
+	}
+	for _, m := range regexMatchesByLine(file.Lines, rePGXConnect) {
+		c.addFactWithEvidence("ExternalCall", map[string]any{"protocol": "db", "method": "CONNECT", "target": "postgres", "library": "pgx", "db_operation": "connect"}, file, m.line, m.col, m.text, func() { c.report.ExternalCalls++ })
+	}
+	for _, m := range regexMatchesByLine(file.Lines, reGormOpen) {
+		c.addFactWithEvidence("ExternalCall", map[string]any{"protocol": "db", "method": "CONNECT", "target": "gorm", "library": "gorm", "db_operation": "connect"}, file, m.line, m.col, m.text, func() { c.report.ExternalCalls++ })
+	}
+	for _, m := range regexMatchesByLine(file.Lines, reDBQueryRead) {
+		c.addFactWithEvidence("ExternalCall", map[string]any{"protocol": "db", "method": "READ", "target": "db", "library": "db-client", "db_operation": "read"}, file, m.line, m.col, m.text, func() { c.report.ExternalCalls++ })
+	}
+	for _, m := range regexMatchesByLine(file.Lines, reDBQueryWrite) {
+		c.addFactWithEvidence("ExternalCall", map[string]any{"protocol": "db", "method": "WRITE", "target": "db", "library": "db-client", "db_operation": "write"}, file, m.line, m.col, m.text, func() { c.report.ExternalCalls++ })
+	}
+}
+
+func nearestGroupOnLine(lines []string, line int, expr *regexp.Regexp) string {
+	if line < 1 || line > len(lines) {
+		return ""
+	}
+	for i := max(1, line-2); i <= min(len(lines), line+2); i++ {
+		matches := regexMatchesByLine([]string{lines[i-1]}, expr)
+		if len(matches) == 0 || len(matches[0].groups) == 0 {
+			continue
+		}
+		v := strings.TrimSpace(matches[0].groups[0])
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func min(a int, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func detectCIIaC(c *collector, file sourceFile) {

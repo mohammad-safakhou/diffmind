@@ -55,6 +55,7 @@ func analyze(ctx context.Context, root string, forcedSnapshotID string) (result,
 		detectRuntimeUnits(c, f)
 		detectInboundEndpoints(c, f)
 		detectOutboundCalls(c, f)
+		detectQueueAndDBCalls(c, f)
 		detectConfigKeys(c, f)
 		detectCIIaC(c, f)
 	}

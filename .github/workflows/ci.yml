@@ -28,6 +28,9 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Graph Acceptance Fixture
+        run: go test ./internal/graph -run TestRunBuildMultiABCDAcceptanceFixture -count=1
+
       - name: Corpus Regression
         run: |
           go run ./cmd/extractor corpus --manifest corpus/manifest.fixtures.json --out .diffmind/corpus-fixtures
