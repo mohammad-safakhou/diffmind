@@ -26,10 +26,12 @@ func Run(_ context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	slog.Info("verification input loaded", "in_bundle", opts.InBundle, "entities", len(bundle.Entities))
 	verified, report, err := verify(bundle, opts)
 	if err != nil {
 		return err
 	}
+	slog.Info("verification decisions computed", "snapshot_id", report.SnapshotID, "decision_entities_added", report.DecisionEntitiesAdded)
 
 	if err := writeJSON(opts.OutBundle, verified); err != nil {
 		return err

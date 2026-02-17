@@ -898,6 +898,10 @@ func handleGraphByID(graphRoot string) http.HandlerFunc {
 			})
 			return
 		}
+		if len(parts) == 2 && parts[1] == "summary" {
+			writeJSON(w, http.StatusOK, buildGraphSummary(graph))
+			return
+		}
 		if len(parts) == 2 && parts[1] == "metrics" {
 			writeJSON(w, http.StatusOK, buildGraphMetrics(graph))
 			return
@@ -1382,6 +1386,34 @@ func buildGraphMetrics(graph graphschema.Graph) graphMetrics {
 		EdgeTypeCounts:  edgeTypeCounts,
 		TopCallers:      topMetricItems(outgoing, labels, 5),
 		TopDependencies: topMetricItems(incoming, labels, 5),
+	}
+}
+
+func buildGraphSummary(graph graphschema.Graph) map[string]any {
+	serviceCount := 0
+	for _, n := range graph.Nodes {
+		if n.Type == "service" {
+			serviceCount++
+		}
+	}
+	density := 0.0
+	nodeCount := len(graph.Nodes)
+	if nodeCount > 1 {
+		maxEdges := float64(nodeCount * (nodeCount - 1))
+		density = float64(len(graph.Edges)) / maxEdges
+	}
+	return map[string]any{
+		"graph_id":      graph.GraphID,
+		"mode":          graph.Mode,
+		"generated_at":  graph.GeneratedAt,
+		"tenant_id":     graph.Meta.TenantID,
+		"node_count":    len(graph.Nodes),
+		"edge_count":    len(graph.Edges),
+		"service_count": serviceCount,
+		"density":       density,
+		"by_node_type":  graph.Stats.ByNode,
+		"by_edge_type":  graph.Stats.ByEdge,
+		"freshness":     graph.Meta.Freshness,
 	}
 }
 

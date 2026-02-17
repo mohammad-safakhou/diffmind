@@ -14,6 +14,26 @@
 
   <main class="layout">
     <section class="panel">
+      <h2>Auth Headers</h2>
+      <div class="row">
+        <label>Tenant
+          <input id="authTenant" placeholder="default" />
+        </label>
+        <label>Principal
+          <input id="authPrincipal" placeholder="ui-user" />
+        </label>
+      </div>
+      <label>Roles (csv)
+        <input id="authRoles" placeholder="platform_admin,tenant_admin,analyst,compliance_auditor" />
+      </label>
+      <label>Scopes (csv)
+        <input id="authScopes" placeholder="graph:read,graph:write,evidence:read,evidence:raw,sensitive:read,audit:read,audit:export" />
+      </label>
+      <div class="actions">
+        <button id="applyAuthBtn" type="button">Apply Auth</button>
+      </div>
+      <p id="authStatus" class="muted"></p>
+
       <h2>Build Graph</h2>
       <form id="buildForm">
         <label>Mode
@@ -90,8 +110,34 @@
         <button id="exportGraphBtn" type="button">Export Filtered Graph</button>
       </div>
       <div class="row">
+        <label class="check">
+          <input id="architectureOnly" type="checkbox" /> Architecture only
+        </label>
+        <label class="check">
+          <input id="collapseByService" type="checkbox" /> Collapse by service
+        </label>
+      </div>
+      <div class="row">
+        <label class="check">
+          <input id="showLabels" type="checkbox" /> Always show labels
+        </label>
+        <label>Max Edges
+          <input id="maxEdges" type="number" min="0" step="100" value="5000" />
+        </label>
+      </div>
+      <div class="row">
+        <label>Max Nodes
+          <input id="maxNodes" type="number" min="0" step="100" value="2000" />
+        </label>
+        <label>View
+          <button id="applyViewBtn" type="button">Apply View Settings</button>
+        </label>
+      </div>
+      <p id="graphWarning" class="muted"></p>
+      <div class="row">
         <label>Layout
           <select id="layoutMode">
+            <option value="service_map">service map</option>
             <option value="grid">grid</option>
             <option value="service_lanes">service lanes</option>
           </select>
@@ -138,7 +184,10 @@
         <div id="compareSummary" class="muted"></div>
         <div id="compareResults" class="details"></div>
       </div>
-      <svg id="graphSvg" viewBox="0 0 1200 520" preserveAspectRatio="xMidYMid meet"></svg>
+      <div class="graphWrap">
+        <button id="resetViewBtn" type="button" class="graphResetBtn">Reset View</button>
+        <svg id="graphSvg" viewBox="0 0 1200 520" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
     </section>
 
     <section class="panel">

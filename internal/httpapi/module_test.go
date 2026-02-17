@@ -392,6 +392,24 @@ func TestGraphsEndpoints(t *testing.T) {
 		t.Fatalf("unexpected metrics payload: %+v", metricsPayload)
 	}
 
+	recSummary := httptest.NewRecorder()
+	reqSummary := httptest.NewRequest(http.MethodGet, "/graphs/g1/summary", nil)
+	mux.ServeHTTP(recSummary, withAuth(reqSummary))
+	if recSummary.Code != http.StatusOK {
+		t.Fatalf("expected /graphs/g1/summary 200, got %d", recSummary.Code)
+	}
+	var summaryPayload struct {
+		GraphID   string `json:"graph_id"`
+		NodeCount int    `json:"node_count"`
+		EdgeCount int    `json:"edge_count"`
+	}
+	if err := json.Unmarshal(recSummary.Body.Bytes(), &summaryPayload); err != nil {
+		t.Fatalf("decode summary response: %v", err)
+	}
+	if summaryPayload.GraphID != "g1" || summaryPayload.NodeCount != 2 || summaryPayload.EdgeCount != 2 {
+		t.Fatalf("unexpected summary payload: %+v", summaryPayload)
+	}
+
 	recQuery := httptest.NewRecorder()
 	reqQuery := httptest.NewRequest(http.MethodGet, "/graphs/g1/query?verification_status=needs_review&explain=true", nil)
 	mux.ServeHTTP(recQuery, withAuth(reqQuery))

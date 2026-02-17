@@ -156,17 +156,22 @@ func RunPipeline(ctx context.Context, args []string) error {
 		RetryDelayMS:   opts.RetryDelayMS,
 		Stages:         make([]stageReport, 0, 5),
 	}
+	fmt.Printf("[run] pipeline started source=%s ref=%s out=%s retries=%d resume=%t\n", opts.Source, opts.Ref, opts.OutDir, opts.Retries, opts.Resume)
+	_ = writeRunReport(opts.ReportPath, report)
 
 	stages := buildStages(opts)
 	for _, stage := range stages {
 		sr := runStage(ctx, opts, stage)
 		report.Stages = append(report.Stages, sr)
+		report.DurationMS = time.Since(start).Milliseconds()
+		_ = writeRunReport(opts.ReportPath, report)
 		if sr.Status == "failed" {
 			report.Status = "failed"
 			report.Error = sr.Error
 			report.ErrorTaxonomy = sr.ErrorTaxonomy
 			report.DurationMS = time.Since(start).Milliseconds()
 			_ = writeRunReport(opts.ReportPath, report)
+			fmt.Printf("[run] pipeline failed stage=%s taxonomy=%s error=%s\n", stage.Name, sr.ErrorTaxonomy, sr.Error)
 			return fmt.Errorf("%s stage failed: %s", stage.Name, sr.Error)
 		}
 	}
@@ -176,6 +181,7 @@ func RunPipeline(ctx context.Context, args []string) error {
 	if err := writeRunReport(opts.ReportPath, report); err != nil {
 		return err
 	}
+	fmt.Printf("[run] pipeline completed status=passed duration_ms=%d report=%s\n", report.DurationMS, opts.ReportPath)
 	return nil
 }
 
@@ -359,7 +365,9 @@ func buildStages(opts runOptions) []stageDef {
 
 func runStage(ctx context.Context, opts runOptions, stage stageDef) stageReport {
 	stageStart := time.Now()
+	fmt.Printf("[run] stage=%s status=starting\n", stage.Name)
 	if opts.Resume && outputsExist(stage.Outputs) {
+		fmt.Printf("[run] stage=%s status=skipped reason=resume_outputs_present\n", stage.Name)
 		return stageReport{
 			Name:       stage.Name,
 			Status:     "skipped",
@@ -373,8 +381,23 @@ func runStage(ctx context.Context, opts runOptions, stage stageDef) stageReport 
 	var lastErr error
 	for attempts < opts.Retries+1 {
 		attempts++
+		stopHeartbeat := make(chan struct{})
+		go func(stageName string, attempt int, started time.Time) {
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					fmt.Printf("[run] stage=%s status=running attempt=%d elapsed_ms=%d\n", stageName, attempt, time.Since(started).Milliseconds())
+				case <-stopHeartbeat:
+					return
+				}
+			}
+		}(stage.Name, attempts, stageStart)
 		err := stage.Invoke(ctx)
+		close(stopHeartbeat)
 		if err == nil {
+			fmt.Printf("[run] stage=%s status=passed attempts=%d duration_ms=%d\n", stage.Name, attempts, time.Since(stageStart).Milliseconds())
 			return stageReport{
 				Name:       stage.Name,
 				Status:     "passed",
@@ -383,6 +406,7 @@ func runStage(ctx context.Context, opts runOptions, stage stageDef) stageReport 
 			}
 		}
 		lastErr = err
+		fmt.Printf("[run] stage=%s status=attempt_failed attempt=%d error=%q retryable=%t\n", stage.Name, attempts, err.Error(), isRetryable(err))
 		if !isRetryable(err) || attempts >= opts.Retries+1 {
 			break
 		}
@@ -400,6 +424,7 @@ func runStage(ctx context.Context, opts runOptions, stage stageDef) stageReport 
 	}
 
 	taxonomy := classifyError(lastErr)
+	fmt.Printf("[run] stage=%s status=failed attempts=%d taxonomy=%s duration_ms=%d\n", stage.Name, attempts, taxonomy, time.Since(stageStart).Milliseconds())
 	return stageReport{
 		Name:          stage.Name,
 		Status:        "failed",

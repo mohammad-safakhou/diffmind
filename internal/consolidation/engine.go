@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -29,8 +30,17 @@ func consolidate(bundle facts.Bundle, forcedSnapshotID string) (IntelligenceBund
 	byKey := map[string]*Entity{}
 	factsByKey := map[string][]facts.Fact{}
 	duplicates := 0
+	inputFacts := len(bundle.Facts)
 
-	for _, f := range bundle.Facts {
+	for i, f := range bundle.Facts {
+		if inputFacts >= 100000 && (i+1)%200000 == 0 {
+			slog.Info("consolidation progress",
+				"phase", "entity_merge",
+				"facts_processed", i+1,
+				"input_facts", inputFacts,
+				"distinct_entities", len(byKey),
+			)
+		}
 		naturalKey := buildNaturalKey(f)
 		key := f.Type + "|" + naturalKey
 		factsByKey[key] = append(factsByKey[key], f)
@@ -68,7 +78,7 @@ func consolidate(bundle facts.Bundle, forcedSnapshotID string) (IntelligenceBund
 	}
 
 	entities := make([]Entity, 0, len(byKey))
-	report := Report{GeneratedAt: time.Now().UTC(), SnapshotID: snapshotID, InputFacts: len(bundle.Facts), DuplicatesMerged: duplicates}
+	report := Report{GeneratedAt: time.Now().UTC(), SnapshotID: snapshotID, InputFacts: inputFacts, DuplicatesMerged: duplicates}
 	for _, e := range byKey {
 		entities = append(entities, *e)
 		switch confidenceBand(e.Confidence) {
@@ -274,7 +284,17 @@ func confidenceBand(v float64) string {
 
 func buildConflictEntities(snapshotID string, factsByKey map[string][]facts.Fact) []*Entity {
 	out := make([]*Entity, 0)
+	processed := 0
 	for key, factsForKey := range factsByKey {
+		processed++
+		if len(factsByKey) >= 100000 && processed%200000 == 0 {
+			slog.Info("consolidation progress",
+				"phase", "conflict_detection",
+				"keys_processed", processed,
+				"total_keys", len(factsByKey),
+				"conflicts_found", len(out),
+			)
+		}
 		if len(factsForKey) < 2 {
 			continue
 		}

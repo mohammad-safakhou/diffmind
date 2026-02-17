@@ -18,19 +18,27 @@ func Run(_ context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if st, err := os.Stat(opts.InBundle); err == nil {
+		slog.Info("consolidation loading input bundle", "in_bundle", opts.InBundle, "size_bytes", st.Size())
+	} else {
+		slog.Info("consolidation loading input bundle", "in_bundle", opts.InBundle)
+	}
 
 	bundle, err := readFactBundle(opts.InBundle)
 	if err != nil {
 		return err
 	}
+	slog.Info("consolidation input loaded", "in_bundle", opts.InBundle, "facts", len(bundle.Facts), "evidence", len(bundle.Evidence))
 	if err := facts.ValidateBundle(bundle); err != nil {
 		return fmt.Errorf("input fact bundle invalid: %w", err)
 	}
+	slog.Info("consolidation input validated", "in_bundle", opts.InBundle)
 
 	intel, report, err := consolidate(bundle, opts.SnapshotID)
 	if err != nil {
 		return err
 	}
+	slog.Info("consolidation entity resolution completed", "snapshot_id", report.SnapshotID, "entities", len(intel.Entities))
 
 	bundlePath := filepath.Join(opts.OutDir, "bundle", "intelligence_bundle.json")
 	reportPath := filepath.Join(opts.OutDir, "bundle", "report.json")
