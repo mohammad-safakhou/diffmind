@@ -26,6 +26,11 @@ func TestViewTypeSet(t *testing.T) {
 		"external",
 		"pipeline",
 		"infra",
+		"dependency",
+		"ownership",
+		"risk",
+		"conflict",
+		"verify",
 		"all",
 	}
 	for _, view := range cases {

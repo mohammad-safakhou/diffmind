@@ -2,10 +2,13 @@ package graph
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,6 +26,7 @@ import (
 type serviceSpec struct {
 	ID             string   `json:"id" yaml:"id"`
 	Name           string   `json:"name" yaml:"name"`
+	TenantID       string   `json:"tenant_id" yaml:"tenant_id"`
 	RepoPath       string   `json:"repo_path" yaml:"repo_path"`
 	BundlePath     string   `json:"bundle_path" yaml:"bundle_path"`
 	AnalyzerBundle string   `json:"analyzer_bundle_path" yaml:"analyzer_bundle_path"`
@@ -42,6 +46,7 @@ type options struct {
 	SourcesCSV         string
 	OutDir             string
 	Persist            bool
+	TenantID           string
 	ServiceID          string
 	ServiceName        string
 	BundlePath         string
@@ -55,6 +60,7 @@ type BuildRequest struct {
 	Sources            []string `json:"sources"`
 	OutDir             string   `json:"out_dir"`
 	Persist            bool     `json:"persist"`
+	TenantID           string   `json:"tenant_id"`
 	Mode               string   `json:"mode"`
 	ServiceID          string   `json:"service_id"`
 	ServiceName        string   `json:"service_name"`
@@ -105,6 +111,7 @@ func Build(ctx context.Context, req BuildRequest) (BuildResult, error) {
 		SourcesCSV:         strings.Join(splitCSV(strings.Join(req.Sources, ",")), ","),
 		OutDir:             strings.TrimSpace(req.OutDir),
 		Persist:            req.Persist,
+		TenantID:           strings.TrimSpace(req.TenantID),
 		ServiceID:          strings.TrimSpace(req.ServiceID),
 		ServiceName:        strings.TrimSpace(req.ServiceName),
 		BundlePath:         strings.TrimSpace(req.BundlePath),
@@ -117,6 +124,9 @@ func Build(ctx context.Context, req BuildRequest) (BuildResult, error) {
 	}
 	if opts.OutDir == "" {
 		opts.OutDir = ".diffmind"
+	}
+	if opts.TenantID == "" {
+		opts.TenantID = "default"
 	}
 	if opts.ManifestPath == "" {
 		opts.ManifestPath = filepath.Join("graph", "services.yaml")
@@ -136,10 +146,31 @@ func buildFromOptions(ctx context.Context, opts options, printPath bool) (BuildR
 	if err != nil {
 		return BuildResult{}, err
 	}
+	for i := range services {
+		if strings.TrimSpace(services[i].TenantID) == "" {
+			services[i].TenantID = normalizeTenantID(opts.TenantID)
+		} else {
+			services[i].TenantID = normalizeTenantID(services[i].TenantID)
+		}
+	}
 
 	graph, err := buildGraph(services, mode)
 	if err != nil {
 		return BuildResult{}, err
+	}
+	if reused, ok := findReusableGraph(opts.OutDir, graph); ok {
+		if printPath {
+			fmt.Println(reused.Path)
+		}
+		return BuildResult{
+			GraphID:     reused.GraphID,
+			GraphPath:   reused.Path,
+			IndexPath:   filepath.Join(opts.OutDir, "graph", "index.json"),
+			Mode:        reused.Mode,
+			NodeCount:   reused.NodeCount,
+			EdgeCount:   reused.EdgeCount,
+			GeneratedAt: reused.GeneratedAt,
+		}, nil
 	}
 
 	graphPath, err := writeGraph(opts.OutDir, graph)
@@ -188,6 +219,7 @@ func parseBuildOptions(args []string) (options, error) {
 	persist := fs.Bool("persist", false, "Persist graph into Postgres")
 	serviceID := fs.String("service-id", "", "Single-repo service id")
 	serviceName := fs.String("service-name", "", "Single-repo service name")
+	tenantID := fs.String("tenant-id", "default", "Tenant id for graph ownership and policy isolation")
 	bundlePath := fs.String("bundle", filepath.Join(".diffmind", "bundle", "intelligence_bundle.json"), "Single-repo bundle path")
 	analyzerBundlePath := fs.String("analyzer-bundle", filepath.Join(".diffmind", "analyzers", "bundle.json"), "Single-repo analyzer bundle path")
 	baseURLs := fs.String("base-urls", "", "Comma-separated base URLs for single-repo mode")
@@ -202,6 +234,7 @@ func parseBuildOptions(args []string) (options, error) {
 		SourcesCSV:         strings.TrimSpace(*sources),
 		OutDir:             strings.TrimSpace(*outDir),
 		Persist:            *persist,
+		TenantID:           normalizeTenantID(strings.TrimSpace(*tenantID)),
 		ServiceID:          strings.TrimSpace(*serviceID),
 		ServiceName:        strings.TrimSpace(*serviceName),
 		BundlePath:         strings.TrimSpace(*bundlePath),
@@ -216,7 +249,7 @@ func filterBuildArgs(args []string) []string {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
-		case arg == "--manifest" || arg == "--out" || arg == "--service-id" || arg == "--service-name" ||
+		case arg == "--manifest" || arg == "--out" || arg == "--service-id" || arg == "--service-name" || arg == "--tenant-id" ||
 			arg == "--bundle" || arg == "--analyzer-bundle" || arg == "--base-urls" || arg == "--mode" || arg == "--sources":
 			out = append(out, arg)
 			if i+1 < len(args) {
@@ -226,7 +259,7 @@ func filterBuildArgs(args []string) []string {
 		case arg == "--persist":
 			out = append(out, arg)
 		case strings.HasPrefix(arg, "--manifest=") || strings.HasPrefix(arg, "--out=") ||
-			strings.HasPrefix(arg, "--service-id=") || strings.HasPrefix(arg, "--service-name=") ||
+			strings.HasPrefix(arg, "--service-id=") || strings.HasPrefix(arg, "--service-name=") || strings.HasPrefix(arg, "--tenant-id=") ||
 			strings.HasPrefix(arg, "--bundle=") || strings.HasPrefix(arg, "--analyzer-bundle=") ||
 			strings.HasPrefix(arg, "--base-urls=") || strings.HasPrefix(arg, "--mode=") ||
 			strings.HasPrefix(arg, "--sources=") ||
@@ -290,6 +323,7 @@ func singleServiceFromOptions(opts options) serviceSpec {
 	return serviceSpec{
 		ID:             id,
 		Name:           name,
+		TenantID:       normalizeTenantID(opts.TenantID),
 		BundlePath:     opts.BundlePath,
 		AnalyzerBundle: opts.AnalyzerBundlePath,
 		BaseURLs:       baseURLs,
@@ -328,8 +362,17 @@ func loadManifestServices(path string) ([]serviceSpec, error) {
 		if strings.TrimSpace(m.Services[i].BundlePath) == "" {
 			return nil, fmt.Errorf("manifest service[%d] missing bundle_path", i)
 		}
+		m.Services[i].TenantID = normalizeTenantID(m.Services[i].TenantID)
 	}
 	return m.Services, nil
+}
+
+func normalizeTenantID(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "default"
+	}
+	return v
 }
 
 func splitCSV(v string) []string {
@@ -381,9 +424,11 @@ func updateGraphIndex(outDir string, graph graphschema.Graph, graphPath string) 
 	filtered = append(filtered, graphschema.Summary{
 		GraphID:     graph.GraphID,
 		GeneratedAt: graph.GeneratedAt,
+		TenantID:    normalizeTenantID(graph.Meta.TenantID),
 		Mode:        graph.Mode,
 		NodeCount:   len(graph.Nodes),
 		EdgeCount:   len(graph.Edges),
+		Fingerprint: graph.Meta.Provenance.Fingerprint,
 		Path:        graphPath,
 	})
 	sort.Slice(filtered, func(i, j int) bool {
@@ -413,6 +458,20 @@ type serviceInput struct {
 	endpointNodes map[string]string
 }
 
+type runReportMeta struct {
+	Path   string
+	Source string
+	Ref    string
+}
+
+type snapshotMeta struct {
+	Path        string
+	RepoLocator string
+	Ref         string
+	CommitSHA   string
+	SourceType  string
+}
+
 type graphBuilder struct {
 	mode       string
 	services   []serviceInput
@@ -423,6 +482,16 @@ type graphBuilder struct {
 }
 
 func buildGraph(services []serviceSpec, mode string) (graphschema.Graph, error) {
+	graphTenant := "default"
+	if len(services) > 0 {
+		graphTenant = normalizeTenantID(services[0].TenantID)
+	}
+	for _, svc := range services {
+		if normalizeTenantID(svc.TenantID) != graphTenant {
+			return graphschema.Graph{}, fmt.Errorf("all services in a graph must share the same tenant_id")
+		}
+	}
+
 	inputs := make([]serviceInput, 0, len(services))
 	for _, spec := range services {
 		b, err := bundleio.Load(spec.BundlePath)
@@ -465,6 +534,12 @@ func buildGraph(services []serviceSpec, mode string) (graphschema.Graph, error) 
 	gb.resolveAPIEdges()
 	gb.resolveCodeQueueAndDBEdges()
 	gb.resolveManifestQueueAndDBEdges()
+	gb.resolveRuntimeBuildDeployEdges()
+	gb.resolveConfigAndSensitiveEdges()
+	gb.resolveDependencyOwnershipEdges()
+	gb.resolveCrossRepoCanonicalization()
+	gb.resolveConfidenceAndConflictEdges()
+	gb.resolveVerificationDecisionEdges()
 
 	nodes := make([]graphschema.Node, 0, len(gb.nodeByID))
 	for _, n := range gb.nodeByID {
@@ -478,10 +553,18 @@ func buildGraph(services []serviceSpec, mode string) (graphschema.Graph, error) 
 	sort.Slice(edges, func(i, j int) bool { return edges[i].ID < edges[j].ID })
 	nodes = trimUnconnectedNodes(nodes, edges)
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
+	byNode := countNodeTypes(nodes)
+	byEdge := countEdgeTypes(edges)
 
 	graphID := fmt.Sprintf("%d", time.Now().UTC().UnixNano())
 	metaServices := make([]graphschema.ServiceMeta, 0, len(inputs))
 	for _, s := range inputs {
+		outputRoot := deriveOutputRootFromBundlePath(s.spec.BundlePath)
+		runMeta := discoverRunReportMetadata(outputRoot)
+		snapMeta := discoverSnapshotMetadata(outputRoot, s.bundle.SnapshotID)
+		bundleSHA, _ := fileSHA256(s.spec.BundlePath)
+		analyzerSHA, _ := fileSHA256(s.spec.AnalyzerBundle)
+
 		metaServices = append(metaServices, graphschema.ServiceMeta{
 			ID:             s.spec.ID,
 			Name:           s.spec.Name,
@@ -493,10 +576,26 @@ func buildGraph(services []serviceSpec, mode string) (graphschema.Graph, error) 
 			QueueConsumes:  append([]string(nil), s.spec.QueueConsumes...),
 			DBReads:        append([]string(nil), s.spec.DBReads...),
 			DBWrites:       append([]string(nil), s.spec.DBWrites...),
+			Provenance: graphschema.ServiceProvenance{
+				OutputRoot:           outputRoot,
+				RunReportPath:        runMeta.Path,
+				RunSource:            runMeta.Source,
+				RunRef:               runMeta.Ref,
+				SnapshotID:           s.bundle.SnapshotID,
+				SnapshotPath:         snapMeta.Path,
+				SnapshotRepoLocator:  snapMeta.RepoLocator,
+				SnapshotRef:          snapMeta.Ref,
+				SnapshotCommitSHA:    snapMeta.CommitSHA,
+				SnapshotSourceType:   snapMeta.SourceType,
+				BundleSHA256:         bundleSHA,
+				AnalyzerBundleSHA256: analyzerSHA,
+			},
 		})
 	}
+	sort.Slice(metaServices, func(i, j int) bool { return metaServices[i].ID < metaServices[j].ID })
+	fingerprint := computeGraphFingerprint(mode, nodes, edges, metaServices)
 
-	return graphschema.Graph{
+	graph := graphschema.Graph{
 		GraphID:     graphID,
 		GeneratedAt: time.Now().UTC(),
 		Mode:        mode,
@@ -505,11 +604,75 @@ func buildGraph(services []serviceSpec, mode string) (graphschema.Graph, error) 
 		Stats: graphschema.GraphStats{
 			NodeCount: len(nodes),
 			EdgeCount: len(edges),
-			ByNode:    gb.byTypeNode,
-			ByEdge:    gb.byTypeEdge,
+			ByNode:    byNode,
+			ByEdge:    byEdge,
 		},
-		Meta: graphschema.GraphMeta{Services: metaServices},
-	}, nil
+		Meta: graphschema.GraphMeta{
+			TenantID: graphTenant,
+			Services: metaServices,
+			Provenance: graphschema.GraphProvenance{
+				Tool:        "diffmind",
+				GeneratedBy: "graph.build",
+				Fingerprint: fingerprint,
+			},
+		},
+	}
+	if err := graphschema.ValidateGraph(graph); err != nil {
+		return graphschema.Graph{}, fmt.Errorf("validate graph schema: %w", err)
+	}
+	return graph, nil
+}
+
+func computeGraphFingerprint(mode string, nodes []graphschema.Node, edges []graphschema.Edge, services []graphschema.ServiceMeta) string {
+	payload := struct {
+		Mode     string                    `json:"mode"`
+		Nodes    []graphschema.Node        `json:"nodes"`
+		Edges    []graphschema.Edge        `json:"edges"`
+		Services []graphschema.ServiceMeta `json:"services"`
+	}{
+		Mode:     mode,
+		Nodes:    nodes,
+		Edges:    edges,
+		Services: services,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func findReusableGraph(outDir string, graph graphschema.Graph) (graphschema.Summary, bool) {
+	indexPath := filepath.Join(outDir, "graph", "index.json")
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		return graphschema.Summary{}, false
+	}
+	var index graphschema.Index
+	if err := json.Unmarshal(data, &index); err != nil {
+		return graphschema.Summary{}, false
+	}
+	if len(index.Graphs) == 0 {
+		return graphschema.Summary{}, false
+	}
+	latest := index.Graphs[0]
+	if strings.TrimSpace(latest.Fingerprint) == "" || strings.TrimSpace(graph.Meta.Provenance.Fingerprint) == "" {
+		return graphschema.Summary{}, false
+	}
+	if latest.Mode != graph.Mode {
+		return graphschema.Summary{}, false
+	}
+	if normalizeTenantID(latest.TenantID) != normalizeTenantID(graph.Meta.TenantID) {
+		return graphschema.Summary{}, false
+	}
+	if latest.Fingerprint != graph.Meta.Provenance.Fingerprint {
+		return graphschema.Summary{}, false
+	}
+	if _, err := os.Stat(latest.Path); err != nil {
+		return graphschema.Summary{}, false
+	}
+	return latest, true
 }
 
 func trimUnconnectedNodes(nodes []graphschema.Node, edges []graphschema.Edge) []graphschema.Node {
@@ -533,4 +696,104 @@ func trimUnconnectedNodes(nodes []graphschema.Node, edges []graphschema.Edge) []
 		}
 	}
 	return out
+}
+
+func countNodeTypes(nodes []graphschema.Node) map[string]int {
+	out := map[string]int{}
+	for _, n := range nodes {
+		out[n.Type]++
+	}
+	return out
+}
+
+func countEdgeTypes(edges []graphschema.Edge) map[string]int {
+	out := map[string]int{}
+	for _, e := range edges {
+		out[e.Type]++
+	}
+	return out
+}
+
+func deriveOutputRootFromBundlePath(bundlePath string) string {
+	trimmed := strings.TrimSpace(bundlePath)
+	if trimmed == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(trimmed)
+	if err != nil {
+		abs = filepath.Clean(trimmed)
+	}
+	parent := filepath.Base(filepath.Dir(abs))
+	if parent == "bundle" {
+		return filepath.Dir(filepath.Dir(abs))
+	}
+	return filepath.Dir(abs)
+}
+
+func discoverRunReportMetadata(outputRoot string) runReportMeta {
+	if strings.TrimSpace(outputRoot) == "" {
+		return runReportMeta{}
+	}
+	path := filepath.Join(outputRoot, "run", "report.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return runReportMeta{}
+	}
+	var report struct {
+		Source string `json:"source"`
+		Ref    string `json:"ref"`
+	}
+	if err := json.Unmarshal(data, &report); err != nil {
+		return runReportMeta{}
+	}
+	return runReportMeta{
+		Path:   path,
+		Source: strings.TrimSpace(report.Source),
+		Ref:    strings.TrimSpace(report.Ref),
+	}
+}
+
+func discoverSnapshotMetadata(outputRoot string, snapshotID string) snapshotMeta {
+	if strings.TrimSpace(outputRoot) == "" || strings.TrimSpace(snapshotID) == "" {
+		return snapshotMeta{}
+	}
+	path := filepath.Join(outputRoot, "snapshots", snapshotID, "snapshot.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return snapshotMeta{}
+	}
+	var meta struct {
+		RepoLocator string `json:"repo_locator"`
+		Ref         string `json:"ref"`
+		CommitSHA   string `json:"commit_sha"`
+		SourceType  string `json:"source_type"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return snapshotMeta{}
+	}
+	return snapshotMeta{
+		Path:        path,
+		RepoLocator: strings.TrimSpace(meta.RepoLocator),
+		Ref:         strings.TrimSpace(meta.Ref),
+		CommitSHA:   strings.TrimSpace(meta.CommitSHA),
+		SourceType:  strings.TrimSpace(meta.SourceType),
+	}
+}
+
+func fileSHA256(path string) (string, error) {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return "", nil
+	}
+	f, err := os.Open(trimmed)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }

@@ -59,7 +59,7 @@ func Run(_ context.Context, args []string) error {
 func parseOptions(args []string) (options, error) {
 	fs := flag.NewFlagSet("query", flag.ContinueOnError)
 	bundlePath := fs.String("bundle", filepath.Join(".diffmind", "bundle", "intelligence_bundle.json"), "Canonical intelligence bundle path")
-	view := fs.String("view", "all", "View: all|runtime|endpoints|config|external|pipeline|infra")
+	view := fs.String("view", "all", "View: all|runtime|endpoints|config|external|pipeline|infra|dependency|ownership|risk|conflict|verify")
 	format := fs.String("format", "table", "Output format: table|json")
 
 	if err := fs.Parse(filterQueryArgs(args)); err != nil {
@@ -115,13 +115,18 @@ func ValidateView(view string) bool {
 
 func viewType(view string) (string, bool) {
 	mapping := map[string]string{
-		"all":       "",
-		"runtime":   "RuntimeUnit",
-		"endpoints": "Endpoint",
-		"config":    "ConfigKey",
-		"external":  "ExternalCall",
-		"pipeline":  "PipelineStep",
-		"infra":     "InfraResource",
+		"all":        "",
+		"runtime":    "RuntimeUnit",
+		"endpoints":  "Endpoint",
+		"config":     "ConfigKey",
+		"external":   "ExternalCall",
+		"pipeline":   "PipelineStep",
+		"infra":      "InfraResource",
+		"dependency": "Dependency",
+		"ownership":  "OwnershipRule",
+		"risk":       "DependencyRisk",
+		"conflict":   "Conflict",
+		"verify":     "VerificationDecision",
 	}
 	t, ok := mapping[view]
 	return t, ok
@@ -159,6 +164,16 @@ func summarize(e bundleio.Entity) string {
 			return fmt.Sprintf("%v %v", a["provider"], a["kind"])
 		}
 		return fmt.Sprintf("%v", a["provider"])
+	case "Dependency":
+		return fmt.Sprintf("%v@%v [%v]", a["name"], a["version"], a["ecosystem"])
+	case "OwnershipRule":
+		return fmt.Sprintf("%v -> %v", a["pattern"], a["owner"])
+	case "DependencyRisk":
+		return fmt.Sprintf("%v %v (%v)", a["name"], a["risk_type"], a["severity"])
+	case "Conflict":
+		return fmt.Sprintf("%v %v", a["entity_type"], a["status"])
+	case "VerificationDecision":
+		return fmt.Sprintf("%v -> %v", a["subject_entity_id"], a["status"])
 	default:
 		return e.NaturalKey
 	}

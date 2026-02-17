@@ -1,0 +1,13 @@
+{
+  "thresholds": {
+    "pass_rate": 0.95,
+    "precision": 0.95,
+    "recall": 0.95,
+    "f1": 0.95,
+    "calibration_error_max": 0.10,
+    "adversarial_pass_rate": 0.90
+  },
+  "severity1": {
+    "regressions_max": 0
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "templates": [
+    {
+      "id": "pr-review-default",
+      "product": "pr-review",
+      "method": "POST",
+      "path": "/products/pr-review",
+      "payload": {
+        "graph_id": "${graph_id}",
+        "changed_nodes": ["${node_id}"],
+        "max_findings": 50
+      },
+      "query": {
+        "explain": true
+      }
+    },
+    {
+      "id": "docs-service",
+      "product": "docs",
+      "method": "GET",
+      "path": "/products/docs/${graph_id}",
+      "query": {
+        "service": "${service_id}",
+        "explain": true
+      }
+    },
+    {
+      "id": "mapper-impact",
+      "product": "mapper",
+      "method": "GET",
+      "path": "/products/mapper/${graph_id}",
+      "query": {
+        "service": "${service_id}",
+        "explain": true
+      }
+    },
+    {
+      "id": "governance-risk",
+      "product": "governance",
+      "method": "GET",
+      "path": "/products/governance/${graph_id}",
+      "query": {
+        "explain": true
+      }
+    }
+  ]
+}

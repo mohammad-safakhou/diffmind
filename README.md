@@ -25,6 +25,18 @@ Repo extractor core for generating auditable repository intelligence bundles.
 - `go run ./cmd/extractor diff`
 - `go run ./cmd/extractor corpus`
 - `go run ./cmd/extractor golden`
+- `go run ./cmd/extractor quality evaluate`
+- `go run ./cmd/extractor quality gate`
+- `go run ./cmd/extractor ops slo`
+- `go run ./cmd/extractor ops backup`
+- `go run ./cmd/extractor ops restore`
+- `go run ./cmd/extractor ops rollout`
+- `go run ./cmd/extractor finalgate attest`
+- Product APIs (via `serve`):
+  - `POST /products/pr-review`
+  - `GET /products/docs/{graph_id}`
+  - `GET /products/mapper/{graph_id}`
+  - `GET /products/governance/{graph_id}`
 
 ## Documentation Index
 
@@ -36,6 +48,17 @@ Repo extractor core for generating auditable repository intelligence bundles.
   - `docs/graph_performance_baseline.md`
 - Versioning/rollback policy:
   - `docs/versioning_policy.md`
+- Quality evaluation and gate runbook:
+  - `docs/m14_quality_runbook.md`
+- Product API contracts and query templates:
+  - `docs/m15_product_api_contracts.md`
+  - `docs/m15_query_templates.json`
+- Operations runbook and rollout policy:
+  - `docs/m16_operations_runbook.md`
+  - `docs/m16_rollout_policy.json`
+- Final completion gate artifacts:
+  - `docs/m17_question_catalog.json`
+  - `docs/m17_completion_runbook.md`
 
 ## Module Contracts
 

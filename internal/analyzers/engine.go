@@ -24,7 +24,7 @@ type collector struct {
 	report       Report
 }
 
-func analyze(ctx context.Context, root string, forcedSnapshotID string) (result, error) {
+func analyze(ctx context.Context, root string, forcedSnapshotID string, extractorSelection string) (result, error) {
 	_ = ctx
 	inv, err := snapshot.BuildInventory(root, snapshot.InventoryOptions{ExcludeDirs: map[string]struct{}{
 		".git": {}, ".diffmind": {}, ".gocache": {}, "bin": {}, "node_modules": {},
@@ -42,22 +42,28 @@ func analyze(ctx context.Context, root string, forcedSnapshotID string) (result,
 	if err != nil {
 		return result{}, err
 	}
+	extractors, err := resolveExtractors(extractorSelection)
+	if err != nil {
+		return result{}, err
+	}
 
 	c := &collector{
 		snapshotID:   snapshotID,
 		provenance:   facts.Provenance{AnalyzerID: analyzerID, AnalyzerVersion: analyzerVersion, Deterministic: true, Inferred: false},
 		evidenceByID: map[string]facts.Evidence{},
 		factByID:     map[string]facts.Fact{},
-		report:       Report{GeneratedAt: time.Now().UTC(), SourceRoot: root, SnapshotID: snapshotID},
+		report: Report{
+			GeneratedAt: time.Now().UTC(),
+			SourceRoot:  root,
+			SnapshotID:  snapshotID,
+			Extractors:  extractorNames(extractors),
+		},
 	}
 
 	for _, f := range files {
-		detectRuntimeUnits(c, f)
-		detectInboundEndpoints(c, f)
-		detectOutboundCalls(c, f)
-		detectQueueAndDBCalls(c, f)
-		detectConfigKeys(c, f)
-		detectCIIaC(c, f)
+		for _, ex := range extractors {
+			ex.Extract(c, f)
+		}
 	}
 
 	bundle := c.bundle()

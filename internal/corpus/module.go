@@ -35,6 +35,9 @@ type manifestCase struct {
 	Name         string      `json:"name"`
 	Source       string      `json:"source"`
 	Ref          string      `json:"ref"`
+	Domain       string      `json:"domain,omitempty"`
+	Language     string      `json:"language,omitempty"`
+	Tags         []string    `json:"tags,omitempty"`
 	Expect       expectation `json:"expect"`
 	AnalyzeFlags []string    `json:"analyze_flags"`
 }
@@ -57,11 +60,15 @@ type caseReport struct {
 	Name         string         `json:"name"`
 	Source       string         `json:"source"`
 	Ref          string         `json:"ref"`
+	Domain       string         `json:"domain,omitempty"`
+	Language     string         `json:"language,omitempty"`
+	Tags         []string       `json:"tags,omitempty"`
 	DurationMS   int64          `json:"duration_ms"`
 	CaseOutDir   string         `json:"case_out_dir"`
 	BundlePath   string         `json:"bundle_path"`
 	EntityCount  int            `json:"entity_count"`
 	CountsByType map[string]int `json:"counts_by_type"`
+	Confidence   float64        `json:"confidence,omitempty"`
 	Status       string         `json:"status"`
 	Failures     []string       `json:"failures"`
 	Error        string         `json:"error,omitempty"`
@@ -252,14 +259,34 @@ func runCase(ctx context.Context, c manifestCase, manifestDir string, outDir str
 		Name:         name,
 		Source:       src,
 		Ref:          ref,
+		Domain:       strings.TrimSpace(c.Domain),
+		Language:     strings.TrimSpace(c.Language),
+		Tags:         append([]string(nil), c.Tags...),
 		DurationMS:   time.Since(start).Milliseconds(),
 		CaseOutDir:   caseOutDir,
 		BundlePath:   bundlePath,
 		EntityCount:  len(b.Entities),
 		CountsByType: countsByType,
+		Confidence:   caseConfidence(c.Expect, len(failures)),
 		Status:       status,
 		Failures:     failures,
 	}
+}
+
+func caseConfidence(expect expectation, failureCount int) float64 {
+	checks := 0
+	if expect.MinEntities > 0 {
+		checks++
+	}
+	checks += len(expect.RequiredTypes)
+	if checks == 0 {
+		return 1.0
+	}
+	passed := checks - failureCount
+	if passed < 0 {
+		passed = 0
+	}
+	return float64(passed) / float64(checks)
 }
 
 func runPipeline(ctx context.Context, source string, ref string, outDir string, analyzeFlags []string) error {

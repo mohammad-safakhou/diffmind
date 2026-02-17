@@ -16,12 +16,16 @@ var supportedCommands = map[string]func(context.Context, []string) error{
 	"parse":     orchestrator.RunParse,
 	"analyze":   orchestrator.RunAnalyze,
 	"bundle":    orchestrator.RunBundle,
+	"verify":    orchestrator.RunVerify,
 	"query":     orchestrator.RunQuery,
 	"diff":      orchestrator.RunDiff,
 	"serve":     orchestrator.RunServe,
 	"corpus":    orchestrator.RunCorpus,
 	"golden":    orchestrator.RunGolden,
 	"graph":     orchestrator.RunGraph,
+	"quality":   orchestrator.RunQuality,
+	"ops":       orchestrator.RunOps,
+	"finalgate": orchestrator.RunFinalGate,
 	"run":       orchestrator.RunPipeline,
 	"help":      func(context.Context, []string) error { return nil },
 	"--help":    func(context.Context, []string) error { return nil },
@@ -80,12 +84,16 @@ func printUsage() {
 	fmt.Println("  parse      Run parser module only")
 	fmt.Println("  analyze    Run analyzers module only")
 	fmt.Println("  bundle     Run consolidation module only")
+	fmt.Println("  verify     Run verification/adjudication module on intelligence bundle")
 	fmt.Println("  query      Query canonical intelligence bundle")
 	fmt.Println("  diff       Diff two canonical intelligence bundles")
 	fmt.Println("  serve      Serve HTTP API for bundle query/diff")
 	fmt.Println("  corpus     Run acceptance corpus against multiple repos")
 	fmt.Println("  golden     Verify or update corpus golden summaries")
 	fmt.Println("  graph      Build and manage service graph artifacts")
+	fmt.Println("  quality    Evaluate quality metrics and enforce release gates")
+	fmt.Println("  ops        Evaluate SLOs, backup/restore, and rollout plans")
+	fmt.Println("  finalgate  Run state-of-the-art completion gate attestation")
 	fmt.Println("  run        Run full orchestrated pipeline")
 	fmt.Println("  version    Print version")
 }

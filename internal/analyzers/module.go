@@ -25,7 +25,7 @@ func Run(ctx context.Context, args []string) error {
 		return fmt.Errorf("resolve source path: %w", err)
 	}
 
-	res, err := analyze(ctx, root, opts.SnapshotID)
+	res, err := analyze(ctx, root, opts.SnapshotID, opts.Extractors)
 	if err != nil {
 		return err
 	}
@@ -96,6 +96,7 @@ func parseOptions(args []string) (Options, error) {
 	outDir := fs.String("out", ".diffmind", "Output root for analyzer artifacts")
 	snapshotID := fs.String("snapshot-id", "", "Optional snapshot id")
 	persist := fs.Bool("persist", false, "Persist analyzer facts/evidence into Postgres")
+	extractors := fs.String("extractors", "", "Comma-separated extractor names (default: all built-ins)")
 	llmAugment := fs.Bool("llm-augment", false, "Enable bounded LLM augmentation")
 	llmModel := fs.String("llm-model", "gpt-5-mini", "LLM model for augmentation")
 	llmTask := fs.String("llm-task", "augment-routes-http-config", "LLM augmentation task")
@@ -110,6 +111,7 @@ func parseOptions(args []string) (Options, error) {
 		OutDir:      *outDir,
 		SnapshotID:  *snapshotID,
 		Persist:     *persist,
+		Extractors:  *extractors,
 		LLMAugment:  *llmAugment,
 		LLMModel:    *llmModel,
 		LLMTask:     *llmTask,
@@ -123,7 +125,7 @@ func filterAnalyzeArgs(args []string) []string {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
-		case arg == "--source" || arg == "--out" || arg == "--snapshot-id" || arg == "--llm-model" || arg == "--llm-task" || arg == "--llm-max-files" || arg == "--llm-max-chars":
+		case arg == "--source" || arg == "--out" || arg == "--snapshot-id" || arg == "--extractors" || arg == "--llm-model" || arg == "--llm-task" || arg == "--llm-max-files" || arg == "--llm-max-chars":
 			filtered = append(filtered, arg)
 			if i+1 < len(args) {
 				i++
@@ -132,6 +134,7 @@ func filterAnalyzeArgs(args []string) []string {
 		case arg == "--persist" || arg == "--llm-augment":
 			filtered = append(filtered, arg)
 		case strings.HasPrefix(arg, "--source=") || strings.HasPrefix(arg, "--out=") || strings.HasPrefix(arg, "--snapshot-id=") ||
+			strings.HasPrefix(arg, "--extractors=") ||
 			strings.HasPrefix(arg, "--persist=") || strings.HasPrefix(arg, "--llm-augment=") || strings.HasPrefix(arg, "--llm-model=") ||
 			strings.HasPrefix(arg, "--llm-task=") || strings.HasPrefix(arg, "--llm-max-files=") || strings.HasPrefix(arg, "--llm-max-chars="):
 			filtered = append(filtered, arg)

@@ -50,9 +50,23 @@ var (
 	reSpringValue  = regexp.MustCompile(`@Value\(\s*"\$\{([^}]+)\}"\s*\)`)
 	rePyGetenv     = regexp.MustCompile(`os\.getenv\(\s*["']([A-Za-z0-9_\-\.]+)["']`)
 	reViperGet     = regexp.MustCompile(`viper\.Get(?:String|Int|Bool|Duration|Float64)?\(\s*"([A-Za-z0-9_\-\.]+)"\s*\)`)
+	reEnvAssign    = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_\-\.]*)\s*=\s*(.+)?$`)
+	reYAMLAssign   = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_\-\.]*)\s*:\s*(.+)?$`)
+	reJSONKey      = regexp.MustCompile(`^\s*"([A-Za-z_][A-Za-z0-9_\-\.]*)"\s*:\s*(.+)?$`)
+	rePropsAssign  = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_\-\.]*)\s*[:=]\s*(.+)?$`)
+	reSecretLike   = regexp.MustCompile(`(?i)(secret|token|password|passwd|api[_\-]?key|private[_\-]?key|client[_\-]?secret|access[_\-]?key|credential)`)
 
 	reTerraformRes = regexp.MustCompile(`^\s*resource\s+"([^"]+)"\s+"([^"]+)"`)
 	reK8sKind      = regexp.MustCompile(`^\s*kind\s*:\s*([A-Za-z0-9]+)`)
+	reK8sName      = regexp.MustCompile(`^\s*name\s*:\s*([A-Za-z0-9\-_\.]+)`)
+	reK8sImage     = regexp.MustCompile(`^\s*image\s*:\s*([A-Za-z0-9/\.\-_:]+)`)
+	reDockerFrom   = regexp.MustCompile(`(?i)^from\s+([a-z0-9/\.\-_:]+)`)
+	reComposeSvc   = regexp.MustCompile(`^\s{2,}([A-Za-z0-9\-_]+)\s*:\s*$`)
+	reComposeImage = regexp.MustCompile(`^\s{4,}image\s*:\s*([A-Za-z0-9/\.\-_:]+)`)
+	reGoBuildCmd   = regexp.MustCompile(`\bgo\s+build\b`)
+	reDockerBuild  = regexp.MustCompile(`\bdocker\s+build(?:x)?\b`)
+	reNpmBuild     = regexp.MustCompile(`\bnpm\s+run\s+build\b`)
+	reMavenPkg     = regexp.MustCompile(`\bmvn(?:w)?\s+.*\b(package|install)\b`)
 	reGHUses       = regexp.MustCompile(`^\s*-?\s*uses\s*:\s*(.+)$`)
 	reGHRun        = regexp.MustCompile(`^\s*-?\s*run\s*:\s*(.+)$`)
 	reGHSecret     = regexp.MustCompile(`secrets\.[A-Za-z0-9_]+`)
@@ -103,6 +117,25 @@ func detectRuntimeUnits(c *collector, file sourceFile) {
 }
 
 func detectInboundEndpoints(c *collector, file sourceFile) {
+	switch file.Ext {
+	case ".js", ".jsx", ".ts", ".tsx":
+		if detectJSTSInboundEndpointsSemantic(c, file) {
+			return
+		}
+	case ".py":
+		if detectPythonInboundEndpointsSemantic(c, file) {
+			return
+		}
+	case ".java":
+		if detectJavaInboundEndpointsSemantic(c, file) {
+			return
+		}
+	}
+	if file.Ext == ".go" {
+		if detectGoInboundEndpointsSemantic(c, file) {
+			return
+		}
+	}
 	for _, m := range regexMatchesByLine(file.Lines, reExpressRoute) {
 		c.addFactWithEvidence("Endpoint", map[string]any{"direction": "inbound", "method": strings.ToUpper(m.groups[0]), "path": m.groups[1], "framework": "express-like"}, file, m.line, m.col, m.text, func() { c.report.Endpoints++ })
 	}
@@ -123,6 +156,25 @@ func detectInboundEndpoints(c *collector, file sourceFile) {
 }
 
 func detectOutboundCalls(c *collector, file sourceFile) {
+	switch file.Ext {
+	case ".js", ".jsx", ".ts", ".tsx":
+		if detectJSTSOutboundCallsSemantic(c, file) {
+			return
+		}
+	case ".py":
+		if detectPythonOutboundCallsSemantic(c, file) {
+			return
+		}
+	case ".java":
+		if detectJavaOutboundCallsSemantic(c, file) {
+			return
+		}
+	}
+	if file.Ext == ".go" {
+		if detectGoOutboundCallsSemantic(c, file) {
+			return
+		}
+	}
 	for _, m := range regexMatchesByLine(file.Lines, reGoHttpNewReq) {
 		c.addFactWithEvidence("ExternalCall", map[string]any{"protocol": "http", "method": m.groups[0], "target": strings.TrimSpace(m.groups[1]), "library": "go-net-http"}, file, m.line, m.col, m.text, func() { c.report.ExternalCalls++ })
 	}
@@ -148,22 +200,53 @@ func detectOutboundCalls(c *collector, file sourceFile) {
 
 func detectConfigKeys(c *collector, file sourceFile) {
 	for _, m := range regexMatchesByLine(file.Lines, reGetenvGo) {
-		c.addFactWithEvidence("ConfigKey", map[string]any{"key": m.groups[0], "pattern": "os.Getenv"}, file, m.line, m.col, m.text, func() { c.report.ConfigKeys++ })
+		recordConfigKey(c, file, m.line, m.col, m.text, m.groups[0], "os.Getenv", "code_ref")
 	}
 	for _, m := range regexMatchesByLine(file.Lines, reProcessEnv) {
-		c.addFactWithEvidence("ConfigKey", map[string]any{"key": m.groups[0], "pattern": "process.env"}, file, m.line, m.col, m.text, func() { c.report.ConfigKeys++ })
+		recordConfigKey(c, file, m.line, m.col, m.text, m.groups[0], "process.env", "code_ref")
 	}
 	for _, m := range regexMatchesByLine(file.Lines, reProcessEnvIx) {
-		c.addFactWithEvidence("ConfigKey", map[string]any{"key": m.groups[0], "pattern": "process.env[]"}, file, m.line, m.col, m.text, func() { c.report.ConfigKeys++ })
+		recordConfigKey(c, file, m.line, m.col, m.text, m.groups[0], "process.env[]", "code_ref")
 	}
 	for _, m := range regexMatchesByLine(file.Lines, reSpringValue) {
-		c.addFactWithEvidence("ConfigKey", map[string]any{"key": m.groups[0], "pattern": "@Value"}, file, m.line, m.col, m.text, func() { c.report.ConfigKeys++ })
+		recordConfigKey(c, file, m.line, m.col, m.text, m.groups[0], "@Value", "code_ref")
 	}
 	for _, m := range regexMatchesByLine(file.Lines, rePyGetenv) {
-		c.addFactWithEvidence("ConfigKey", map[string]any{"key": m.groups[0], "pattern": "os.getenv"}, file, m.line, m.col, m.text, func() { c.report.ConfigKeys++ })
+		recordConfigKey(c, file, m.line, m.col, m.text, m.groups[0], "os.getenv", "code_ref")
 	}
 	for _, m := range regexMatchesByLine(file.Lines, reViperGet) {
-		c.addFactWithEvidence("ConfigKey", map[string]any{"key": m.groups[0], "pattern": "viper.Get"}, file, m.line, m.col, m.text, func() { c.report.ConfigKeys++ })
+		recordConfigKey(c, file, m.line, m.col, m.text, m.groups[0], "viper.Get", "code_ref")
+	}
+
+	if isConfigManifestFile(file.Path) {
+		for i, line := range file.Lines {
+			lineNo := i + 1
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "//") {
+				continue
+			}
+			if m := reEnvAssign.FindStringSubmatch(line); len(m) >= 2 {
+				recordConfigKey(c, file, lineNo, 1, line, m[1], "env_assignment", "config_manifest")
+				continue
+			}
+			if m := reJSONKey.FindStringSubmatch(line); len(m) >= 2 {
+				recordConfigKey(c, file, lineNo, 1, line, m[1], "json_assignment", "config_manifest")
+				continue
+			}
+			if m := reYAMLAssign.FindStringSubmatch(line); len(m) >= 2 {
+				key := m[1]
+				lower := strings.ToLower(strings.TrimSpace(key))
+				// Skip common structural keys to keep config lineage focused.
+				if lower == "apiversion" || lower == "kind" || lower == "metadata" || lower == "spec" {
+					continue
+				}
+				recordConfigKey(c, file, lineNo, 1, line, key, "yaml_assignment", "config_manifest")
+				continue
+			}
+			if m := rePropsAssign.FindStringSubmatch(line); len(m) >= 2 {
+				recordConfigKey(c, file, lineNo, 1, line, m[1], "properties_assignment", "config_manifest")
+			}
+		}
 	}
 }
 
@@ -289,29 +372,226 @@ func detectCIIaC(c *collector, file sourceFile) {
 			c.addFactWithEvidence("PipelineStep", map[string]any{"provider": "github-actions", "kind": "uses", "value": strings.TrimSpace(m.groups[0])}, file, m.line, m.col, m.text, func() { c.report.PipelineSteps++ })
 		}
 		for _, m := range regexMatchesByLine(file.Lines, reGHRun) {
-			c.addFactWithEvidence("PipelineStep", map[string]any{"provider": "github-actions", "kind": "run", "value": strings.TrimSpace(m.groups[0])}, file, m.line, m.col, m.text, func() { c.report.PipelineSteps++ })
+			runCmd := strings.TrimSpace(m.groups[0])
+			c.addFactWithEvidence("PipelineStep", map[string]any{"provider": "github-actions", "kind": "run", "value": runCmd}, file, m.line, m.col, m.text, func() { c.report.PipelineSteps++ })
+			detectBuildArtifactsFromCommand(c, file, m.line, m.col, m.text, runCmd, "github-actions")
 		}
 		for _, m := range regexMatchesByLine(file.Lines, reGHSecret) {
 			c.addFactWithEvidence("PipelineStep", map[string]any{"provider": "github-actions", "kind": "secret", "value": strings.TrimSpace(m.text)}, file, m.line, m.col, m.text, func() { c.report.PipelineSteps++ })
+			c.addFactWithEvidence("SensitiveSurface", map[string]any{
+				"kind":           "pipeline_secret",
+				"reference":      strings.TrimSpace(m.text),
+				"classification": "secret-like",
+				"source_kind":    "ci",
+				"environment":    inferEnvironmentScope(file.Path, ""),
+			}, file, m.line, m.col, m.text, func() { c.report.SensitiveSurfaces++ })
 		}
 	}
 
 	if base == ".gitlab-ci.yml" || base == "jenkinsfile" {
 		c.addFactWithEvidence("PipelineStep", map[string]any{"provider": base, "kind": "pipeline-file", "value": file.Path}, file, 1, 1, file.Path, func() { c.report.PipelineSteps++ })
+		for i, line := range file.Lines {
+			detectBuildArtifactsFromCommand(c, file, i+1, 1, line, line, base)
+		}
 	}
 
 	if strings.HasSuffix(lower, ".tf") {
 		for _, m := range regexMatchesByLine(file.Lines, reTerraformRes) {
 			c.addFactWithEvidence("InfraResource", map[string]any{"provider": "terraform", "resource_type": m.groups[0], "name": m.groups[1]}, file, m.line, m.col, m.text, func() { c.report.InfraResources++ })
+			c.addFactWithEvidence("Deployment", map[string]any{
+				"platform":      "terraform",
+				"resource_type": m.groups[0],
+				"name":          m.groups[1],
+				"file":          file.Path,
+			}, file, m.line, m.col, m.text, func() { c.report.Deployments++ })
 		}
 	}
 	if strings.Contains(lower, "helm/") && base == "chart.yaml" {
 		c.addFactWithEvidence("InfraResource", map[string]any{"provider": "helm", "kind": "chart", "file": file.Path}, file, 1, 1, "Chart.yaml", func() { c.report.InfraResources++ })
+		c.addFactWithEvidence("Deployment", map[string]any{
+			"platform": "helm",
+			"name":     filepath.Base(filepath.Dir(file.Path)),
+			"file":     file.Path,
+		}, file, 1, 1, "Chart.yaml", func() { c.report.Deployments++ })
 	}
 	if strings.HasPrefix(lower, "k8s/") || base == "kustomization.yaml" || base == "kustomization.yml" {
+		lastKind := ""
+		lastName := ""
 		for _, m := range regexMatchesByLine(file.Lines, reK8sKind) {
-			c.addFactWithEvidence("InfraResource", map[string]any{"provider": "kubernetes", "kind": m.groups[0], "file": file.Path}, file, m.line, m.col, m.text, func() { c.report.InfraResources++ })
+			lastKind = strings.TrimSpace(m.groups[0])
+			c.addFactWithEvidence("InfraResource", map[string]any{"provider": "kubernetes", "kind": lastKind, "file": file.Path}, file, m.line, m.col, m.text, func() { c.report.InfraResources++ })
+			if strings.EqualFold(lastKind, "Deployment") || strings.EqualFold(lastKind, "StatefulSet") || strings.EqualFold(lastKind, "DaemonSet") {
+				c.addFactWithEvidence("Deployment", map[string]any{
+					"platform":      "kubernetes",
+					"resource_kind": lastKind,
+					"name":          lastName,
+					"file":          file.Path,
+				}, file, m.line, m.col, m.text, func() { c.report.Deployments++ })
+			}
 		}
+		for _, m := range regexMatchesByLine(file.Lines, reK8sName) {
+			lastName = strings.TrimSpace(m.groups[0])
+		}
+		for _, m := range regexMatchesByLine(file.Lines, reK8sImage) {
+			image := strings.TrimSpace(m.groups[0])
+			if image == "" {
+				continue
+			}
+			c.addFactWithEvidence("BuildArtifact", map[string]any{
+				"artifact_type": "container-image",
+				"name":          image,
+				"produced_by":   "kubernetes-manifest",
+				"file":          file.Path,
+			}, file, m.line, m.col, m.text, func() { c.report.BuildArtifacts++ })
+		}
+	}
+
+	if base == "dockerfile" {
+		for _, m := range regexMatchesByLine(file.Lines, reDockerFrom) {
+			image := strings.TrimSpace(m.groups[0])
+			if image == "" {
+				continue
+			}
+			c.addFactWithEvidence("BuildArtifact", map[string]any{
+				"artifact_type": "container-image",
+				"name":          image,
+				"produced_by":   "dockerfile",
+				"file":          file.Path,
+			}, file, m.line, m.col, m.text, func() { c.report.BuildArtifacts++ })
+		}
+	}
+
+	if base == "docker-compose.yml" || base == "docker-compose.yaml" || base == "compose.yml" || base == "compose.yaml" {
+		currentService := ""
+		for i, line := range file.Lines {
+			if m := reComposeSvc.FindStringSubmatch(line); len(m) >= 2 {
+				currentService = strings.TrimSpace(m[1])
+			}
+			if m := reComposeImage.FindStringSubmatch(line); len(m) >= 2 {
+				image := strings.TrimSpace(m[1])
+				if image == "" {
+					continue
+				}
+				c.addFactWithEvidence("BuildArtifact", map[string]any{
+					"artifact_type": "container-image",
+					"name":          image,
+					"service":       currentService,
+					"produced_by":   "docker-compose",
+					"file":          file.Path,
+				}, file, i+1, 1, line, func() { c.report.BuildArtifacts++ })
+				c.addFactWithEvidence("Deployment", map[string]any{
+					"platform": "docker-compose",
+					"name":     currentService,
+					"image":    image,
+					"file":     file.Path,
+				}, file, i+1, 1, line, func() { c.report.Deployments++ })
+			}
+		}
+	}
+}
+
+func detectBuildArtifactsFromCommand(c *collector, file sourceFile, line int, col int, snippet string, cmd string, provider string) {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" {
+		return
+	}
+	switch {
+	case reDockerBuild.MatchString(cmd):
+		c.addFactWithEvidence("BuildArtifact", map[string]any{
+			"artifact_type": "container-image",
+			"name":          "docker-image",
+			"build_command": cmd,
+			"provider":      provider,
+			"file":          file.Path,
+		}, file, line, col, snippet, func() { c.report.BuildArtifacts++ })
+	case reGoBuildCmd.MatchString(cmd):
+		c.addFactWithEvidence("BuildArtifact", map[string]any{
+			"artifact_type": "binary",
+			"name":          "go-binary",
+			"build_command": cmd,
+			"provider":      provider,
+			"file":          file.Path,
+		}, file, line, col, snippet, func() { c.report.BuildArtifacts++ })
+	case reNpmBuild.MatchString(cmd):
+		c.addFactWithEvidence("BuildArtifact", map[string]any{
+			"artifact_type": "web-bundle",
+			"name":          "npm-build-output",
+			"build_command": cmd,
+			"provider":      provider,
+			"file":          file.Path,
+		}, file, line, col, snippet, func() { c.report.BuildArtifacts++ })
+	case reMavenPkg.MatchString(cmd):
+		c.addFactWithEvidence("BuildArtifact", map[string]any{
+			"artifact_type": "jar",
+			"name":          "maven-artifact",
+			"build_command": cmd,
+			"provider":      provider,
+			"file":          file.Path,
+		}, file, line, col, snippet, func() { c.report.BuildArtifacts++ })
+	}
+}
+
+func recordConfigKey(c *collector, file sourceFile, line int, col int, snippet string, key string, pattern string, sourceKind string) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return
+	}
+	env := inferEnvironmentScope(file.Path, key)
+	sensitive := reSecretLike.MatchString(strings.ToLower(key))
+	c.addFactWithEvidence("ConfigKey", map[string]any{
+		"key":         key,
+		"pattern":     pattern,
+		"source_kind": sourceKind,
+		"environment": env,
+		"sensitive":   sensitive,
+		"file":        file.Path,
+	}, file, line, col, snippet, func() { c.report.ConfigKeys++ })
+	if sensitive {
+		c.addFactWithEvidence("SensitiveSurface", map[string]any{
+			"kind":           "config_key",
+			"key":            key,
+			"classification": "secret-like",
+			"source_kind":    sourceKind,
+			"environment":    env,
+			"file":           file.Path,
+		}, file, line, col, snippet, func() { c.report.SensitiveSurfaces++ })
+	}
+}
+
+func inferEnvironmentScope(path string, key string) string {
+	p := strings.ToLower(path)
+	k := strings.ToLower(key)
+	switch {
+	case strings.Contains(p, "prod"), strings.Contains(k, "prod_"), strings.Contains(k, ".prod"):
+		return "prod"
+	case strings.Contains(p, "stag"), strings.Contains(k, "stage_"), strings.Contains(k, "staging_"):
+		return "staging"
+	case strings.Contains(p, "dev"), strings.Contains(k, "dev_"), strings.Contains(k, ".dev"):
+		return "dev"
+	case strings.Contains(p, "test"), strings.Contains(p, "qa"), strings.Contains(k, "test_"), strings.Contains(k, "qa_"):
+		return "test"
+	default:
+		return "default"
+	}
+}
+
+func isConfigManifestFile(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	lower := strings.ToLower(path)
+	if strings.HasPrefix(base, ".env") {
+		return true
+	}
+	if strings.Contains(lower, "/config/") || strings.Contains(lower, "\\config\\") {
+		return true
+	}
+	if strings.HasPrefix(base, "application.") || strings.HasPrefix(base, "settings.") {
+		return true
+	}
+	switch filepath.Ext(base) {
+	case ".yaml", ".yml", ".json", ".toml", ".ini", ".properties", ".conf":
+		return strings.Contains(lower, "config")
+	default:
+		return false
 	}
 }
 

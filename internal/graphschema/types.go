@@ -13,20 +13,52 @@ type Graph struct {
 }
 
 type GraphMeta struct {
-	Services []ServiceMeta `json:"services"`
+	TenantID   string          `json:"tenant_id,omitempty"`
+	Services   []ServiceMeta   `json:"services"`
+	Provenance GraphProvenance `json:"provenance,omitempty"`
+	Freshness  GraphFreshness  `json:"freshness,omitempty"`
 }
 
 type ServiceMeta struct {
-	ID             string   `json:"id"`
-	Name           string   `json:"name"`
-	RepoPath       string   `json:"repo_path,omitempty"`
-	BundlePath     string   `json:"bundle_path"`
-	AnalyzerBundle string   `json:"analyzer_bundle_path,omitempty"`
-	BaseURLs       []string `json:"base_urls,omitempty"`
-	QueuePublishes []string `json:"queue_publishes,omitempty"`
-	QueueConsumes  []string `json:"queue_consumes,omitempty"`
-	DBReads        []string `json:"db_reads,omitempty"`
-	DBWrites       []string `json:"db_writes,omitempty"`
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	RepoPath       string            `json:"repo_path,omitempty"`
+	BundlePath     string            `json:"bundle_path"`
+	AnalyzerBundle string            `json:"analyzer_bundle_path,omitempty"`
+	BaseURLs       []string          `json:"base_urls,omitempty"`
+	QueuePublishes []string          `json:"queue_publishes,omitempty"`
+	QueueConsumes  []string          `json:"queue_consumes,omitempty"`
+	DBReads        []string          `json:"db_reads,omitempty"`
+	DBWrites       []string          `json:"db_writes,omitempty"`
+	Provenance     ServiceProvenance `json:"provenance,omitempty"`
+}
+
+type GraphProvenance struct {
+	Tool        string `json:"tool,omitempty"`
+	GeneratedBy string `json:"generated_by,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+}
+
+type GraphFreshness struct {
+	EvaluatedAt time.Time `json:"evaluated_at,omitempty"`
+	MaxAgeHours int       `json:"max_age_hours,omitempty"`
+	AgeSeconds  int64     `json:"age_seconds,omitempty"`
+	IsStale     bool      `json:"is_stale"`
+}
+
+type ServiceProvenance struct {
+	OutputRoot           string `json:"output_root,omitempty"`
+	RunReportPath        string `json:"run_report_path,omitempty"`
+	RunSource            string `json:"run_source,omitempty"`
+	RunRef               string `json:"run_ref,omitempty"`
+	SnapshotID           string `json:"snapshot_id,omitempty"`
+	SnapshotPath         string `json:"snapshot_path,omitempty"`
+	SnapshotRepoLocator  string `json:"snapshot_repo_locator,omitempty"`
+	SnapshotRef          string `json:"snapshot_ref,omitempty"`
+	SnapshotCommitSHA    string `json:"snapshot_commit_sha,omitempty"`
+	SnapshotSourceType   string `json:"snapshot_source_type,omitempty"`
+	BundleSHA256         string `json:"bundle_sha256,omitempty"`
+	AnalyzerBundleSHA256 string `json:"analyzer_bundle_sha256,omitempty"`
 }
 
 type GraphStats struct {
@@ -75,8 +107,10 @@ type Index struct {
 type Summary struct {
 	GraphID     string    `json:"graph_id"`
 	GeneratedAt time.Time `json:"generated_at"`
+	TenantID    string    `json:"tenant_id,omitempty"`
 	Mode        string    `json:"mode"`
 	NodeCount   int       `json:"node_count"`
 	EdgeCount   int       `json:"edge_count"`
+	Fingerprint string    `json:"fingerprint,omitempty"`
 	Path        string    `json:"path"`
 }

@@ -14,3 +14,4 @@ type ClassifierModule interface{ Module }
 type ParserModule interface{ Module }
 type AnalyzerModule interface{ Module }
 type ConsolidationModule interface{ Module }
+type VerifierModule interface{ Module }

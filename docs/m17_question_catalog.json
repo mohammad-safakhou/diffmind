@@ -1,0 +1,24 @@
+{
+  "questions": [
+    {
+      "id": "q-service-external",
+      "question": "What external services does each service depend on?",
+      "endpoint": "/products/docs/{graph_id}"
+    },
+    {
+      "id": "q-change-impact",
+      "question": "What is the impact of changing a service/module?",
+      "endpoint": "/products/mapper/{graph_id}?service={service_id}"
+    },
+    {
+      "id": "q-pr-risk",
+      "question": "What risks are introduced by this PR scope?",
+      "endpoint": "/products/pr-review"
+    },
+    {
+      "id": "q-governance",
+      "question": "What is current governance and risk posture?",
+      "endpoint": "/products/governance/{graph_id}"
+    }
+  ]
+}

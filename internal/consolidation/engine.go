@@ -27,11 +27,13 @@ func consolidate(bundle facts.Bundle, forcedSnapshotID string) (IntelligenceBund
 	}
 
 	byKey := map[string]*Entity{}
+	factsByKey := map[string][]facts.Fact{}
 	duplicates := 0
 
 	for _, f := range bundle.Facts {
 		naturalKey := buildNaturalKey(f)
 		key := f.Type + "|" + naturalKey
+		factsByKey[key] = append(factsByKey[key], f)
 		entity, exists := byKey[key]
 		if !exists {
 			entity = &Entity{
@@ -44,6 +46,7 @@ func consolidate(bundle facts.Bundle, forcedSnapshotID string) (IntelligenceBund
 				Confidence:  f.Confidence,
 			}
 			attachRuntimeReference(entity, byKey, evidenceByID)
+			entity.Attributes["confidence_band"] = confidenceBand(entity.Confidence)
 			byKey[key] = entity
 			continue
 		}
@@ -55,12 +58,27 @@ func consolidate(bundle facts.Bundle, forcedSnapshotID string) (IntelligenceBund
 		}
 		mergeAttributes(entity.Attributes, f.Attributes)
 		attachRuntimeReference(entity, byKey, evidenceByID)
+		entity.Attributes["confidence_band"] = confidenceBand(entity.Confidence)
+	}
+
+	conflictEntities := buildConflictEntities(snapshotID, factsByKey)
+	for _, ce := range conflictEntities {
+		key := ce.Type + "|" + ce.NaturalKey
+		byKey[key] = ce
 	}
 
 	entities := make([]Entity, 0, len(byKey))
 	report := Report{GeneratedAt: time.Now().UTC(), SnapshotID: snapshotID, InputFacts: len(bundle.Facts), DuplicatesMerged: duplicates}
 	for _, e := range byKey {
 		entities = append(entities, *e)
+		switch confidenceBand(e.Confidence) {
+		case "high":
+			report.ConfidenceHigh++
+		case "medium":
+			report.ConfidenceMedium++
+		default:
+			report.ConfidenceLow++
+		}
 		switch e.Type {
 		case "RuntimeUnit":
 			report.RuntimeUnits++
@@ -70,10 +88,28 @@ func consolidate(bundle facts.Bundle, forcedSnapshotID string) (IntelligenceBund
 			report.ExternalCalls++
 		case "ConfigKey":
 			report.ConfigKeys++
+		case "SensitiveSurface":
+			report.SensitiveSurfaces++
 		case "PipelineStep":
 			report.PipelineSteps++
 		case "InfraResource":
 			report.InfraResources++
+		case "BuildArtifact":
+			report.BuildArtifacts++
+		case "Deployment":
+			report.Deployments++
+		case "Dependency":
+			report.Dependencies++
+		case "OwnershipRule":
+			report.OwnershipRules++
+		case "DependencyRisk":
+			report.DependencyRisks++
+		case "Conflict":
+			report.Conflicts++
+		case "CodeSymbol":
+			report.CodeSymbols++
+		case "CodeCall":
+			report.CodeCalls++
 		}
 	}
 	sort.Slice(entities, func(i, j int) bool {
@@ -106,13 +142,31 @@ func buildNaturalKey(f facts.Fact) string {
 	case "Endpoint":
 		return joinKey(values(a, "direction", "method", "path", "framework", "runtime_unit_id"))
 	case "ConfigKey":
-		return joinKey(values(a, "key", "pattern", "runtime_unit_id"))
+		return joinKey(values(a, "key", "pattern", "runtime_unit_id", "environment", "source_kind", "sensitive"))
+	case "SensitiveSurface":
+		return joinKey(values(a, "kind", "key", "reference", "classification", "environment", "source_kind"))
 	case "ExternalCall":
 		return joinKey(values(a, "protocol", "method", "target", "library", "runtime_unit_id"))
 	case "PipelineStep":
 		return joinKey(values(a, "provider", "kind", "value"))
 	case "InfraResource":
 		return joinKey(values(a, "provider", "kind", "resource_type", "name", "file"))
+	case "BuildArtifact":
+		return joinKey(values(a, "artifact_type", "name", "service", "build_command", "provider", "produced_by", "file"))
+	case "Deployment":
+		return joinKey(values(a, "platform", "resource_kind", "name", "image", "file"))
+	case "CodeSymbol":
+		return joinKey(values(a, "language", "symbol_kind", "name", "file", "line", "col"))
+	case "CodeCall":
+		return joinKey(values(a, "language", "callee", "file", "line", "col"))
+	case "Dependency":
+		return joinKey(values(a, "ecosystem", "name", "version", "scope", "internal", "source_file"))
+	case "OwnershipRule":
+		return joinKey(values(a, "pattern", "owner", "source_file"))
+	case "DependencyRisk":
+		return joinKey(values(a, "ecosystem", "name", "version", "risk_type", "severity", "source_file"))
+	case "Conflict":
+		return joinKey(values(a, "entity_type", "entity_natural_key", "status"))
 	default:
 		b, _ := json.Marshal(a)
 		return string(b)
@@ -206,4 +260,87 @@ func stableEntityID(snapshotID string, entityType string, naturalKey string) str
 	_, _ = h.Write([]byte("|"))
 	_, _ = h.Write([]byte(naturalKey))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func confidenceBand(v float64) string {
+	if v >= 0.9 {
+		return "high"
+	}
+	if v >= 0.7 {
+		return "medium"
+	}
+	return "low"
+}
+
+func buildConflictEntities(snapshotID string, factsByKey map[string][]facts.Fact) []*Entity {
+	out := make([]*Entity, 0)
+	for key, factsForKey := range factsByKey {
+		if len(factsForKey) < 2 {
+			continue
+		}
+		parts := strings.SplitN(key, "|", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		entityType := parts[0]
+		naturalKey := parts[1]
+		conflictKeys, observedValues := detectAttributeConflicts(factsForKey)
+		if len(conflictKeys) == 0 {
+			continue
+		}
+
+		evIDs := make([]string, 0)
+		factIDs := make([]string, 0, len(factsForKey))
+		for _, f := range factsForKey {
+			evIDs = append(evIDs, f.EvidenceIDs...)
+			factIDs = append(factIDs, f.ID)
+		}
+		sort.Strings(conflictKeys)
+		conflictNaturalKey := joinKey([]string{entityType, naturalKey, strings.Join(conflictKeys, ",")})
+		out = append(out, &Entity{
+			ID:         stableEntityID(snapshotID, "Conflict", conflictNaturalKey),
+			Type:       "Conflict",
+			NaturalKey: conflictNaturalKey,
+			Attributes: map[string]any{
+				"entity_type":        entityType,
+				"entity_natural_key": naturalKey,
+				"conflict_keys":      conflictKeys,
+				"observed_values":    observedValues,
+				"status":             "unresolved",
+				"severity":           "medium",
+				"confidence_band":    "low",
+			},
+			EvidenceIDs: uniqueSorted(evIDs),
+			FactIDs:     uniqueSorted(factIDs),
+			Confidence:  0.55,
+		})
+	}
+	return out
+}
+
+func detectAttributeConflicts(factsForKey []facts.Fact) ([]string, map[string][]string) {
+	valueSets := map[string]map[string]struct{}{}
+	for _, f := range factsForKey {
+		for k, v := range f.Attributes {
+			if valueSets[k] == nil {
+				valueSets[k] = map[string]struct{}{}
+			}
+			valueSets[k][fmt.Sprint(v)] = struct{}{}
+		}
+	}
+	conflictKeys := make([]string, 0)
+	observed := map[string][]string{}
+	for k, set := range valueSets {
+		if len(set) < 2 {
+			continue
+		}
+		conflictKeys = append(conflictKeys, k)
+		values := make([]string, 0, len(set))
+		for v := range set {
+			values = append(values, v)
+		}
+		sort.Strings(values)
+		observed[k] = values
+	}
+	return conflictKeys, observed
 }

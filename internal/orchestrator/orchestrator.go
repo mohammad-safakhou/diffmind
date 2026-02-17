@@ -17,12 +17,16 @@ import (
 	"diffmind/internal/contracts"
 	"diffmind/internal/corpus"
 	"diffmind/internal/diff"
+	"diffmind/internal/finalgate"
 	"diffmind/internal/golden"
 	"diffmind/internal/graph"
 	"diffmind/internal/httpapi"
+	"diffmind/internal/ops"
 	"diffmind/internal/parser"
+	"diffmind/internal/quality"
 	"diffmind/internal/query"
 	"diffmind/internal/snapshot"
+	"diffmind/internal/verifier"
 )
 
 type runOptions struct {
@@ -72,6 +76,7 @@ var (
 	parserModule        contracts.ParserModule        = parser.Module{}
 	analyzerModule      contracts.AnalyzerModule      = analyzers.Module{}
 	consolidationModule contracts.ConsolidationModule = consolidation.Module{}
+	verifierModule      contracts.VerifierModule      = verifier.Module{}
 )
 
 func RunSnapshot(ctx context.Context, args []string) error {
@@ -92,6 +97,10 @@ func RunAnalyze(ctx context.Context, args []string) error {
 
 func RunBundle(ctx context.Context, args []string) error {
 	return consolidationModule.Run(ctx, args)
+}
+
+func RunVerify(ctx context.Context, args []string) error {
+	return verifierModule.Run(ctx, args)
 }
 
 func RunQuery(ctx context.Context, args []string) error {
@@ -116,6 +125,18 @@ func RunGolden(ctx context.Context, args []string) error {
 
 func RunGraph(ctx context.Context, args []string) error {
 	return graph.Run(ctx, args)
+}
+
+func RunQuality(ctx context.Context, args []string) error {
+	return quality.Run(ctx, args)
+}
+
+func RunOps(ctx context.Context, args []string) error {
+	return ops.Run(ctx, args)
+}
+
+func RunFinalGate(ctx context.Context, args []string) error {
+	return finalgate.Run(ctx, args)
 }
 
 func RunPipeline(ctx context.Context, args []string) error {
@@ -283,6 +304,12 @@ func buildStages(opts runOptions) []stageDef {
 	analyzeArgs := append(append([]string{}, sourceOut...), opts.ForwardArgs...)
 	bundleArgs := []string{"--in", filepath.Join(opts.OutDir, "analyzers", "bundle.json"), "--out", opts.OutDir}
 	bundleArgs = append(bundleArgs, opts.ForwardArgs...)
+	verifyArgs := []string{
+		"--in", filepath.Join(opts.OutDir, "bundle", "intelligence_bundle.json"),
+		"--out", opts.OutDir,
+		"--out-bundle", filepath.Join(opts.OutDir, "bundle", "intelligence_bundle.json"),
+	}
+	verifyArgs = append(verifyArgs, opts.ForwardArgs...)
 
 	return []stageDef{
 		{
@@ -318,6 +345,13 @@ func buildStages(opts runOptions) []stageDef {
 			Outputs: []string{filepath.Join(opts.OutDir, "bundle", "intelligence_bundle.json")},
 			Invoke: func(ctx context.Context) error {
 				return RunBundle(ctx, bundleArgs)
+			},
+		},
+		{
+			Name:    "verify",
+			Outputs: []string{filepath.Join(opts.OutDir, "verify", "report.json")},
+			Invoke: func(ctx context.Context) error {
+				return RunVerify(ctx, verifyArgs)
 			},
 		},
 	}
