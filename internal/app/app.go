@@ -25,6 +25,7 @@ var supportedCommands = map[string]func(context.Context, []string) error{
 	"graph":     orchestrator.RunGraph,
 	"quality":   orchestrator.RunQuality,
 	"ops":       orchestrator.RunOps,
+	"runtime":   orchestrator.RunRuntime,
 	"finalgate": orchestrator.RunFinalGate,
 	"run":       orchestrator.RunPipeline,
 	"help":      func(context.Context, []string) error { return nil },
@@ -93,6 +94,7 @@ func printUsage() {
 	fmt.Println("  graph      Build and manage service graph artifacts")
 	fmt.Println("  quality    Evaluate quality metrics and enforce release gates")
 	fmt.Println("  ops        Evaluate SLOs, backup/restore, and rollout plans")
+	fmt.Println("  runtime    Generate runtime reconciliation plan and dry-run reconcile")
 	fmt.Println("  finalgate  Run state-of-the-art completion gate attestation")
 	fmt.Println("  run        Run full orchestrated pipeline")
 	fmt.Println("  version    Print version")

@@ -24,7 +24,7 @@ type collector struct {
 	report       Report
 }
 
-func analyze(ctx context.Context, root string, forcedSnapshotID string, extractorSelection string) (result, error) {
+func analyze(ctx context.Context, root string, forcedSnapshotID string, adapterSelection string, extractorSelection string) (result, error) {
 	_ = ctx
 	inv, err := snapshot.BuildInventory(root, snapshot.InventoryOptions{ExcludeDirs: map[string]struct{}{
 		".git": {}, ".diffmind": {}, ".gocache": {}, "bin": {}, "node_modules": {},
@@ -42,7 +42,7 @@ func analyze(ctx context.Context, root string, forcedSnapshotID string, extracto
 	if err != nil {
 		return result{}, err
 	}
-	extractors, err := resolveExtractors(extractorSelection)
+	adapters, err := resolveAdapters(adapterSelection)
 	if err != nil {
 		return result{}, err
 	}
@@ -56,14 +56,61 @@ func analyze(ctx context.Context, root string, forcedSnapshotID string, extracto
 			GeneratedAt: time.Now().UTC(),
 			SourceRoot:  root,
 			SnapshotID:  snapshotID,
-			Extractors:  extractorNames(extractors),
+			Adapters:    adapterNames(adapters),
 		},
 	}
 
-	for _, f := range files {
-		for _, ex := range extractors {
-			ex.Extract(c, f)
+	executedExtractors := map[string]struct{}{}
+	for _, ad := range adapters {
+		probe := ad.Probe(root)
+		planItem := AdapterPlanItem{
+			Name:         ad.Name(),
+			Version:      ad.Version(),
+			Capabilities: ad.Capabilities(),
+			Available:    probe.Available,
+			Selected:     true,
+			Reason:       strings.TrimSpace(probe.Reason),
 		}
+		if !probe.Available {
+			c.report.AdapterPlan = append(c.report.AdapterPlan, planItem)
+			continue
+		}
+		extractors, err := ad.Plan(extractorSelection)
+		if err != nil {
+			return result{}, err
+		}
+		planItem.Extractors = extractorNames(extractors)
+		c.report.AdapterPlan = append(c.report.AdapterPlan, planItem)
+		if len(extractors) == 0 {
+			continue
+		}
+
+		beforeFacts := len(c.factByID)
+		beforeEvidence := len(c.evidenceByID)
+		for _, f := range files {
+			for _, ex := range extractors {
+				ex.Extract(c, f)
+				executedExtractors[ex.Name()] = struct{}{}
+			}
+		}
+
+		c.report.AdapterRuns = append(c.report.AdapterRuns, AdapterRunItem{
+			Name:          ad.Name(),
+			Version:       ad.Version(),
+			Extractors:    extractorNames(extractors),
+			FactsAdded:    len(c.factByID) - beforeFacts,
+			EvidenceAdded: len(c.evidenceByID) - beforeEvidence,
+			ReplayKey:     replayKey(snapshotID, ad.Name(), ad.Version(), extractorNames(extractors)),
+		})
+	}
+
+	if len(executedExtractors) > 0 {
+		names := make([]string, 0, len(executedExtractors))
+		for name := range executedExtractors {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		c.report.Extractors = names
 	}
 
 	bundle := c.bundle()

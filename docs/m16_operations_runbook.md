@@ -10,6 +10,11 @@ Use HTTP ops endpoints (requires compliance/audit access):
 - `GET /ops/metrics`
 - `GET /ops/slo`
 
+`GET /ops/slo` now includes a `runtime_reconciliation` quality block with:
+- confirmed/contradicted/needs_review/unmapped totals and rates
+- runtime quality gate status (`runtime_quality_passed`)
+- composite SLO gate (`slo_passed`) that combines API availability and runtime quality
+
 ## CLI Operations
 1. Evaluate SLO status from audit and quality artifacts:
 

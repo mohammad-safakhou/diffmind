@@ -593,8 +593,6 @@ func buildGraph(services []serviceSpec, mode string) (graphschema.Graph, error) 
 		})
 	}
 	sort.Slice(metaServices, func(i, j int) bool { return metaServices[i].ID < metaServices[j].ID })
-	fingerprint := computeGraphFingerprint(mode, nodes, edges, metaServices)
-
 	graph := graphschema.Graph{
 		GraphID:     graphID,
 		GeneratedAt: time.Now().UTC(),
@@ -608,32 +606,43 @@ func buildGraph(services []serviceSpec, mode string) (graphschema.Graph, error) 
 			ByEdge:    byEdge,
 		},
 		Meta: graphschema.GraphMeta{
-			TenantID: graphTenant,
-			Services: metaServices,
+			OntologyVersion: graphschema.OntologyVersionV2,
+			TenantID:        graphTenant,
+			Services:        metaServices,
 			Provenance: graphschema.GraphProvenance{
 				Tool:        "diffmind",
 				GeneratedBy: "graph.build",
-				Fingerprint: fingerprint,
+				Fingerprint: "",
 			},
 		},
 	}
+	graphschema.NormalizeGraphSemantics(&graph)
+	graph.Meta.Provenance.Fingerprint = computeGraphFingerprint(
+		graph.Mode,
+		graph.Meta.OntologyVersion,
+		graph.Nodes,
+		graph.Edges,
+		graph.Meta.Services,
+	)
 	if err := graphschema.ValidateGraph(graph); err != nil {
 		return graphschema.Graph{}, fmt.Errorf("validate graph schema: %w", err)
 	}
 	return graph, nil
 }
 
-func computeGraphFingerprint(mode string, nodes []graphschema.Node, edges []graphschema.Edge, services []graphschema.ServiceMeta) string {
+func computeGraphFingerprint(mode string, ontologyVersion string, nodes []graphschema.Node, edges []graphschema.Edge, services []graphschema.ServiceMeta) string {
 	payload := struct {
-		Mode     string                    `json:"mode"`
-		Nodes    []graphschema.Node        `json:"nodes"`
-		Edges    []graphschema.Edge        `json:"edges"`
-		Services []graphschema.ServiceMeta `json:"services"`
+		Mode            string                    `json:"mode"`
+		OntologyVersion string                    `json:"ontology_version"`
+		Nodes           []graphschema.Node        `json:"nodes"`
+		Edges           []graphschema.Edge        `json:"edges"`
+		Services        []graphschema.ServiceMeta `json:"services"`
 	}{
-		Mode:     mode,
-		Nodes:    nodes,
-		Edges:    edges,
-		Services: services,
+		Mode:            mode,
+		OntologyVersion: ontologyVersion,
+		Nodes:           nodes,
+		Edges:           edges,
+		Services:        services,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {

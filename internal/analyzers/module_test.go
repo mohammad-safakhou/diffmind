@@ -104,6 +104,83 @@ func TestRunRejectsUnknownExtractor(t *testing.T) {
 	}
 }
 
+func TestRunRejectsUnknownAdapter(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, ".diffmind")
+	mustWrite(t, root, "cmd/main.go", "package main\nfunc main(){}\n")
+
+	err := Run(context.Background(), []string{"--source", root, "--out", out, "--adapters", "builtin,missing"})
+	if err == nil {
+		t.Fatalf("expected error for unknown adapter")
+	}
+	if got := err.Error(); got == "" || !strings.Contains(got, `unsupported adapter "missing"`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunWithAdapterSelectionWritesPlanAndRuns(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, ".diffmind")
+	mustWrite(t, root, "cmd/main.go", "package main\nfunc main(){}\n")
+
+	if err := Run(context.Background(), []string{
+		"--source", root,
+		"--out", out,
+		"--snapshot-id", "snap-adapter",
+		"--adapters", "builtin",
+		"--extractors", "runtime",
+	}); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	reportData, err := os.ReadFile(filepath.Join(out, "analyzers", "report.json"))
+	if err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	var report Report
+	if err := json.Unmarshal(reportData, &report); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	if len(report.Adapters) != 1 || report.Adapters[0] != "builtin" {
+		t.Fatalf("unexpected adapters: %#v", report.Adapters)
+	}
+	if len(report.AdapterPlan) != 1 || report.AdapterPlan[0].Name != "builtin" || !report.AdapterPlan[0].Available {
+		t.Fatalf("unexpected adapter plan: %#v", report.AdapterPlan)
+	}
+	if len(report.AdapterRuns) != 1 || report.AdapterRuns[0].Name != "builtin" {
+		t.Fatalf("unexpected adapter runs: %#v", report.AdapterRuns)
+	}
+	if report.AdapterRuns[0].ReplayKey == "" {
+		t.Fatalf("expected replay_key in adapter run metadata")
+	}
+	if len(report.AdapterRuns[0].Extractors) != 1 || report.AdapterRuns[0].Extractors[0] != "runtime" {
+		t.Fatalf("unexpected run extractors: %#v", report.AdapterRuns[0].Extractors)
+	}
+	if !report.Offline {
+		t.Fatalf("expected offline=true by default")
+	}
+	if report.ToolchainManifestPath == "" || report.ToolchainManifestSHA256 == "" {
+		t.Fatalf("expected toolchain manifest metadata in report")
+	}
+	if _, err := os.Stat(report.ToolchainManifestPath); err != nil {
+		t.Fatalf("expected toolchain manifest file: %v", err)
+	}
+}
+
+func TestRunOfflineRejectsLLMAugment(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, ".diffmind")
+	mustWrite(t, root, "cmd/main.go", "package main\nfunc main(){}\n")
+
+	err := Run(context.Background(), []string{"--source", root, "--out", out, "--llm-augment"})
+	if err == nil {
+		t.Fatalf("expected error for llm augment in offline mode")
+	}
+	if got := err.Error(); !strings.Contains(got, "disabled in offline mode") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestGoSemanticExtractionHandlesAliasedNetHTTP(t *testing.T) {
 	root := t.TempDir()
 	out := filepath.Join(root, ".diffmind")
@@ -143,6 +220,63 @@ func main() {
 	}
 }
 
+func TestGoSemanticExtractionMuxMethodsAndDependencyCalls(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, ".diffmind")
+
+	mustWrite(t, root, "cmd/main.go", `
+package main
+
+import (
+	"context"
+	"database/sql"
+	"os/exec"
+)
+
+func run(ctx context.Context, r any, writer any, ch any) {
+	r.HandleFunc("/users", func(){}).Methods("GET", "POST")
+	writer.WriteMessages(ctx, struct{Topic string}{Topic: "orders.events"})
+	_, _ = ch.Consume("orders.events", "", false, false, false, false, nil)
+	db, _ := sql.Open("postgres", "dsn")
+	_, _ = db.Query("SELECT * FROM users")
+	_, _ = db.Exec("UPDATE users SET active=true")
+	_, _ = exec.Command("echo", "done")
+}
+`)
+
+	if err := Run(context.Background(), []string{"--source", root, "--out", out, "--snapshot-id", "snap-go-semantic-advanced", "--extractors", "endpoint,queue_db"}); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(out, "analyzers", "bundle.json"))
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+	var bundle facts.Bundle
+	if err := json.Unmarshal(data, &bundle); err != nil {
+		t.Fatalf("unmarshal bundle: %v", err)
+	}
+
+	if !hasEndpoint(bundle, "GET", "/users") || !hasEndpoint(bundle, "POST", "/users") {
+		t.Fatalf("expected semantic gorilla mux endpoint methods")
+	}
+	if !hasExternalCall(bundle, "PUBLISH", "orders.events") {
+		t.Fatalf("expected semantic Go queue publish call")
+	}
+	if !hasExternalCall(bundle, "CONSUME", "orders.events") {
+		t.Fatalf("expected semantic Go queue consume call")
+	}
+	if !hasExternalCallWithProtocolAndMethod(bundle, "db", "CONNECT") {
+		t.Fatalf("expected semantic Go DB connect call")
+	}
+	if !hasExternalCallWithProtocolAndMethod(bundle, "db", "READ") || !hasExternalCallWithProtocolAndMethod(bundle, "db", "WRITE") {
+		t.Fatalf("expected semantic Go DB read/write calls")
+	}
+	if !hasExternalCallWithProtocolAndMethod(bundle, "command", "EXEC") {
+		t.Fatalf("expected semantic Go command execution call")
+	}
+}
+
 func TestJSTSSemanticExtractionRouterAndAxiosClient(t *testing.T) {
 	root := t.TempDir()
 	out := filepath.Join(root, ".diffmind")
@@ -176,6 +310,114 @@ client.post("https://svc.local/orders", { id: 1 });
 	}
 	if !hasExternalCall(bundle, "POST", "https://svc.local/orders") {
 		t.Fatalf("expected semantic outbound call for axios client variable")
+	}
+}
+
+func TestJSTSSemanticExtractionNestMountedRouterAndHTTPMethods(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, ".diffmind")
+
+	mustWrite(t, root, "internal/http/routes.ts", `
+import express from "express";
+
+const app = express();
+const api = express.Router();
+api.get("/orders", (_req, res) => res.send("ok"));
+app.use("/v1", api);
+`)
+	mustWrite(t, root, "src/orders.controller.ts", `
+import { Controller, Get } from "@nestjs/common";
+
+@Controller("/orders")
+export class OrdersController {
+  @Get("/health")
+  health() {
+    return "ok";
+  }
+}
+`)
+	mustWrite(t, root, "internal/http/client.ts", `
+import axios from "axios";
+
+fetch("https://svc.local/items", { method: "PATCH" });
+axios({ url: "https://svc.local/delete", method: "DELETE" });
+`)
+
+	if err := Run(context.Background(), []string{"--source", root, "--out", out, "--snapshot-id", "snap-jsts-semantic-advanced", "--extractors", "endpoint,external_http"}); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(out, "analyzers", "bundle.json"))
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+	var bundle facts.Bundle
+	if err := json.Unmarshal(data, &bundle); err != nil {
+		t.Fatalf("unmarshal bundle: %v", err)
+	}
+
+	if !hasEndpoint(bundle, "GET", "/v1/orders") {
+		t.Fatalf("expected semantic endpoint for mounted express router")
+	}
+	if !hasEndpoint(bundle, "GET", "/orders/health") {
+		t.Fatalf("expected semantic endpoint for NestJS controller decorator")
+	}
+	if !hasExternalCall(bundle, "PATCH", "https://svc.local/items") {
+		t.Fatalf("expected semantic outbound call with fetch method parsing")
+	}
+	if !hasExternalCall(bundle, "DELETE", "https://svc.local/delete") {
+		t.Fatalf("expected semantic outbound call for axios({method,url})")
+	}
+}
+
+func TestJSTSSemanticDependencyExtractionQueueDBAndCommand(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, ".diffmind")
+
+	mustWrite(t, root, "internal/deps.ts", `
+async function runAll(producer: any, consumer: any, channel: any, sqs: any, prisma: any, child: any) {
+  await producer.send({ topic: "orders.events", messages: [{ value: "x" }] });
+  await consumer.subscribe({ topic: "orders.events" });
+  channel.sendToQueue("billing.queue", Buffer.from("x"));
+  channel.consume("billing.queue", () => {});
+  sqs.sendMessage({ QueueUrl: "https://sqs.aws.local/orders" });
+  sqs.receiveMessage({ QueueUrl: "https://sqs.aws.local/orders" });
+  await prisma.order.findMany();
+  await prisma.order.update({ where: { id: 1 }, data: { status: "done" } });
+  child.exec("echo done");
+}
+`)
+
+	if err := Run(context.Background(), []string{"--source", root, "--out", out, "--snapshot-id", "snap-jsts-deps", "--extractors", "queue_db"}); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(out, "analyzers", "bundle.json"))
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+	var bundle facts.Bundle
+	if err := json.Unmarshal(data, &bundle); err != nil {
+		t.Fatalf("unmarshal bundle: %v", err)
+	}
+
+	if !hasExternalCall(bundle, "PUBLISH", "orders.events") {
+		t.Fatalf("expected semantic Kafka publish dependency")
+	}
+	if !hasExternalCall(bundle, "CONSUME", "orders.events") {
+		t.Fatalf("expected semantic Kafka consume dependency")
+	}
+	if !hasExternalCall(bundle, "PUBLISH", "billing.queue") || !hasExternalCall(bundle, "CONSUME", "billing.queue") {
+		t.Fatalf("expected semantic RabbitMQ publish/consume dependencies")
+	}
+	if !hasExternalCall(bundle, "PUBLISH", "https://sqs.aws.local/orders") || !hasExternalCall(bundle, "CONSUME", "https://sqs.aws.local/orders") {
+		t.Fatalf("expected semantic SQS publish/consume dependencies")
+	}
+	if !hasExternalCallWithProtocolAndMethod(bundle, "db", "READ") || !hasExternalCallWithProtocolAndMethod(bundle, "db", "WRITE") {
+		t.Fatalf("expected semantic Prisma read/write dependencies")
+	}
+	if !hasExternalCallWithProtocolAndMethod(bundle, "command", "EXEC") {
+		t.Fatalf("expected semantic command execution dependency")
 	}
 }
 
@@ -214,6 +456,97 @@ rq.post("https://svc.local/orders", json={"id": 1})
 	}
 	if !hasExternalCall(bundle, "POST", "https://svc.local/orders") {
 		t.Fatalf("expected semantic outbound call from requests alias")
+	}
+}
+
+func TestPythonSemanticExtractionFastAPIAndHTTPX(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, ".diffmind")
+
+	mustWrite(t, root, "app.py", `
+from fastapi import FastAPI, APIRouter
+import httpx
+
+app = FastAPI()
+router = APIRouter(prefix="/v1")
+
+@router.get("/users")
+def users():
+    return []
+
+app.include_router(router, prefix="/api")
+httpx.request(method="PATCH", url="https://svc.local/items")
+`)
+
+	if err := Run(context.Background(), []string{"--source", root, "--out", out, "--snapshot-id", "snap-py-semantic-advanced", "--extractors", "endpoint,external_http"}); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(out, "analyzers", "bundle.json"))
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+	var bundle facts.Bundle
+	if err := json.Unmarshal(data, &bundle); err != nil {
+		t.Fatalf("unmarshal bundle: %v", err)
+	}
+
+	if !hasEndpoint(bundle, "GET", "/api/v1/users") {
+		t.Fatalf("expected semantic endpoint from FastAPI router with include_router prefix")
+	}
+	if !hasExternalCall(bundle, "PATCH", "https://svc.local/items") {
+		t.Fatalf("expected semantic outbound call from httpx.request")
+	}
+}
+
+func TestPythonSemanticDependencyExtractionQueueDBAndCommand(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, ".diffmind")
+
+	mustWrite(t, root, "deps.py", `
+import subprocess
+import os
+
+def run_all(producer, consumer, sqs, session, celery_app):
+    producer.send("orders.events", b"x")
+    consumer.subscribe("orders.events")
+    sqs.send_message(QueueUrl="https://sqs.aws.local/orders")
+    sqs.receive_message(QueueUrl="https://sqs.aws.local/orders")
+    session.execute("SELECT * FROM orders")
+    session.execute("UPDATE orders SET status='done'")
+    celery_app.send_task("billing.reconcile")
+    subprocess.run("echo done", shell=True)
+    os.system("echo done")
+`)
+
+	if err := Run(context.Background(), []string{"--source", root, "--out", out, "--snapshot-id", "snap-py-deps", "--extractors", "queue_db"}); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(out, "analyzers", "bundle.json"))
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+	var bundle facts.Bundle
+	if err := json.Unmarshal(data, &bundle); err != nil {
+		t.Fatalf("unmarshal bundle: %v", err)
+	}
+
+	if !hasExternalCall(bundle, "PUBLISH", "orders.events") {
+		t.Fatalf("expected semantic Python queue publish call")
+	}
+	if !hasExternalCall(bundle, "CONSUME", "orders.events") {
+		t.Fatalf("expected semantic Python queue consume call")
+	}
+	if !hasExternalCall(bundle, "PUBLISH", "https://sqs.aws.local/orders") ||
+		!hasExternalCall(bundle, "CONSUME", "https://sqs.aws.local/orders") {
+		t.Fatalf("expected semantic Python SQS publish/consume calls")
+	}
+	if !hasExternalCallWithProtocolAndMethod(bundle, "db", "READ") || !hasExternalCallWithProtocolAndMethod(bundle, "db", "WRITE") {
+		t.Fatalf("expected semantic Python DB read/write calls")
+	}
+	if !hasExternalCallWithProtocolAndMethod(bundle, "command", "EXEC") {
+		t.Fatalf("expected semantic Python command execution call")
 	}
 }
 
@@ -267,6 +600,132 @@ public class Controller {
 	}
 	if !hasExternalCall(bundle, "POST", "https://svc.local/orders") {
 		t.Fatalf("expected semantic outbound call from RestTemplate.postForObject")
+	}
+}
+
+func TestJavaSemanticExtractionClassMappingScheduleAndQueueConsumer(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, ".diffmind")
+
+	mustWrite(t, root, "src/main/java/com/acme/Controller.java", `
+package com.acme;
+
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.kafka.annotation.KafkaListener;
+
+@RestController
+@RequestMapping("/api/v1")
+public class Controller {
+  @GetMapping("/users")
+  public String users() {
+    return "ok";
+  }
+}
+
+@Component
+class Worker {
+  @Scheduled(cron = "0 0 * * * *")
+  public void tick() {}
+
+  @KafkaListener(topics = "orders.events")
+  public void onOrder(String payload) {}
+}
+`)
+
+	if err := Run(context.Background(), []string{"--source", root, "--out", out, "--snapshot-id", "snap-java-semantic-exposure", "--extractors", "endpoint"}); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(out, "analyzers", "bundle.json"))
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+	var bundle facts.Bundle
+	if err := json.Unmarshal(data, &bundle); err != nil {
+		t.Fatalf("unmarshal bundle: %v", err)
+	}
+
+	if !hasEndpoint(bundle, "GET", "/api/v1/users") {
+		t.Fatalf("expected composed semantic endpoint from class + method mapping")
+	}
+	if !hasEndpoint(bundle, "SCHEDULE", "0 0 * * * *") {
+		t.Fatalf("expected scheduled semantic exposure endpoint")
+	}
+	foundConsume := false
+	for _, f := range bundle.Facts {
+		if f.Type != "ExternalCall" {
+			continue
+		}
+		protocol, _ := f.Attributes["protocol"].(string)
+		method, _ := f.Attributes["method"].(string)
+		target, _ := f.Attributes["target"].(string)
+		if protocol == "queue" && method == "CONSUME" && target == "orders.events" {
+			foundConsume = true
+			break
+		}
+	}
+	if !foundConsume {
+		t.Fatalf("expected queue consumer semantic fact from @KafkaListener")
+	}
+}
+
+func TestJavaSemanticDependencyExtractionHTTPQueueDBAndCommand(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, ".diffmind")
+
+	mustWrite(t, root, "src/main/java/com/acme/Deps.java", `
+package com.acme;
+
+import org.springframework.web.client.RestTemplate;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.jdbc.core.JdbcTemplate;
+
+public class Deps {
+  private final RestTemplate restTemplate = new RestTemplate();
+  private final KafkaTemplate<String, String> kafkaTemplate = null;
+  private final JdbcTemplate jdbcTemplate = null;
+
+  public void run() throws Exception {
+    restTemplate.getForEntity("https://svc.local/orders", String.class);
+    kafkaTemplate.send("orders.events", "payload");
+    jdbcTemplate.queryForList("SELECT * FROM orders");
+    jdbcTemplate.update("UPDATE orders SET status='done'");
+    Runtime.getRuntime().exec("echo hello");
+  }
+}
+`)
+
+	if err := Run(context.Background(), []string{"--source", root, "--out", out, "--snapshot-id", "snap-java-deps", "--extractors", "external_http,queue_db"}); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(out, "analyzers", "bundle.json"))
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+	var bundle facts.Bundle
+	if err := json.Unmarshal(data, &bundle); err != nil {
+		t.Fatalf("unmarshal bundle: %v", err)
+	}
+
+	if !hasExternalCall(bundle, "GET", "https://svc.local/orders") {
+		t.Fatalf("expected Java semantic outbound HTTP call")
+	}
+	if !hasExternalCallWithProtocolAndMethod(bundle, "queue", "PUBLISH") {
+		t.Fatalf("expected Java semantic queue publish call")
+	}
+	if !hasExternalCallWithProtocolAndMethod(bundle, "db", "READ") {
+		t.Fatalf("expected Java semantic db read call")
+	}
+	if !hasExternalCallWithProtocolAndMethod(bundle, "db", "WRITE") {
+		t.Fatalf("expected Java semantic db write call")
+	}
+	if !hasExternalCallWithProtocolAndMethod(bundle, "command", "EXEC") {
+		t.Fatalf("expected Java semantic command execution call")
 	}
 }
 
@@ -488,6 +947,20 @@ func hasExternalCall(bundle facts.Bundle, method string, target string) bool {
 		m, _ := f.Attributes["method"].(string)
 		t, _ := f.Attributes["target"].(string)
 		if m == method && t == target {
+			return true
+		}
+	}
+	return false
+}
+
+func hasExternalCallWithProtocolAndMethod(bundle facts.Bundle, protocol string, method string) bool {
+	for _, f := range bundle.Facts {
+		if f.Type != "ExternalCall" {
+			continue
+		}
+		p, _ := f.Attributes["protocol"].(string)
+		m, _ := f.Attributes["method"].(string)
+		if p == protocol && m == method {
 			return true
 		}
 	}

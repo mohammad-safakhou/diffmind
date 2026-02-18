@@ -58,6 +58,42 @@ func detectGoInboundEndpointsSemantic(c *collector, file sourceFile) bool {
 				"path":      path,
 				"framework": "go-net-http-semantic",
 			}, file, line, col, snippet, func() { c.report.Endpoints++ })
+		case "METHODS":
+			if len(call.Args) == 0 {
+				return true
+			}
+			nested, ok := sel.X.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			nestedSel, ok := nested.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			nestedMethod := strings.ToUpper(strings.TrimSpace(nestedSel.Sel.Name))
+			if nestedMethod != "HANDLE" && nestedMethod != "HANDLEFUNC" {
+				return true
+			}
+			if len(nested.Args) == 0 {
+				return true
+			}
+			path := normalizeGoExprAsPath(nested.Args[0], fset)
+			if path == "" {
+				return true
+			}
+			methods := goStringArgs(call.Args, fset)
+			if len(methods) == 0 {
+				methods = []string{"ANY"}
+			}
+			line, col, snippet := lineColSnippet(fset, file, call.Pos())
+			for _, m := range methods {
+				c.addFactWithEvidence("Endpoint", map[string]any{
+					"direction": "inbound",
+					"method":    strings.ToUpper(m),
+					"path":      path,
+					"framework": "gorilla-mux-semantic",
+				}, file, line, col, snippet, func() { c.report.Endpoints++ })
+			}
 		}
 		return true
 	})
@@ -126,6 +162,112 @@ func detectGoOutboundCallsSemantic(c *collector, file sourceFile) bool {
 				"target":   "request-object",
 				"library":  "go-net-http-semantic",
 			}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+		}
+		return true
+	})
+	return true
+}
+
+func detectGoQueueAndDBCallsSemantic(c *collector, file sourceFile) bool {
+	fset, node, ok := parseGoAST(file)
+	if !ok {
+		return false
+	}
+
+	sqlAliases := goImportAliasesForPath(node, "database/sql")
+	execAliases := goImportAliasesForPath(node, "os/exec")
+
+	ast.Inspect(node, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		method := strings.TrimSpace(sel.Sel.Name)
+		methodUpper := strings.ToUpper(method)
+		line, col, snippet := lineColSnippet(fset, file, call.Pos())
+
+		switch methodUpper {
+		case "WRITEMESSAGES", "SENDMESSAGE":
+			target := goTopicFromCallArgs(call.Args, fset)
+			if target == "" {
+				target = "kafka:unknown-topic"
+			}
+			c.addFactWithEvidence("ExternalCall", map[string]any{
+				"protocol":        "queue",
+				"method":          "PUBLISH",
+				"target":          target,
+				"library":         "go-queue-semantic",
+				"queue_operation": "publish",
+				"queue_kind":      "kafka",
+			}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+		case "CONSUME", "READMESSAGE":
+			target := goTopicFromCallArgs(call.Args, fset)
+			if target == "" {
+				target = "kafka:unknown-topic"
+			}
+			c.addFactWithEvidence("ExternalCall", map[string]any{
+				"protocol":        "queue",
+				"method":          "CONSUME",
+				"target":          target,
+				"library":         "go-queue-semantic",
+				"queue_operation": "consume",
+				"queue_kind":      "kafka",
+			}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+		case "OPEN":
+			if recv, ok := sel.X.(*ast.Ident); ok && sqlAliases[recv.Name] {
+				target := "db:unknown"
+				if len(call.Args) > 0 {
+					target = normalizeGoExprAsTarget(call.Args[0], fset)
+				}
+				c.addFactWithEvidence("ExternalCall", map[string]any{
+					"protocol":     "db",
+					"method":       "CONNECT",
+					"target":       target,
+					"library":      "database/sql-semantic",
+					"db_operation": "connect",
+				}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+			}
+		case "QUERY", "QUERYROW", "SELECT", "FIND", "GET":
+			target := goSQLTargetFromCallArgs(call.Args, fset)
+			if target == "" {
+				target = "db"
+			}
+			c.addFactWithEvidence("ExternalCall", map[string]any{
+				"protocol":     "db",
+				"method":       "READ",
+				"target":       target,
+				"library":      "go-db-semantic",
+				"db_operation": "read",
+			}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+		case "EXEC", "CREATE", "UPDATE", "DELETE", "INSERT":
+			target := goSQLTargetFromCallArgs(call.Args, fset)
+			if target == "" {
+				target = "db"
+			}
+			c.addFactWithEvidence("ExternalCall", map[string]any{
+				"protocol":     "db",
+				"method":       "WRITE",
+				"target":       target,
+				"library":      "go-db-semantic",
+				"db_operation": "write",
+			}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+		case "COMMAND", "COMMANDCONTEXT":
+			if recv, ok := sel.X.(*ast.Ident); ok && execAliases[recv.Name] {
+				target := "unknown-command"
+				if len(call.Args) > 0 {
+					target = normalizeGoExprAsTarget(call.Args[0], fset)
+				}
+				c.addFactWithEvidence("ExternalCall", map[string]any{
+					"protocol": "command",
+					"method":   "EXEC",
+					"target":   target,
+					"library":  "os-exec-semantic",
+				}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+			}
 		}
 		return true
 	})
@@ -233,4 +375,62 @@ func lineColSnippet(fset *token.FileSet, file sourceFile, pos token.Pos) (int, i
 		return line, col, file.Lines[line-1]
 	}
 	return line, col, ""
+}
+
+func goStringArgs(args []ast.Expr, fset *token.FileSet) []string {
+	out := make([]string, 0, len(args))
+	for _, a := range args {
+		v := normalizeGoExprAsPath(a, fset)
+		if strings.TrimSpace(v) == "" {
+			continue
+		}
+		out = append(out, strings.ToUpper(strings.TrimSpace(v)))
+	}
+	return out
+}
+
+func goTopicFromCallArgs(args []ast.Expr, fset *token.FileSet) string {
+	for _, arg := range args {
+		if arg == nil {
+			continue
+		}
+		if kv, ok := arg.(*ast.KeyValueExpr); ok {
+			if key, ok := kv.Key.(*ast.Ident); ok && strings.EqualFold(strings.TrimSpace(key.Name), "Topic") {
+				return normalizeGoExprAsTarget(kv.Value, fset)
+			}
+		}
+		if comp, ok := arg.(*ast.CompositeLit); ok {
+			for _, el := range comp.Elts {
+				if kv, ok := el.(*ast.KeyValueExpr); ok {
+					key := strings.TrimSpace(exprString(kv.Key, fset))
+					key = strings.TrimPrefix(key, "*")
+					if strings.HasSuffix(strings.ToLower(key), ".topic") || strings.EqualFold(key, "Topic") {
+						return normalizeGoExprAsTarget(kv.Value, fset)
+					}
+				}
+			}
+		}
+	}
+	if len(args) > 0 {
+		v := normalizeGoExprAsTarget(args[0], fset)
+		if strings.Contains(v, ".") || strings.HasPrefix(v, "topic") || strings.HasPrefix(v, "kafka:") {
+			return v
+		}
+	}
+	return ""
+}
+
+func goSQLTargetFromCallArgs(args []ast.Expr, fset *token.FileSet) string {
+	if len(args) == 0 {
+		return ""
+	}
+	v := normalizeGoExprAsTarget(args[0], fset)
+	upper := strings.ToUpper(strings.TrimSpace(v))
+	if strings.HasPrefix(upper, "SELECT ") || strings.HasPrefix(upper, "INSERT ") || strings.HasPrefix(upper, "UPDATE ") || strings.HasPrefix(upper, "DELETE ") {
+		return v
+	}
+	if strings.Contains(strings.ToLower(v), "db") || strings.Contains(strings.ToLower(v), "sql") {
+		return v
+	}
+	return ""
 }

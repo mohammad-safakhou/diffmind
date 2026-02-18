@@ -27,6 +27,8 @@ const (
 	ActionAuditRead     Action = "audit_read"
 	ActionAuditExport   Action = "audit_export"
 	ActionAuditPrune    Action = "audit_prune"
+	ActionRuntimePlan   Action = "runtime_plan"
+	ActionRuntimeRun    Action = "runtime_reconcile"
 )
 
 type Request struct {

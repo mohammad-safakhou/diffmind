@@ -8,7 +8,10 @@ import (
 	python "github.com/tree-sitter/tree-sitter-python/bindings/go"
 )
 
-var pythonRouteMethodsRe = regexp.MustCompile(`(?i)methods\s*=\s*\[\s*["']([A-Za-z]+)["']`)
+var (
+	pythonRouteMethodsRe = regexp.MustCompile(`(?i)methods\s*=\s*\[\s*["']([A-Za-z]+)["']`)
+	pythonKeywordArgRe   = regexp.MustCompile(`(?i)\b([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*["']([^"']+)["']`)
+)
 
 func detectPythonInboundEndpointsSemantic(c *collector, file sourceFile) bool {
 	tree, content, ok := parsePythonAST(file)
@@ -18,11 +21,7 @@ func detectPythonInboundEndpointsSemantic(c *collector, file sourceFile) bool {
 	defer tree.Close()
 	root := tree.RootNode()
 
-	routerNames := map[string]bool{
-		"app":    true,
-		"router": true,
-		"api":    true,
-	}
+	routerNames, routerPrefixes := collectPythonRouterSymbols(root, content)
 
 	scanPythonCallExpressions(root, func(call *sitter.Node) {
 		object, method, args := parsePythonCallShape(call, content)
@@ -41,10 +40,11 @@ func detectPythonInboundEndpointsSemantic(c *collector, file sourceFile) bool {
 				return
 			}
 			line, col := pythonLineCol(call)
+			fullPath := joinPythonPaths(routerPrefixes[object], path)
 			c.addFactWithEvidence("Endpoint", map[string]any{
 				"direction": "inbound",
 				"method":    method,
-				"path":      path,
+				"path":      fullPath,
 				"framework": "python-semantic",
 			}, file, line, col, pythonLineSnippet(file, line), func() { c.report.Endpoints++ })
 		case "ROUTE":
@@ -54,10 +54,11 @@ func detectPythonInboundEndpointsSemantic(c *collector, file sourceFile) bool {
 			}
 			httpMethod := extractPythonRouteMethod(call, content)
 			line, col := pythonLineCol(call)
+			fullPath := joinPythonPaths(routerPrefixes[object], path)
 			c.addFactWithEvidence("Endpoint", map[string]any{
 				"direction": "inbound",
 				"method":    httpMethod,
-				"path":      path,
+				"path":      fullPath,
 				"framework": "python-semantic",
 			}, file, line, col, pythonLineSnippet(file, line), func() { c.report.Endpoints++ })
 		}
@@ -73,7 +74,7 @@ func detectPythonOutboundCallsSemantic(c *collector, file sourceFile) bool {
 	defer tree.Close()
 	root := tree.RootNode()
 
-	requestsAliases, directFuncs := collectPythonRequestsSymbols(root, content)
+	httpAliases, directFuncs := collectPythonHTTPClientSymbols(root, content)
 	scanPythonCallExpressions(root, func(call *sitter.Node) {
 		fn := call.ChildByFieldName("function")
 		argsNode := call.ChildByFieldName("arguments")
@@ -93,10 +94,14 @@ func detectPythonOutboundCallsSemantic(c *collector, file sourceFile) bool {
 				return
 			}
 			objName := strings.TrimSpace(obj.Utf8Text(content))
-			if !requestsAliases[objName] {
+			clientKind, ok := httpAliases[objName]
+			if !ok {
 				return
 			}
 			method = strings.ToUpper(strings.TrimSpace(attr.Utf8Text(content)))
+			if clientKind == "httpx" && method == "REQUEST" {
+				method = extractPythonHTTPXRequestMethod(args, content)
+			}
 		} else if fn.Kind() == "identifier" {
 			name := strings.TrimSpace(fn.Utf8Text(content))
 			m, ok := directFuncs[name]
@@ -110,7 +115,7 @@ func detectPythonOutboundCallsSemantic(c *collector, file sourceFile) bool {
 
 		switch method {
 		case "GET", "POST", "PUT", "PATCH", "DELETE":
-			target := normalizePythonArgument(args[0], content)
+			target := pythonTargetFromArgs(args, content)
 			if target == "" {
 				target = "unknown-target"
 			}
@@ -119,8 +124,140 @@ func detectPythonOutboundCallsSemantic(c *collector, file sourceFile) bool {
 				"protocol": "http",
 				"method":   method,
 				"target":   target,
-				"library":  "python-requests-semantic",
+				"library":  "python-http-semantic",
 			}, file, line, col, pythonLineSnippet(file, line), func() { c.report.ExternalCalls++ })
+		}
+	})
+	return true
+}
+
+func detectPythonQueueAndDBCallsSemantic(c *collector, file sourceFile) bool {
+	tree, content, ok := parsePythonAST(file)
+	if !ok {
+		return false
+	}
+	defer tree.Close()
+	root := tree.RootNode()
+
+	scanPythonCallExpressions(root, func(call *sitter.Node) {
+		fn := call.ChildByFieldName("function")
+		argsNode := call.ChildByFieldName("arguments")
+		if fn == nil || argsNode == nil {
+			return
+		}
+		args := pythonArgs(argsNode)
+		line, col := pythonLineCol(call)
+		snippet := pythonLineSnippet(file, line)
+
+		if fn.Kind() == "attribute" {
+			attr := fn.ChildByFieldName("attribute")
+			if attr == nil {
+				return
+			}
+			name := strings.ToLower(strings.TrimSpace(attr.Utf8Text(content)))
+			switch name {
+			case "send", "publish", "send_task", "apply_async", "send_message":
+				target := pythonTargetFromArgs(args, content)
+				if target == "" {
+					target = "queue:unknown"
+				}
+				queueKind := "queue"
+				if strings.Contains(strings.ToLower(target), "sqs") {
+					queueKind = "sqs"
+				}
+				c.addFactWithEvidence("ExternalCall", map[string]any{
+					"protocol":        "queue",
+					"method":          "PUBLISH",
+					"target":          target,
+					"library":         "python-queue-semantic",
+					"queue_operation": "publish",
+					"queue_kind":      queueKind,
+				}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+			case "consume", "subscribe", "receive_message", "get_message":
+				target := pythonTargetFromArgs(args, content)
+				if target == "" {
+					target = "queue:unknown"
+				}
+				queueKind := "queue"
+				if strings.Contains(strings.ToLower(target), "sqs") {
+					queueKind = "sqs"
+				}
+				c.addFactWithEvidence("ExternalCall", map[string]any{
+					"protocol":        "queue",
+					"method":          "CONSUME",
+					"target":          target,
+					"library":         "python-queue-semantic",
+					"queue_operation": "consume",
+					"queue_kind":      queueKind,
+				}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+			case "execute":
+				target := pythonTargetFromArgs(args, content)
+				method := "READ"
+				op := strings.ToUpper(strings.TrimSpace(target))
+				if strings.HasPrefix(op, "INSERT ") || strings.HasPrefix(op, "UPDATE ") || strings.HasPrefix(op, "DELETE ") {
+					method = "WRITE"
+				}
+				if target == "" {
+					target = "db"
+				}
+				c.addFactWithEvidence("ExternalCall", map[string]any{
+					"protocol":     "db",
+					"method":       method,
+					"target":       target,
+					"library":      "python-db-semantic",
+					"db_operation": strings.ToLower(method),
+				}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+			case "query", "find", "get":
+				target := pythonTargetFromArgs(args, content)
+				if target == "" {
+					target = "db"
+				}
+				c.addFactWithEvidence("ExternalCall", map[string]any{
+					"protocol":     "db",
+					"method":       "READ",
+					"target":       target,
+					"library":      "python-db-semantic",
+					"db_operation": "read",
+				}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+			case "create", "save", "update", "delete", "insert":
+				target := pythonTargetFromArgs(args, content)
+				if target == "" {
+					target = "db"
+				}
+				c.addFactWithEvidence("ExternalCall", map[string]any{
+					"protocol":     "db",
+					"method":       "WRITE",
+					"target":       target,
+					"library":      "python-db-semantic",
+					"db_operation": "write",
+				}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+			case "run", "popen", "call", "check_output":
+				target := pythonTargetFromArgs(args, content)
+				if target == "" {
+					target = "unknown-command"
+				}
+				c.addFactWithEvidence("ExternalCall", map[string]any{
+					"protocol": "command",
+					"method":   "EXEC",
+					"target":   target,
+					"library":  "python-process-semantic",
+				}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+			}
+		}
+		if fn.Kind() == "identifier" {
+			name := strings.ToLower(strings.TrimSpace(fn.Utf8Text(content)))
+			if name == "system" || name == "popen" {
+				target := pythonTargetFromArgs(args, content)
+				if target == "" {
+					target = "unknown-command"
+				}
+				c.addFactWithEvidence("ExternalCall", map[string]any{
+					"protocol": "command",
+					"method":   "EXEC",
+					"target":   target,
+					"library":  "python-process-semantic",
+				}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+			}
 		}
 	})
 	return true
@@ -143,9 +280,10 @@ func parsePythonAST(file sourceFile) (*sitter.Tree, []byte, bool) {
 	return tree, content, true
 }
 
-func collectPythonRequestsSymbols(root *sitter.Node, content []byte) (map[string]bool, map[string]string) {
-	aliases := map[string]bool{
-		"requests": true,
+func collectPythonHTTPClientSymbols(root *sitter.Node, content []byte) (map[string]string, map[string]string) {
+	aliases := map[string]string{
+		"requests": "requests",
+		"httpx":    "httpx",
 	}
 	direct := map[string]string{}
 
@@ -153,28 +291,46 @@ func collectPythonRequestsSymbols(root *sitter.Node, content []byte) (map[string
 		switch n.Kind() {
 		case "import_statement":
 			text := strings.TrimSpace(n.Utf8Text(content))
-			// Supports: import requests / import requests as rq
+			// Supports: import requests / import requests as rq / import httpx as hx
 			if !strings.HasPrefix(text, "import ") {
 				return
 			}
 			text = strings.TrimSpace(strings.TrimPrefix(text, "import "))
 			if text == "requests" {
-				aliases["requests"] = true
+				aliases["requests"] = "requests"
 				return
 			}
 			if strings.HasPrefix(text, "requests as ") {
 				alias := strings.TrimSpace(strings.TrimPrefix(text, "requests as "))
 				if alias != "" {
-					aliases[alias] = true
+					aliases[alias] = "requests"
+				}
+			}
+			if text == "httpx" {
+				aliases["httpx"] = "httpx"
+				return
+			}
+			if strings.HasPrefix(text, "httpx as ") {
+				alias := strings.TrimSpace(strings.TrimPrefix(text, "httpx as "))
+				if alias != "" {
+					aliases[alias] = "httpx"
 				}
 			}
 		case "import_from_statement":
 			text := strings.TrimSpace(n.Utf8Text(content))
-			// Supports: from requests import get / from requests import post as p
-			if !strings.HasPrefix(text, "from requests import ") {
+			// Supports: from requests import get / from httpx import post as p
+			provider := ""
+			switch {
+			case strings.HasPrefix(text, "from requests import "):
+				provider = "requests"
+				text = strings.TrimSpace(strings.TrimPrefix(text, "from requests import "))
+			case strings.HasPrefix(text, "from httpx import "):
+				provider = "httpx"
+				text = strings.TrimSpace(strings.TrimPrefix(text, "from httpx import "))
+			default:
 				return
 			}
-			names := strings.TrimSpace(strings.TrimPrefix(text, "from requests import "))
+			names := text
 			for _, part := range strings.Split(names, ",") {
 				part = strings.TrimSpace(part)
 				if part == "" {
@@ -187,9 +343,17 @@ func collectPythonRequestsSymbols(root *sitter.Node, content []byte) (map[string
 					baseName = strings.TrimSpace(p[0])
 					aliasName = strings.TrimSpace(p[1])
 				}
+				if strings.EqualFold(baseName, "request") {
+					direct[aliasName] = "UNKNOWN"
+					continue
+				}
 				switch strings.ToLower(baseName) {
 				case "get", "post", "put", "patch", "delete":
 					direct[aliasName] = strings.ToUpper(baseName)
+				case "request":
+					if provider == "httpx" || provider == "requests" {
+						direct[aliasName] = "UNKNOWN"
+					}
 				}
 			}
 		}
@@ -264,6 +428,157 @@ func extractPythonRouteMethod(call *sitter.Node, content []byte) string {
 		return strings.ToUpper(strings.TrimSpace(m[1]))
 	}
 	return "ANY"
+}
+
+func collectPythonRouterSymbols(root *sitter.Node, content []byte) (map[string]bool, map[string]string) {
+	names := map[string]bool{"app": true, "router": true, "api": true}
+	prefixes := map[string]string{}
+	walkPython(root, func(n *sitter.Node) {
+		if n.Kind() != "assignment" {
+			return
+		}
+		left := n.ChildByFieldName("left")
+		right := n.ChildByFieldName("right")
+		if left == nil || right == nil || left.Kind() != "identifier" || right.Kind() != "call" {
+			return
+		}
+		name := strings.TrimSpace(left.Utf8Text(content))
+		if name == "" {
+			return
+		}
+		fn := right.ChildByFieldName("function")
+		if fn == nil {
+			return
+		}
+		fnText := strings.TrimSpace(fn.Utf8Text(content))
+		if fnText == "FastAPI" || strings.HasSuffix(fnText, ".FastAPI") || fnText == "Flask" || strings.HasSuffix(fnText, ".Flask") || fnText == "APIRouter" || strings.HasSuffix(fnText, ".APIRouter") || fnText == "Blueprint" || strings.HasSuffix(fnText, ".Blueprint") {
+			names[name] = true
+			if args := right.ChildByFieldName("arguments"); args != nil {
+				if p := extractPythonKeywordArgValue(args.Utf8Text(content), "prefix"); p != "" {
+					prefixes[name] = normalizePythonPath(p)
+				}
+				if p := extractPythonKeywordArgValue(args.Utf8Text(content), "url_prefix"); p != "" {
+					prefixes[name] = normalizePythonPath(p)
+				}
+			}
+		}
+	})
+	scanPythonCallExpressions(root, func(call *sitter.Node) {
+		object, method, args := parsePythonCallShape(call, content)
+		if object == "" || strings.ToUpper(strings.TrimSpace(method)) != "INCLUDE_ROUTER" || len(args) == 0 {
+			return
+		}
+		routerName := strings.TrimSpace(args[0].Utf8Text(content))
+		if routerName == "" {
+			return
+		}
+		names[routerName] = true
+		if argsNode := call.ChildByFieldName("arguments"); argsNode != nil {
+			if p := extractPythonKeywordArgValue(argsNode.Utf8Text(content), "prefix"); p != "" {
+				prefixes[routerName] = joinPythonPaths(normalizePythonPath(p), prefixes[routerName])
+			}
+		}
+	})
+	return names, prefixes
+}
+
+func extractPythonKeywordArgValue(argsText string, key string) string {
+	for _, m := range pythonKeywordArgRe.FindAllStringSubmatch(argsText, -1) {
+		if len(m) < 3 {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(m[1]), key) {
+			return strings.TrimSpace(m[2])
+		}
+	}
+	return ""
+}
+
+func normalizePythonPath(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	v = strings.Trim(v, "\"'")
+	if !strings.HasPrefix(v, "/") {
+		v = "/" + v
+	}
+	if len(v) > 1 {
+		v = strings.TrimRight(v, "/")
+	}
+	return v
+}
+
+func joinPythonPaths(base string, route string) string {
+	base = normalizePythonPath(base)
+	route = normalizePythonPath(route)
+	switch {
+	case base == "" && route == "":
+		return "/"
+	case base == "":
+		return route
+	case route == "":
+		return base
+	case base == "/":
+		return route
+	case route == "/":
+		return base
+	default:
+		return normalizePythonPath(strings.TrimRight(base, "/") + "/" + strings.TrimLeft(route, "/"))
+	}
+}
+
+func extractPythonHTTPXRequestMethod(args []*sitter.Node, content []byte) string {
+	for _, a := range args {
+		if a == nil {
+			continue
+		}
+		text := strings.TrimSpace(a.Utf8Text(content))
+		if m := extractPythonKeywordArgValue(text, "method"); m != "" {
+			return strings.ToUpper(strings.TrimSpace(m))
+		}
+	}
+	return "UNKNOWN"
+}
+
+func pythonTargetFromArgs(args []*sitter.Node, content []byte) string {
+	if len(args) == 0 {
+		return ""
+	}
+	// First pass: resolve known keyword arguments regardless of their order.
+	for _, a := range args {
+		if a == nil {
+			continue
+		}
+		text := strings.TrimSpace(a.Utf8Text(content))
+		if m := extractPythonKeywordArgValue(text, "topic"); m != "" {
+			return m
+		}
+		if m := extractPythonKeywordArgValue(text, "queue_url"); m != "" {
+			return m
+		}
+		if m := extractPythonKeywordArgValue(text, "QueueUrl"); m != "" {
+			return m
+		}
+		if m := extractPythonKeywordArgValue(text, "url"); m != "" {
+			return m
+		}
+	}
+	// Second pass: fall back to the first positional/literal-like argument.
+	for _, a := range args {
+		if a == nil {
+			continue
+		}
+		if a.Kind() == "keyword_argument" {
+			// Skip keyword arguments in fallback mode.
+			continue
+		}
+		v := normalizePythonArgument(a, content)
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func pythonLineCol(node *sitter.Node) (int, int) {

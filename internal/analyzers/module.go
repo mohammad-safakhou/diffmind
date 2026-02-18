@@ -25,9 +25,14 @@ func Run(ctx context.Context, args []string) error {
 		return fmt.Errorf("resolve source path: %w", err)
 	}
 
-	res, err := analyze(ctx, root, opts.SnapshotID, opts.Extractors)
+	res, err := analyze(ctx, root, opts.SnapshotID, opts.Adapters, opts.Extractors)
 	if err != nil {
 		return err
+	}
+	res.report.Offline = opts.Offline
+
+	if opts.Offline && opts.LLMAugment {
+		return fmt.Errorf("llm augmentation is disabled in offline mode; rerun with --offline=false to enable --llm-augment")
 	}
 
 	llmOpts := llmOptions{
@@ -51,6 +56,13 @@ func Run(ctx context.Context, args []string) error {
 		res.report.FactsCount = len(res.bundle.Facts)
 		res.report.EvidenceCount = len(res.bundle.Evidence)
 	}
+
+	manifestPath, manifestSHA, err := writeToolchainManifest(opts.OutDir, &res.report)
+	if err != nil {
+		return err
+	}
+	res.report.ToolchainManifestPath = manifestPath
+	res.report.ToolchainManifestSHA256 = manifestSHA
 
 	bundlePath := filepath.Join(opts.OutDir, "analyzers", "bundle.json")
 	reportPath := filepath.Join(opts.OutDir, "analyzers", "report.json")
@@ -84,6 +96,8 @@ func Run(ctx context.Context, args []string) error {
 		"evidence", res.report.EvidenceCount,
 		"llm_enabled", res.report.LLMEnabled,
 		"llm_facts_added", res.report.LLMFactsAdded,
+		"offline", res.report.Offline,
+		"toolchain_manifest", res.report.ToolchainManifestPath,
 		"bundle_path", bundlePath,
 	)
 	fmt.Println(bundlePath)
@@ -96,7 +110,9 @@ func parseOptions(args []string) (Options, error) {
 	outDir := fs.String("out", ".diffmind", "Output root for analyzer artifacts")
 	snapshotID := fs.String("snapshot-id", "", "Optional snapshot id")
 	persist := fs.Bool("persist", false, "Persist analyzer facts/evidence into Postgres")
+	offline := fs.Bool("offline", true, "Run in offline self-hosted mode (disables network-bound augmentations)")
 	extractors := fs.String("extractors", "", "Comma-separated extractor names (default: all built-ins)")
+	adapters := fs.String("adapters", "", "Comma-separated analyzer adapter names (default: all built-ins)")
 	llmAugment := fs.Bool("llm-augment", false, "Enable bounded LLM augmentation")
 	llmModel := fs.String("llm-model", "gpt-5-mini", "LLM model for augmentation")
 	llmTask := fs.String("llm-task", "augment-routes-http-config", "LLM augmentation task")
@@ -111,7 +127,9 @@ func parseOptions(args []string) (Options, error) {
 		OutDir:      *outDir,
 		SnapshotID:  *snapshotID,
 		Persist:     *persist,
+		Offline:     *offline,
 		Extractors:  *extractors,
+		Adapters:    *adapters,
 		LLMAugment:  *llmAugment,
 		LLMModel:    *llmModel,
 		LLMTask:     *llmTask,
@@ -125,17 +143,18 @@ func filterAnalyzeArgs(args []string) []string {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
-		case arg == "--source" || arg == "--out" || arg == "--snapshot-id" || arg == "--extractors" || arg == "--llm-model" || arg == "--llm-task" || arg == "--llm-max-files" || arg == "--llm-max-chars":
+		case arg == "--source" || arg == "--out" || arg == "--snapshot-id" || arg == "--extractors" || arg == "--adapters" || arg == "--llm-model" || arg == "--llm-task" || arg == "--llm-max-files" || arg == "--llm-max-chars":
 			filtered = append(filtered, arg)
 			if i+1 < len(args) {
 				i++
 				filtered = append(filtered, args[i])
 			}
-		case arg == "--persist" || arg == "--llm-augment":
+		case arg == "--persist" || arg == "--llm-augment" || arg == "--offline":
 			filtered = append(filtered, arg)
 		case strings.HasPrefix(arg, "--source=") || strings.HasPrefix(arg, "--out=") || strings.HasPrefix(arg, "--snapshot-id=") ||
 			strings.HasPrefix(arg, "--extractors=") ||
-			strings.HasPrefix(arg, "--persist=") || strings.HasPrefix(arg, "--llm-augment=") || strings.HasPrefix(arg, "--llm-model=") ||
+			strings.HasPrefix(arg, "--adapters=") ||
+			strings.HasPrefix(arg, "--persist=") || strings.HasPrefix(arg, "--offline=") || strings.HasPrefix(arg, "--llm-augment=") || strings.HasPrefix(arg, "--llm-model=") ||
 			strings.HasPrefix(arg, "--llm-task=") || strings.HasPrefix(arg, "--llm-max-files=") || strings.HasPrefix(arg, "--llm-max-chars="):
 			filtered = append(filtered, arg)
 		}

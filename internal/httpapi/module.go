@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -10,6 +11,8 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,10 +23,13 @@ import (
 
 	"diffmind/internal/audit"
 	"diffmind/internal/bundleio"
+	"diffmind/internal/contracts"
 	"diffmind/internal/diff"
+	"diffmind/internal/finalgate"
 	graphpkg "diffmind/internal/graph"
 	"diffmind/internal/graphschema"
 	"diffmind/internal/query"
+	runtimepkg "diffmind/internal/runtime"
 	"diffmind/internal/security"
 )
 
@@ -56,11 +62,19 @@ type graphFilters struct {
 	ServiceFilter   string
 	RepoFilter      string
 	NodeFilter      string
+	SectionFilter   string
+	ClassFilter     string
 	ConfidenceMin   float64
 	Verification    string
+	AdapterID       string
+	ProvVersion     string
 	ConflictStatus  string
 	Environment     string
 	QueryText       string
+}
+
+type publishPolicy struct {
+	IncludeDisputed bool
 }
 
 type metricItem struct {
@@ -180,6 +194,135 @@ type compareIndex struct {
 	NextBefore string           `json:"next_before,omitempty"`
 }
 
+type runtimeReconcileSummary struct {
+	ReconcileID  string    `json:"reconcile_id"`
+	GeneratedAt  time.Time `json:"generated_at"`
+	TenantID     string    `json:"tenant_id,omitempty"`
+	GraphID      string    `json:"graph_id"`
+	Claims       int       `json:"claims"`
+	Observations int       `json:"observations"`
+	Confirmed    int       `json:"confirmed"`
+	Contradicted int       `json:"contradicted"`
+	Unmapped     int       `json:"runtime_only_unmapped"`
+	NeedsReview  int       `json:"needs_review"`
+	Path         string    `json:"path"`
+}
+
+type runtimeReconcileIndex struct {
+	Runs       []runtimeReconcileSummary `json:"runs"`
+	NextBefore string                    `json:"next_before,omitempty"`
+}
+
+type runtimeReconcileRecord struct {
+	ReconcileID string                                 `json:"reconcile_id"`
+	GeneratedAt time.Time                              `json:"generated_at"`
+	TenantID    string                                 `json:"tenant_id,omitempty"`
+	Request     contracts.RuntimeReconciliationRequest `json:"request"`
+	Result      contracts.RuntimeReconciliationResult  `json:"result"`
+}
+
+type runtimeReconcileCompare struct {
+	FromReconcileID     string   `json:"from_reconcile_id"`
+	ToReconcileID       string   `json:"to_reconcile_id"`
+	FromGraphID         string   `json:"from_graph_id"`
+	ToGraphID           string   `json:"to_graph_id"`
+	ConfirmedAdded      []string `json:"confirmed_added"`
+	ConfirmedRemoved    []string `json:"confirmed_removed"`
+	ContradictedAdded   []string `json:"contradicted_added"`
+	ContradictedRemoved []string `json:"contradicted_removed"`
+	UnmappedAdded       []string `json:"runtime_only_unmapped_added"`
+	UnmappedRemoved     []string `json:"runtime_only_unmapped_removed"`
+	NeedsReviewAdded    []string `json:"needs_review_added"`
+	NeedsReviewRemoved  []string `json:"needs_review_removed"`
+}
+
+type runtimeReconcileGraphSummary struct {
+	GraphID      string    `json:"graph_id"`
+	Runs         int       `json:"runs"`
+	Claims       int       `json:"claims"`
+	Observations int       `json:"observations"`
+	Confirmed    int       `json:"confirmed"`
+	Contradicted int       `json:"contradicted"`
+	Unmapped     int       `json:"runtime_only_unmapped"`
+	NeedsReview  int       `json:"needs_review"`
+	LastRunAt    time.Time `json:"last_run_at"`
+}
+
+type runtimeReconcileReport struct {
+	GeneratedAt       time.Time                      `json:"generated_at"`
+	TenantID          string                         `json:"tenant_id,omitempty"`
+	GraphID           string                         `json:"graph_id,omitempty"`
+	From              string                         `json:"from,omitempty"`
+	To                string                         `json:"to,omitempty"`
+	TotalRuns         int                            `json:"total_runs"`
+	TotalClaims       int                            `json:"total_claims"`
+	TotalObservations int                            `json:"total_observations"`
+	TotalConfirmed    int                            `json:"total_confirmed"`
+	TotalContradicted int                            `json:"total_contradicted"`
+	TotalUnmapped     int                            `json:"total_runtime_only_unmapped"`
+	TotalNeedsReview  int                            `json:"total_needs_review"`
+	ConfirmedRate     float64                        `json:"confirmed_rate"`
+	ContradictedRate  float64                        `json:"contradicted_rate"`
+	NeedsReviewRate   float64                        `json:"needs_review_rate"`
+	UnmappedRate      float64                        `json:"runtime_only_unmapped_rate"`
+	TopGraphs         []runtimeReconcileGraphSummary `json:"top_graphs"`
+	LatestRun         *runtimeReconcileSummary       `json:"latest_run,omitempty"`
+}
+
+type finalGateAttestRequest struct {
+	QualityGatePath string   `json:"quality_gate_path"`
+	SLOPath         string   `json:"slo_path"`
+	TemplatesPath   string   `json:"templates_path"`
+	CatalogPath     string   `json:"catalog_path"`
+	GraphIndexPath  string   `json:"graph_index_path"`
+	OutReportPath   string   `json:"out_report_path"`
+	OutDecisionPath string   `json:"out_decision_path"`
+	Signers         []string `json:"signers"`
+}
+
+type productTemplate struct {
+	ID      string         `json:"id"`
+	Product string         `json:"product"`
+	Method  string         `json:"method"`
+	Path    string         `json:"path"`
+	Query   map[string]any `json:"query,omitempty"`
+	Payload any            `json:"payload,omitempty"`
+}
+
+type productTemplateFile struct {
+	Templates []productTemplate `json:"templates"`
+}
+
+type productTemplateExecuteRequest struct {
+	TemplateID    string         `json:"template_id"`
+	TemplatePath  string         `json:"template_path,omitempty"`
+	Vars          map[string]any `json:"vars,omitempty"`
+	IncludeResult bool           `json:"include_result,omitempty"`
+}
+
+type productQuestionFile struct {
+	Questions []struct {
+		ID       string `json:"id"`
+		Question string `json:"question"`
+		Endpoint string `json:"endpoint"`
+	} `json:"questions"`
+}
+
+type productQuestionExecuteRequest struct {
+	QuestionID   string         `json:"question_id"`
+	CatalogPath  string         `json:"catalog_path,omitempty"`
+	TemplatePath string         `json:"template_path,omitempty"`
+	Vars         map[string]any `json:"vars,omitempty"`
+}
+
+type productQuestionRunRequest struct {
+	QuestionIDs    []string                  `json:"question_ids,omitempty"`
+	CatalogPath    string                    `json:"catalog_path,omitempty"`
+	TemplatePath   string                    `json:"template_path,omitempty"`
+	Vars           map[string]any            `json:"vars,omitempty"`
+	VarsByQuestion map[string]map[string]any `json:"vars_by_question,omitempty"`
+}
+
 type routeMetrics struct {
 	Route            string    `json:"route"`
 	Requests         int64     `json:"requests"`
@@ -294,12 +437,27 @@ func newMux(defaultBundlePath string, graphRoot string) http.Handler {
 	mux.Handle("/compliance/audit", instrument("/compliance/audit", handleAuditList(graphRoot)))
 	mux.Handle("/compliance/audit/export", instrument("/compliance/audit/export", handleAuditExport(graphRoot)))
 	mux.Handle("/compliance/audit/retention", instrument("/compliance/audit/retention", handleAuditRetention(graphRoot)))
+	mux.Handle("/products/templates", instrument("/products/templates", handleProductTemplates(graphRoot)))
+	mux.Handle("/products/templates/execute", instrument("/products/templates/execute", handleProductTemplateExecute(graphRoot)))
+	mux.Handle("/products/questions", instrument("/products/questions", handleProductQuestions(graphRoot)))
+	mux.Handle("/products/questions/execute", instrument("/products/questions/execute", handleProductQuestionExecute(graphRoot)))
+	mux.Handle("/products/questions/run", instrument("/products/questions/run", handleProductQuestionRun(graphRoot)))
+	mux.Handle("/products/questions/coverage", instrument("/products/questions/coverage", handleProductQuestionCoverage(graphRoot)))
 	mux.Handle("/products/pr-review", instrument("/products/pr-review", handleProductPRReview(graphRoot)))
 	mux.Handle("/products/docs/", instrument("/products/docs/:graph_id", handleProductDocs(graphRoot)))
 	mux.Handle("/products/mapper/", instrument("/products/mapper/:graph_id", handleProductMapper(graphRoot)))
 	mux.Handle("/products/governance/", instrument("/products/governance/:graph_id", handleProductGovernance(graphRoot)))
 	mux.Handle("/ops/metrics", instrument("/ops/metrics", handleOpsMetrics(graphRoot)))
 	mux.Handle("/ops/slo", instrument("/ops/slo", handleOpsSLO(graphRoot)))
+	mux.Handle("/final/attest", instrument("/final/attest", handleFinalGateAttest(graphRoot)))
+	mux.Handle("/final/readiness", instrument("/final/readiness", handleFinalReadiness(graphRoot)))
+	mux.Handle("/final/decision", instrument("/final/decision", handleFinalDecision(graphRoot)))
+	mux.Handle("/runtime/plan", instrument("/runtime/plan", handleRuntimePlan(graphRoot)))
+	mux.Handle("/runtime/reconcile", instrument("/runtime/reconcile", handleRuntimeReconcile(graphRoot)))
+	mux.Handle("/runtime/reconcile/report", instrument("/runtime/reconcile/report", handleRuntimeReconcileReport(graphRoot)))
+	mux.Handle("/runtime/reconcile/compare", instrument("/runtime/reconcile/compare", handleRuntimeReconcileCompare(graphRoot)))
+	mux.Handle("/runtime/reconcile/", instrument("/runtime/reconcile/:id", handleRuntimeReconcileByID(graphRoot)))
+	mux.Handle("/runtime/claims/", instrument("/runtime/claims/:graph_id", handleRuntimeClaims(graphRoot)))
 	if sub, err := fs.Sub(uiFiles, "ui"); err == nil {
 		mux.Handle("/", http.FileServer(http.FS(sub)))
 	}
@@ -429,6 +587,9 @@ func handleGraphsCompare(graphRoot string) http.HandlerFunc {
 			fromGraph = filterGraph(fromGraph, filters)
 			toGraph = filterGraph(toGraph, filters)
 		}
+		policy := parsePublishPolicy(r)
+		fromGraph = applyStrictPublishPolicy(fromGraph, policy)
+		toGraph = applyStrictPublishPolicy(toGraph, policy)
 		result := buildGraphCompare(fromGraph, toGraph)
 		result.TenantID = graphTenant(fromGraph)
 		if err := persistCompareResult(graphRoot, &result); err != nil {
@@ -883,6 +1044,7 @@ func handleGraphByID(graphRoot string) http.HandlerFunc {
 		if hasGraphFilter(filters) {
 			graph = filterGraph(graph, filters)
 		}
+		graph = applyStrictPublishPolicy(graph, parsePublishPolicy(r))
 		includeSensitive := parseBoolDefault(r.URL.Query().Get("include_sensitive"), false)
 		graph = security.RedactGraph(graph, authCtx, includeSensitive)
 		graph = annotateGraphFreshness(graph, time.Now().UTC(), parseMaxAgeHours(r.URL.Query().Get("max_age_hours")))
@@ -962,6 +1124,7 @@ func handleGraphAt(graphRoot string) http.HandlerFunc {
 		if hasGraphFilter(filters) {
 			graph = filterGraph(graph, filters)
 		}
+		graph = applyStrictPublishPolicy(graph, parsePublishPolicy(r))
 		includeSensitive := parseBoolDefault(r.URL.Query().Get("include_sensitive"), false)
 		graph = security.RedactGraph(graph, authCtx, includeSensitive)
 		graph = annotateGraphFreshness(graph, time.Now().UTC(), parseMaxAgeHours(r.URL.Query().Get("max_age_hours")))
@@ -1145,16 +1308,26 @@ func parseGraphFilters(r *http.Request) (graphFilters, error) {
 		ServiceFilter:   strings.TrimSpace(r.URL.Query().Get("service")),
 		RepoFilter:      strings.TrimSpace(r.URL.Query().Get("repo")),
 		NodeFilter:      strings.TrimSpace(r.URL.Query().Get("node")),
+		SectionFilter:   strings.TrimSpace(r.URL.Query().Get("section")),
+		ClassFilter:     strings.TrimSpace(r.URL.Query().Get("class")),
 		ConfidenceMin:   confidenceMin,
-		Verification:    strings.TrimSpace(r.URL.Query().Get("verification_status")),
+		Verification:    firstNonEmptyTrimmed(r.URL.Query().Get("verification_state"), r.URL.Query().Get("verification_status")),
+		AdapterID:       strings.TrimSpace(r.URL.Query().Get("adapter_id")),
+		ProvVersion:     strings.TrimSpace(r.URL.Query().Get("provenance_version")),
 		ConflictStatus:  strings.TrimSpace(r.URL.Query().Get("conflict_status")),
 		Environment:     strings.TrimSpace(r.URL.Query().Get("environment")),
 		QueryText:       strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q"))),
 	}, nil
 }
 
+func parsePublishPolicy(r *http.Request) publishPolicy {
+	return publishPolicy{
+		IncludeDisputed: parseBoolDefault(r.URL.Query().Get("include_disputed"), false),
+	}
+}
+
 func hasGraphFilter(f graphFilters) bool {
-	return !f.IncludeInferred || f.EdgeTypeFilter != "" || f.ServiceFilter != "" || f.RepoFilter != "" || f.NodeFilter != "" || f.ConfidenceMin > 0 || f.Verification != "" || f.ConflictStatus != "" || f.Environment != "" || f.QueryText != ""
+	return !f.IncludeInferred || f.EdgeTypeFilter != "" || f.ServiceFilter != "" || f.RepoFilter != "" || f.NodeFilter != "" || f.SectionFilter != "" || f.ClassFilter != "" || f.ConfidenceMin > 0 || f.Verification != "" || f.AdapterID != "" || f.ProvVersion != "" || f.ConflictStatus != "" || f.Environment != "" || f.QueryText != ""
 }
 
 func filterGraph(graph graphschema.Graph, f graphFilters) graphschema.Graph {
@@ -1166,7 +1339,7 @@ func filterGraph(graph graphschema.Graph, f graphFilters) graphschema.Graph {
 
 	// If there is no explicit node-scoping filter and edge filtering produced no edges,
 	// preserve nodes so node-only graphs remain visible in the UI.
-	hasNodeScope := f.ServiceFilter != "" || f.RepoFilter != "" || f.NodeFilter != "" || f.Verification != "" || f.ConflictStatus != "" || f.Environment != "" || f.QueryText != ""
+	hasNodeScope := f.ServiceFilter != "" || f.RepoFilter != "" || f.NodeFilter != "" || f.SectionFilter != "" || f.ClassFilter != "" || f.Verification != "" || f.AdapterID != "" || f.ProvVersion != "" || f.ConflictStatus != "" || f.Environment != "" || f.QueryText != ""
 	if !hasNodeScope && len(edges) == 0 {
 		graph.Edges = edges
 		graph.Stats = recomputeGraphStats(graph.Nodes, edges)
@@ -1177,6 +1350,13 @@ func filterGraph(graph graphschema.Graph, f graphFilters) graphschema.Graph {
 	for _, e := range edges {
 		includeNodes[e.SourceID] = struct{}{}
 		includeNodes[e.TargetID] = struct{}{}
+	}
+	if hasNodeScope {
+		for _, n := range graph.Nodes {
+			if nodeMatchesFilters(n, serviceRepo, f) {
+				includeNodes[n.ID] = struct{}{}
+			}
+		}
 	}
 	for _, n := range graph.Nodes {
 		if f.ServiceFilter != "" && n.ServiceID == f.ServiceFilter {
@@ -1269,6 +1449,37 @@ func filterGraphEdges(graph graphschema.Graph, f graphFilters) []graphschema.Edg
 		if f.NodeFilter != "" && e.SourceID != f.NodeFilter && e.TargetID != f.NodeFilter {
 			continue
 		}
+		if f.SectionFilter != "" && !equalsFoldTrimmed(e.Section, f.SectionFilter) {
+			continue
+		}
+		if f.ClassFilter != "" && !equalsFoldTrimmed(e.Class, f.ClassFilter) {
+			continue
+		}
+		if f.Verification != "" {
+			v := effectiveVerificationState(e.VerificationState, e.Attributes, e.Inferred)
+			if !equalsFoldTrimmed(v, f.Verification) {
+				continue
+			}
+		}
+		if f.AdapterID != "" {
+			adapter := firstNonEmptyTrimmed(
+				attrString(e.Attributes, "adapter_id"),
+				attrString(e.Attributes, "provenance_adapter_id"),
+			)
+			if !equalsFoldTrimmed(adapter, f.AdapterID) {
+				continue
+			}
+		}
+		if f.ProvVersion != "" {
+			version := firstNonEmptyTrimmed(
+				attrString(e.Attributes, "provenance_version"),
+				attrString(e.Attributes, "adapter_version"),
+				attrString(e.Attributes, "rulepack_version"),
+			)
+			if !equalsFoldTrimmed(version, f.ProvVersion) {
+				continue
+			}
+		}
 		if f.QueryText != "" {
 			blob := strings.ToLower(e.ID + " " + e.Type + " " + fmt.Sprint(e.Attributes))
 			if !strings.Contains(blob, f.QueryText) {
@@ -1282,9 +1493,34 @@ func filterGraphEdges(graph graphschema.Graph, f graphFilters) []graphschema.Edg
 
 func nodeMatchesFilters(n graphschema.Node, serviceRepo map[string]string, f graphFilters) bool {
 	_ = serviceRepo
+	if f.SectionFilter != "" && !equalsFoldTrimmed(n.Section, f.SectionFilter) {
+		return false
+	}
+	if f.ClassFilter != "" && !equalsFoldTrimmed(n.Class, f.ClassFilter) {
+		return false
+	}
 	if f.Verification != "" {
-		v := strings.ToLower(strings.TrimSpace(fmt.Sprint(n.Attributes["verification_status"])))
-		if v != strings.ToLower(f.Verification) {
+		v := effectiveVerificationState(n.VerificationState, n.Attributes, n.Inferred)
+		if !equalsFoldTrimmed(v, f.Verification) {
+			return false
+		}
+	}
+	if f.AdapterID != "" {
+		adapter := firstNonEmptyTrimmed(
+			attrString(n.Attributes, "adapter_id"),
+			attrString(n.Attributes, "provenance_adapter_id"),
+		)
+		if !equalsFoldTrimmed(adapter, f.AdapterID) {
+			return false
+		}
+	}
+	if f.ProvVersion != "" {
+		version := firstNonEmptyTrimmed(
+			attrString(n.Attributes, "provenance_version"),
+			attrString(n.Attributes, "adapter_version"),
+			attrString(n.Attributes, "rulepack_version"),
+		)
+		if !equalsFoldTrimmed(version, f.ProvVersion) {
 			return false
 		}
 	}
@@ -1312,6 +1548,84 @@ func nodeMatchesFilters(n graphschema.Node, serviceRepo map[string]string, f gra
 	return true
 }
 
+func applyStrictPublishPolicy(graph graphschema.Graph, policy publishPolicy) graphschema.Graph {
+	keepNode := map[string]struct{}{}
+	for _, n := range graph.Nodes {
+		if shouldKeepByPublishPolicy(n.Section, n.VerificationState, n.Attributes, n.Inferred, policy) {
+			keepNode[n.ID] = struct{}{}
+		}
+	}
+
+	nodes := make([]graphschema.Node, 0, len(graph.Nodes))
+	for _, n := range graph.Nodes {
+		if _, ok := keepNode[n.ID]; !ok {
+			continue
+		}
+		nodes = append(nodes, n)
+	}
+
+	edges := make([]graphschema.Edge, 0, len(graph.Edges))
+	for _, e := range graph.Edges {
+		if _, ok := keepNode[e.SourceID]; !ok {
+			continue
+		}
+		if _, ok := keepNode[e.TargetID]; !ok {
+			continue
+		}
+		if !shouldKeepByPublishPolicy(e.Section, e.VerificationState, e.Attributes, e.Inferred, policy) {
+			continue
+		}
+		edges = append(edges, e)
+	}
+
+	graph.Nodes = nodes
+	graph.Edges = edges
+	graph.Stats = recomputeGraphStats(nodes, edges)
+	return graph
+}
+
+func shouldKeepByPublishPolicy(section string, verificationState string, attrs map[string]any, inferred bool, policy publishPolicy) bool {
+	sec := strings.ToLower(strings.TrimSpace(section))
+	if sec != "exposure" && sec != "dependencies" {
+		return true
+	}
+	state := effectiveVerificationState(verificationState, attrs, inferred)
+	if state == "verified" {
+		return true
+	}
+	if state == "disputed" && policy.IncludeDisputed {
+		return true
+	}
+	return false
+}
+
+func effectiveVerificationState(field string, attrs map[string]any, inferred bool) string {
+	if inferred {
+		return "inferred"
+	}
+	if v := strings.ToLower(strings.TrimSpace(field)); v != "" {
+		return v
+	}
+	if attrs != nil {
+		if raw, ok := attrs["verification_state"]; ok {
+			if v := strings.ToLower(strings.TrimSpace(fmt.Sprint(raw))); v != "" {
+				return v
+			}
+		}
+		if raw, ok := attrs["verification_status"]; ok {
+			if v := strings.ToLower(strings.TrimSpace(fmt.Sprint(raw))); v != "" {
+				return v
+			}
+		}
+		if raw, ok := attrs["status"]; ok {
+			if v := strings.ToLower(strings.TrimSpace(fmt.Sprint(raw))); v != "" {
+				return v
+			}
+		}
+	}
+	return "verified"
+}
+
 func buildGraphExplain(graph graphschema.Graph) map[string]any {
 	nodeExplain := make([]map[string]any, 0, len(graph.Nodes))
 	for _, n := range graph.Nodes {
@@ -1320,6 +1634,9 @@ func buildGraphExplain(graph graphschema.Graph) map[string]any {
 			"type":                n.Type,
 			"label":               n.Label,
 			"service_id":          n.ServiceID,
+			"section":             n.Section,
+			"class":               n.Class,
+			"verification_state":  n.VerificationState,
 			"confidence":          n.Confidence,
 			"inferred":            n.Inferred,
 			"verification_status": n.Attributes["verification_status"],
@@ -1330,14 +1647,17 @@ func buildGraphExplain(graph graphschema.Graph) map[string]any {
 	edgeExplain := make([]map[string]any, 0, len(graph.Edges))
 	for _, e := range graph.Edges {
 		edgeExplain = append(edgeExplain, map[string]any{
-			"id":            e.ID,
-			"type":          e.Type,
-			"source_id":     e.SourceID,
-			"target_id":     e.TargetID,
-			"confidence":    e.Confidence,
-			"inferred":      e.Inferred,
-			"attributes":    e.Attributes,
-			"evidence_refs": e.EvidenceRefs,
+			"id":                 e.ID,
+			"type":               e.Type,
+			"source_id":          e.SourceID,
+			"target_id":          e.TargetID,
+			"section":            e.Section,
+			"class":              e.Class,
+			"verification_state": e.VerificationState,
+			"confidence":         e.Confidence,
+			"inferred":           e.Inferred,
+			"attributes":         e.Attributes,
+			"evidence_refs":      e.EvidenceRefs,
 		})
 	}
 	return map[string]any{
@@ -1345,6 +1665,31 @@ func buildGraphExplain(graph graphschema.Graph) map[string]any {
 		"nodes": nodeExplain,
 		"edges": edgeExplain,
 	}
+}
+
+func firstNonEmptyTrimmed(values ...string) string {
+	for _, v := range values {
+		if trimmed := strings.TrimSpace(v); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func equalsFoldTrimmed(a string, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+func attrString(attrs map[string]any, key string) string {
+	if attrs == nil {
+		return ""
+	}
+	for k, v := range attrs {
+		if strings.EqualFold(strings.TrimSpace(k), strings.TrimSpace(key)) {
+			return strings.TrimSpace(fmt.Sprint(v))
+		}
+	}
+	return ""
 }
 
 func recomputeGraphStats(nodes []graphschema.Node, edges []graphschema.Edge) graphschema.GraphStats {
@@ -1820,6 +2165,302 @@ func pruneCompareHistory(graphRoot string, keepLatest int) (int, error) {
 	return deleted, nil
 }
 
+func loadRuntimeReconcileIndex(graphRoot string) (runtimeReconcileIndex, error) {
+	indexPath := filepath.Join(graphRoot, "runtime", "reconcile", "index.json")
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return runtimeReconcileIndex{Runs: []runtimeReconcileSummary{}}, nil
+		}
+		return runtimeReconcileIndex{}, err
+	}
+	index := runtimeReconcileIndex{Runs: []runtimeReconcileSummary{}}
+	if err := json.Unmarshal(data, &index); err != nil {
+		return runtimeReconcileIndex{}, fmt.Errorf("decode runtime reconcile index: %w", err)
+	}
+	return index, nil
+}
+
+func filterRuntimeReconcileRunsByTenant(r *http.Request, runs []runtimeReconcileSummary) []runtimeReconcileSummary {
+	authCtx, err := security.ContextFromHeaders(r.Header)
+	if err != nil || authCtx.HasRole("platform_admin") {
+		return runs
+	}
+	tenantID := normalizeTenant(authCtx.TenantID)
+	filtered := make([]runtimeReconcileSummary, 0, len(runs))
+	for _, run := range runs {
+		if normalizeTenant(run.TenantID) == tenantID {
+			filtered = append(filtered, run)
+		}
+	}
+	return filtered
+}
+
+func listRuntimeReconcileHistory(graphRoot string, r *http.Request, w http.ResponseWriter) {
+	index, err := loadRuntimeReconcileIndex(graphRoot)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	index.Runs = filterRuntimeReconcileRunsByTenant(r, index.Runs)
+	limit := 0
+	if q := strings.TrimSpace(r.URL.Query().Get("limit")); q != "" {
+		n, err := strconv.Atoi(q)
+		if err != nil || n < 0 {
+			writeError(w, http.StatusBadRequest, "invalid limit")
+			return
+		}
+		limit = n
+	}
+	before := strings.TrimSpace(r.URL.Query().Get("before"))
+	start := 0
+	if before != "" {
+		found := -1
+		for i, item := range index.Runs {
+			if item.ReconcileID == before {
+				found = i
+				break
+			}
+		}
+		if found == -1 {
+			writeError(w, http.StatusBadRequest, "invalid before cursor")
+			return
+		}
+		start = found + 1
+	}
+	if start > len(index.Runs) {
+		start = len(index.Runs)
+	}
+	runs := index.Runs[start:]
+	nextBefore := ""
+	if limit > 0 && len(runs) > limit {
+		runs = runs[:limit]
+		nextBefore = runs[len(runs)-1].ReconcileID
+	}
+	writeJSON(w, http.StatusOK, runtimeReconcileIndex{Runs: runs, NextBefore: nextBefore})
+}
+
+func persistRuntimeReconcileResult(graphRoot string, tenantID string, req contracts.RuntimeReconciliationRequest, result contracts.RuntimeReconciliationResult) (string, time.Time, error) {
+	now := time.Now().UTC()
+	recID := fmt.Sprintf("%d", now.UnixNano())
+	baseDir := filepath.Join(graphRoot, "runtime", "reconcile", recID)
+	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+		return "", time.Time{}, fmt.Errorf("create runtime reconcile dir: %w", err)
+	}
+	payload := runtimeReconcileRecord{
+		ReconcileID: recID,
+		GeneratedAt: now,
+		TenantID:    normalizeTenant(tenantID),
+		Request:     req,
+		Result:      result,
+	}
+	outPath := filepath.Join(baseDir, "result.json")
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("marshal runtime reconcile result: %w", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(outPath, data, 0o644); err != nil {
+		return "", time.Time{}, fmt.Errorf("write runtime reconcile result: %w", err)
+	}
+
+	indexPath := filepath.Join(graphRoot, "runtime", "reconcile", "index.json")
+	idx := runtimeReconcileIndex{Runs: []runtimeReconcileSummary{}}
+	if indexData, err := os.ReadFile(indexPath); err == nil {
+		_ = json.Unmarshal(indexData, &idx)
+	}
+	idx.Runs = append(idx.Runs, runtimeReconcileSummary{
+		ReconcileID:  recID,
+		GeneratedAt:  now,
+		TenantID:     normalizeTenant(tenantID),
+		GraphID:      strings.TrimSpace(req.GraphID),
+		Claims:       len(req.Claims),
+		Observations: len(req.Observations),
+		Confirmed:    len(result.Confirmed),
+		Contradicted: len(result.Contradicted),
+		Unmapped:     len(result.Unmapped),
+		NeedsReview:  len(result.NeedsReview),
+		Path:         outPath,
+	})
+	sort.Slice(idx.Runs, func(i, j int) bool {
+		return idx.Runs[i].GeneratedAt.After(idx.Runs[j].GeneratedAt)
+	})
+	indexData, err := json.MarshalIndent(idx, "", "  ")
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("marshal runtime reconcile index: %w", err)
+	}
+	indexData = append(indexData, '\n')
+	if err := os.MkdirAll(filepath.Dir(indexPath), 0o755); err != nil {
+		return "", time.Time{}, fmt.Errorf("create runtime reconcile index dir: %w", err)
+	}
+	if err := os.WriteFile(indexPath, indexData, 0o644); err != nil {
+		return "", time.Time{}, fmt.Errorf("write runtime reconcile index: %w", err)
+	}
+	return recID, now, nil
+}
+
+func loadRuntimeReconcileResult(graphRoot string, reconcileID string) (runtimeReconcileRecord, error) {
+	path := filepath.Join(graphRoot, "runtime", "reconcile", reconcileID, "result.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return runtimeReconcileRecord{}, err
+	}
+	var payload runtimeReconcileRecord
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return runtimeReconcileRecord{}, fmt.Errorf("decode runtime reconcile result: %w", err)
+	}
+	return payload, nil
+}
+
+func compareRuntimeReconcileRuns(from runtimeReconcileRecord, to runtimeReconcileRecord) runtimeReconcileCompare {
+	confirmedAdded, confirmedRemoved := diffStringSets(from.Result.Confirmed, to.Result.Confirmed)
+	contradictedAdded, contradictedRemoved := diffStringSets(from.Result.Contradicted, to.Result.Contradicted)
+	unmappedAdded, unmappedRemoved := diffStringSets(from.Result.Unmapped, to.Result.Unmapped)
+	needsReviewAdded, needsReviewRemoved := diffStringSets(from.Result.NeedsReview, to.Result.NeedsReview)
+	return runtimeReconcileCompare{
+		FromReconcileID:     from.ReconcileID,
+		ToReconcileID:       to.ReconcileID,
+		FromGraphID:         from.Result.GraphID,
+		ToGraphID:           to.Result.GraphID,
+		ConfirmedAdded:      confirmedAdded,
+		ConfirmedRemoved:    confirmedRemoved,
+		ContradictedAdded:   contradictedAdded,
+		ContradictedRemoved: contradictedRemoved,
+		UnmappedAdded:       unmappedAdded,
+		UnmappedRemoved:     unmappedRemoved,
+		NeedsReviewAdded:    needsReviewAdded,
+		NeedsReviewRemoved:  needsReviewRemoved,
+	}
+}
+
+func diffStringSets(from []string, to []string) ([]string, []string) {
+	fromSet := map[string]struct{}{}
+	toSet := map[string]struct{}{}
+	for _, v := range from {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			fromSet[v] = struct{}{}
+		}
+	}
+	for _, v := range to {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			toSet[v] = struct{}{}
+		}
+	}
+	added := make([]string, 0)
+	removed := make([]string, 0)
+	for v := range toSet {
+		if _, ok := fromSet[v]; !ok {
+			added = append(added, v)
+		}
+	}
+	for v := range fromSet {
+		if _, ok := toSet[v]; !ok {
+			removed = append(removed, v)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	return added, removed
+}
+
+func deleteRuntimeReconcileResult(graphRoot string, reconcileID string) error {
+	resultPath := filepath.Join(graphRoot, "runtime", "reconcile", reconcileID, "result.json")
+	if _, err := os.Stat(resultPath); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(filepath.Dir(resultPath)); err != nil {
+		return fmt.Errorf("remove runtime reconcile dir: %w", err)
+	}
+	indexPath := filepath.Join(graphRoot, "runtime", "reconcile", "index.json")
+	idx := runtimeReconcileIndex{Runs: []runtimeReconcileSummary{}}
+	if data, err := os.ReadFile(indexPath); err == nil {
+		_ = json.Unmarshal(data, &idx)
+	}
+	filtered := make([]runtimeReconcileSummary, 0, len(idx.Runs))
+	for _, item := range idx.Runs {
+		if item.ReconcileID != reconcileID {
+			filtered = append(filtered, item)
+		}
+	}
+	idx.Runs = filtered
+	indexData, err := json.MarshalIndent(idx, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal runtime reconcile index: %w", err)
+	}
+	indexData = append(indexData, '\n')
+	if err := os.WriteFile(indexPath, indexData, 0o644); err != nil {
+		return fmt.Errorf("write runtime reconcile index: %w", err)
+	}
+	return nil
+}
+
+func pruneRuntimeReconcileHistory(graphRoot string, keepLatest int, tenantScope string) (int, error) {
+	indexPath := filepath.Join(graphRoot, "runtime", "reconcile", "index.json")
+	idx := runtimeReconcileIndex{Runs: []runtimeReconcileSummary{}}
+	if data, err := os.ReadFile(indexPath); err == nil {
+		if err := json.Unmarshal(data, &idx); err != nil {
+			return 0, fmt.Errorf("decode runtime reconcile index: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return 0, err
+	}
+	tenantScope = strings.TrimSpace(tenantScope)
+	tenantScopeNorm := ""
+	if tenantScope != "" {
+		tenantScopeNorm = normalizeTenant(tenantScope)
+	}
+	var target []runtimeReconcileSummary
+	var passthrough []runtimeReconcileSummary
+	if tenantScopeNorm == "" {
+		target = idx.Runs
+	} else {
+		target = make([]runtimeReconcileSummary, 0, len(idx.Runs))
+		passthrough = make([]runtimeReconcileSummary, 0, len(idx.Runs))
+		for _, item := range idx.Runs {
+			if normalizeTenant(item.TenantID) == tenantScopeNorm {
+				target = append(target, item)
+			} else {
+				passthrough = append(passthrough, item)
+			}
+		}
+	}
+	if keepLatest >= len(target) {
+		return 0, nil
+	}
+	toDelete := target[keepLatest:]
+	deleted := 0
+	for _, item := range toDelete {
+		if item.Path == "" {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Dir(item.Path)); err == nil {
+			deleted++
+		}
+	}
+	if tenantScopeNorm == "" {
+		idx.Runs = target[:keepLatest]
+	} else {
+		idx.Runs = append(passthrough, target[:keepLatest]...)
+		sort.Slice(idx.Runs, func(i, j int) bool {
+			return idx.Runs[i].GeneratedAt.After(idx.Runs[j].GeneratedAt)
+		})
+	}
+	indexData, err := json.MarshalIndent(idx, "", "  ")
+	if err != nil {
+		return deleted, fmt.Errorf("marshal runtime reconcile index: %w", err)
+	}
+	indexData = append(indexData, '\n')
+	if err := os.MkdirAll(filepath.Dir(indexPath), 0o755); err != nil {
+		return deleted, fmt.Errorf("create runtime reconcile index dir: %w", err)
+	}
+	if err := os.WriteFile(indexPath, indexData, 0o644); err != nil {
+		return deleted, fmt.Errorf("write runtime reconcile index: %w", err)
+	}
+	return deleted, nil
+}
+
 func handleAuditList(graphRoot string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -1952,6 +2593,633 @@ func handleAuditRetention(graphRoot string) http.HandlerFunc {
 			"retain_days": req.RetainDays,
 		})
 	}
+}
+
+func defaultTemplateCatalogPath() string {
+	return filepath.Join("docs", "m15_query_templates.json")
+}
+
+func defaultQuestionCatalogPath() string {
+	return filepath.Join("docs", "m17_question_catalog.json")
+}
+
+func resolveReadablePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return path
+	}
+	if filepath.IsAbs(path) {
+		return path
+	}
+	candidates := []string{
+		path,
+		filepath.Join("..", path),
+		filepath.Join("..", "..", path),
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return path
+}
+
+func loadProductTemplates(path string) (productTemplateFile, error) {
+	path = resolveReadablePath(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return productTemplateFile{}, err
+	}
+	var payload productTemplateFile
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return productTemplateFile{}, fmt.Errorf("decode product templates: %w", err)
+	}
+	return payload, nil
+}
+
+func loadProductQuestions(path string) (productQuestionFile, error) {
+	path = resolveReadablePath(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return productQuestionFile{}, err
+	}
+	var payload productQuestionFile
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return productQuestionFile{}, fmt.Errorf("decode product question catalog: %w", err)
+	}
+	return payload, nil
+}
+
+func findTemplateByID(catalog productTemplateFile, templateID string) *productTemplate {
+	for i := range catalog.Templates {
+		if strings.TrimSpace(catalog.Templates[i].ID) == templateID {
+			return &catalog.Templates[i]
+		}
+	}
+	return nil
+}
+
+func findTemplateByEndpoint(catalog productTemplateFile, endpoint string) *productTemplate {
+	needle := normalizeTemplatePath(strings.TrimSpace(endpoint))
+	for i := range catalog.Templates {
+		path := normalizeTemplatePath(strings.TrimSpace(catalog.Templates[i].Path))
+		if path == "" {
+			continue
+		}
+		if matchCatalogPath(path, needle) {
+			return &catalog.Templates[i]
+		}
+	}
+	return nil
+}
+
+func executeProductTemplate(graphRoot string, authHeaders http.Header, templateID string, templatePath string, vars map[string]any) (int, map[string]any) {
+	resolvedTemplatePath := resolveReadablePath(templatePath)
+	catalog, err := loadProductTemplates(resolvedTemplatePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return http.StatusNotFound, map[string]any{"error": "product templates not found"}
+		}
+		return http.StatusInternalServerError, map[string]any{"error": err.Error()}
+	}
+	tmpl := findTemplateByID(catalog, templateID)
+	if tmpl == nil {
+		return http.StatusNotFound, map[string]any{"error": "template not found"}
+	}
+	method := strings.ToUpper(strings.TrimSpace(tmpl.Method))
+	if method == "" {
+		method = http.MethodGet
+	}
+	targetPath := interpolateTemplateString(strings.TrimSpace(tmpl.Path), vars)
+	if targetPath == "" {
+		return http.StatusBadRequest, map[string]any{"error": "template path resolves to empty"}
+	}
+	if !strings.HasPrefix(targetPath, "/products/") || strings.HasPrefix(targetPath, "/products/templates") || strings.HasPrefix(targetPath, "/products/questions") {
+		return http.StatusBadRequest, map[string]any{"error": "template path is not executable"}
+	}
+	queryVals := url.Values{}
+	for k, v := range tmpl.Query {
+		key := strings.TrimSpace(k)
+		if key == "" {
+			continue
+		}
+		value := interpolateTemplateAny(v, vars)
+		if value == nil {
+			continue
+		}
+		queryVals.Set(key, fmt.Sprint(value))
+	}
+	resolvedPath := targetPath
+	if encoded := queryVals.Encode(); encoded != "" {
+		sep := "?"
+		if strings.Contains(resolvedPath, "?") {
+			sep = "&"
+		}
+		resolvedPath += sep + encoded
+	}
+	bodyPayload := interpolateTemplateAny(tmpl.Payload, vars)
+	var bodyReader io.Reader
+	if method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch {
+		if bodyPayload == nil {
+			bodyPayload = map[string]any{}
+		}
+		b, err := json.Marshal(bodyPayload)
+		if err != nil {
+			return http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("encode resolved payload: %v", err)}
+		}
+		bodyReader = bytes.NewReader(b)
+	}
+	execReq := httptest.NewRequest(method, resolvedPath, bodyReader)
+	for k, values := range authHeaders {
+		if len(values) == 0 {
+			continue
+		}
+		execReq.Header[k] = append([]string(nil), values...)
+	}
+	if bodyReader != nil {
+		execReq.Header.Set("Content-Type", "application/json")
+	}
+	var h http.Handler
+	switch {
+	case strings.HasPrefix(targetPath, "/products/pr-review"):
+		h = handleProductPRReview(graphRoot)
+	case strings.HasPrefix(targetPath, "/products/docs/"):
+		h = handleProductDocs(graphRoot)
+	case strings.HasPrefix(targetPath, "/products/mapper/"):
+		h = handleProductMapper(graphRoot)
+	case strings.HasPrefix(targetPath, "/products/governance/"):
+		h = handleProductGovernance(graphRoot)
+	default:
+		return http.StatusBadRequest, map[string]any{"error": "template path is not mapped to a product handler"}
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, execReq)
+	var result any
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		result = map[string]any{"raw": rec.Body.String()}
+	}
+	resp := map[string]any{
+		"template_id":   templateID,
+		"template_path": resolvedTemplatePath,
+		"method":        method,
+		"path":          targetPath,
+		"query":         queryVals,
+		"status":        rec.Code,
+		"result":        result,
+	}
+	if bodyPayload != nil {
+		resp["payload"] = bodyPayload
+	}
+	if rec.Code >= 400 {
+		resp["error"] = result
+	}
+	return rec.Code, resp
+}
+
+func handleProductTemplates(graphRoot string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if _, ok := authorizeRequest(w, r, security.ActionQueryGraph, normalizeTenant(r.Header.Get("X-DiffMind-Tenant")), false, false, graphRoot); !ok {
+			return
+		}
+		templatePath := strings.TrimSpace(r.URL.Query().Get("path"))
+		if templatePath == "" {
+			templatePath = defaultTemplateCatalogPath()
+		}
+		resolvedPath := resolveReadablePath(templatePath)
+		payload, err := loadProductTemplates(resolvedPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				writeError(w, http.StatusNotFound, "product templates not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"path":      resolvedPath,
+			"count":     len(payload.Templates),
+			"templates": payload.Templates,
+		})
+	}
+}
+
+func handleProductTemplateExecute(graphRoot string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if _, ok := authorizeRequest(w, r, security.ActionQueryGraph, normalizeTenant(r.Header.Get("X-DiffMind-Tenant")), false, false, graphRoot); !ok {
+			return
+		}
+		req := productTemplateExecuteRequest{}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("decode request body: %v", err))
+			return
+		}
+		req.TemplateID = strings.TrimSpace(req.TemplateID)
+		if req.TemplateID == "" {
+			writeError(w, http.StatusBadRequest, "template_id is required")
+			return
+		}
+		templatePath := strings.TrimSpace(req.TemplatePath)
+		if templatePath == "" {
+			templatePath = defaultTemplateCatalogPath()
+		}
+		status, resp := executeProductTemplate(graphRoot, r.Header, req.TemplateID, templatePath, req.Vars)
+		writeJSON(w, status, resp)
+	}
+}
+
+func handleProductQuestions(graphRoot string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if _, ok := authorizeRequest(w, r, security.ActionQueryGraph, normalizeTenant(r.Header.Get("X-DiffMind-Tenant")), false, false, graphRoot); !ok {
+			return
+		}
+		catalogPath := strings.TrimSpace(r.URL.Query().Get("catalog_path"))
+		if catalogPath == "" {
+			catalogPath = defaultQuestionCatalogPath()
+		}
+		resolvedPath := resolveReadablePath(catalogPath)
+		payload, err := loadProductQuestions(resolvedPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				writeError(w, http.StatusNotFound, "product question catalog not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"path":      resolvedPath,
+			"count":     len(payload.Questions),
+			"questions": payload.Questions,
+		})
+	}
+}
+
+func handleProductQuestionExecute(graphRoot string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if _, ok := authorizeRequest(w, r, security.ActionQueryGraph, normalizeTenant(r.Header.Get("X-DiffMind-Tenant")), false, false, graphRoot); !ok {
+			return
+		}
+		req := productQuestionExecuteRequest{}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("decode request body: %v", err))
+			return
+		}
+		req.QuestionID = strings.TrimSpace(req.QuestionID)
+		if req.QuestionID == "" {
+			writeError(w, http.StatusBadRequest, "question_id is required")
+			return
+		}
+		catalogPath := strings.TrimSpace(req.CatalogPath)
+		if catalogPath == "" {
+			catalogPath = defaultQuestionCatalogPath()
+		}
+		resolvedCatalogPath := resolveReadablePath(catalogPath)
+		questions, err := loadProductQuestions(resolvedCatalogPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				writeError(w, http.StatusNotFound, "product question catalog not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		var selectedEndpoint string
+		for _, q := range questions.Questions {
+			if strings.TrimSpace(q.ID) == req.QuestionID {
+				selectedEndpoint = strings.TrimSpace(q.Endpoint)
+				break
+			}
+		}
+		if selectedEndpoint == "" {
+			writeError(w, http.StatusNotFound, "question not found")
+			return
+		}
+		templatePath := strings.TrimSpace(req.TemplatePath)
+		if templatePath == "" {
+			templatePath = defaultTemplateCatalogPath()
+		}
+		templates, err := loadProductTemplates(templatePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				writeError(w, http.StatusNotFound, "product templates not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		template := findTemplateByEndpoint(templates, selectedEndpoint)
+		if template == nil {
+			writeError(w, http.StatusNotFound, "no template mapped to question endpoint")
+			return
+		}
+		status, resp := executeProductTemplate(graphRoot, r.Header, strings.TrimSpace(template.ID), templatePath, req.Vars)
+		resp["question_id"] = req.QuestionID
+		resp["question_endpoint"] = selectedEndpoint
+		resp["catalog_path"] = resolvedCatalogPath
+		writeJSON(w, status, resp)
+	}
+}
+
+func handleProductQuestionRun(graphRoot string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if _, ok := authorizeRequest(w, r, security.ActionQueryGraph, normalizeTenant(r.Header.Get("X-DiffMind-Tenant")), false, false, graphRoot); !ok {
+			return
+		}
+		req := productQuestionRunRequest{}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("decode request body: %v", err))
+			return
+		}
+		catalogPath := strings.TrimSpace(req.CatalogPath)
+		if catalogPath == "" {
+			catalogPath = defaultQuestionCatalogPath()
+		}
+		templatePath := strings.TrimSpace(req.TemplatePath)
+		if templatePath == "" {
+			templatePath = defaultTemplateCatalogPath()
+		}
+		resolvedCatalogPath := resolveReadablePath(catalogPath)
+		resolvedTemplatePath := resolveReadablePath(templatePath)
+
+		questions, err := loadProductQuestions(resolvedCatalogPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				writeError(w, http.StatusNotFound, "product question catalog not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		templates, err := loadProductTemplates(resolvedTemplatePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				writeError(w, http.StatusNotFound, "product templates not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		selected := map[string]struct{}{}
+		if len(req.QuestionIDs) > 0 {
+			for _, id := range req.QuestionIDs {
+				id = strings.TrimSpace(id)
+				if id != "" {
+					selected[id] = struct{}{}
+				}
+			}
+		}
+
+		results := make([]map[string]any, 0, len(questions.Questions))
+		success := 0
+		failed := 0
+		for _, q := range questions.Questions {
+			qid := strings.TrimSpace(q.ID)
+			if len(selected) > 0 {
+				if _, ok := selected[qid]; !ok {
+					continue
+				}
+			}
+			endpoint := strings.TrimSpace(q.Endpoint)
+			mapped := findTemplateByEndpoint(templates, endpoint)
+			item := map[string]any{
+				"question_id":       qid,
+				"question":          strings.TrimSpace(q.Question),
+				"question_endpoint": endpoint,
+			}
+			if mapped == nil {
+				failed++
+				item["status"] = http.StatusNotFound
+				item["error"] = "no template mapped to question endpoint"
+				results = append(results, item)
+				continue
+			}
+			item["template_id"] = strings.TrimSpace(mapped.ID)
+			vars := map[string]any{}
+			for k, v := range req.Vars {
+				vars[k] = v
+			}
+			if qVars, ok := req.VarsByQuestion[qid]; ok {
+				for k, v := range qVars {
+					vars[k] = v
+				}
+			}
+			status, resp := executeProductTemplate(graphRoot, r.Header, strings.TrimSpace(mapped.ID), resolvedTemplatePath, vars)
+			item["status"] = status
+			item["response"] = resp
+			if status >= 200 && status < 300 {
+				success++
+			} else {
+				failed++
+			}
+			results = append(results, item)
+		}
+		total := len(results)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"catalog_path":   resolvedCatalogPath,
+			"template_path":  resolvedTemplatePath,
+			"total":          total,
+			"succeeded":      success,
+			"failed":         failed,
+			"overall_passed": failed == 0 && total > 0,
+			"results":        results,
+		})
+	}
+}
+
+func handleProductQuestionCoverage(graphRoot string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if _, ok := authorizeRequest(w, r, security.ActionQueryGraph, normalizeTenant(r.Header.Get("X-DiffMind-Tenant")), false, false, graphRoot); !ok {
+			return
+		}
+		catalogPath := strings.TrimSpace(r.URL.Query().Get("catalog_path"))
+		if catalogPath == "" {
+			catalogPath = defaultQuestionCatalogPath()
+		}
+		templatePath := strings.TrimSpace(r.URL.Query().Get("template_path"))
+		if templatePath == "" {
+			templatePath = defaultTemplateCatalogPath()
+		}
+		resolvedCatalogPath := resolveReadablePath(catalogPath)
+		resolvedTemplatePath := resolveReadablePath(templatePath)
+		questions, err := loadProductQuestions(resolvedCatalogPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				writeError(w, http.StatusNotFound, "product question catalog not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		templates, err := loadProductTemplates(resolvedTemplatePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				writeError(w, http.StatusNotFound, "product templates not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		type item struct {
+			QuestionID       string `json:"question_id"`
+			Question         string `json:"question"`
+			Endpoint         string `json:"endpoint"`
+			Covered          bool   `json:"covered"`
+			MappedTemplateID string `json:"mapped_template_id,omitempty"`
+		}
+		items := make([]item, 0, len(questions.Questions))
+		coveredCount := 0
+		for _, q := range questions.Questions {
+			endpoint := strings.TrimSpace(q.Endpoint)
+			mapped := findTemplateByEndpoint(templates, endpoint)
+			entry := item{
+				QuestionID: strings.TrimSpace(q.ID),
+				Question:   strings.TrimSpace(q.Question),
+				Endpoint:   endpoint,
+			}
+			if mapped != nil {
+				entry.Covered = true
+				entry.MappedTemplateID = strings.TrimSpace(mapped.ID)
+				coveredCount++
+			}
+			items = append(items, entry)
+		}
+		coverage := 1.0
+		if len(items) > 0 {
+			coverage = float64(coveredCount) / float64(len(items))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"catalog_path":   resolvedCatalogPath,
+			"template_path":  resolvedTemplatePath,
+			"total":          len(items),
+			"covered":        coveredCount,
+			"coverage_ratio": coverage,
+			"items":          items,
+		})
+	}
+}
+
+func interpolateTemplateString(input string, vars map[string]any) string {
+	out := input
+	for key, value := range vars {
+		token := "${" + strings.TrimSpace(key) + "}"
+		out = strings.ReplaceAll(out, token, fmt.Sprint(value))
+	}
+	return out
+}
+
+func interpolateTemplateAny(value any, vars map[string]any) any {
+	switch v := value.(type) {
+	case string:
+		return interpolateTemplateString(v, vars)
+	case []any:
+		out := make([]any, 0, len(v))
+		for _, item := range v {
+			out = append(out, interpolateTemplateAny(item, vars))
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for k, item := range v {
+			out[k] = interpolateTemplateAny(item, vars)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func normalizeTemplatePath(path string) string {
+	if path == "" {
+		return ""
+	}
+	out := strings.TrimSpace(path)
+	if idx := strings.Index(out, "?"); idx >= 0 {
+		out = out[:idx]
+	}
+	out = strings.ReplaceAll(out, "{graph_id}", "${graph_id}")
+	out = strings.ReplaceAll(out, "{service_id}", "${service_id}")
+	out = strings.ReplaceAll(out, "$${graph_id}", "${graph_id}")
+	out = strings.ReplaceAll(out, "$${service_id}", "${service_id}")
+	out = strings.TrimRight(out, "/")
+	if out == "" {
+		return "/"
+	}
+	return out
+}
+
+func splitPathParts(path string) []string {
+	path = strings.TrimPrefix(path, "/")
+	if path == "" {
+		return nil
+	}
+	raw := strings.Split(path, "/")
+	out := make([]string, 0, len(raw))
+	for _, part := range raw {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func isPathPlaceholder(part string) bool {
+	part = strings.TrimSpace(part)
+	if part == "" {
+		return false
+	}
+	return strings.HasPrefix(part, "${") && strings.HasSuffix(part, "}") ||
+		strings.HasPrefix(part, "{") && strings.HasSuffix(part, "}")
+}
+
+func matchCatalogPath(templatePath string, catalogPath string) bool {
+	templateParts := splitPathParts(templatePath)
+	catalogParts := splitPathParts(catalogPath)
+	if len(templateParts) != len(catalogParts) {
+		return false
+	}
+	for i := range templateParts {
+		a := templateParts[i]
+		b := catalogParts[i]
+		if isPathPlaceholder(a) || isPathPlaceholder(b) {
+			continue
+		}
+		if a != b {
+			return false
+		}
+	}
+	return true
 }
 
 func handleProductPRReview(graphRoot string) http.HandlerFunc {
@@ -2338,17 +3606,772 @@ func handleOpsSLO(graphRoot string) http.HandlerFunc {
 		if total > 0 {
 			adherence = (float64(success) / float64(total)) * 100
 		}
+		runtimeSLO := map[string]any{
+			"total_runs":                   0,
+			"decision_total":               0,
+			"confirmed":                    0,
+			"contradicted":                 0,
+			"needs_review":                 0,
+			"runtime_only_unmapped":        0,
+			"confirmed_rate":               0.0,
+			"contradicted_rate":            0.0,
+			"needs_review_rate":            0.0,
+			"runtime_only_unmapped_rate":   0.0,
+			"target_confirmed_rate":        0.9,
+			"runtime_quality_passed":       true,
+			"runtime_quality_reason":       "no_runtime_reconciliation_runs",
+			"runtime_quality_gate_enabled": true,
+		}
+		runtimePassed := true
+		if authCtx, err := security.ContextFromHeaders(r.Header); err == nil {
+			if index, err := loadRuntimeReconcileIndex(graphRoot); err == nil {
+				runs := index.Runs
+				if !authCtx.HasRole("platform_admin") {
+					runs = filterRuntimeReconcileRunsByTenant(r, runs)
+				}
+				totalRuns := len(runs)
+				totalConfirmed := 0
+				totalContradicted := 0
+				totalNeedsReview := 0
+				totalUnmapped := 0
+				for _, run := range runs {
+					totalConfirmed += run.Confirmed
+					totalContradicted += run.Contradicted
+					totalNeedsReview += run.NeedsReview
+					totalUnmapped += run.Unmapped
+				}
+				decisionTotal := totalConfirmed + totalContradicted + totalNeedsReview + totalUnmapped
+				confirmedRate := 0.0
+				contradictedRate := 0.0
+				needsReviewRate := 0.0
+				unmappedRate := 0.0
+				if decisionTotal > 0 {
+					confirmedRate = float64(totalConfirmed) / float64(decisionTotal)
+					contradictedRate = float64(totalContradicted) / float64(decisionTotal)
+					needsReviewRate = float64(totalNeedsReview) / float64(decisionTotal)
+					unmappedRate = float64(totalUnmapped) / float64(decisionTotal)
+				}
+				runtimePassed = totalRuns == 0 || confirmedRate >= 0.9
+				reason := "no_runtime_reconciliation_runs"
+				if totalRuns > 0 {
+					if runtimePassed {
+						reason = "confirmed_rate_meets_target"
+					} else {
+						reason = "confirmed_rate_below_target"
+					}
+				}
+				runtimeSLO = map[string]any{
+					"total_runs":                   totalRuns,
+					"decision_total":               decisionTotal,
+					"confirmed":                    totalConfirmed,
+					"contradicted":                 totalContradicted,
+					"needs_review":                 totalNeedsReview,
+					"runtime_only_unmapped":        totalUnmapped,
+					"confirmed_rate":               confirmedRate,
+					"contradicted_rate":            contradictedRate,
+					"needs_review_rate":            needsReviewRate,
+					"runtime_only_unmapped_rate":   unmappedRate,
+					"target_confirmed_rate":        0.9,
+					"runtime_quality_passed":       runtimePassed,
+					"runtime_quality_reason":       reason,
+					"runtime_quality_gate_enabled": true,
+				}
+			}
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"generated_at":            time.Now().UTC(),
 			"critical_requests":       total,
 			"critical_successes":      success,
 			"slo_adherence":           adherence,
 			"slo_target":              99.9,
-			"slo_passed":              adherence >= 99.9,
+			"slo_passed":              adherence >= 99.9 && runtimePassed,
 			"critical_latency_p95_ms": p95,
-			"routes":                  routes,
+			"slo_checks": map[string]any{
+				"api_availability_passed": adherence >= 99.9,
+				"runtime_quality_passed":  runtimePassed,
+			},
+			"runtime_reconciliation": runtimeSLO,
+			"routes":                 routes,
 		})
 	}
+}
+
+func finalArtifactsRoot(graphRoot string) string {
+	root := strings.TrimSpace(graphRoot)
+	if root == "" {
+		return ".diffmind"
+	}
+	if strings.EqualFold(filepath.Base(root), "graph") {
+		return filepath.Dir(root)
+	}
+	return root
+}
+
+func defaultFinalGatePaths(graphRoot string) (string, string, string, string, string, string, string) {
+	root := finalArtifactsRoot(graphRoot)
+	return filepath.Join(root, "quality", "gate_result.json"),
+		filepath.Join(root, "ops", "slo_report.json"),
+		filepath.Join("docs", "m15_query_templates.json"),
+		filepath.Join("docs", "m17_question_catalog.json"),
+		filepath.Join(root, "graph", "index.json"),
+		filepath.Join(root, "final", "readiness_report.json"),
+		filepath.Join(root, "final", "gate_decision.md")
+}
+
+func handleFinalGateAttest(graphRoot string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if _, ok := authorizeRequest(w, r, security.ActionAuditExport, normalizeTenant(r.Header.Get("X-DiffMind-Tenant")), true, true, graphRoot); !ok {
+			return
+		}
+		qualityPath, sloPath, templatesPath, catalogPath, graphIndexPath, outReportPath, outDecisionPath := defaultFinalGatePaths(graphRoot)
+		req := finalGateAttestRequest{}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("decode request body: %v", err))
+			return
+		}
+		if v := strings.TrimSpace(req.QualityGatePath); v != "" {
+			qualityPath = v
+		}
+		if v := strings.TrimSpace(req.SLOPath); v != "" {
+			sloPath = v
+		}
+		if v := strings.TrimSpace(req.TemplatesPath); v != "" {
+			templatesPath = v
+		}
+		if v := strings.TrimSpace(req.CatalogPath); v != "" {
+			catalogPath = v
+		}
+		if v := strings.TrimSpace(req.GraphIndexPath); v != "" {
+			graphIndexPath = v
+		}
+		if v := strings.TrimSpace(req.OutReportPath); v != "" {
+			outReportPath = v
+		}
+		if v := strings.TrimSpace(req.OutDecisionPath); v != "" {
+			outDecisionPath = v
+		}
+		args := []string{
+			"attest",
+			"--quality-gate", qualityPath,
+			"--slo", sloPath,
+			"--templates", templatesPath,
+			"--catalog", catalogPath,
+			"--graph-index", graphIndexPath,
+			"--out-report", outReportPath,
+			"--out-decision", outDecisionPath,
+		}
+		if len(req.Signers) > 0 {
+			signers := make([]string, 0, len(req.Signers))
+			for _, s := range req.Signers {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					signers = append(signers, s)
+				}
+			}
+			if len(signers) > 0 {
+				args = append(args, "--signers", strings.Join(signers, ","))
+			}
+		}
+		runErr := finalgate.Run(r.Context(), args)
+		resp := map[string]any{
+			"quality_gate_path": qualityPath,
+			"slo_path":          sloPath,
+			"templates_path":    templatesPath,
+			"catalog_path":      catalogPath,
+			"graph_index_path":  graphIndexPath,
+			"report_path":       outReportPath,
+			"decision_path":     outDecisionPath,
+		}
+		if reportData, err := os.ReadFile(outReportPath); err == nil {
+			var reportPayload any
+			if json.Unmarshal(reportData, &reportPayload) == nil {
+				resp["readiness_report"] = reportPayload
+			}
+		}
+		if decisionData, err := os.ReadFile(outDecisionPath); err == nil {
+			resp["gate_decision_markdown"] = string(decisionData)
+		}
+		if runErr != nil {
+			resp["attest_error"] = runErr.Error()
+			resp["overall_passed"] = false
+			if _, ok := resp["readiness_report"]; ok {
+				writeJSON(w, http.StatusOK, resp)
+				return
+			}
+			writeError(w, http.StatusInternalServerError, runErr.Error())
+			return
+		}
+		resp["overall_passed"] = true
+		writeJSON(w, http.StatusOK, resp)
+	}
+}
+
+func handleFinalReadiness(graphRoot string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if _, ok := authorizeRequest(w, r, security.ActionAuditRead, normalizeTenant(r.Header.Get("X-DiffMind-Tenant")), true, false, graphRoot); !ok {
+			return
+		}
+		_, _, _, _, _, defaultPath, _ := defaultFinalGatePaths(graphRoot)
+		path := strings.TrimSpace(r.URL.Query().Get("path"))
+		if path == "" {
+			path = defaultPath
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				writeError(w, http.StatusNotFound, "final readiness report not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		var payload any
+		if err := json.Unmarshal(data, &payload); err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("decode readiness report: %v", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"path":   path,
+			"report": payload,
+		})
+	}
+}
+
+func handleFinalDecision(graphRoot string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if _, ok := authorizeRequest(w, r, security.ActionAuditRead, normalizeTenant(r.Header.Get("X-DiffMind-Tenant")), true, false, graphRoot); !ok {
+			return
+		}
+		_, _, _, _, _, _, defaultPath := defaultFinalGatePaths(graphRoot)
+		path := strings.TrimSpace(r.URL.Query().Get("path"))
+		if path == "" {
+			path = defaultPath
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				writeError(w, http.StatusNotFound, "final gate decision not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"path":    path,
+			"content": string(data),
+		})
+	}
+}
+
+func handleRuntimePlan(graphRoot string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if _, ok := authorizeRequest(w, r, security.ActionRuntimePlan, normalizeTenant(r.Header.Get("X-DiffMind-Tenant")), false, false, graphRoot); !ok {
+			return
+		}
+		writeJSON(w, http.StatusOK, runtimepkg.DefaultPlan())
+	}
+}
+
+func parseRuntimeReportTimeParam(raw string, name string) (time.Time, bool, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false, nil
+	}
+	ts, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("invalid %s (expected RFC3339)", name)
+	}
+	return ts.UTC(), true, nil
+}
+
+func handleRuntimeReconcileReport(graphRoot string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if _, ok := authorizeRequest(w, r, security.ActionRuntimePlan, normalizeTenant(r.Header.Get("X-DiffMind-Tenant")), false, false, graphRoot); !ok {
+			return
+		}
+		from, hasFrom, err := parseRuntimeReportTimeParam(r.URL.Query().Get("from"), "from")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		to, hasTo, err := parseRuntimeReportTimeParam(r.URL.Query().Get("to"), "to")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if hasFrom && hasTo && from.After(to) {
+			writeError(w, http.StatusBadRequest, "from must be <= to")
+			return
+		}
+		graphFilter := strings.TrimSpace(r.URL.Query().Get("graph_id"))
+
+		index, err := loadRuntimeReconcileIndex(graphRoot)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		filtered := filterRuntimeReconcileRunsByTenant(r, index.Runs)
+		if graphFilter != "" {
+			next := make([]runtimeReconcileSummary, 0, len(filtered))
+			for _, run := range filtered {
+				if strings.TrimSpace(run.GraphID) == graphFilter {
+					next = append(next, run)
+				}
+			}
+			filtered = next
+		}
+		if hasFrom || hasTo {
+			next := make([]runtimeReconcileSummary, 0, len(filtered))
+			for _, run := range filtered {
+				ts := run.GeneratedAt.UTC()
+				if hasFrom && ts.Before(from) {
+					continue
+				}
+				if hasTo && ts.After(to) {
+					continue
+				}
+				next = append(next, run)
+			}
+			filtered = next
+		}
+
+		authCtx, authErr := security.ContextFromHeaders(r.Header)
+		report := runtimeReconcileReport{
+			GeneratedAt: time.Now().UTC(),
+			GraphID:     graphFilter,
+			TopGraphs:   []runtimeReconcileGraphSummary{},
+		}
+		if authErr == nil && !authCtx.HasRole("platform_admin") {
+			report.TenantID = normalizeTenant(authCtx.TenantID)
+		}
+		if hasFrom {
+			report.From = from.Format(time.RFC3339)
+		}
+		if hasTo {
+			report.To = to.Format(time.RFC3339)
+		}
+		report.TotalRuns = len(filtered)
+		if len(filtered) > 0 {
+			latest := filtered[0]
+			report.LatestRun = &latest
+		}
+		graphs := map[string]*runtimeReconcileGraphSummary{}
+		for _, run := range filtered {
+			report.TotalClaims += run.Claims
+			report.TotalObservations += run.Observations
+			report.TotalConfirmed += run.Confirmed
+			report.TotalContradicted += run.Contradicted
+			report.TotalUnmapped += run.Unmapped
+			report.TotalNeedsReview += run.NeedsReview
+
+			stat, ok := graphs[run.GraphID]
+			if !ok {
+				stat = &runtimeReconcileGraphSummary{GraphID: run.GraphID}
+				graphs[run.GraphID] = stat
+			}
+			stat.Runs++
+			stat.Claims += run.Claims
+			stat.Observations += run.Observations
+			stat.Confirmed += run.Confirmed
+			stat.Contradicted += run.Contradicted
+			stat.Unmapped += run.Unmapped
+			stat.NeedsReview += run.NeedsReview
+			if run.GeneratedAt.After(stat.LastRunAt) {
+				stat.LastRunAt = run.GeneratedAt
+			}
+		}
+		decisionTotal := report.TotalConfirmed + report.TotalContradicted + report.TotalNeedsReview + report.TotalUnmapped
+		if decisionTotal > 0 {
+			report.ConfirmedRate = float64(report.TotalConfirmed) / float64(decisionTotal)
+			report.ContradictedRate = float64(report.TotalContradicted) / float64(decisionTotal)
+			report.NeedsReviewRate = float64(report.TotalNeedsReview) / float64(decisionTotal)
+			report.UnmappedRate = float64(report.TotalUnmapped) / float64(decisionTotal)
+		}
+		report.TopGraphs = make([]runtimeReconcileGraphSummary, 0, len(graphs))
+		for _, stat := range graphs {
+			report.TopGraphs = append(report.TopGraphs, *stat)
+		}
+		sort.Slice(report.TopGraphs, func(i, j int) bool {
+			if report.TopGraphs[i].Runs == report.TopGraphs[j].Runs {
+				return report.TopGraphs[i].GraphID < report.TopGraphs[j].GraphID
+			}
+			return report.TopGraphs[i].Runs > report.TopGraphs[j].Runs
+		})
+		if len(report.TopGraphs) > 5 {
+			report.TopGraphs = report.TopGraphs[:5]
+		}
+		writeJSON(w, http.StatusOK, report)
+	}
+}
+
+func handleRuntimeReconcile(graphRoot string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			if _, ok := authorizeRequest(w, r, security.ActionRuntimePlan, normalizeTenant(r.Header.Get("X-DiffMind-Tenant")), false, false, graphRoot); !ok {
+				return
+			}
+			listRuntimeReconcileHistory(graphRoot, r, w)
+			return
+		case http.MethodPost:
+			req := contracts.RuntimeReconciliationRequest{}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("decode request body: %v", err))
+				return
+			}
+			if strings.TrimSpace(req.GraphID) == "" {
+				writeError(w, http.StatusBadRequest, "graph_id is required")
+				return
+			}
+			resourceTenant := normalizeTenant(req.TenantID)
+			if req.TenantID == "" {
+				resourceTenant = normalizeTenant(r.Header.Get("X-DiffMind-Tenant"))
+			}
+			if _, ok := authorizeRequest(w, r, security.ActionRuntimeRun, resourceTenant, false, true, graphRoot); !ok {
+				return
+			}
+			result, err := runtimepkg.Reconcile(r.Context(), req)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			recID, generatedAt, err := persistRuntimeReconcileResult(graphRoot, normalizeTenant(resourceTenant), req, result)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"reconcile_id":          recID,
+				"generated_at":          generatedAt,
+				"tenant_id":             normalizeTenant(resourceTenant),
+				"graph_id":              result.GraphID,
+				"confirmed":             result.Confirmed,
+				"contradicted":          result.Contradicted,
+				"runtime_only_unmapped": result.Unmapped,
+				"needs_review":          result.NeedsReview,
+			})
+			return
+		case http.MethodDelete:
+			authCtx, ok := authorizeRequest(w, r, security.ActionRuntimeRun, normalizeTenant(r.Header.Get("X-DiffMind-Tenant")), false, true, graphRoot)
+			if !ok {
+				return
+			}
+			keepLatest := 20
+			if q := strings.TrimSpace(r.URL.Query().Get("keep_latest")); q != "" {
+				n, err := strconv.Atoi(q)
+				if err != nil || n < 0 {
+					writeError(w, http.StatusBadRequest, "invalid keep_latest")
+					return
+				}
+				keepLatest = n
+			}
+			scopeTenant := ""
+			if !authCtx.HasRole("platform_admin") {
+				scopeTenant = normalizeTenant(authCtx.TenantID)
+			}
+			deleted, err := pruneRuntimeReconcileHistory(graphRoot, keepLatest, scopeTenant)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"deleted":     deleted,
+				"keep_latest": keepLatest,
+			})
+			return
+		default:
+			w.Header().Set("Allow", "GET, POST, DELETE")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+	}
+}
+
+func handleRuntimeReconcileByID(graphRoot string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		recID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/runtime/reconcile/"))
+		recID = strings.Trim(recID, "/")
+		if recID == "" {
+			writeError(w, http.StatusBadRequest, "reconcile id is required")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			if _, ok := authorizeRequest(w, r, security.ActionRuntimePlan, normalizeTenant(r.Header.Get("X-DiffMind-Tenant")), false, false, graphRoot); !ok {
+				return
+			}
+			payload, err := loadRuntimeReconcileResult(graphRoot, recID)
+			if err != nil {
+				if os.IsNotExist(err) {
+					writeError(w, http.StatusNotFound, "runtime reconcile result not found")
+					return
+				}
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			authCtx, err := security.ContextFromHeaders(r.Header)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, err.Error())
+				return
+			}
+			if !authCtx.HasRole("platform_admin") && normalizeTenant(payload.TenantID) != normalizeTenant(authCtx.TenantID) {
+				writeError(w, http.StatusForbidden, "tenant_mismatch")
+				return
+			}
+			writeJSON(w, http.StatusOK, payload)
+			return
+		case http.MethodDelete:
+			authCtx, ok := authorizeRequest(w, r, security.ActionRuntimeRun, normalizeTenant(r.Header.Get("X-DiffMind-Tenant")), false, true, graphRoot)
+			if !ok {
+				return
+			}
+			payload, err := loadRuntimeReconcileResult(graphRoot, recID)
+			if err != nil {
+				if os.IsNotExist(err) {
+					writeError(w, http.StatusNotFound, "runtime reconcile result not found")
+					return
+				}
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			if !authCtx.HasRole("platform_admin") && normalizeTenant(payload.TenantID) != normalizeTenant(authCtx.TenantID) {
+				writeError(w, http.StatusForbidden, "tenant_mismatch")
+				return
+			}
+			if err := deleteRuntimeReconcileResult(graphRoot, recID); err != nil {
+				if os.IsNotExist(err) {
+					writeError(w, http.StatusNotFound, "runtime reconcile result not found")
+					return
+				}
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"deleted": recID})
+			return
+		default:
+			w.Header().Set("Allow", "GET, DELETE")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+	}
+}
+
+func handleRuntimeReconcileCompare(graphRoot string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if _, ok := authorizeRequest(w, r, security.ActionRuntimePlan, normalizeTenant(r.Header.Get("X-DiffMind-Tenant")), false, false, graphRoot); !ok {
+			return
+		}
+		fromID := strings.TrimSpace(r.URL.Query().Get("from"))
+		toID := strings.TrimSpace(r.URL.Query().Get("to"))
+		if fromID == "" || toID == "" {
+			writeError(w, http.StatusBadRequest, "from and to query params are required")
+			return
+		}
+		fromRec, err := loadRuntimeReconcileResult(graphRoot, fromID)
+		if err != nil {
+			if os.IsNotExist(err) {
+				writeError(w, http.StatusNotFound, "from runtime reconcile result not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		toRec, err := loadRuntimeReconcileResult(graphRoot, toID)
+		if err != nil {
+			if os.IsNotExist(err) {
+				writeError(w, http.StatusNotFound, "to runtime reconcile result not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		authCtx, err := security.ContextFromHeaders(r.Header)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		if !authCtx.HasRole("platform_admin") {
+			if normalizeTenant(fromRec.TenantID) != normalizeTenant(authCtx.TenantID) || normalizeTenant(toRec.TenantID) != normalizeTenant(authCtx.TenantID) {
+				writeError(w, http.StatusForbidden, "tenant_mismatch")
+				return
+			}
+		}
+		payload := compareRuntimeReconcileRuns(fromRec, toRec)
+		writeJSON(w, http.StatusOK, payload)
+	}
+}
+
+func handleRuntimeClaims(graphRoot string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		rest := strings.TrimPrefix(r.URL.Path, "/runtime/claims/")
+		graphID := strings.TrimSpace(strings.Trim(rest, "/"))
+		if graphID == "" {
+			writeError(w, http.StatusBadRequest, "graph id is required")
+			return
+		}
+		graph, err := loadGraph(graphRoot, graphID)
+		if err != nil {
+			if os.IsNotExist(err) {
+				writeError(w, http.StatusNotFound, "graph not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if _, ok := authorizeRequest(w, r, security.ActionRuntimePlan, graphTenant(graph), false, false, graphRoot); !ok {
+			return
+		}
+
+		policy := parsePublishPolicy(r)
+		sections := runtimeClaimSections(r.URL.Query().Get("sections"))
+		includeNodes := parseBoolDefault(r.URL.Query().Get("include_nodes"), true)
+		includeEdges := parseBoolDefault(r.URL.Query().Get("include_edges"), true)
+		claims := buildRuntimeClaims(graphID, graph, sections, includeNodes, includeEdges, policy)
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"graph_id": graphID,
+			"count":    len(claims),
+			"claims":   claims,
+		})
+	}
+}
+
+func runtimeClaimSections(raw string) map[string]struct{} {
+	out := map[string]struct{}{}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		out["exposure"] = struct{}{}
+		out["dependencies"] = struct{}{}
+		return out
+	}
+	for _, p := range strings.Split(raw, ",") {
+		s := strings.ToLower(strings.TrimSpace(p))
+		if s == "" {
+			continue
+		}
+		out[s] = struct{}{}
+	}
+	if len(out) == 0 {
+		out["exposure"] = struct{}{}
+		out["dependencies"] = struct{}{}
+	}
+	return out
+}
+
+func buildRuntimeClaims(graphID string, graph graphschema.Graph, sections map[string]struct{}, includeNodes bool, includeEdges bool, policy publishPolicy) []contracts.RuntimeClaim {
+	claims := make([]contracts.RuntimeClaim, 0)
+	if includeNodes {
+		for _, n := range graph.Nodes {
+			sec := strings.ToLower(strings.TrimSpace(n.Section))
+			if _, ok := sections[sec]; !ok {
+				continue
+			}
+			if !shouldKeepByPublishPolicy(n.Section, n.VerificationState, n.Attributes, n.Inferred, policy) {
+				continue
+			}
+			claims = append(claims, contracts.RuntimeClaim{
+				GraphID: graphID,
+				NodeID:  n.ID,
+				Class:   n.Class,
+				Section: n.Section,
+				Metadata: map[string]string{
+					"type":               n.Type,
+					"label":              n.Label,
+					"service_id":         n.ServiceID,
+					"verification_state": effectiveVerificationState(n.VerificationState, n.Attributes, n.Inferred),
+				},
+			})
+		}
+	}
+	if includeEdges {
+		for _, e := range graph.Edges {
+			sec := strings.ToLower(strings.TrimSpace(e.Section))
+			if _, ok := sections[sec]; !ok {
+				continue
+			}
+			if !shouldKeepByPublishPolicy(e.Section, e.VerificationState, e.Attributes, e.Inferred, policy) {
+				continue
+			}
+			claims = append(claims, contracts.RuntimeClaim{
+				GraphID:  graphID,
+				EdgeID:   e.ID,
+				Class:    e.Class,
+				Section:  e.Section,
+				Evidence: evidenceRefStrings(e.EvidenceRefs),
+				Metadata: map[string]string{
+					"type":               e.Type,
+					"source_id":          e.SourceID,
+					"target_id":          e.TargetID,
+					"verification_state": effectiveVerificationState(e.VerificationState, e.Attributes, e.Inferred),
+				},
+			})
+		}
+	}
+	sort.Slice(claims, func(i, j int) bool {
+		ik := strings.TrimSpace(claims[i].EdgeID)
+		if ik == "" {
+			ik = strings.TrimSpace(claims[i].NodeID)
+		}
+		jk := strings.TrimSpace(claims[j].EdgeID)
+		if jk == "" {
+			jk = strings.TrimSpace(claims[j].NodeID)
+		}
+		return ik < jk
+	})
+	return claims
+}
+
+func evidenceRefStrings(refs []graphschema.EvidenceRef) []string {
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if path := strings.TrimSpace(ref.FilePath); path != "" {
+			if ref.StartLine > 0 {
+				out = append(out, fmt.Sprintf("%s:%d", path, ref.StartLine))
+			} else {
+				out = append(out, path)
+			}
+			continue
+		}
+		if id := strings.TrimSpace(ref.EvidenceID); id != "" {
+			out = append(out, "evidence:"+id)
+		}
+	}
+	return out
 }
 
 func countSeverity(findings []productFinding, severity string) int {

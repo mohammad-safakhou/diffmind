@@ -26,6 +26,11 @@ const includeInferred = document.getElementById('includeInferred');
 const edgeTypes = document.getElementById('edgeTypes');
 const serviceFilter = document.getElementById('serviceFilter');
 const repoFilter = document.getElementById('repoFilter');
+const sectionFilter = document.getElementById('sectionFilter');
+const classFilter = document.getElementById('classFilter');
+const verificationStateFilter = document.getElementById('verificationStateFilter');
+const adapterIDFilter = document.getElementById('adapterIDFilter');
+const provenanceVersionFilter = document.getElementById('provenanceVersionFilter');
 const confidenceMin = document.getElementById('confidenceMin');
 const confidenceMinLabel = document.getElementById('confidenceMinLabel');
 const summary = document.getElementById('summary');
@@ -36,6 +41,28 @@ const compareTo = document.getElementById('compareTo');
 const compareHistory = document.getElementById('compareHistory');
 const compareSummary = document.getElementById('compareSummary');
 const compareResults = document.getElementById('compareResults');
+const productTemplateID = document.getElementById('productTemplateID');
+const productTemplateVars = document.getElementById('productTemplateVars');
+const productTemplateSummary = document.getElementById('productTemplateSummary');
+const productTemplateResult = document.getElementById('productTemplateResult');
+const questionID = document.getElementById('questionID');
+const questionVars = document.getElementById('questionVars');
+const questionSummary = document.getElementById('questionSummary');
+const questionResult = document.getElementById('questionResult');
+const runtimeGraphID = document.getElementById('runtimeGraphID');
+const runtimeSections = document.getElementById('runtimeSections');
+const runtimeIncludeDisputed = document.getElementById('runtimeIncludeDisputed');
+const runtimeHistory = document.getElementById('runtimeHistory');
+const runtimeCompareTo = document.getElementById('runtimeCompareTo');
+const runtimeReportFrom = document.getElementById('runtimeReportFrom');
+const runtimeReportTo = document.getElementById('runtimeReportTo');
+const runtimeClaims = document.getElementById('runtimeClaims');
+const runtimeObservations = document.getElementById('runtimeObservations');
+const runtimeSummary = document.getElementById('runtimeSummary');
+const runtimeResult = document.getElementById('runtimeResult');
+const finalSigners = document.getElementById('finalSigners');
+const finalSummary = document.getElementById('finalSummary');
+const finalResult = document.getElementById('finalResult');
 const edgesBody = document.querySelector('#edgesTable tbody');
 const details = document.getElementById('selectionDetails');
 const graphSvg = document.getElementById('graphSvg');
@@ -220,6 +247,21 @@ function graphQuery() {
   }
   if (repoFilter.value.trim() !== '') {
     params.set('repo', repoFilter.value.trim());
+  }
+  if (sectionFilter.value.trim() !== '') {
+    params.set('section', sectionFilter.value.trim());
+  }
+  if (classFilter.value.trim() !== '') {
+    params.set('class', classFilter.value.trim());
+  }
+  if (verificationStateFilter.value.trim() !== '') {
+    params.set('verification_state', verificationStateFilter.value.trim());
+  }
+  if (adapterIDFilter.value.trim() !== '') {
+    params.set('adapter_id', adapterIDFilter.value.trim());
+  }
+  if (provenanceVersionFilter.value.trim() !== '') {
+    params.set('provenance_version', provenanceVersionFilter.value.trim());
   }
   const minConfidence = Number(confidenceMin.value || '0');
   if (minConfidence > 0) {
@@ -435,6 +477,9 @@ async function loadGraph() {
   renderMetrics(metricsPayload);
   renderEdges();
   renderSVG();
+  if (runtimeGraphID && runtimeGraphID.value.trim() === '') {
+    runtimeGraphID.value = graphID;
+  }
 }
 
 function short(v, max = 42) {
@@ -532,6 +577,353 @@ function stringifyShort(v) {
     return short(JSON.stringify(v), 18);
   }
   return String(v);
+}
+
+function parseJSONArrayInput(value, label) {
+  const trimmed = String(value || '').trim();
+  if (trimmed === '') return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch (err) {
+    throw new Error(`${label} must be valid JSON array: ${err.message}`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`${label} must be a JSON array`);
+  }
+  return parsed;
+}
+
+async function loadRuntimePlan() {
+  const plan = await fetchJSON('/runtime/plan');
+  const signals = Array.isArray(plan.input_signals) ? plan.input_signals.length : 0;
+  runtimeSummary.textContent = `Runtime plan loaded: phase=${plan.phase || 'n/a'}, enabled=${Boolean(plan.enabled)}, publish_blocking=${Boolean(plan.publish_blocking)}, signals=${signals}`;
+  runtimeResult.textContent = JSON.stringify(plan, null, 2);
+}
+
+async function loadRuntimeClaims() {
+  const graphID = (runtimeGraphID && runtimeGraphID.value.trim()) || graphSelect.value.trim();
+  if (!graphID) {
+    runtimeSummary.textContent = 'Runtime claims load requires graph id.';
+    return;
+  }
+  const params = new URLSearchParams();
+  const sections = (runtimeSections && runtimeSections.value.trim()) || '';
+  if (sections !== '') {
+    params.set('sections', sections);
+  }
+  if (runtimeIncludeDisputed && runtimeIncludeDisputed.checked) {
+    params.set('include_disputed', 'true');
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const payload = await fetchJSON(`/runtime/claims/${encodeURIComponent(graphID)}${suffix}`);
+  const claims = Array.isArray(payload.claims) ? payload.claims : [];
+  runtimeClaims.value = JSON.stringify(claims, null, 2);
+  runtimeSummary.textContent = `Loaded ${claims.length} runtime claims from graph ${graphID}.`;
+  runtimeResult.textContent = JSON.stringify({
+    graph_id: payload.graph_id,
+    count: payload.count,
+  }, null, 2);
+}
+
+async function refreshRuntimeHistory() {
+  if (!runtimeHistory) return;
+  const payload = await fetchJSON('/runtime/reconcile?limit=20');
+  const runs = Array.isArray(payload.runs) ? payload.runs : [];
+  runtimeHistory.innerHTML = '';
+  if (runtimeCompareTo) runtimeCompareTo.innerHTML = '';
+  if (runs.length === 0) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'No runtime runs';
+    runtimeHistory.appendChild(option);
+    if (runtimeCompareTo) {
+      const cmp = document.createElement('option');
+      cmp.value = '';
+      cmp.textContent = 'No runtime runs';
+      runtimeCompareTo.appendChild(cmp);
+    }
+    return;
+  }
+  for (const run of runs) {
+    const option = document.createElement('option');
+    option.value = run.reconcile_id;
+    option.textContent = `${run.reconcile_id} (${run.graph_id})`;
+    runtimeHistory.appendChild(option);
+    if (runtimeCompareTo) {
+      const cmp = document.createElement('option');
+      cmp.value = run.reconcile_id;
+      cmp.textContent = `${run.reconcile_id} (${run.graph_id})`;
+      runtimeCompareTo.appendChild(cmp);
+    }
+  }
+  if (runtimeCompareTo && runtimeCompareTo.options.length > 1) {
+    runtimeCompareTo.selectedIndex = 1;
+  }
+}
+
+async function loadSelectedRuntimeRun() {
+  if (!runtimeHistory || !runtimeHistory.value) {
+    runtimeSummary.textContent = 'No runtime run selected.';
+    return;
+  }
+  const run = await fetchJSON(`/runtime/reconcile/${encodeURIComponent(runtimeHistory.value)}`);
+  const req = run.request || {};
+  if (runtimeGraphID) runtimeGraphID.value = req.graph_id || run.result?.graph_id || runtimeGraphID.value;
+  runtimeClaims.value = JSON.stringify(Array.isArray(req.claims) ? req.claims : [], null, 2);
+  runtimeObservations.value = JSON.stringify(Array.isArray(req.observations) ? req.observations : [], null, 2);
+  runtimeSummary.textContent = `Loaded runtime run ${run.reconcile_id}.`;
+  runtimeResult.textContent = JSON.stringify(run.result || {}, null, 2);
+}
+
+async function deleteSelectedRuntimeRun() {
+  if (!runtimeHistory || !runtimeHistory.value) {
+    runtimeSummary.textContent = 'No runtime run selected.';
+    return;
+  }
+  const recID = runtimeHistory.value;
+  await fetchJSON(`/runtime/reconcile/${encodeURIComponent(recID)}`, { method: 'DELETE' });
+  runtimeSummary.textContent = `Deleted runtime run ${recID}.`;
+  runtimeResult.textContent = '';
+  await refreshRuntimeHistory();
+}
+
+async function pruneRuntimeHistory(keepLatest = 20) {
+  const payload = await fetchJSON(`/runtime/reconcile?keep_latest=${encodeURIComponent(String(keepLatest))}`, { method: 'DELETE' });
+  runtimeSummary.textContent = `Pruned runtime history. Deleted ${payload.deleted || 0}, kept latest ${keepLatest}.`;
+  await refreshRuntimeHistory();
+}
+
+async function compareSelectedRuntimeRuns() {
+  if (!runtimeHistory || !runtimeHistory.value) {
+    runtimeSummary.textContent = 'No source runtime run selected.';
+    return;
+  }
+  if (!runtimeCompareTo || !runtimeCompareTo.value) {
+    runtimeSummary.textContent = 'No target runtime run selected.';
+    return;
+  }
+  if (runtimeHistory.value === runtimeCompareTo.value) {
+    runtimeSummary.textContent = 'Select two different runtime runs to compare.';
+    return;
+  }
+  const payload = await fetchJSON(`/runtime/reconcile/compare?from=${encodeURIComponent(runtimeHistory.value)}&to=${encodeURIComponent(runtimeCompareTo.value)}`);
+  const changed =
+    (payload.confirmed_added || []).length +
+    (payload.confirmed_removed || []).length +
+    (payload.contradicted_added || []).length +
+    (payload.contradicted_removed || []).length +
+    (payload.runtime_only_unmapped_added || []).length +
+    (payload.runtime_only_unmapped_removed || []).length +
+    (payload.needs_review_added || []).length +
+    (payload.needs_review_removed || []).length;
+  runtimeSummary.textContent = `Compared runtime runs ${payload.from_reconcile_id} -> ${payload.to_reconcile_id}: changed_items=${changed}`;
+  runtimeResult.textContent = JSON.stringify(payload, null, 2);
+}
+
+async function loadRuntimeReport() {
+  const params = new URLSearchParams();
+  const graphID = (runtimeGraphID && runtimeGraphID.value.trim()) || graphSelect.value.trim();
+  if (graphID) {
+    params.set('graph_id', graphID);
+  }
+  const from = runtimeReportFrom && runtimeReportFrom.value ? runtimeReportFrom.value.trim() : '';
+  const to = runtimeReportTo && runtimeReportTo.value ? runtimeReportTo.value.trim() : '';
+  if (from) {
+    params.set('from', from);
+  }
+  if (to) {
+    params.set('to', to);
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const payload = await fetchJSON(`/runtime/reconcile/report${suffix}`);
+  runtimeSummary.textContent = `Runtime report: runs=${payload.total_runs || 0}, confirmed=${payload.total_confirmed || 0}, contradicted=${payload.total_contradicted || 0}, unmapped=${payload.total_runtime_only_unmapped || 0}, needs_review=${payload.total_needs_review || 0}`;
+  runtimeResult.textContent = JSON.stringify(payload, null, 2);
+}
+
+async function runRuntimeReconcile() {
+  const graphID = (runtimeGraphID && runtimeGraphID.value.trim()) || graphSelect.value.trim();
+  if (!graphID) {
+    runtimeSummary.textContent = 'Runtime reconcile requires graph id.';
+    return;
+  }
+  const claims = parseJSONArrayInput(runtimeClaims ? runtimeClaims.value : '', 'claims');
+  const observations = parseJSONArrayInput(runtimeObservations ? runtimeObservations.value : '', 'observations');
+
+  runtimeSummary.textContent = 'Running runtime reconcile...';
+  const payload = await fetchJSON('/runtime/reconcile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      tenant_id: state.auth.tenant || 'default',
+      graph_id: graphID,
+      claims,
+      observations,
+    }),
+  });
+  const confirmed = Array.isArray(payload.confirmed) ? payload.confirmed.length : 0;
+  const contradicted = Array.isArray(payload.contradicted) ? payload.contradicted.length : 0;
+  const unmapped = Array.isArray(payload.runtime_only_unmapped) ? payload.runtime_only_unmapped.length : 0;
+  const needsReview = Array.isArray(payload.needs_review) ? payload.needs_review.length : 0;
+  runtimeSummary.textContent = `Runtime reconcile completed: confirmed=${confirmed}, contradicted=${contradicted}, unmapped=${unmapped}, needs_review=${needsReview}`;
+  runtimeResult.textContent = JSON.stringify(payload, null, 2);
+  await refreshRuntimeHistory();
+}
+
+async function loadProductTemplates() {
+  const payload = await fetchJSON('/products/templates');
+  const templates = Array.isArray(payload.templates) ? payload.templates : [];
+  if (templates.length === 0) {
+    productTemplateSummary.textContent = 'No product templates available.';
+    productTemplateResult.textContent = JSON.stringify(payload, null, 2);
+    return;
+  }
+  if (productTemplateID && !productTemplateID.value.trim()) {
+    productTemplateID.value = templates[0].id || '';
+  }
+  productTemplateSummary.textContent = `Loaded ${templates.length} product templates from ${payload.path}.`;
+  productTemplateResult.textContent = JSON.stringify(payload, null, 2);
+}
+
+async function runProductTemplate() {
+  const templateID = productTemplateID ? productTemplateID.value.trim() : '';
+  if (!templateID) {
+    productTemplateSummary.textContent = 'Template ID is required.';
+    return;
+  }
+  let vars = {};
+  const rawVars = productTemplateVars ? productTemplateVars.value.trim() : '';
+  if (rawVars !== '') {
+    try {
+      vars = JSON.parse(rawVars);
+    } catch (err) {
+      productTemplateSummary.textContent = `Template vars must be valid JSON object: ${err.message}`;
+      return;
+    }
+    if (!vars || typeof vars !== 'object' || Array.isArray(vars)) {
+      productTemplateSummary.textContent = 'Template vars must be a JSON object.';
+      return;
+    }
+  }
+  const payload = await fetchJSON('/products/templates/execute', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      template_id: templateID,
+      vars,
+      include_result: true,
+    }),
+  });
+  productTemplateSummary.textContent = `Template executed: id=${payload.template_id}, status=${payload.status}, path=${payload.path}`;
+  productTemplateResult.textContent = JSON.stringify(payload, null, 2);
+}
+
+async function loadProductQuestions() {
+  const payload = await fetchJSON('/products/questions');
+  const questions = Array.isArray(payload.questions) ? payload.questions : [];
+  if (questions.length === 0) {
+    questionSummary.textContent = 'No questions available.';
+    questionResult.textContent = JSON.stringify(payload, null, 2);
+    return;
+  }
+  if (questionID && !questionID.value.trim()) {
+    questionID.value = questions[0].id || '';
+  }
+  questionSummary.textContent = `Loaded ${questions.length} questions from ${payload.path}.`;
+  questionResult.textContent = JSON.stringify(payload, null, 2);
+}
+
+async function runQuestion() {
+  const qid = questionID ? questionID.value.trim() : '';
+  if (!qid) {
+    questionSummary.textContent = 'Question ID is required.';
+    return;
+  }
+  let vars = {};
+  const rawVars = questionVars ? questionVars.value.trim() : '';
+  if (rawVars !== '') {
+    try {
+      vars = JSON.parse(rawVars);
+    } catch (err) {
+      questionSummary.textContent = `Question vars must be valid JSON object: ${err.message}`;
+      return;
+    }
+    if (!vars || typeof vars !== 'object' || Array.isArray(vars)) {
+      questionSummary.textContent = 'Question vars must be a JSON object.';
+      return;
+    }
+  }
+  const payload = await fetchJSON('/products/questions/execute', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      question_id: qid,
+      vars,
+    }),
+  });
+  questionSummary.textContent = `Question executed: id=${payload.question_id}, status=${payload.status}, endpoint=${payload.question_endpoint}`;
+  questionResult.textContent = JSON.stringify(payload, null, 2);
+}
+
+async function loadQuestionCoverage() {
+  const payload = await fetchJSON('/products/questions/coverage');
+  questionSummary.textContent = `Question coverage: covered=${payload.covered || 0}/${payload.total || 0}, ratio=${Number(payload.coverage_ratio || 0).toFixed(2)}`;
+  questionResult.textContent = JSON.stringify(payload, null, 2);
+}
+
+async function runQuestionCatalog() {
+  let vars = {};
+  const rawVars = questionVars ? questionVars.value.trim() : '';
+  if (rawVars !== '') {
+    try {
+      vars = JSON.parse(rawVars);
+    } catch (err) {
+      questionSummary.textContent = `Question vars must be valid JSON object: ${err.message}`;
+      return;
+    }
+    if (!vars || typeof vars !== 'object' || Array.isArray(vars)) {
+      questionSummary.textContent = 'Question vars must be a JSON object.';
+      return;
+    }
+  }
+  const payload = await fetchJSON('/products/questions/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ vars }),
+  });
+  questionSummary.textContent = `Question catalog run: succeeded=${payload.succeeded || 0}/${payload.total || 0}, failed=${payload.failed || 0}, overall_passed=${Boolean(payload.overall_passed)}`;
+  questionResult.textContent = JSON.stringify(payload, null, 2);
+}
+
+async function runFinalGateAttestation() {
+  const signers = (finalSigners && finalSigners.value ? finalSigners.value : '')
+    .split(',')
+    .map((v) => v.trim())
+    .filter((v) => v !== '');
+  finalSummary.textContent = 'Running final gate attestation...';
+  const payload = await fetchJSON('/final/attest', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ signers }),
+  });
+  const report = payload.readiness_report || {};
+  const passed = typeof report.overall_passed === 'boolean' ? report.overall_passed : Boolean(payload.overall_passed);
+  finalSummary.textContent = `Final gate completed: overall_passed=${passed}`;
+  finalResult.textContent = JSON.stringify(payload, null, 2);
+}
+
+async function loadFinalReadiness() {
+  const payload = await fetchJSON('/final/readiness');
+  const report = payload.report || {};
+  finalSummary.textContent = `Loaded final readiness from ${payload.path}: overall_passed=${Boolean(report.overall_passed)}`;
+  finalResult.textContent = JSON.stringify(payload, null, 2);
+}
+
+async function loadFinalDecision() {
+  const payload = await fetchJSON('/final/decision');
+  const text = payload.content || '';
+  finalSummary.textContent = `Loaded final gate decision from ${payload.path}`;
+  finalResult.textContent = text;
 }
 
 function renderEdges() {
@@ -675,55 +1067,46 @@ function sectionTint(section) {
   return '#f1f5f9';
 }
 
-function classifyNodeSection(node, graph) {
+function canonicalNodeSection(node) {
+  const section = String(node.section || '').trim().toLowerCase();
+  if (section === 'exposure' || section === 'logic' || section === 'dependencies') {
+    return section;
+  }
+  const cls = String(node.class || '').trim().toLowerCase();
+  if (cls.startsWith('exposure_')) return 'exposure';
+  if (cls.startsWith('dependency_')) return 'dependencies';
+  if (cls.startsWith('logic_')) return 'logic';
+
+  // Compatibility fallback for legacy graphs without ontology-v2 metadata.
   const t = (node.type || '').toLowerCase();
-  const label = (node.label || '').toLowerCase();
-  const id = (node.id || '').toLowerCase();
-
   if (t === 'endpoint') return 'exposure';
-  if (t === 'sensitive_surface') return 'exposure';
-  if (t === 'service') return 'logic';
-
-  if (t === 'queue' || t === 'topic') {
-    const incomingFromService = (graph.edges || []).some((e) =>
-      e.target_id === node.id && String(e.type || '').includes('publishes')
-    );
-    const outgoingToService = (graph.edges || []).some((e) =>
-      e.source_id === node.id && String(e.type || '').includes('to_service')
-    );
-    const inboundHint = label.includes('consumer') || label.includes('inbound') || label.includes('listen') || label.includes('subscribe');
-    if (outgoingToService || inboundHint) return 'exposure';
-    if (incomingFromService) return 'dependencies';
-    return 'logic';
-  }
-
-  if (t === 'runtime_unit') {
-    if (label.includes('expose') || label.includes('listen') || label.includes('port') || label.includes('ingress')) return 'exposure';
-    return 'logic';
-  }
-
+  if (t === 'queue' || t === 'topic') return 'dependencies';
   if (t === 'database' || t === 'table' || t === 'dependency' || t === 'build_artifact') return 'dependencies';
-  if (t === 'pipeline_step' || t === 'deployment' || t === 'config_key' || t === 'owner' || t === 'environment') return 'logic';
-
-  if (label.includes('cron') || label.includes('schedule') || label.includes('trigger') || id.includes('cron') || id.includes('schedule')) return 'exposure';
-  if (label.includes('publish') || label.includes('producer') || label.includes('outbound') || id.includes('publish')) return 'dependencies';
-  if (label.includes('consume') || label.includes('consumer') || label.includes('inbound') || id.includes('consume')) return 'exposure';
-
   return 'logic';
 }
 
+function toGroupLabel(value) {
+  const raw = String(value || '').trim();
+  if (raw === '') return '';
+  return raw
+    .replace(/[_\-]+/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 function classifyNodeGroup(section, node) {
+  if (String(node.class || '').trim() !== '') {
+    return toGroupLabel(node.class);
+  }
   const t = (node.type || '').toLowerCase();
-  const label = (node.label || '').toLowerCase();
-  const id = (node.id || '').toLowerCase();
 
   if (section === 'exposure') {
     if (t === 'endpoint') return 'API Endpoints';
-    if (t === 'queue' || t === 'topic') return 'Queue/Topic Consumers';
+    if (t === 'queue' || t === 'topic') return 'Queue/Topic Inputs';
     if (t === 'sensitive_surface') return 'Sensitive Inputs';
     if (t === 'runtime_unit') return 'Ingress/Runtime Entry';
-    if (label.includes('cron') || label.includes('schedule') || id.includes('cron') || id.includes('schedule')) return 'Schedulers';
-    if (label.includes('command') || id.includes('command')) return 'Command Inputs';
     return 'Other Inputs';
   }
 
@@ -732,7 +1115,6 @@ function classifyNodeGroup(section, node) {
     if (t === 'database' || t === 'table') return 'Databases & Storage';
     if (t === 'queue' || t === 'topic') return 'Queue/Topic Publishes';
     if (t === 'build_artifact') return 'Build/Infra Artifacts';
-    if (label.includes('command') || id.includes('command')) return 'Command Calls';
     return 'Other Dependencies';
   }
 
@@ -756,7 +1138,7 @@ function computeServiceMapLayout(graph) {
   const sectionBuckets = new Map(sectionOrder.map((s) => [s, new Map()]));
 
   for (const node of nodes) {
-    const section = classifyNodeSection(node, graph);
+    const section = canonicalNodeSection(node);
     const group = classifyNodeGroup(section, node);
     const groups = sectionBuckets.get(section) || new Map();
     if (!groups.has(group)) groups.set(group, []);
@@ -1274,7 +1656,154 @@ function wireEvents() {
     a.click();
     URL.revokeObjectURL(url);
   });
+  const loadProductTemplatesBtn = document.getElementById('loadProductTemplatesBtn');
+  if (loadProductTemplatesBtn) {
+    loadProductTemplatesBtn.addEventListener('click', () => {
+      loadProductTemplates().catch((err) => {
+        productTemplateSummary.textContent = `Load templates failed: ${err.message}`;
+      });
+    });
+  }
+  const runProductTemplateBtn = document.getElementById('runProductTemplateBtn');
+  if (runProductTemplateBtn) {
+    runProductTemplateBtn.addEventListener('click', () => {
+      runProductTemplate().catch((err) => {
+        productTemplateSummary.textContent = `Run template failed: ${err.message}`;
+      });
+    });
+  }
+  const loadQuestionsBtn = document.getElementById('loadQuestionsBtn');
+  if (loadQuestionsBtn) {
+    loadQuestionsBtn.addEventListener('click', () => {
+      loadProductQuestions().catch((err) => {
+        questionSummary.textContent = `Load questions failed: ${err.message}`;
+      });
+    });
+  }
+  const runQuestionBtn = document.getElementById('runQuestionBtn');
+  if (runQuestionBtn) {
+    runQuestionBtn.addEventListener('click', () => {
+      runQuestion().catch((err) => {
+        questionSummary.textContent = `Run question failed: ${err.message}`;
+      });
+    });
+  }
+  const loadQuestionCoverageBtn = document.getElementById('loadQuestionCoverageBtn');
+  if (loadQuestionCoverageBtn) {
+    loadQuestionCoverageBtn.addEventListener('click', () => {
+      loadQuestionCoverage().catch((err) => {
+        questionSummary.textContent = `Question coverage failed: ${err.message}`;
+      });
+    });
+  }
+  const runQuestionCatalogBtn = document.getElementById('runQuestionCatalogBtn');
+  if (runQuestionCatalogBtn) {
+    runQuestionCatalogBtn.addEventListener('click', () => {
+      runQuestionCatalog().catch((err) => {
+        questionSummary.textContent = `Run question catalog failed: ${err.message}`;
+      });
+    });
+  }
+  const loadRuntimePlanBtn = document.getElementById('loadRuntimePlanBtn');
+  if (loadRuntimePlanBtn) {
+    loadRuntimePlanBtn.addEventListener('click', () => {
+      loadRuntimePlan().catch((err) => {
+        runtimeSummary.textContent = `Runtime plan load failed: ${err.message}`;
+      });
+    });
+  }
+  const loadRuntimeClaimsBtn = document.getElementById('loadRuntimeClaimsBtn');
+  if (loadRuntimeClaimsBtn) {
+    loadRuntimeClaimsBtn.addEventListener('click', () => {
+      loadRuntimeClaims().catch((err) => {
+        runtimeSummary.textContent = `Runtime claims load failed: ${err.message}`;
+      });
+    });
+  }
+  const runRuntimeReconcileBtn = document.getElementById('runRuntimeReconcileBtn');
+  if (runRuntimeReconcileBtn) {
+    runRuntimeReconcileBtn.addEventListener('click', () => {
+      runRuntimeReconcile().catch((err) => {
+        runtimeSummary.textContent = `Runtime reconcile failed: ${err.message}`;
+      });
+    });
+  }
+  const refreshRuntimeHistoryBtn = document.getElementById('refreshRuntimeHistoryBtn');
+  if (refreshRuntimeHistoryBtn) {
+    refreshRuntimeHistoryBtn.addEventListener('click', () => {
+      refreshRuntimeHistory().catch((err) => {
+        runtimeSummary.textContent = `Runtime history refresh failed: ${err.message}`;
+      });
+    });
+  }
+  const loadRuntimeHistoryBtn = document.getElementById('loadRuntimeHistoryBtn');
+  if (loadRuntimeHistoryBtn) {
+    loadRuntimeHistoryBtn.addEventListener('click', () => {
+      loadSelectedRuntimeRun().catch((err) => {
+        runtimeSummary.textContent = `Runtime run load failed: ${err.message}`;
+      });
+    });
+  }
+  const compareRuntimeHistoryBtn = document.getElementById('compareRuntimeHistoryBtn');
+  if (compareRuntimeHistoryBtn) {
+    compareRuntimeHistoryBtn.addEventListener('click', () => {
+      compareSelectedRuntimeRuns().catch((err) => {
+        runtimeSummary.textContent = `Runtime compare failed: ${err.message}`;
+      });
+    });
+  }
+  const deleteRuntimeHistoryBtn = document.getElementById('deleteRuntimeHistoryBtn');
+  if (deleteRuntimeHistoryBtn) {
+    deleteRuntimeHistoryBtn.addEventListener('click', () => {
+      deleteSelectedRuntimeRun().catch((err) => {
+        runtimeSummary.textContent = `Runtime run delete failed: ${err.message}`;
+      });
+    });
+  }
+  const pruneRuntimeHistoryBtn = document.getElementById('pruneRuntimeHistoryBtn');
+  if (pruneRuntimeHistoryBtn) {
+    pruneRuntimeHistoryBtn.addEventListener('click', () => {
+      pruneRuntimeHistory(20).catch((err) => {
+        runtimeSummary.textContent = `Runtime history prune failed: ${err.message}`;
+      });
+    });
+  }
+  const loadRuntimeReportBtn = document.getElementById('loadRuntimeReportBtn');
+  if (loadRuntimeReportBtn) {
+    loadRuntimeReportBtn.addEventListener('click', () => {
+      loadRuntimeReport().catch((err) => {
+        runtimeSummary.textContent = `Runtime report failed: ${err.message}`;
+      });
+    });
+  }
+  const runFinalGateBtn = document.getElementById('runFinalGateBtn');
+  if (runFinalGateBtn) {
+    runFinalGateBtn.addEventListener('click', () => {
+      runFinalGateAttestation().catch((err) => {
+        finalSummary.textContent = `Final gate attestation failed: ${err.message}`;
+      });
+    });
+  }
+  const loadFinalReadinessBtn = document.getElementById('loadFinalReadinessBtn');
+  if (loadFinalReadinessBtn) {
+    loadFinalReadinessBtn.addEventListener('click', () => {
+      loadFinalReadiness().catch((err) => {
+        finalSummary.textContent = `Load final readiness failed: ${err.message}`;
+      });
+    });
+  }
+  const loadFinalDecisionBtn = document.getElementById('loadFinalDecisionBtn');
+  if (loadFinalDecisionBtn) {
+    loadFinalDecisionBtn.addEventListener('click', () => {
+      loadFinalDecision().catch((err) => {
+        finalSummary.textContent = `Load final decision failed: ${err.message}`;
+      });
+    });
+  }
   graphSelect.addEventListener('change', () => {
+    if (runtimeGraphID && runtimeGraphID.value.trim() === '') {
+      runtimeGraphID.value = graphSelect.value;
+    }
     loadGraph().catch((err) => {
       summary.textContent = `Failed loading graph: ${err.message}`;
     });
@@ -1361,6 +1890,38 @@ async function bootstrap() {
   }
   try {
     await loadGraphsList();
+    if (runtimeGraphID && runtimeGraphID.value.trim() === '' && graphSelect.value) {
+      runtimeGraphID.value = graphSelect.value;
+    }
+    if (runtimeClaims && runtimeClaims.value.trim() === '') {
+      runtimeClaims.value = JSON.stringify([{ graph_id: graphSelect.value || 'g1', edge_id: 'e1' }], null, 2);
+    }
+    if (runtimeSections && runtimeSections.value.trim() === '') {
+      runtimeSections.value = 'exposure,dependencies';
+    }
+    if (productTemplateVars && productTemplateVars.value.trim() === '') {
+      productTemplateVars.value = JSON.stringify({
+        graph_id: graphSelect.value || 'g1',
+        service_id: 'a',
+        node_id: 'svc:a',
+      }, null, 2);
+    }
+    if (questionVars && questionVars.value.trim() === '') {
+      questionVars.value = JSON.stringify({
+        graph_id: graphSelect.value || 'g1',
+        service_id: 'a',
+        node_id: 'svc:a',
+      }, null, 2);
+    }
+    if (runtimeObservations && runtimeObservations.value.trim() === '') {
+      runtimeObservations.value = JSON.stringify([{ source_system: 'gateway', signal_type: 'http', attributes: { edge_id: 'e1' } }], null, 2);
+    }
+    if (finalSigners && finalSigners.value.trim() === '') {
+      finalSigners.value = 'engineering,platform,security';
+    }
+    await loadProductTemplates();
+    await loadProductQuestions();
+    await refreshRuntimeHistory();
   } catch (err) {
     summary.textContent = `Failed loading graphs list: ${err.message}`;
   }

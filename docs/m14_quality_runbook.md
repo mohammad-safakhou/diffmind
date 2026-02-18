@@ -22,6 +22,9 @@ extractor quality gate \
   --report .diffmind/quality/report.json \
   --policy quality/policy.json \
   --out .diffmind/quality/gate_result.json
+
+Policy now includes matrix/drift/benchmark thresholds in addition to base precision/recall gates:
+`framework_matrix_pass_rate`, `drift_precision`, `drift_recall`, `drift_f1`, `benchmark_p95_ms_max`.
 ```
 
 ## CI/CD Integration

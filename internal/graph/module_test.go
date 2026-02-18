@@ -430,6 +430,23 @@ func TestBuildGraphServiceMetaIncludesProvenance(t *testing.T) {
 	if prov.AnalyzerBundleSHA256 != analyzerSHA {
 		t.Fatalf("unexpected analyzer sha: %q", prov.AnalyzerBundleSHA256)
 	}
+	hasEndpointNode := false
+	hasExposeEdge := false
+	for _, n := range graph.Nodes {
+		if n.Type == "endpoint" {
+			hasEndpointNode = true
+			break
+		}
+	}
+	for _, e := range graph.Edges {
+		if e.Type == "service_exposes_endpoint" {
+			hasExposeEdge = true
+			break
+		}
+	}
+	if !hasEndpointNode || !hasExposeEdge {
+		t.Fatalf("expected endpoint node and service_exposes_endpoint edge, got node=%v edge=%v", hasEndpointNode, hasExposeEdge)
+	}
 }
 
 func TestBuildGraphAddsRuntimeBuildDeployEdges(t *testing.T) {
@@ -806,6 +823,125 @@ services:
 		if edgeTypes[typ] == 0 {
 			t.Fatalf("expected edge type %s, got %#v", typ, edgeTypes)
 		}
+	}
+}
+
+func TestBuildGraphAddsNormalizedResolverAttributes(t *testing.T) {
+	tmp := t.TempDir()
+	outDir := filepath.Join(tmp, "out")
+	manifestPath := filepath.Join(tmp, "services.yaml")
+	emptyAnalyzer := filepath.Join(tmp, "empty.analyzer.json")
+	writeJSON(t, emptyAnalyzer, map[string]any{"facts": []any{}, "evidence": []any{}, "generated": "2026-01-01T00:00:00Z"})
+
+	svcABundle := filepath.Join(tmp, "a.bundle.json")
+	svcBBundle := filepath.Join(tmp, "b.bundle.json")
+	writeJSON(t, svcABundle, map[string]any{
+		"snapshot_id": "sa",
+		"entities": []map[string]any{
+			{"id": "ec-http", "type": "ExternalCall", "natural_key": "http|GET|https://orders-b.local/v1/users?active=true", "attributes": map[string]any{"protocol": "http", "method": "GET", "target": "https://orders-b.local/v1/users?active=true"}, "evidence_ids": []string{"ev1"}, "fact_ids": []string{"f1"}, "confidence": 0.95},
+			{"id": "ec-q", "type": "ExternalCall", "natural_key": "queue|PUBLISH|kafka:orders.events", "attributes": map[string]any{"protocol": "queue", "method": "PUBLISH", "target": "kafka:orders.events"}, "evidence_ids": []string{"ev2"}, "fact_ids": []string{"f2"}, "confidence": 0.9},
+			{"id": "ec-db", "type": "ExternalCall", "natural_key": "db|WRITE|db:payments", "attributes": map[string]any{"protocol": "db", "method": "WRITE", "target": "db:payments"}, "evidence_ids": []string{"ev3"}, "fact_ids": []string{"f3"}, "confidence": 0.9},
+		},
+	})
+	writeJSON(t, svcBBundle, map[string]any{
+		"snapshot_id": "sb",
+		"entities": []map[string]any{
+			{"id": "ep-b", "type": "Endpoint", "natural_key": "inbound|GET|/v1/users/", "attributes": map[string]any{"direction": "inbound", "method": "GET", "path": "/v1/users/"}, "evidence_ids": []string{"ev4"}, "fact_ids": []string{"f4"}, "confidence": 0.9},
+			{"id": "ec-bq", "type": "ExternalCall", "natural_key": "queue|CONSUME|orders.events", "attributes": map[string]any{"protocol": "queue", "method": "CONSUME", "target": "orders.events"}, "evidence_ids": []string{"ev5"}, "fact_ids": []string{"f5"}, "confidence": 0.9},
+			{"id": "ec-bdb", "type": "ExternalCall", "natural_key": "db|READ|payments", "attributes": map[string]any{"protocol": "db", "method": "READ", "target": "payments"}, "evidence_ids": []string{"ev6"}, "fact_ids": []string{"f6"}, "confidence": 0.9},
+		},
+	})
+
+	manifest := []byte(`
+services:
+  - id: orders-a
+    name: Orders A
+    bundle_path: ` + svcABundle + `
+    analyzer_bundle_path: ` + emptyAnalyzer + `
+    base_urls: ["https://orders-a.local"]
+  - id: orders-b
+    name: Orders B
+    bundle_path: ` + svcBBundle + `
+    analyzer_bundle_path: ` + emptyAnalyzer + `
+    base_urls: ["https://orders-b.local"]
+`)
+	if err := os.WriteFile(manifestPath, manifest, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if err := Run(context.Background(), []string{"build", "--manifest", manifestPath, "--out", outDir, "--mode", "multi"}); err != nil {
+		t.Fatalf("graph build failed: %v", err)
+	}
+
+	indexData, err := os.ReadFile(filepath.Join(outDir, "graph", "index.json"))
+	if err != nil {
+		t.Fatalf("read index: %v", err)
+	}
+	var index struct {
+		Graphs []struct {
+			Path string `json:"path"`
+		} `json:"graphs"`
+	}
+	if err := json.Unmarshal(indexData, &index); err != nil {
+		t.Fatalf("decode index: %v", err)
+	}
+	graphData, err := os.ReadFile(index.Graphs[0].Path)
+	if err != nil {
+		t.Fatalf("read graph: %v", err)
+	}
+	var graph struct {
+		Nodes []struct {
+			Type       string         `json:"type"`
+			Attributes map[string]any `json:"attributes"`
+		} `json:"nodes"`
+		Edges []struct {
+			Type       string         `json:"type"`
+			Attributes map[string]any `json:"attributes"`
+		} `json:"edges"`
+	}
+	if err := json.Unmarshal(graphData, &graph); err != nil {
+		t.Fatalf("decode graph: %v", err)
+	}
+
+	foundEndpointNormalized := false
+	foundServiceCallPathNormalized := false
+	foundQueueCanonical := false
+	foundDBCanonical := false
+
+	for _, n := range graph.Nodes {
+		if n.Type == "endpoint" {
+			if got, _ := n.Attributes["path_normalized"].(string); got == "/v1/users" {
+				foundEndpointNormalized = true
+			}
+		}
+		if n.Type == "queue" {
+			if got, _ := n.Attributes["canonical_key"].(string); got == "orders.events" {
+				foundQueueCanonical = true
+			}
+		}
+		if n.Type == "database" {
+			if got, _ := n.Attributes["canonical_key"].(string); got == "payments" {
+				foundDBCanonical = true
+			}
+		}
+	}
+	for _, e := range graph.Edges {
+		if e.Type == "service_calls_endpoint" {
+			if got, _ := e.Attributes["target_path_normalized"].(string); got == "/v1/users" {
+				foundServiceCallPathNormalized = true
+			}
+		}
+	}
+	if !foundEndpointNormalized {
+		t.Fatalf("expected endpoint node path_normalized attribute")
+	}
+	if !foundServiceCallPathNormalized {
+		t.Fatalf("expected service_calls_endpoint edge target_path_normalized attribute")
+	}
+	if !foundQueueCanonical {
+		t.Fatalf("expected queue node canonical_key attribute")
+	}
+	if !foundDBCanonical {
+		t.Fatalf("expected database node canonical_key attribute")
 	}
 }
 

@@ -39,7 +39,7 @@ func Authorize(ctx Context, req Request) Decision {
 			return Decision{Allow: true, Reason: "evidence_read_permitted"}
 		}
 		return Decision{Allow: false, Reason: "evidence_read_forbidden"}
-	case ActionCompareGraph, ActionQueryGraph, ActionQueryEntities:
+	case ActionCompareGraph, ActionQueryGraph, ActionQueryEntities, ActionRuntimePlan, ActionRuntimeRun:
 		if ctx.HasRole("analyst") || ctx.HasRole("tenant_admin") || ctx.HasScope("graph:read") {
 			return Decision{Allow: true, Reason: "read_permitted"}
 		}

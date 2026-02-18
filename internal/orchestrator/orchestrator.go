@@ -25,6 +25,7 @@ import (
 	"diffmind/internal/parser"
 	"diffmind/internal/quality"
 	"diffmind/internal/query"
+	runtimepkg "diffmind/internal/runtime"
 	"diffmind/internal/snapshot"
 	"diffmind/internal/verifier"
 )
@@ -137,6 +138,10 @@ func RunOps(ctx context.Context, args []string) error {
 
 func RunFinalGate(ctx context.Context, args []string) error {
 	return finalgate.Run(ctx, args)
+}
+
+func RunRuntime(ctx context.Context, args []string) error {
+	return runtimepkg.Run(ctx, args)
 }
 
 func RunPipeline(ctx context.Context, args []string) error {

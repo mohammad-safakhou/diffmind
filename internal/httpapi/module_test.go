@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -779,6 +781,159 @@ func TestGraphFilterKeepsNodesWhenNoEdgesRemain(t *testing.T) {
 	}
 }
 
+func TestStrictPublishPolicyDefaultsVerifiedAndAllowsDisputedOverride(t *testing.T) {
+	tmp := t.TempDir()
+	graphRoot := filepath.Join(tmp, "graph")
+	if err := os.MkdirAll(filepath.Join(graphRoot, "g1"), 0o755); err != nil {
+		t.Fatalf("mkdir graph dir: %v", err)
+	}
+	index := map[string]any{
+		"graphs": []map[string]any{
+			{"graph_id": "g1", "generated_at": "2026-01-01T00:00:00Z", "mode": "single", "node_count": 4, "edge_count": 3, "path": filepath.Join(graphRoot, "g1", "graph.json")},
+		},
+	}
+	graph := map[string]any{
+		"graph_id": "g1", "generated_at": "2026-01-01T00:00:00Z", "mode": "single",
+		"nodes": []map[string]any{
+			{"id": "svc:a", "type": "service", "label": "A", "service_id": "a", "section": "logic", "verification_state": "verified", "attributes": map[string]any{}, "confidence": 1.0, "inferred": false},
+			{"id": "ep:verified", "type": "endpoint", "label": "GET /ok", "service_id": "a", "section": "exposure", "verification_state": "verified", "attributes": map[string]any{}, "confidence": 0.95, "inferred": false},
+			{"id": "ep:needs-review", "type": "endpoint", "label": "GET /review", "service_id": "a", "section": "exposure", "verification_state": "needs_review", "attributes": map[string]any{}, "confidence": 0.75, "inferred": false},
+			{"id": "q:disputed", "type": "queue", "label": "orders.events", "service_id": "a", "section": "dependencies", "verification_state": "disputed", "attributes": map[string]any{}, "confidence": 0.6, "inferred": false},
+		},
+		"edges": []map[string]any{
+			{"id": "e-verified", "type": "service_exposes_endpoint", "source_id": "svc:a", "target_id": "ep:verified", "section": "exposure", "verification_state": "verified", "attributes": map[string]any{}, "confidence": 0.95, "inferred": false, "evidence_refs": []any{}},
+			{"id": "e-needs-review", "type": "service_exposes_endpoint", "source_id": "svc:a", "target_id": "ep:needs-review", "section": "exposure", "verification_state": "needs_review", "attributes": map[string]any{}, "confidence": 0.75, "inferred": false, "evidence_refs": []any{}},
+			{"id": "e-disputed", "type": "service_publishes_queue", "source_id": "svc:a", "target_id": "q:disputed", "section": "dependencies", "verification_state": "disputed", "attributes": map[string]any{}, "confidence": 0.6, "inferred": false, "evidence_refs": []any{}},
+		},
+		"stats": map[string]any{
+			"node_count":   4,
+			"edge_count":   3,
+			"by_node_type": map[string]any{"service": 1, "endpoint": 2, "queue": 1},
+			"by_edge_type": map[string]any{"service_exposes_endpoint": 2, "service_publishes_queue": 1},
+		},
+		"meta": map[string]any{"tenant_id": "default", "services": []map[string]any{}},
+	}
+	writeJSONFile(t, filepath.Join(graphRoot, "index.json"), index)
+	writeJSONFile(t, filepath.Join(graphRoot, "g1", "graph.json"), graph)
+
+	mux := newMux("", graphRoot)
+
+	recDefault := httptest.NewRecorder()
+	reqDefault := httptest.NewRequest(http.MethodGet, "/graphs/g1", nil)
+	mux.ServeHTTP(recDefault, withAuth(reqDefault))
+	if recDefault.Code != http.StatusOK {
+		t.Fatalf("expected /graphs/g1 200, got %d body=%s", recDefault.Code, recDefault.Body.String())
+	}
+	var payloadDefault struct {
+		Nodes []struct {
+			ID string `json:"id"`
+		} `json:"nodes"`
+		Edges []struct {
+			ID string `json:"id"`
+		} `json:"edges"`
+	}
+	if err := json.Unmarshal(recDefault.Body.Bytes(), &payloadDefault); err != nil {
+		t.Fatalf("decode default graph response: %v", err)
+	}
+	if len(payloadDefault.Nodes) != 2 {
+		t.Fatalf("expected default policy to keep only service + verified critical node, got %d", len(payloadDefault.Nodes))
+	}
+	if len(payloadDefault.Edges) != 1 {
+		t.Fatalf("expected default policy to keep only verified critical edge, got %d", len(payloadDefault.Edges))
+	}
+
+	recIncludeDisputed := httptest.NewRecorder()
+	reqIncludeDisputed := httptest.NewRequest(http.MethodGet, "/graphs/g1?include_disputed=true", nil)
+	mux.ServeHTTP(recIncludeDisputed, withAuth(reqIncludeDisputed))
+	if recIncludeDisputed.Code != http.StatusOK {
+		t.Fatalf("expected /graphs/g1?include_disputed=true 200, got %d body=%s", recIncludeDisputed.Code, recIncludeDisputed.Body.String())
+	}
+	var payloadIncludeDisputed struct {
+		Nodes []struct {
+			ID string `json:"id"`
+		} `json:"nodes"`
+		Edges []struct {
+			ID string `json:"id"`
+		} `json:"edges"`
+	}
+	if err := json.Unmarshal(recIncludeDisputed.Body.Bytes(), &payloadIncludeDisputed); err != nil {
+		t.Fatalf("decode include_disputed graph response: %v", err)
+	}
+	if len(payloadIncludeDisputed.Nodes) != 3 {
+		t.Fatalf("expected disputed override to include disputed critical node, got %d", len(payloadIncludeDisputed.Nodes))
+	}
+	if len(payloadIncludeDisputed.Edges) != 2 {
+		t.Fatalf("expected disputed override to include disputed critical edge, got %d", len(payloadIncludeDisputed.Edges))
+	}
+}
+
+func TestGraphQueryFiltersSectionClassVerificationAndProvenance(t *testing.T) {
+	tmp := t.TempDir()
+	graphRoot := filepath.Join(tmp, "graph")
+	if err := os.MkdirAll(filepath.Join(graphRoot, "g1"), 0o755); err != nil {
+		t.Fatalf("mkdir graph dir: %v", err)
+	}
+	index := map[string]any{
+		"graphs": []map[string]any{
+			{"graph_id": "g1", "generated_at": "2026-01-01T00:00:00Z", "mode": "single", "node_count": 3, "edge_count": 2, "path": filepath.Join(graphRoot, "g1", "graph.json")},
+		},
+	}
+	graph := map[string]any{
+		"graph_id": "g1", "generated_at": "2026-01-01T00:00:00Z", "mode": "single",
+		"nodes": []map[string]any{
+			{"id": "svc:a", "type": "service", "label": "A", "service_id": "a", "section": "logic", "class": "logic_service_core", "verification_state": "verified", "attributes": map[string]any{"adapter_id": "go-types", "provenance_version": "2026.01"}, "confidence": 1.0, "inferred": false},
+			{"id": "ep:orders", "type": "endpoint", "label": "GET /orders", "service_id": "a", "section": "exposure", "class": "exposure_http_endpoint", "verification_state": "verified", "attributes": map[string]any{"adapter_id": "pyright", "provenance_version": "2026.02"}, "confidence": 0.95, "inferred": false},
+			{"id": "dep:billing", "type": "dependency", "label": "billing", "service_id": "a", "section": "dependencies", "class": "dependency_http_call", "verification_state": "disputed", "attributes": map[string]any{"adapter_id": "semgrep", "provenance_version": "2026.02"}, "confidence": 0.6, "inferred": false},
+		},
+		"edges": []map[string]any{
+			{"id": "e-exposure", "type": "service_exposes_endpoint", "source_id": "svc:a", "target_id": "ep:orders", "section": "exposure", "class": "exposure_http_endpoint", "verification_state": "verified", "attributes": map[string]any{"adapter_id": "pyright", "provenance_version": "2026.02"}, "confidence": 0.95, "inferred": false, "evidence_refs": []any{}},
+			{"id": "e-dependency", "type": "service_calls_dependency", "source_id": "svc:a", "target_id": "dep:billing", "section": "dependencies", "class": "dependency_http_call", "verification_state": "disputed", "attributes": map[string]any{"adapter_id": "semgrep", "provenance_version": "2026.02"}, "confidence": 0.6, "inferred": false, "evidence_refs": []any{}},
+		},
+		"stats": map[string]any{"node_count": 3, "edge_count": 2, "by_node_type": map[string]any{"service": 1, "endpoint": 1, "dependency": 1}, "by_edge_type": map[string]any{"service_exposes_endpoint": 1, "service_calls_dependency": 1}},
+		"meta":  map[string]any{"tenant_id": "default", "services": []map[string]any{}},
+	}
+	writeJSONFile(t, filepath.Join(graphRoot, "index.json"), index)
+	writeJSONFile(t, filepath.Join(graphRoot, "g1", "graph.json"), graph)
+
+	mux := newMux("", graphRoot)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/graphs/g1/query?section=exposure&class=exposure_http_endpoint&verification_state=verified&adapter_id=pyright&provenance_version=2026.02", nil)
+	mux.ServeHTTP(rec, withAuth(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected /graphs/g1/query with section filters 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Nodes []struct {
+			ID string `json:"id"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode filtered graph response: %v", err)
+	}
+	if len(payload.Nodes) != 1 || payload.Nodes[0].ID != "ep:orders" {
+		t.Fatalf("expected only endpoint node after canonical filters, got %+v", payload.Nodes)
+	}
+
+	recCompat := httptest.NewRecorder()
+	reqCompat := httptest.NewRequest(http.MethodGet, "/graphs/g1/query?section=exposure&class=exposure_http_endpoint&verification_status=verified&adapter_id=pyright&provenance_version=2026.02", nil)
+	mux.ServeHTTP(recCompat, withAuth(reqCompat))
+	if recCompat.Code != http.StatusOK {
+		t.Fatalf("expected /graphs/g1/query with verification_status 200, got %d body=%s", recCompat.Code, recCompat.Body.String())
+	}
+	var payloadCompat struct {
+		Nodes []struct {
+			ID string `json:"id"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(recCompat.Body.Bytes(), &payloadCompat); err != nil {
+		t.Fatalf("decode compatibility graph response: %v", err)
+	}
+	if len(payloadCompat.Nodes) != 1 || payloadCompat.Nodes[0].ID != "ep:orders" {
+		t.Fatalf("expected compatibility filter to keep endpoint node, got %+v", payloadCompat.Nodes)
+	}
+}
+
 func TestGraphsBuildEndpoint(t *testing.T) {
 	tmp := t.TempDir()
 	outDir := filepath.Join(tmp, "out")
@@ -852,6 +1007,346 @@ func TestGraphsBuildEndpoint(t *testing.T) {
 	}
 }
 
+func TestRuntimeEndpoints(t *testing.T) {
+	tmp := t.TempDir()
+	graphRoot := filepath.Join(tmp, "graph")
+	if err := os.MkdirAll(filepath.Join(graphRoot, "g1"), 0o755); err != nil {
+		t.Fatalf("mkdir graph dir: %v", err)
+	}
+	index := map[string]any{
+		"graphs": []map[string]any{
+			{"graph_id": "g1", "generated_at": "2026-01-01T00:00:00Z", "mode": "single", "node_count": 3, "edge_count": 2, "path": filepath.Join(graphRoot, "g1", "graph.json")},
+		},
+	}
+	graph := map[string]any{
+		"graph_id": "g1", "generated_at": "2026-01-01T00:00:00Z", "mode": "single",
+		"nodes": []map[string]any{
+			{"id": "svc:a", "type": "service", "label": "A", "service_id": "a", "section": "logic", "class": "logic_service_core", "verification_state": "verified", "attributes": map[string]any{}, "confidence": 1.0, "inferred": false},
+			{"id": "ep:orders", "type": "endpoint", "label": "GET /orders", "service_id": "a", "section": "exposure", "class": "exposure_http_endpoint", "verification_state": "verified", "attributes": map[string]any{}, "confidence": 0.95, "inferred": false},
+			{"id": "dep:billing", "type": "dependency", "label": "billing", "service_id": "a", "section": "dependencies", "class": "dependency_http_call", "verification_state": "disputed", "attributes": map[string]any{}, "confidence": 0.6, "inferred": false},
+		},
+		"edges": []map[string]any{
+			{"id": "e-exposure", "type": "service_exposes_endpoint", "source_id": "svc:a", "target_id": "ep:orders", "section": "exposure", "class": "exposure_http_endpoint", "verification_state": "verified", "attributes": map[string]any{}, "confidence": 0.95, "inferred": false, "evidence_refs": []map[string]any{{"file_path": "main.go", "start_line": 10}}},
+			{"id": "e-dependency", "type": "service_calls_dependency", "source_id": "svc:a", "target_id": "dep:billing", "section": "dependencies", "class": "dependency_http_call", "verification_state": "disputed", "attributes": map[string]any{}, "confidence": 0.6, "inferred": false, "evidence_refs": []any{}},
+		},
+		"stats": map[string]any{"node_count": 3, "edge_count": 2, "by_node_type": map[string]any{"service": 1, "endpoint": 1, "dependency": 1}, "by_edge_type": map[string]any{"service_exposes_endpoint": 1, "service_calls_dependency": 1}},
+		"meta":  map[string]any{"tenant_id": "default", "services": []map[string]any{}},
+	}
+	writeJSONFile(t, filepath.Join(graphRoot, "index.json"), index)
+	writeJSONFile(t, filepath.Join(graphRoot, "g1", "graph.json"), graph)
+
+	mux := newMux("", graphRoot)
+
+	recPlan := httptest.NewRecorder()
+	reqPlan := httptest.NewRequest(http.MethodGet, "/runtime/plan", nil)
+	mux.ServeHTTP(recPlan, withAuth(reqPlan))
+	if recPlan.Code != http.StatusOK {
+		t.Fatalf("expected /runtime/plan 200, got %d body=%s", recPlan.Code, recPlan.Body.String())
+	}
+	var planPayload struct {
+		Enabled         bool   `json:"enabled"`
+		PublishBlocking bool   `json:"publish_blocking"`
+		Phase           string `json:"phase"`
+	}
+	if err := json.Unmarshal(recPlan.Body.Bytes(), &planPayload); err != nil {
+		t.Fatalf("decode runtime plan response: %v", err)
+	}
+	if planPayload.Enabled {
+		t.Fatalf("expected runtime plan enabled=false")
+	}
+	if planPayload.PublishBlocking {
+		t.Fatalf("expected runtime plan publish_blocking=false")
+	}
+	if planPayload.Phase == "" {
+		t.Fatalf("expected runtime plan phase")
+	}
+
+	body := []byte(`{
+		"tenant_id":"default",
+		"graph_id":"g1",
+		"claims":[{"graph_id":"g1","edge_id":"e1"},{"graph_id":"g1","node_id":"n1"}],
+		"observations":[
+			{"source_system":"gateway","signal_type":"http","attributes":{"edge_id":"e1"}},
+			{"source_system":"broker","signal_type":"queue","attributes":{"node_id":"n1","contradicts":"true"}}
+		]
+	}`)
+	recReconcile := httptest.NewRecorder()
+	reqReconcile := httptest.NewRequest(http.MethodPost, "/runtime/reconcile", bytes.NewReader(body))
+	reqReconcile.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(recReconcile, withAuth(reqReconcile))
+	if recReconcile.Code != http.StatusOK {
+		t.Fatalf("expected /runtime/reconcile 200, got %d body=%s", recReconcile.Code, recReconcile.Body.String())
+	}
+	var reconcilePayload struct {
+		ReconcileID  string   `json:"reconcile_id"`
+		GraphID      string   `json:"graph_id"`
+		Confirmed    []string `json:"confirmed"`
+		Contradicted []string `json:"contradicted"`
+	}
+	if err := json.Unmarshal(recReconcile.Body.Bytes(), &reconcilePayload); err != nil {
+		t.Fatalf("decode runtime reconcile response: %v", err)
+	}
+	if reconcilePayload.GraphID != "g1" {
+		t.Fatalf("expected graph_id g1, got %q", reconcilePayload.GraphID)
+	}
+	if len(reconcilePayload.Confirmed) != 1 || reconcilePayload.Confirmed[0] != "edge:e1" {
+		t.Fatalf("expected confirmed edge:e1, got %+v", reconcilePayload.Confirmed)
+	}
+	if len(reconcilePayload.Contradicted) != 1 || reconcilePayload.Contradicted[0] != "node:n1" {
+		t.Fatalf("expected contradicted node:n1, got %+v", reconcilePayload.Contradicted)
+	}
+	if reconcilePayload.ReconcileID == "" {
+		t.Fatalf("expected reconcile_id in runtime reconcile response")
+	}
+
+	recReconcileHistory := httptest.NewRecorder()
+	reqReconcileHistory := httptest.NewRequest(http.MethodGet, "/runtime/reconcile?limit=10", nil)
+	mux.ServeHTTP(recReconcileHistory, withAuth(reqReconcileHistory))
+	if recReconcileHistory.Code != http.StatusOK {
+		t.Fatalf("expected /runtime/reconcile history 200, got %d body=%s", recReconcileHistory.Code, recReconcileHistory.Body.String())
+	}
+	var historyPayload struct {
+		Runs []struct {
+			ReconcileID string `json:"reconcile_id"`
+			GeneratedAt string `json:"generated_at"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(recReconcileHistory.Body.Bytes(), &historyPayload); err != nil {
+		t.Fatalf("decode runtime reconcile history response: %v", err)
+	}
+	if len(historyPayload.Runs) == 0 || historyPayload.Runs[0].ReconcileID == "" {
+		t.Fatalf("expected runtime reconcile history entries")
+	}
+
+	recReconcileByID := httptest.NewRecorder()
+	reqReconcileByID := httptest.NewRequest(http.MethodGet, "/runtime/reconcile/"+reconcilePayload.ReconcileID, nil)
+	mux.ServeHTTP(recReconcileByID, withAuth(reqReconcileByID))
+	if recReconcileByID.Code != http.StatusOK {
+		t.Fatalf("expected /runtime/reconcile/{id} 200, got %d body=%s", recReconcileByID.Code, recReconcileByID.Body.String())
+	}
+	var byIDPayload struct {
+		ReconcileID string `json:"reconcile_id"`
+		Result      struct {
+			GraphID string `json:"graph_id"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(recReconcileByID.Body.Bytes(), &byIDPayload); err != nil {
+		t.Fatalf("decode runtime reconcile by id response: %v", err)
+	}
+	if byIDPayload.ReconcileID != reconcilePayload.ReconcileID || byIDPayload.Result.GraphID != "g1" {
+		t.Fatalf("unexpected runtime reconcile by id payload: %+v", byIDPayload)
+	}
+
+	recDeleteWrongTenant := httptest.NewRecorder()
+	reqDeleteWrongTenant := httptest.NewRequest(http.MethodDelete, "/runtime/reconcile/"+reconcilePayload.ReconcileID, nil)
+	reqDeleteWrongTenant = withAuthTenantRoleScope(reqDeleteWrongTenant, "other", "analyst", "graph:read")
+	mux.ServeHTTP(recDeleteWrongTenant, reqDeleteWrongTenant)
+	if recDeleteWrongTenant.Code != http.StatusForbidden {
+		t.Fatalf("expected DELETE /runtime/reconcile/{id} tenant mismatch 403, got %d body=%s", recDeleteWrongTenant.Code, recDeleteWrongTenant.Body.String())
+	}
+
+	recDeleteByID := httptest.NewRecorder()
+	reqDeleteByID := httptest.NewRequest(http.MethodDelete, "/runtime/reconcile/"+reconcilePayload.ReconcileID, nil)
+	mux.ServeHTTP(recDeleteByID, withAuth(reqDeleteByID))
+	if recDeleteByID.Code != http.StatusOK {
+		t.Fatalf("expected DELETE /runtime/reconcile/{id} 200, got %d body=%s", recDeleteByID.Code, recDeleteByID.Body.String())
+	}
+
+	recByIDAfterDelete := httptest.NewRecorder()
+	reqByIDAfterDelete := httptest.NewRequest(http.MethodGet, "/runtime/reconcile/"+reconcilePayload.ReconcileID, nil)
+	mux.ServeHTTP(recByIDAfterDelete, withAuth(reqByIDAfterDelete))
+	if recByIDAfterDelete.Code != http.StatusNotFound {
+		t.Fatalf("expected GET /runtime/reconcile/{id} after delete to return 404, got %d", recByIDAfterDelete.Code)
+	}
+
+	seedIDs := make([]string, 0, 2)
+	for i := 0; i < 2; i++ {
+		recSeed := httptest.NewRecorder()
+		reqSeed := httptest.NewRequest(http.MethodPost, "/runtime/reconcile", bytes.NewReader(body))
+		reqSeed.Header.Set("Content-Type", "application/json")
+		mux.ServeHTTP(recSeed, withAuth(reqSeed))
+		if recSeed.Code != http.StatusOK {
+			t.Fatalf("expected seeded runtime reconcile post 200, got %d body=%s", recSeed.Code, recSeed.Body.String())
+		}
+		var seeded struct {
+			ReconcileID string `json:"reconcile_id"`
+		}
+		if err := json.Unmarshal(recSeed.Body.Bytes(), &seeded); err != nil {
+			t.Fatalf("decode seeded runtime reconcile response: %v", err)
+		}
+		if seeded.ReconcileID == "" {
+			t.Fatalf("expected reconcile_id for seeded runtime run")
+		}
+		seedIDs = append(seedIDs, seeded.ReconcileID)
+	}
+	recCompareRuns := httptest.NewRecorder()
+	reqCompareRuns := httptest.NewRequest(http.MethodGet, "/runtime/reconcile/compare?from="+seedIDs[0]+"&to="+seedIDs[1], nil)
+	mux.ServeHTTP(recCompareRuns, withAuth(reqCompareRuns))
+	if recCompareRuns.Code != http.StatusOK {
+		t.Fatalf("expected GET /runtime/reconcile/compare 200, got %d body=%s", recCompareRuns.Code, recCompareRuns.Body.String())
+	}
+	var compareRunsPayload struct {
+		FromReconcileID string `json:"from_reconcile_id"`
+		ToReconcileID   string `json:"to_reconcile_id"`
+	}
+	if err := json.Unmarshal(recCompareRuns.Body.Bytes(), &compareRunsPayload); err != nil {
+		t.Fatalf("decode runtime reconcile compare response: %v", err)
+	}
+	if compareRunsPayload.FromReconcileID != seedIDs[0] || compareRunsPayload.ToReconcileID != seedIDs[1] {
+		t.Fatalf("unexpected runtime compare payload ids: %+v", compareRunsPayload)
+	}
+	recSeedByID := httptest.NewRecorder()
+	reqSeedByID := httptest.NewRequest(http.MethodGet, "/runtime/reconcile/"+seedIDs[0], nil)
+	mux.ServeHTTP(recSeedByID, withAuth(reqSeedByID))
+	if recSeedByID.Code != http.StatusOK {
+		t.Fatalf("expected GET /runtime/reconcile/{id} for seeded run 200, got %d body=%s", recSeedByID.Code, recSeedByID.Body.String())
+	}
+	var seedByIDPayload struct {
+		GeneratedAt string `json:"generated_at"`
+	}
+	if err := json.Unmarshal(recSeedByID.Body.Bytes(), &seedByIDPayload); err != nil {
+		t.Fatalf("decode seeded runtime reconcile by id response: %v", err)
+	}
+	if seedByIDPayload.GeneratedAt == "" {
+		t.Fatalf("expected generated_at in seeded runtime reconcile by id response")
+	}
+	recCompareWrongTenant := httptest.NewRecorder()
+	reqCompareWrongTenant := httptest.NewRequest(http.MethodGet, "/runtime/reconcile/compare?from="+seedIDs[0]+"&to="+seedIDs[1], nil)
+	reqCompareWrongTenant = withAuthTenantRoleScope(reqCompareWrongTenant, "other", "analyst", "graph:read")
+	mux.ServeHTTP(recCompareWrongTenant, reqCompareWrongTenant)
+	if recCompareWrongTenant.Code != http.StatusForbidden {
+		t.Fatalf("expected runtime compare tenant mismatch 403, got %d body=%s", recCompareWrongTenant.Code, recCompareWrongTenant.Body.String())
+	}
+
+	recReport := httptest.NewRecorder()
+	reqReport := httptest.NewRequest(http.MethodGet, "/runtime/reconcile/report?graph_id=g1", nil)
+	mux.ServeHTTP(recReport, withAuth(reqReport))
+	if recReport.Code != http.StatusOK {
+		t.Fatalf("expected GET /runtime/reconcile/report 200, got %d body=%s", recReport.Code, recReport.Body.String())
+	}
+	var reportPayload struct {
+		TotalRuns         int `json:"total_runs"`
+		TotalConfirmed    int `json:"total_confirmed"`
+		TotalContradicted int `json:"total_contradicted"`
+		TotalUnmapped     int `json:"total_runtime_only_unmapped"`
+		TopGraphs         []struct {
+			GraphID string `json:"graph_id"`
+			Runs    int    `json:"runs"`
+		} `json:"top_graphs"`
+	}
+	if err := json.Unmarshal(recReport.Body.Bytes(), &reportPayload); err != nil {
+		t.Fatalf("decode runtime reconcile report response: %v", err)
+	}
+	if reportPayload.TotalRuns < 2 {
+		t.Fatalf("expected report total_runs >= 2, got %d", reportPayload.TotalRuns)
+	}
+	if reportPayload.TotalConfirmed < 2 {
+		t.Fatalf("expected report total_confirmed >= 2, got %d", reportPayload.TotalConfirmed)
+	}
+	if reportPayload.TotalContradicted < 2 {
+		t.Fatalf("expected report total_contradicted >= 2, got %d", reportPayload.TotalContradicted)
+	}
+	if reportPayload.TotalUnmapped != 0 {
+		t.Fatalf("expected report runtime_only_unmapped total 0, got %d", reportPayload.TotalUnmapped)
+	}
+	if len(reportPayload.TopGraphs) == 0 || reportPayload.TopGraphs[0].GraphID != "g1" {
+		t.Fatalf("expected runtime report top_graphs to include g1, got %+v", reportPayload.TopGraphs)
+	}
+
+	recReportFiltered := httptest.NewRecorder()
+	reqReportFiltered := httptest.NewRequest(http.MethodGet, "/runtime/reconcile/report?from="+seedByIDPayload.GeneratedAt+"&to="+seedByIDPayload.GeneratedAt, nil)
+	mux.ServeHTTP(recReportFiltered, withAuth(reqReportFiltered))
+	if recReportFiltered.Code != http.StatusOK {
+		t.Fatalf("expected GET /runtime/reconcile/report with from/to 200, got %d body=%s", recReportFiltered.Code, recReportFiltered.Body.String())
+	}
+	var reportFilteredPayload struct {
+		TotalRuns int `json:"total_runs"`
+	}
+	if err := json.Unmarshal(recReportFiltered.Body.Bytes(), &reportFilteredPayload); err != nil {
+		t.Fatalf("decode filtered runtime reconcile report response: %v", err)
+	}
+	if reportFilteredPayload.TotalRuns < 1 {
+		t.Fatalf("expected filtered runtime report total_runs >= 1, got %d", reportFilteredPayload.TotalRuns)
+	}
+
+	recReportBadFrom := httptest.NewRecorder()
+	reqReportBadFrom := httptest.NewRequest(http.MethodGet, "/runtime/reconcile/report?from=not-a-time", nil)
+	mux.ServeHTTP(recReportBadFrom, withAuth(reqReportBadFrom))
+	if recReportBadFrom.Code != http.StatusBadRequest {
+		t.Fatalf("expected runtime report bad from 400, got %d", recReportBadFrom.Code)
+	}
+
+	recReportTenantMismatch := httptest.NewRecorder()
+	reqReportTenantMismatch := httptest.NewRequest(http.MethodGet, "/runtime/reconcile/report", nil)
+	reqReportTenantMismatch = withAuthTenantRoleScope(reqReportTenantMismatch, "other", "analyst", "graph:read")
+	mux.ServeHTTP(recReportTenantMismatch, reqReportTenantMismatch)
+	if recReportTenantMismatch.Code != http.StatusOK {
+		t.Fatalf("expected runtime report with other tenant to return 200, got %d body=%s", recReportTenantMismatch.Code, recReportTenantMismatch.Body.String())
+	}
+	var reportTenantMismatchPayload struct {
+		TotalRuns int `json:"total_runs"`
+	}
+	if err := json.Unmarshal(recReportTenantMismatch.Body.Bytes(), &reportTenantMismatchPayload); err != nil {
+		t.Fatalf("decode runtime report tenant mismatch payload: %v", err)
+	}
+	if reportTenantMismatchPayload.TotalRuns != 0 {
+		t.Fatalf("expected runtime report for other tenant to return 0 runs, got %d", reportTenantMismatchPayload.TotalRuns)
+	}
+
+	recPrune := httptest.NewRecorder()
+	reqPrune := httptest.NewRequest(http.MethodDelete, "/runtime/reconcile?keep_latest=1", nil)
+	mux.ServeHTTP(recPrune, withAuth(reqPrune))
+	if recPrune.Code != http.StatusOK {
+		t.Fatalf("expected DELETE /runtime/reconcile?keep_latest=1 200, got %d body=%s", recPrune.Code, recPrune.Body.String())
+	}
+	var prunePayload struct {
+		Deleted int `json:"deleted"`
+	}
+	if err := json.Unmarshal(recPrune.Body.Bytes(), &prunePayload); err != nil {
+		t.Fatalf("decode runtime reconcile prune response: %v", err)
+	}
+	if prunePayload.Deleted < 1 {
+		t.Fatalf("expected prune to delete at least one run, got %d", prunePayload.Deleted)
+	}
+
+	recClaimsDefault := httptest.NewRecorder()
+	reqClaimsDefault := httptest.NewRequest(http.MethodGet, "/runtime/claims/g1", nil)
+	mux.ServeHTTP(recClaimsDefault, withAuth(reqClaimsDefault))
+	if recClaimsDefault.Code != http.StatusOK {
+		t.Fatalf("expected /runtime/claims/g1 200, got %d body=%s", recClaimsDefault.Code, recClaimsDefault.Body.String())
+	}
+	var claimsDefaultPayload struct {
+		Count  int `json:"count"`
+		Claims []struct {
+			NodeID string `json:"node_id"`
+			EdgeID string `json:"edge_id"`
+		} `json:"claims"`
+	}
+	if err := json.Unmarshal(recClaimsDefault.Body.Bytes(), &claimsDefaultPayload); err != nil {
+		t.Fatalf("decode runtime claims default response: %v", err)
+	}
+	// default strict policy should exclude disputed dependency claims
+	if claimsDefaultPayload.Count != 2 {
+		t.Fatalf("expected 2 default claims (verified exposure node+edge), got %d", claimsDefaultPayload.Count)
+	}
+
+	recClaimsIncludeDisputed := httptest.NewRecorder()
+	reqClaimsIncludeDisputed := httptest.NewRequest(http.MethodGet, "/runtime/claims/g1?include_disputed=true", nil)
+	mux.ServeHTTP(recClaimsIncludeDisputed, withAuth(reqClaimsIncludeDisputed))
+	if recClaimsIncludeDisputed.Code != http.StatusOK {
+		t.Fatalf("expected /runtime/claims/g1?include_disputed=true 200, got %d body=%s", recClaimsIncludeDisputed.Code, recClaimsIncludeDisputed.Body.String())
+	}
+	var claimsIncludeDisputedPayload struct {
+		Count int `json:"count"`
+	}
+	if err := json.Unmarshal(recClaimsIncludeDisputed.Body.Bytes(), &claimsIncludeDisputedPayload); err != nil {
+		t.Fatalf("decode runtime claims include_disputed response: %v", err)
+	}
+	if claimsIncludeDisputedPayload.Count != 4 {
+		t.Fatalf("expected 4 claims with disputed override, got %d", claimsIncludeDisputedPayload.Count)
+	}
+}
+
 func TestUIIndexIsServed(t *testing.T) {
 	mux := newMux("", "")
 	rec := httptest.NewRecorder()
@@ -868,15 +1363,84 @@ func TestUIIndexIsServed(t *testing.T) {
 func TestAuthRequiredForGraphEndpoints(t *testing.T) {
 	tmp := t.TempDir()
 	graphRoot := filepath.Join(tmp, "graph")
-	if err := os.MkdirAll(graphRoot, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(graphRoot, "g1"), 0o755); err != nil {
 		t.Fatalf("mkdir graph dir: %v", err)
 	}
+	writeJSONFile(t, filepath.Join(graphRoot, "index.json"), map[string]any{
+		"graphs": []map[string]any{
+			{"graph_id": "g1", "generated_at": "2026-01-01T00:00:00Z", "mode": "single", "node_count": 1, "edge_count": 0, "path": filepath.Join(graphRoot, "g1", "graph.json")},
+		},
+	})
+	writeJSONFile(t, filepath.Join(graphRoot, "g1", "graph.json"), map[string]any{
+		"graph_id": "g1", "generated_at": "2026-01-01T00:00:00Z", "mode": "single",
+		"nodes": []map[string]any{{"id": "svc:a", "type": "service", "label": "A", "service_id": "a", "attributes": map[string]any{}, "confidence": 1.0, "inferred": false}},
+		"edges": []map[string]any{},
+		"stats": map[string]any{"node_count": 1, "edge_count": 0, "by_node_type": map[string]any{"service": 1}, "by_edge_type": map[string]any{}},
+		"meta":  map[string]any{"tenant_id": "default", "services": []map[string]any{}},
+	})
 	mux := newMux("", graphRoot)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/graphs", nil)
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 without auth headers, got %d", rec.Code)
+	}
+
+	recRuntime := httptest.NewRecorder()
+	reqRuntime := httptest.NewRequest(http.MethodGet, "/runtime/plan", nil)
+	mux.ServeHTTP(recRuntime, reqRuntime)
+	if recRuntime.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on runtime endpoint without auth headers, got %d", recRuntime.Code)
+	}
+
+	recRuntimeHistory := httptest.NewRecorder()
+	reqRuntimeHistory := httptest.NewRequest(http.MethodGet, "/runtime/reconcile", nil)
+	mux.ServeHTTP(recRuntimeHistory, reqRuntimeHistory)
+	if recRuntimeHistory.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on runtime reconcile history without auth headers, got %d", recRuntimeHistory.Code)
+	}
+
+	recRuntimeClaims := httptest.NewRecorder()
+	reqRuntimeClaims := httptest.NewRequest(http.MethodGet, "/runtime/claims/g1", nil)
+	mux.ServeHTTP(recRuntimeClaims, reqRuntimeClaims)
+	if recRuntimeClaims.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on runtime claims endpoint without auth headers, got %d", recRuntimeClaims.Code)
+	}
+
+	recProductTemplates := httptest.NewRecorder()
+	reqProductTemplates := httptest.NewRequest(http.MethodGet, "/products/templates", nil)
+	mux.ServeHTTP(recProductTemplates, reqProductTemplates)
+	if recProductTemplates.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on products templates endpoint without auth headers, got %d", recProductTemplates.Code)
+	}
+
+	recProductQuestions := httptest.NewRecorder()
+	reqProductQuestions := httptest.NewRequest(http.MethodGet, "/products/questions", nil)
+	mux.ServeHTTP(recProductQuestions, reqProductQuestions)
+	if recProductQuestions.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on products questions endpoint without auth headers, got %d", recProductQuestions.Code)
+	}
+
+	recProductCoverage := httptest.NewRecorder()
+	reqProductCoverage := httptest.NewRequest(http.MethodGet, "/products/questions/coverage", nil)
+	mux.ServeHTTP(recProductCoverage, reqProductCoverage)
+	if recProductCoverage.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on products questions coverage endpoint without auth headers, got %d", recProductCoverage.Code)
+	}
+
+	recProductQuestionRun := httptest.NewRecorder()
+	reqProductQuestionRun := httptest.NewRequest(http.MethodPost, "/products/questions/run", bytes.NewReader([]byte(`{"vars":{"graph_id":"g1"}}`)))
+	reqProductQuestionRun.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(recProductQuestionRun, reqProductQuestionRun)
+	if recProductQuestionRun.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on products questions run endpoint without auth headers, got %d", recProductQuestionRun.Code)
+	}
+
+	recFinalReadiness := httptest.NewRecorder()
+	reqFinalReadiness := httptest.NewRequest(http.MethodGet, "/final/readiness", nil)
+	mux.ServeHTTP(recFinalReadiness, reqFinalReadiness)
+	if recFinalReadiness.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on final readiness endpoint without auth headers, got %d", recFinalReadiness.Code)
 	}
 }
 
@@ -1047,6 +1611,145 @@ func TestProductEndpoints(t *testing.T) {
 		t.Fatalf("expected mapper 200, got %d body=%s", recMapper.Code, recMapper.Body.String())
 	}
 
+	recTemplates := httptest.NewRecorder()
+	reqTemplates := httptest.NewRequest(http.MethodGet, "/products/templates", nil)
+	reqTemplates = withAuthRoleScope(reqTemplates, "analyst", "graph:read")
+	mux.ServeHTTP(recTemplates, reqTemplates)
+	if recTemplates.Code != http.StatusOK {
+		t.Fatalf("expected product templates 200, got %d body=%s", recTemplates.Code, recTemplates.Body.String())
+	}
+	var templatesPayload struct {
+		Count int `json:"count"`
+	}
+	if err := json.Unmarshal(recTemplates.Body.Bytes(), &templatesPayload); err != nil {
+		t.Fatalf("decode product templates: %v", err)
+	}
+	if templatesPayload.Count == 0 {
+		t.Fatalf("expected non-empty product template catalog")
+	}
+
+	execBody := []byte(`{
+		"template_id":"docs-service",
+		"vars":{"graph_id":"g1","service_id":"a"}
+	}`)
+	recTemplateExec := httptest.NewRecorder()
+	reqTemplateExec := httptest.NewRequest(http.MethodPost, "/products/templates/execute", bytes.NewReader(execBody))
+	reqTemplateExec.Header.Set("Content-Type", "application/json")
+	reqTemplateExec = withAuthRoleScope(reqTemplateExec, "analyst", "graph:read")
+	mux.ServeHTTP(recTemplateExec, reqTemplateExec)
+	if recTemplateExec.Code != http.StatusOK {
+		t.Fatalf("expected product template execute 200, got %d body=%s", recTemplateExec.Code, recTemplateExec.Body.String())
+	}
+	var templateExecPayload struct {
+		TemplateID string         `json:"template_id"`
+		Status     int            `json:"status"`
+		Result     map[string]any `json:"result"`
+	}
+	if err := json.Unmarshal(recTemplateExec.Body.Bytes(), &templateExecPayload); err != nil {
+		t.Fatalf("decode product template execute payload: %v", err)
+	}
+	if templateExecPayload.TemplateID != "docs-service" || templateExecPayload.Status != http.StatusOK {
+		t.Fatalf("unexpected product template execute metadata: %+v", templateExecPayload)
+	}
+	if len(templateExecPayload.Result) == 0 {
+		t.Fatalf("expected non-empty template execute result payload")
+	}
+	if _, ok := templateExecPayload.Result["overview"]; !ok {
+		resultPayload, _ := templateExecPayload.Result["result"].(map[string]any)
+		if len(resultPayload) == 0 || resultPayload["overview"] == nil {
+			t.Fatalf("expected template execute overview in result payload, got %+v", templateExecPayload.Result)
+		}
+	}
+
+	recQuestions := httptest.NewRecorder()
+	reqQuestions := httptest.NewRequest(http.MethodGet, "/products/questions", nil)
+	reqQuestions = withAuthRoleScope(reqQuestions, "analyst", "graph:read")
+	mux.ServeHTTP(recQuestions, reqQuestions)
+	if recQuestions.Code != http.StatusOK {
+		t.Fatalf("expected product questions 200, got %d body=%s", recQuestions.Code, recQuestions.Body.String())
+	}
+	var questionsPayload struct {
+		Count int `json:"count"`
+	}
+	if err := json.Unmarshal(recQuestions.Body.Bytes(), &questionsPayload); err != nil {
+		t.Fatalf("decode product questions payload: %v", err)
+	}
+	if questionsPayload.Count == 0 {
+		t.Fatalf("expected non-empty product question catalog")
+	}
+
+	questionExecBody := []byte(`{
+		"question_id":"q-service-external",
+		"vars":{"graph_id":"g1","service_id":"a"}
+	}`)
+	recQuestionExec := httptest.NewRecorder()
+	reqQuestionExec := httptest.NewRequest(http.MethodPost, "/products/questions/execute", bytes.NewReader(questionExecBody))
+	reqQuestionExec.Header.Set("Content-Type", "application/json")
+	reqQuestionExec = withAuthRoleScope(reqQuestionExec, "analyst", "graph:read")
+	mux.ServeHTTP(recQuestionExec, reqQuestionExec)
+	if recQuestionExec.Code != http.StatusOK {
+		t.Fatalf("expected question execute 200, got %d body=%s", recQuestionExec.Code, recQuestionExec.Body.String())
+	}
+	var questionExecPayload struct {
+		QuestionID string `json:"question_id"`
+		Status     int    `json:"status"`
+	}
+	if err := json.Unmarshal(recQuestionExec.Body.Bytes(), &questionExecPayload); err != nil {
+		t.Fatalf("decode question execute payload: %v", err)
+	}
+	if questionExecPayload.QuestionID != "q-service-external" || questionExecPayload.Status != http.StatusOK {
+		t.Fatalf("unexpected question execute payload: %+v", questionExecPayload)
+	}
+
+	recQuestionCoverage := httptest.NewRecorder()
+	reqQuestionCoverage := httptest.NewRequest(http.MethodGet, "/products/questions/coverage", nil)
+	reqQuestionCoverage = withAuthRoleScope(reqQuestionCoverage, "analyst", "graph:read")
+	mux.ServeHTTP(recQuestionCoverage, reqQuestionCoverage)
+	if recQuestionCoverage.Code != http.StatusOK {
+		t.Fatalf("expected question coverage 200, got %d body=%s", recQuestionCoverage.Code, recQuestionCoverage.Body.String())
+	}
+	var coveragePayload struct {
+		Total         int     `json:"total"`
+		Covered       int     `json:"covered"`
+		CoverageRatio float64 `json:"coverage_ratio"`
+	}
+	if err := json.Unmarshal(recQuestionCoverage.Body.Bytes(), &coveragePayload); err != nil {
+		t.Fatalf("decode question coverage payload: %v", err)
+	}
+	if coveragePayload.Total == 0 || coveragePayload.Covered == 0 {
+		t.Fatalf("expected non-zero question coverage totals, got %+v", coveragePayload)
+	}
+	if coveragePayload.CoverageRatio <= 0 {
+		t.Fatalf("expected positive question coverage ratio, got %+v", coveragePayload)
+	}
+
+	questionRunBody := []byte(`{
+		"vars":{"graph_id":"g1","service_id":"a","node_id":"svc:a"}
+	}`)
+	recQuestionRun := httptest.NewRecorder()
+	reqQuestionRun := httptest.NewRequest(http.MethodPost, "/products/questions/run", bytes.NewReader(questionRunBody))
+	reqQuestionRun.Header.Set("Content-Type", "application/json")
+	reqQuestionRun = withAuthRoleScope(reqQuestionRun, "analyst", "graph:read")
+	mux.ServeHTTP(recQuestionRun, reqQuestionRun)
+	if recQuestionRun.Code != http.StatusOK {
+		t.Fatalf("expected question run 200, got %d body=%s", recQuestionRun.Code, recQuestionRun.Body.String())
+	}
+	var questionRunPayload struct {
+		Total         int  `json:"total"`
+		Succeeded     int  `json:"succeeded"`
+		Failed        int  `json:"failed"`
+		OverallPassed bool `json:"overall_passed"`
+	}
+	if err := json.Unmarshal(recQuestionRun.Body.Bytes(), &questionRunPayload); err != nil {
+		t.Fatalf("decode question run payload: %v", err)
+	}
+	if questionRunPayload.Total == 0 {
+		t.Fatalf("expected question run total > 0")
+	}
+	if questionRunPayload.Succeeded == 0 || questionRunPayload.Failed != 0 || !questionRunPayload.OverallPassed {
+		t.Fatalf("unexpected question run summary: %+v", questionRunPayload)
+	}
+
 	recGov := httptest.NewRecorder()
 	reqGov := httptest.NewRequest(http.MethodGet, "/products/governance/g1?explain=true", nil)
 	reqGov = withAuthRoleScope(reqGov, "analyst", "graph:read")
@@ -1065,6 +1768,20 @@ func TestProductEndpoints(t *testing.T) {
 	}
 	if govPayload.Result.RiskPosture == "" {
 		t.Fatalf("expected governance risk posture")
+	}
+
+	runtimeBody := []byte(`{
+		"tenant_id":"default",
+		"graph_id":"g1",
+		"claims":[{"graph_id":"g1","edge_id":"e1"}],
+		"observations":[{"source_system":"gateway","signal_type":"http","attributes":{"edge_id":"e1"}}]
+	}`)
+	recRuntime := httptest.NewRecorder()
+	reqRuntime := httptest.NewRequest(http.MethodPost, "/runtime/reconcile", bytes.NewReader(runtimeBody))
+	reqRuntime.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(recRuntime, withAuth(reqRuntime))
+	if recRuntime.Code != http.StatusOK {
+		t.Fatalf("expected runtime reconcile seed 200, got %d body=%s", recRuntime.Code, recRuntime.Body.String())
 	}
 
 	recOpsMetrics := httptest.NewRecorder()
@@ -1091,12 +1808,123 @@ func TestProductEndpoints(t *testing.T) {
 	if recOpsSLO.Code != http.StatusOK {
 		t.Fatalf("expected ops slo 200, got %d body=%s", recOpsSLO.Code, recOpsSLO.Body.String())
 	}
-	var sloPayload map[string]any
+	var sloPayload struct {
+		SLOAdherence float64 `json:"slo_adherence"`
+		SLOPassed    bool    `json:"slo_passed"`
+		SLOChecks    struct {
+			APIAvailabilityPassed bool `json:"api_availability_passed"`
+			RuntimeQualityPassed  bool `json:"runtime_quality_passed"`
+		} `json:"slo_checks"`
+		Runtime struct {
+			TotalRuns            int     `json:"total_runs"`
+			ConfirmedRate        float64 `json:"confirmed_rate"`
+			RuntimeQualityPassed bool    `json:"runtime_quality_passed"`
+		} `json:"runtime_reconciliation"`
+	}
 	if err := json.Unmarshal(recOpsSLO.Body.Bytes(), &sloPayload); err != nil {
 		t.Fatalf("decode ops slo: %v", err)
 	}
-	if _, ok := sloPayload["slo_adherence"]; !ok {
+	if sloPayload.SLOAdherence <= 0 {
 		t.Fatalf("expected slo_adherence in ops slo payload")
+	}
+	if sloPayload.Runtime.TotalRuns < 1 {
+		t.Fatalf("expected runtime_reconciliation.total_runs >= 1, got %d", sloPayload.Runtime.TotalRuns)
+	}
+	if sloPayload.Runtime.ConfirmedRate <= 0 {
+		t.Fatalf("expected runtime_reconciliation.confirmed_rate > 0")
+	}
+	if !sloPayload.Runtime.RuntimeQualityPassed {
+		t.Fatalf("expected runtime quality gate to pass")
+	}
+	if !sloPayload.SLOChecks.RuntimeQualityPassed {
+		t.Fatalf("expected slo_checks.runtime_quality_passed=true")
+	}
+	_ = sloPayload.SLOPassed
+	_ = sloPayload.SLOChecks.APIAvailabilityPassed
+
+	finalQualityPath := filepath.Join(tmp, "final-inputs", "quality_gate.json")
+	finalSLOPath := filepath.Join(tmp, "final-inputs", "slo.json")
+	finalTemplatesPath := filepath.Join(tmp, "final-inputs", "templates.json")
+	finalCatalogPath := filepath.Join(tmp, "final-inputs", "catalog.json")
+	finalGraphIndexPath := filepath.Join(tmp, "final-inputs", "graph_index.json")
+	finalOutReportPath := filepath.Join(tmp, "final-output", "readiness_report.json")
+	finalOutDecisionPath := filepath.Join(tmp, "final-output", "gate_decision.md")
+	writeJSONFile(t, finalQualityPath, map[string]any{"passed": true})
+	writeJSONFile(t, finalSLOPath, map[string]any{"passed": true, "slo_checks": map[string]any{"runtime_quality_passed": true}})
+	writeJSONFile(t, finalTemplatesPath, map[string]any{
+		"templates": []map[string]any{
+			{"id": "docs-service", "path": "/products/docs/${graph_id}", "method": "GET", "query": map[string]any{"explain": true}},
+		},
+	})
+	writeJSONFile(t, finalCatalogPath, map[string]any{
+		"questions": []map[string]any{
+			{"id": "q-service-external", "question": "What external services does each service depend on?", "endpoint": "/products/docs/{graph_id}"},
+		},
+	})
+	writeJSONFile(t, finalGraphIndexPath, map[string]any{
+		"graphs": []map[string]any{
+			{"graph_id": "g1", "tenant_id": "default", "fingerprint": "abc123"},
+		},
+	})
+
+	finalReqBody := map[string]any{
+		"quality_gate_path": finalQualityPath,
+		"slo_path":          finalSLOPath,
+		"templates_path":    finalTemplatesPath,
+		"catalog_path":      finalCatalogPath,
+		"graph_index_path":  finalGraphIndexPath,
+		"out_report_path":   finalOutReportPath,
+		"out_decision_path": finalOutDecisionPath,
+		"signers":           []string{"engineering", "platform", "security"},
+	}
+	finalReqBodyBytes, err := json.Marshal(finalReqBody)
+	if err != nil {
+		t.Fatalf("marshal final gate request body: %v", err)
+	}
+	recFinalAttest := httptest.NewRecorder()
+	reqFinalAttest := httptest.NewRequest(http.MethodPost, "/final/attest", bytes.NewReader(finalReqBodyBytes))
+	reqFinalAttest.Header.Set("Content-Type", "application/json")
+	reqFinalAttest = withAuthRoleScope(reqFinalAttest, "compliance_auditor", "audit:export")
+	mux.ServeHTTP(recFinalAttest, reqFinalAttest)
+	if recFinalAttest.Code != http.StatusOK {
+		t.Fatalf("expected final attest 200, got %d body=%s", recFinalAttest.Code, recFinalAttest.Body.String())
+	}
+	var finalAttestPayload struct {
+		OverallPassed bool `json:"overall_passed"`
+		Readiness     struct {
+			OverallPassed bool `json:"overall_passed"`
+		} `json:"readiness_report"`
+	}
+	if err := json.Unmarshal(recFinalAttest.Body.Bytes(), &finalAttestPayload); err != nil {
+		t.Fatalf("decode final attest payload: %v", err)
+	}
+	if !finalAttestPayload.OverallPassed || !finalAttestPayload.Readiness.OverallPassed {
+		t.Fatalf("expected final attest to pass, got %+v", finalAttestPayload)
+	}
+
+	recFinalReadiness := httptest.NewRecorder()
+	reqFinalReadiness := httptest.NewRequest(http.MethodGet, "/final/readiness?path="+url.QueryEscape(finalOutReportPath), nil)
+	reqFinalReadiness = withAuthRoleScope(reqFinalReadiness, "compliance_auditor", "audit:read")
+	mux.ServeHTTP(recFinalReadiness, reqFinalReadiness)
+	if recFinalReadiness.Code != http.StatusOK {
+		t.Fatalf("expected final readiness 200, got %d body=%s", recFinalReadiness.Code, recFinalReadiness.Body.String())
+	}
+
+	recFinalDecision := httptest.NewRecorder()
+	reqFinalDecision := httptest.NewRequest(http.MethodGet, "/final/decision?path="+url.QueryEscape(finalOutDecisionPath), nil)
+	reqFinalDecision = withAuthRoleScope(reqFinalDecision, "compliance_auditor", "audit:read")
+	mux.ServeHTTP(recFinalDecision, reqFinalDecision)
+	if recFinalDecision.Code != http.StatusOK {
+		t.Fatalf("expected final decision 200, got %d body=%s", recFinalDecision.Code, recFinalDecision.Body.String())
+	}
+	var finalDecisionPayload struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(recFinalDecision.Body.Bytes(), &finalDecisionPayload); err != nil {
+		t.Fatalf("decode final decision payload: %v", err)
+	}
+	if !strings.Contains(finalDecisionPayload.Content, "APPROVE") {
+		t.Fatalf("expected final decision markdown to contain APPROVE, got %q", finalDecisionPayload.Content)
 	}
 }
 
@@ -1148,7 +1976,14 @@ func withAuth(req *http.Request) *http.Request {
 }
 
 func withAuthRoleScope(req *http.Request, roles string, scopes string) *http.Request {
+	return withAuthTenantRoleScope(req, "default", roles, scopes)
+}
+
+func withAuthTenantRoleScope(req *http.Request, tenant string, roles string, scopes string) *http.Request {
 	req.Header.Set("X-DiffMind-Tenant", "default")
+	if strings.TrimSpace(tenant) != "" {
+		req.Header.Set("X-DiffMind-Tenant", strings.TrimSpace(tenant))
+	}
 	req.Header.Set("X-DiffMind-Principal", "test-user")
 	req.Header.Set("X-DiffMind-Roles", roles)
 	req.Header.Set("X-DiffMind-Scopes", scopes)

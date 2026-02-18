@@ -48,6 +48,12 @@ Repo extractor core for generating auditable repository intelligence bundles.
   - `docs/graph_performance_baseline.md`
 - Versioning/rollback policy:
   - `docs/versioning_policy.md`
+- Ontology v2 schema and compatibility mapping:
+  - `docs/ontology_v2_schema.md`
+- Analyzer adapter runtime contract:
+  - `docs/analyzer_adapter_runtime.md`
+- Analyzer offline toolchain policy:
+  - `docs/analyzer_offline_toolchain_policy.md`
 - Quality evaluation and gate runbook:
   - `docs/m14_quality_runbook.md`
 - Product API contracts and query templates:

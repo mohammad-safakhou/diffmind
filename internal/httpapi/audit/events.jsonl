@@ -1,0 +1,8 @@
+{"timestamp":"2026-02-18T14:29:11.700354Z","action":"query_graph","tenant_id":"default","principal":"test-user","method":"GET","path":"/runtime/plan","decision":"allow","reason":"platform_admin"}
+{"timestamp":"2026-02-18T14:29:11.701098Z","action":"query_graph","tenant_id":"default","principal":"test-user","method":"POST","path":"/runtime/reconcile","decision":"allow","reason":"platform_admin"}
+{"timestamp":"2026-02-18T14:29:21.80903Z","action":"query_graph","tenant_id":"default","principal":"test-user","method":"GET","path":"/runtime/plan","decision":"allow","reason":"platform_admin"}
+{"timestamp":"2026-02-18T14:29:21.810351Z","action":"query_graph","tenant_id":"default","principal":"test-user","method":"POST","path":"/runtime/reconcile","decision":"allow","reason":"platform_admin"}
+{"timestamp":"2026-02-18T14:49:22.953058Z","action":"query_graph","tenant_id":"default","principal":"test-user","method":"GET","path":"/runtime/plan","decision":"allow","reason":"platform_admin"}
+{"timestamp":"2026-02-18T14:49:22.956182Z","action":"query_graph","tenant_id":"default","principal":"test-user","method":"POST","path":"/runtime/reconcile","decision":"allow","reason":"platform_admin"}
+{"timestamp":"2026-02-18T14:49:31.273505Z","action":"query_graph","tenant_id":"default","principal":"test-user","method":"GET","path":"/runtime/plan","decision":"allow","reason":"platform_admin"}
+{"timestamp":"2026-02-18T14:49:31.275623Z","action":"query_graph","tenant_id":"default","principal":"test-user","method":"POST","path":"/runtime/reconcile","decision":"allow","reason":"platform_admin"}

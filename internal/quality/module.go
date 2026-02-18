@@ -29,6 +29,9 @@ type corpusCase struct {
 	CountsByType map[string]int `json:"counts_by_type"`
 	Domain       string         `json:"domain,omitempty"`
 	Language     string         `json:"language,omitempty"`
+	Framework    string         `json:"framework,omitempty"`
+	FrameworkVer string         `json:"framework_version,omitempty"`
+	DurationMS   int64          `json:"duration_ms,omitempty"`
 	Tags         []string       `json:"tags,omitempty"`
 	Failures     []string       `json:"failures,omitempty"`
 	Confidence   float64        `json:"confidence,omitempty"`
@@ -53,7 +56,11 @@ type report struct {
 	Metrics        metrics        `json:"metrics"`
 	ByDomain       []metricBucket `json:"by_domain,omitempty"`
 	ByLanguage     []metricBucket `json:"by_language,omitempty"`
+	ByFrameworkVer []metricBucket `json:"by_framework_version,omitempty"`
 	Adversarial    advMetrics     `json:"adversarial"`
+	Drift          driftMetrics   `json:"drift"`
+	Benchmark      benchMetrics   `json:"benchmark"`
+	RuntimePlan    runtimePlan    `json:"runtime_reconciliation"`
 	Regressions    []regression   `json:"regressions"`
 }
 
@@ -81,6 +88,33 @@ type advMetrics struct {
 	PassRate float64 `json:"pass_rate"`
 }
 
+type driftMetrics struct {
+	Cases     int     `json:"cases"`
+	Detected  int     `json:"detected"`
+	Precision float64 `json:"precision"`
+	Recall    float64 `json:"recall"`
+	F1        float64 `json:"f1"`
+}
+
+type benchMetrics struct {
+	Cases        int   `json:"cases"`
+	P50Duration  int64 `json:"p50_duration_ms"`
+	P95Duration  int64 `json:"p95_duration_ms"`
+	MaxDuration  int64 `json:"max_duration_ms"`
+	AvgDuration  int64 `json:"avg_duration_ms"`
+	TotalRuntime int64 `json:"total_runtime_ms"`
+}
+
+type runtimePlan struct {
+	ContractVersion string   `json:"contract_version"`
+	Phase           string   `json:"phase"`
+	Enabled         bool     `json:"enabled"`
+	PublishBlocking bool     `json:"publish_blocking"`
+	InputSignals    []string `json:"input_signals"`
+	MatchStrategy   string   `json:"match_strategy"`
+	OutputStates    []string `json:"output_states"`
+}
+
 type regression struct {
 	CaseName  string   `json:"case_name"`
 	Severity  string   `json:"severity"`
@@ -99,6 +133,11 @@ type gatePolicy struct {
 		F1                  float64 `json:"f1"`
 		CalibrationErrorMax float64 `json:"calibration_error_max"`
 		AdversarialPassRate float64 `json:"adversarial_pass_rate"`
+		FrameworkMatrixRate float64 `json:"framework_matrix_pass_rate"`
+		DriftPrecision      float64 `json:"drift_precision"`
+		DriftRecall         float64 `json:"drift_recall"`
+		DriftF1             float64 `json:"drift_f1"`
+		BenchmarkP95MSMax   int64   `json:"benchmark_p95_ms_max"`
 	} `json:"thresholds"`
 	Severity1 struct {
 		RegressionsMax int `json:"regressions_max"`
@@ -278,7 +317,24 @@ func evaluate(corpusPath string, goldenPath string) (report, error) {
 	result.Metrics = calcMetrics(corpus.Cases, golden.Cases)
 	result.ByDomain = calcBuckets(corpus.Cases, golden.Cases, func(c corpusCase) string { return strings.TrimSpace(c.Domain) })
 	result.ByLanguage = calcBuckets(corpus.Cases, golden.Cases, func(c corpusCase) string { return strings.TrimSpace(c.Language) })
+	result.ByFrameworkVer = calcBuckets(corpus.Cases, golden.Cases, func(c corpusCase) string {
+		name := strings.TrimSpace(c.Framework)
+		ver := strings.TrimSpace(c.FrameworkVer)
+		if name == "" && ver == "" {
+			return ""
+		}
+		if ver == "" {
+			return name
+		}
+		if name == "" {
+			return "unknown@" + ver
+		}
+		return name + "@" + ver
+	})
 	result.Adversarial = calcAdversarial(corpus.Cases)
+	result.Drift = calcDrift(corpus.Cases)
+	result.Benchmark = calcBenchmark(corpus.Cases)
+	result.RuntimePlan = defaultRuntimePlan()
 	return result, nil
 }
 
@@ -348,6 +404,126 @@ func calcAdversarial(cases []corpusCase) advMetrics {
 		}
 	}
 	return advMetrics{Cases: total, Passed: passed, PassRate: ratio(passed, total)}
+}
+
+func calcDrift(cases []corpusCase) driftMetrics {
+	var tp, fp, fn int
+	tracked := 0
+	for _, c := range cases {
+		expected := hasTag(c.Tags, "drift_expected")
+		predicted := hasTag(c.Tags, "drift_detected")
+		if !predicted {
+			for _, f := range c.Failures {
+				if strings.Contains(strings.ToLower(strings.TrimSpace(f)), "drift") {
+					predicted = true
+					break
+				}
+			}
+		}
+		if !expected && !predicted {
+			continue
+		}
+		tracked++
+		switch {
+		case expected && predicted:
+			tp++
+		case !expected && predicted:
+			fp++
+		case expected && !predicted:
+			fn++
+		}
+	}
+
+	precision := 1.0
+	if tp+fp > 0 {
+		precision = float64(tp) / float64(tp+fp)
+	}
+	recall := 1.0
+	if tp+fn > 0 {
+		recall = float64(tp) / float64(tp+fn)
+	}
+	f1 := 0.0
+	if precision+recall > 0 {
+		f1 = 2 * precision * recall / (precision + recall)
+	}
+	return driftMetrics{
+		Cases:     tracked,
+		Detected:  tp + fp,
+		Precision: precision,
+		Recall:    recall,
+		F1:        f1,
+	}
+}
+
+func calcBenchmark(cases []corpusCase) benchMetrics {
+	durations := make([]int64, 0, len(cases))
+	var total int64
+	var max int64
+	for _, c := range cases {
+		if c.DurationMS <= 0 {
+			continue
+		}
+		d := c.DurationMS
+		durations = append(durations, d)
+		total += d
+		if d > max {
+			max = d
+		}
+	}
+	if len(durations) == 0 {
+		return benchMetrics{}
+	}
+	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+	return benchMetrics{
+		Cases:        len(durations),
+		P50Duration:  percentileDuration(durations, 0.50),
+		P95Duration:  percentileDuration(durations, 0.95),
+		MaxDuration:  max,
+		AvgDuration:  total / int64(len(durations)),
+		TotalRuntime: total,
+	}
+}
+
+func percentileDuration(sorted []int64, p float64) int64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	if p <= 0 {
+		return sorted[0]
+	}
+	if p >= 1 {
+		return sorted[len(sorted)-1]
+	}
+	idx := int(float64(len(sorted)-1) * p)
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(sorted) {
+		idx = len(sorted) - 1
+	}
+	return sorted[idx]
+}
+
+func defaultRuntimePlan() runtimePlan {
+	return runtimePlan{
+		ContractVersion: "v0",
+		Phase:           "phase2-preparation",
+		Enabled:         false,
+		PublishBlocking: false,
+		InputSignals: []string{
+			"api_gateway_access_logs",
+			"queue_broker_delivery_events",
+			"runtime_db_query_observations",
+			"service_dependency_telemetry",
+		},
+		MatchStrategy: "canonical_id_and_evidence_overlap",
+		OutputStates: []string{
+			"confirmed",
+			"contradicted",
+			"missing_runtime_signal",
+			"runtime_only_unmapped",
+		},
+	}
 }
 
 func collectRegressions(cases []corpusCase, golden []goldenCase) []regression {
@@ -496,6 +672,30 @@ func evaluateGate(rep report, policy gatePolicy) gateResult {
 	if rep.Adversarial.Cases > 0 && rep.Adversarial.PassRate < policy.Thresholds.AdversarialPassRate {
 		failures = append(failures, fmt.Sprintf("adversarial_pass_rate %.4f < %.4f", rep.Adversarial.PassRate, policy.Thresholds.AdversarialPassRate))
 	}
+	if policy.Thresholds.FrameworkMatrixRate > 0 && len(rep.ByFrameworkVer) > 0 {
+		matrixCases := 0
+		matrixPassed := 0
+		for _, b := range rep.ByFrameworkVer {
+			matrixCases += b.Cases
+			matrixPassed += int(float64(b.Cases)*b.PassRate + 0.5)
+		}
+		matrixRate := ratio(matrixPassed, matrixCases)
+		if matrixRate < policy.Thresholds.FrameworkMatrixRate {
+			failures = append(failures, fmt.Sprintf("framework_matrix_pass_rate %.4f < %.4f", matrixRate, policy.Thresholds.FrameworkMatrixRate))
+		}
+	}
+	if policy.Thresholds.DriftPrecision > 0 && rep.Drift.Cases > 0 && rep.Drift.Precision < policy.Thresholds.DriftPrecision {
+		failures = append(failures, fmt.Sprintf("drift_precision %.4f < %.4f", rep.Drift.Precision, policy.Thresholds.DriftPrecision))
+	}
+	if policy.Thresholds.DriftRecall > 0 && rep.Drift.Cases > 0 && rep.Drift.Recall < policy.Thresholds.DriftRecall {
+		failures = append(failures, fmt.Sprintf("drift_recall %.4f < %.4f", rep.Drift.Recall, policy.Thresholds.DriftRecall))
+	}
+	if policy.Thresholds.DriftF1 > 0 && rep.Drift.Cases > 0 && rep.Drift.F1 < policy.Thresholds.DriftF1 {
+		failures = append(failures, fmt.Sprintf("drift_f1 %.4f < %.4f", rep.Drift.F1, policy.Thresholds.DriftF1))
+	}
+	if policy.Thresholds.BenchmarkP95MSMax > 0 && rep.Benchmark.Cases > 0 && rep.Benchmark.P95Duration > policy.Thresholds.BenchmarkP95MSMax {
+		failures = append(failures, fmt.Sprintf("benchmark_p95_ms %d > %d", rep.Benchmark.P95Duration, policy.Thresholds.BenchmarkP95MSMax))
+	}
 	sev1 := 0
 	for _, r := range rep.Regressions {
 		if strings.EqualFold(r.Severity, "sev1") {
@@ -522,6 +722,10 @@ func writeDashboard(path string, rep report) error {
 		fmt.Sprintf("- f1: %.4f", rep.Metrics.F1),
 		fmt.Sprintf("- calibration_error: %.4f", rep.Metrics.CalibrationError),
 		fmt.Sprintf("- adversarial_pass_rate: %.4f (%d/%d)", rep.Adversarial.PassRate, rep.Adversarial.Passed, rep.Adversarial.Cases),
+		fmt.Sprintf("- drift_precision: %.4f", rep.Drift.Precision),
+		fmt.Sprintf("- drift_recall: %.4f", rep.Drift.Recall),
+		fmt.Sprintf("- drift_f1: %.4f", rep.Drift.F1),
+		fmt.Sprintf("- benchmark_p95_ms: %d", rep.Benchmark.P95Duration),
 		"",
 		"## Regressions",
 		fmt.Sprintf("- total: %d", len(rep.Regressions)),
@@ -537,6 +741,15 @@ func writeDashboard(path string, rep report) error {
 	for _, b := range rep.ByLanguage {
 		lines = append(lines, fmt.Sprintf("- %s: pass_rate=%.4f f1=%.4f calibration_error=%.4f", b.Name, b.PassRate, b.F1, b.CalibrationError))
 	}
+	lines = append(lines, "", "## By Framework Version")
+	for _, b := range rep.ByFrameworkVer {
+		lines = append(lines, fmt.Sprintf("- %s: pass_rate=%.4f f1=%.4f calibration_error=%.4f", b.Name, b.PassRate, b.F1, b.CalibrationError))
+	}
+	lines = append(lines, "", "## Runtime Reconciliation (Phase-2 Plan)")
+	lines = append(lines, fmt.Sprintf("- contract_version: %s", rep.RuntimePlan.ContractVersion))
+	lines = append(lines, fmt.Sprintf("- phase: %s", rep.RuntimePlan.Phase))
+	lines = append(lines, fmt.Sprintf("- enabled: %t", rep.RuntimePlan.Enabled))
+	lines = append(lines, fmt.Sprintf("- publish_blocking: %t", rep.RuntimePlan.PublishBlocking))
 	return writeText(path, strings.Join(lines, "\n")+"\n")
 }
 

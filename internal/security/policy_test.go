@@ -13,6 +13,12 @@ func TestAuthorizeTenantIsolationAndRoles(t *testing.T) {
 	if d := Authorize(ctx, Request{Action: ActionBuildGraph, ResourceTenant: "t1"}); d.Allow {
 		t.Fatalf("expected deny without write role/scope")
 	}
+	if d := Authorize(ctx, Request{Action: ActionRuntimePlan, ResourceTenant: "t1"}); !d.Allow {
+		t.Fatalf("expected allow for runtime plan read action, got %+v", d)
+	}
+	if d := Authorize(ctx, Request{Action: ActionRuntimeRun, ResourceTenant: "t1"}); !d.Allow {
+		t.Fatalf("expected allow for runtime reconcile read action, got %+v", d)
+	}
 	admin := Context{TenantID: "t1", Principal: "u2", Roles: []string{"tenant_admin"}}
 	if d := Authorize(admin, Request{Action: ActionBuildGraph, ResourceTenant: "t1"}); !d.Allow {
 		t.Fatalf("expected tenant admin write allow")

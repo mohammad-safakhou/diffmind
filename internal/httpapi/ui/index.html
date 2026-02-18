@@ -98,6 +98,27 @@
         <label>Repo Filter
           <input id="repoFilter" placeholder="/repos/service-a" />
         </label>
+        <label>Section
+          <input id="sectionFilter" placeholder="exposure|logic|dependencies" />
+        </label>
+      </div>
+      <div class="row">
+        <label>Class
+          <input id="classFilter" placeholder="exposure_http_endpoint" />
+        </label>
+        <label>Verification State
+          <input id="verificationStateFilter" placeholder="verified|needs_review|disputed" />
+        </label>
+      </div>
+      <div class="row">
+        <label>Adapter ID
+          <input id="adapterIDFilter" placeholder="pyright|go-types|tsc" />
+        </label>
+        <label>Provenance Version
+          <input id="provenanceVersionFilter" placeholder="v1.0.0" />
+        </label>
+      </div>
+      <div class="row">
         <label>Min Confidence
           <input id="confidenceMin" type="range" min="0" max="1" step="0.05" value="0" />
           <span id="confidenceMinLabel">0.00</span>
@@ -183,6 +204,124 @@
         </div>
         <div id="compareSummary" class="muted"></div>
         <div id="compareResults" class="details"></div>
+      </div>
+      <div class="compareBox">
+        <h3>Product Query Templates</h3>
+        <div class="row">
+          <label>Template ID
+            <input id="productTemplateID" placeholder="docs-service" />
+          </label>
+          <label>Controls
+            <div class="actions">
+              <button id="loadProductTemplatesBtn" type="button">Load Templates</button>
+              <button id="runProductTemplateBtn" type="button">Run Template</button>
+            </div>
+          </label>
+        </div>
+        <label>Template Vars JSON (object)
+          <textarea id="productTemplateVars" rows="4" placeholder='{"graph_id":"g1","service_id":"service-a","node_id":"svc:a"}'></textarea>
+        </label>
+        <div id="productTemplateSummary" class="muted"></div>
+        <pre id="productTemplateResult" class="details"></pre>
+      </div>
+      <div class="compareBox">
+        <h3>Question Catalog</h3>
+        <div class="row">
+          <label>Question ID
+            <input id="questionID" placeholder="q-service-external" />
+          </label>
+          <label>Controls
+            <div class="actions">
+              <button id="loadQuestionsBtn" type="button">Load Questions</button>
+              <button id="loadQuestionCoverageBtn" type="button">Coverage</button>
+              <button id="runQuestionCatalogBtn" type="button">Run Catalog</button>
+              <button id="runQuestionBtn" type="button">Run Question</button>
+            </div>
+          </label>
+        </div>
+        <label>Question Vars JSON (object)
+          <textarea id="questionVars" rows="4" placeholder='{"graph_id":"g1","service_id":"service-a","node_id":"svc:a"}'></textarea>
+        </label>
+        <div id="questionSummary" class="muted"></div>
+        <pre id="questionResult" class="details"></pre>
+      </div>
+      <div class="compareBox">
+        <h3>Runtime Reconciliation (Dry-Run)</h3>
+        <div class="row">
+          <label>Graph ID
+            <input id="runtimeGraphID" placeholder="g1" />
+          </label>
+          <label>Controls
+            <div class="actions">
+              <button id="loadRuntimePlanBtn" type="button">Load Runtime Plan</button>
+              <button id="loadRuntimeClaimsBtn" type="button">Load Claims From Graph</button>
+              <button id="runRuntimeReconcileBtn" type="button">Run Reconcile</button>
+            </div>
+          </label>
+        </div>
+        <div class="row">
+          <label>Reconcile History
+            <select id="runtimeHistory"></select>
+          </label>
+          <label>Compare To
+            <select id="runtimeCompareTo"></select>
+          </label>
+        </div>
+        <div class="row">
+          <label>History Actions
+            <div class="actions">
+              <button id="refreshRuntimeHistoryBtn" type="button">Refresh History</button>
+              <button id="loadRuntimeHistoryBtn" type="button">Load Selected</button>
+              <button id="compareRuntimeHistoryBtn" type="button">Compare Selected</button>
+              <button id="deleteRuntimeHistoryBtn" type="button">Delete Selected</button>
+              <button id="pruneRuntimeHistoryBtn" type="button">Keep Latest 20</button>
+            </div>
+          </label>
+        </div>
+        <div class="row">
+          <label>Report From (RFC3339)
+            <input id="runtimeReportFrom" placeholder="2026-01-01T00:00:00Z" />
+          </label>
+          <label>Report To (RFC3339)
+            <input id="runtimeReportTo" placeholder="2026-01-31T23:59:59Z" />
+          </label>
+        </div>
+        <div class="actions">
+          <button id="loadRuntimeReportBtn" type="button">Load Runtime Report</button>
+        </div>
+        <div class="row">
+          <label>Sections
+            <input id="runtimeSections" placeholder="exposure,dependencies" />
+          </label>
+          <label class="check">
+            <input id="runtimeIncludeDisputed" type="checkbox" /> Include disputed
+          </label>
+        </div>
+        <label>Claims JSON (array)
+          <textarea id="runtimeClaims" rows="6" placeholder='[{"graph_id":"g1","edge_id":"e1"}]'></textarea>
+        </label>
+        <label>Observations JSON (array)
+          <textarea id="runtimeObservations" rows="6" placeholder='[{"source_system":"gateway","signal_type":"http","attributes":{"edge_id":"e1"}}]'></textarea>
+        </label>
+        <div id="runtimeSummary" class="muted"></div>
+        <pre id="runtimeResult" class="details"></pre>
+      </div>
+      <div class="compareBox">
+        <h3>Final Gate (M17)</h3>
+        <div class="row">
+          <label>Signers (csv)
+            <input id="finalSigners" placeholder="engineering,platform,security" />
+          </label>
+          <label>Controls
+            <div class="actions">
+              <button id="runFinalGateBtn" type="button">Run Attestation</button>
+              <button id="loadFinalReadinessBtn" type="button">Load Readiness</button>
+              <button id="loadFinalDecisionBtn" type="button">Load Decision</button>
+            </div>
+          </label>
+        </div>
+        <div id="finalSummary" class="muted"></div>
+        <pre id="finalResult" class="details"></pre>
       </div>
       <div class="graphWrap">
         <button id="resetViewBtn" type="button" class="graphResetBtn">Reset View</button>

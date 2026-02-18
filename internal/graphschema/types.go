@@ -13,10 +13,11 @@ type Graph struct {
 }
 
 type GraphMeta struct {
-	TenantID   string          `json:"tenant_id,omitempty"`
-	Services   []ServiceMeta   `json:"services"`
-	Provenance GraphProvenance `json:"provenance,omitempty"`
-	Freshness  GraphFreshness  `json:"freshness,omitempty"`
+	OntologyVersion string          `json:"ontology_version,omitempty"`
+	TenantID        string          `json:"tenant_id,omitempty"`
+	Services        []ServiceMeta   `json:"services"`
+	Provenance      GraphProvenance `json:"provenance,omitempty"`
+	Freshness       GraphFreshness  `json:"freshness,omitempty"`
 }
 
 type ServiceMeta struct {
@@ -69,24 +70,30 @@ type GraphStats struct {
 }
 
 type Node struct {
-	ID         string         `json:"id"`
-	Type       string         `json:"type"`
-	Label      string         `json:"label"`
-	ServiceID  string         `json:"service_id,omitempty"`
-	Attributes map[string]any `json:"attributes"`
-	Confidence float64        `json:"confidence"`
-	Inferred   bool           `json:"inferred"`
+	ID                string         `json:"id"`
+	Type              string         `json:"type"`
+	Label             string         `json:"label"`
+	ServiceID         string         `json:"service_id,omitempty"`
+	Section           string         `json:"section,omitempty"`
+	Class             string         `json:"class,omitempty"`
+	VerificationState string         `json:"verification_state,omitempty"`
+	Attributes        map[string]any `json:"attributes"`
+	Confidence        float64        `json:"confidence"`
+	Inferred          bool           `json:"inferred"`
 }
 
 type Edge struct {
-	ID           string         `json:"id"`
-	Type         string         `json:"type"`
-	SourceID     string         `json:"source_id"`
-	TargetID     string         `json:"target_id"`
-	Attributes   map[string]any `json:"attributes"`
-	Confidence   float64        `json:"confidence"`
-	Inferred     bool           `json:"inferred"`
-	EvidenceRefs []EvidenceRef  `json:"evidence_refs"`
+	ID                string         `json:"id"`
+	Type              string         `json:"type"`
+	SourceID          string         `json:"source_id"`
+	TargetID          string         `json:"target_id"`
+	Section           string         `json:"section,omitempty"`
+	Class             string         `json:"class,omitempty"`
+	VerificationState string         `json:"verification_state,omitempty"`
+	Attributes        map[string]any `json:"attributes"`
+	Confidence        float64        `json:"confidence"`
+	Inferred          bool           `json:"inferred"`
+	EvidenceRefs      []EvidenceRef  `json:"evidence_refs"`
 }
 
 type EvidenceRef struct {

@@ -37,6 +37,7 @@ func (g *graphBuilder) addServiceNodes() {
 func (g *graphBuilder) addEndpointNodes() {
 	for i := range g.services {
 		svc := &g.services[i]
+		serviceNode := serviceNodeID(svc.spec.ID)
 		for _, e := range svc.bundle.Entities {
 			if e.Type != "Endpoint" {
 				continue
@@ -53,7 +54,20 @@ func (g *graphBuilder) addEndpointNodes() {
 				Confidence: e.Confidence,
 				Inferred:   false,
 			})
+			endpointNode := g.nodeByID[nodeID]
+			endpointNode.Attributes["path_normalized"] = normalizePath(path)
+			g.nodeByID[nodeID] = endpointNode
 			svc.endpointNodes[e.ID] = nodeID
+			g.addEdge(graphschema.Edge{
+				ID:           edgeID("service_exposes_endpoint", serviceNode, nodeID, e.ID),
+				Type:         "service_exposes_endpoint",
+				SourceID:     serviceNode,
+				TargetID:     nodeID,
+				Attributes:   map[string]any{"source": "bundle"},
+				Confidence:   e.Confidence,
+				Inferred:     false,
+				EvidenceRefs: buildEvidenceRefs(svc.analyzer, e.FactIDs, e.EvidenceIDs),
+			})
 		}
 	}
 }
@@ -112,11 +126,15 @@ func (g *graphBuilder) resolveAPIEdges() {
 			}
 			serviceToEndpointID := edgeID("service_calls_endpoint", srcServiceNode, endpointID, method+"|"+target)
 			g.addEdge(graphschema.Edge{
-				ID:           serviceToEndpointID,
-				Type:         "service_calls_endpoint",
-				SourceID:     srcServiceNode,
-				TargetID:     endpointID,
-				Attributes:   map[string]any{"method": method, "target": target},
+				ID:       serviceToEndpointID,
+				Type:     "service_calls_endpoint",
+				SourceID: srcServiceNode,
+				TargetID: endpointID,
+				Attributes: map[string]any{
+					"method":                 method,
+					"target":                 target,
+					"target_path_normalized": normalizePath(target),
+				},
 				Confidence:   edgeConfidence(e.Confidence, inferred),
 				Inferred:     inferred,
 				EvidenceRefs: evidence,
@@ -145,6 +163,7 @@ func (g *graphBuilder) resolveCodeQueueAndDBEdges() {
 			evidence := buildEvidenceRefs(svc.analyzer, e.FactIDs, e.EvidenceIDs)
 			switch protocol {
 			case "queue":
+				canonical := canonicalQueueKey(target)
 				queueID, ok := queueNodes[target]
 				if !ok {
 					queueID = queueNodeID(target)
@@ -153,35 +172,46 @@ func (g *graphBuilder) resolveCodeQueueAndDBEdges() {
 						ID:         queueID,
 						Type:       "queue",
 						Label:      target,
-						Attributes: map[string]any{"name": target, "source": "analyzer"},
+						Attributes: map[string]any{"name": target, "source": "analyzer", "canonical_key": canonical},
 						Confidence: e.Confidence,
 						Inferred:   false,
 					})
 				}
 				if method == "CONSUME" {
 					g.addEdge(graphschema.Edge{
-						ID:           edgeID("queue_delivers_to_service", queueID, src, target+"|"+method),
-						Type:         "queue_delivers_to_service",
-						SourceID:     queueID,
-						TargetID:     src,
-						Attributes:   map[string]any{"topic": target, "source": "analyzer", "library": e.Attributes["library"]},
+						ID:       edgeID("queue_delivers_to_service", queueID, src, target+"|"+method),
+						Type:     "queue_delivers_to_service",
+						SourceID: queueID,
+						TargetID: src,
+						Attributes: map[string]any{
+							"topic":         target,
+							"source":        "analyzer",
+							"library":       e.Attributes["library"],
+							"canonical_key": canonical,
+						},
 						Confidence:   e.Confidence,
 						Inferred:     false,
 						EvidenceRefs: evidence,
 					})
 				} else {
 					g.addEdge(graphschema.Edge{
-						ID:           edgeID("service_publishes_queue", src, queueID, target+"|"+method),
-						Type:         "service_publishes_queue",
-						SourceID:     src,
-						TargetID:     queueID,
-						Attributes:   map[string]any{"topic": target, "source": "analyzer", "library": e.Attributes["library"]},
+						ID:       edgeID("service_publishes_queue", src, queueID, target+"|"+method),
+						Type:     "service_publishes_queue",
+						SourceID: src,
+						TargetID: queueID,
+						Attributes: map[string]any{
+							"topic":         target,
+							"source":        "analyzer",
+							"library":       e.Attributes["library"],
+							"canonical_key": canonical,
+						},
 						Confidence:   e.Confidence,
 						Inferred:     false,
 						EvidenceRefs: evidence,
 					})
 				}
 			case "db":
+				canonical := canonicalDatabaseKey(target)
 				dbID, ok := dbNodes[target]
 				if !ok {
 					dbID = databaseNodeID(target)
@@ -190,29 +220,39 @@ func (g *graphBuilder) resolveCodeQueueAndDBEdges() {
 						ID:         dbID,
 						Type:       "database",
 						Label:      target,
-						Attributes: map[string]any{"name": target, "source": "analyzer"},
+						Attributes: map[string]any{"name": target, "source": "analyzer", "canonical_key": canonical},
 						Confidence: e.Confidence,
 						Inferred:   false,
 					})
 				}
 				if method == "READ" {
 					g.addEdge(graphschema.Edge{
-						ID:           edgeID("service_reads_db", src, dbID, target+"|"+method),
-						Type:         "service_reads_db",
-						SourceID:     src,
-						TargetID:     dbID,
-						Attributes:   map[string]any{"database": target, "source": "analyzer", "library": e.Attributes["library"]},
+						ID:       edgeID("service_reads_db", src, dbID, target+"|"+method),
+						Type:     "service_reads_db",
+						SourceID: src,
+						TargetID: dbID,
+						Attributes: map[string]any{
+							"database":      target,
+							"source":        "analyzer",
+							"library":       e.Attributes["library"],
+							"canonical_key": canonical,
+						},
 						Confidence:   e.Confidence,
 						Inferred:     false,
 						EvidenceRefs: evidence,
 					})
 				} else {
 					g.addEdge(graphschema.Edge{
-						ID:           edgeID("service_writes_db", src, dbID, target+"|"+method),
-						Type:         "service_writes_db",
-						SourceID:     src,
-						TargetID:     dbID,
-						Attributes:   map[string]any{"database": target, "source": "analyzer", "library": e.Attributes["library"]},
+						ID:       edgeID("service_writes_db", src, dbID, target+"|"+method),
+						Type:     "service_writes_db",
+						SourceID: src,
+						TargetID: dbID,
+						Attributes: map[string]any{
+							"database":      target,
+							"source":        "analyzer",
+							"library":       e.Attributes["library"],
+							"canonical_key": canonical,
+						},
 						Confidence:   e.Confidence,
 						Inferred:     false,
 						EvidenceRefs: evidence,
@@ -230,13 +270,14 @@ func (g *graphBuilder) resolveManifestQueueAndDBEdges() {
 	for _, svc := range g.services {
 		src := serviceNodeID(svc.spec.ID)
 		for _, topic := range uniqueStrings(svc.spec.QueuePublishes) {
+			canonical := canonicalQueueKey(topic)
 			qNodeID := queueNodeID(topic)
 			queueNodes[topic] = qNodeID
 			g.addNode(graphschema.Node{
 				ID:         qNodeID,
 				Type:       "queue",
 				Label:      topic,
-				Attributes: map[string]any{"name": topic},
+				Attributes: map[string]any{"name": topic, "canonical_key": canonical},
 				Confidence: 1.0,
 				Inferred:   false,
 			})
@@ -245,12 +286,13 @@ func (g *graphBuilder) resolveManifestQueueAndDBEdges() {
 				Type:       "service_publishes_queue",
 				SourceID:   src,
 				TargetID:   qNodeID,
-				Attributes: map[string]any{"topic": topic, "source": "manifest"},
+				Attributes: map[string]any{"topic": topic, "source": "manifest", "canonical_key": canonical},
 				Confidence: 1.0,
 				Inferred:   false,
 			})
 		}
 		for _, topic := range uniqueStrings(svc.spec.QueueConsumes) {
+			canonical := canonicalQueueKey(topic)
 			qNodeID, ok := queueNodes[topic]
 			if !ok {
 				qNodeID = queueNodeID(topic)
@@ -259,7 +301,7 @@ func (g *graphBuilder) resolveManifestQueueAndDBEdges() {
 					ID:         qNodeID,
 					Type:       "queue",
 					Label:      topic,
-					Attributes: map[string]any{"name": topic},
+					Attributes: map[string]any{"name": topic, "canonical_key": canonical},
 					Confidence: 1.0,
 					Inferred:   false,
 				})
@@ -269,13 +311,14 @@ func (g *graphBuilder) resolveManifestQueueAndDBEdges() {
 				Type:       "queue_delivers_to_service",
 				SourceID:   qNodeID,
 				TargetID:   src,
-				Attributes: map[string]any{"topic": topic, "source": "manifest"},
+				Attributes: map[string]any{"topic": topic, "source": "manifest", "canonical_key": canonical},
 				Confidence: 1.0,
 				Inferred:   false,
 			})
 		}
 
 		for _, db := range uniqueStrings(svc.spec.DBReads) {
+			canonical := canonicalDatabaseKey(db)
 			dbNodeID, ok := dbNodes[db]
 			if !ok {
 				dbNodeID = databaseNodeID(db)
@@ -284,7 +327,7 @@ func (g *graphBuilder) resolveManifestQueueAndDBEdges() {
 					ID:         dbNodeID,
 					Type:       "database",
 					Label:      db,
-					Attributes: map[string]any{"name": db},
+					Attributes: map[string]any{"name": db, "canonical_key": canonical},
 					Confidence: 1.0,
 					Inferred:   false,
 				})
@@ -294,12 +337,13 @@ func (g *graphBuilder) resolveManifestQueueAndDBEdges() {
 				Type:       "service_reads_db",
 				SourceID:   src,
 				TargetID:   dbNodeID,
-				Attributes: map[string]any{"database": db, "source": "manifest"},
+				Attributes: map[string]any{"database": db, "source": "manifest", "canonical_key": canonical},
 				Confidence: 1.0,
 				Inferred:   false,
 			})
 		}
 		for _, db := range uniqueStrings(svc.spec.DBWrites) {
+			canonical := canonicalDatabaseKey(db)
 			dbNodeID, ok := dbNodes[db]
 			if !ok {
 				dbNodeID = databaseNodeID(db)
@@ -308,7 +352,7 @@ func (g *graphBuilder) resolveManifestQueueAndDBEdges() {
 					ID:         dbNodeID,
 					Type:       "database",
 					Label:      db,
-					Attributes: map[string]any{"name": db},
+					Attributes: map[string]any{"name": db, "canonical_key": canonical},
 					Confidence: 1.0,
 					Inferred:   false,
 				})
@@ -318,7 +362,7 @@ func (g *graphBuilder) resolveManifestQueueAndDBEdges() {
 				Type:       "service_writes_db",
 				SourceID:   src,
 				TargetID:   dbNodeID,
-				Attributes: map[string]any{"database": db, "source": "manifest"},
+				Attributes: map[string]any{"database": db, "source": "manifest", "canonical_key": canonical},
 				Confidence: 1.0,
 				Inferred:   false,
 			})
@@ -1194,7 +1238,16 @@ func normalizePath(v string) string {
 		if err != nil {
 			return ""
 		}
-		return u.Path
+		v = strings.TrimSpace(u.Path)
+	}
+	if v == "" {
+		return "/"
+	}
+	if !strings.HasPrefix(v, "/") {
+		v = "/" + v
+	}
+	if len(v) > 1 {
+		v = strings.TrimRight(v, "/")
 	}
 	return v
 }

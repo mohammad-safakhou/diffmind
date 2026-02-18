@@ -251,6 +251,27 @@ func detectConfigKeys(c *collector, file sourceFile) {
 }
 
 func detectQueueAndDBCalls(c *collector, file sourceFile) {
+	if file.Ext == ".go" {
+		if detectGoQueueAndDBCallsSemantic(c, file) {
+			return
+		}
+	}
+	if file.Ext == ".py" {
+		if detectPythonQueueAndDBCallsSemantic(c, file) {
+			return
+		}
+	}
+	switch file.Ext {
+	case ".js", ".jsx", ".ts", ".tsx":
+		if detectJSTSQueueAndDBCallsSemantic(c, file) {
+			return
+		}
+	}
+	if file.Ext == ".java" {
+		if detectJavaQueueAndDBCallsSemantic(c, file) {
+			return
+		}
+	}
 	for _, m := range regexMatchesByLine(file.Lines, reKafkaWrite) {
 		topic := nearestGroupOnLine(file.Lines, m.line, reKafkaTopicAttr)
 		if topic == "" {

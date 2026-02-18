@@ -20,6 +20,9 @@ func ValidateGraph(graph Graph) error {
 	if strings.TrimSpace(graph.Meta.TenantID) == "" {
 		return errors.New("meta.tenant_id is required")
 	}
+	if v := strings.TrimSpace(graph.Meta.OntologyVersion); v != "" && !IsSupportedOntologyVersion(v) {
+		return fmt.Errorf("meta.ontology_version %q is unsupported", v)
+	}
 
 	nodeByID := make(map[string]Node, len(graph.Nodes))
 	for i, n := range graph.Nodes {
@@ -74,6 +77,15 @@ func validateNode(n Node) error {
 	if n.Confidence < 0 || n.Confidence > 1 {
 		return errors.New("confidence must be in [0,1]")
 	}
+	if v := strings.TrimSpace(n.Section); v != "" && !IsValidSection(v) {
+		return fmt.Errorf("section %q is invalid", v)
+	}
+	if strings.TrimSpace(n.Class) == "" && strings.TrimSpace(n.Section) != "" {
+		return errors.New("class is required when section is set")
+	}
+	if v := strings.TrimSpace(n.VerificationState); v != "" && !IsValidVerificationState(v) {
+		return fmt.Errorf("verification_state %q is invalid", v)
+	}
 	return nil
 }
 
@@ -92,6 +104,15 @@ func validateEdge(e Edge) error {
 	}
 	if e.Confidence < 0 || e.Confidence > 1 {
 		return errors.New("confidence must be in [0,1]")
+	}
+	if v := strings.TrimSpace(e.Section); v != "" && !IsValidSection(v) {
+		return fmt.Errorf("section %q is invalid", v)
+	}
+	if strings.TrimSpace(e.Class) == "" && strings.TrimSpace(e.Section) != "" {
+		return errors.New("class is required when section is set")
+	}
+	if v := strings.TrimSpace(e.VerificationState); v != "" && !IsValidVerificationState(v) {
+		return fmt.Errorf("verification_state %q is invalid", v)
 	}
 	for i, ref := range e.EvidenceRefs {
 		if err := validateEvidenceRef(ref); err != nil {

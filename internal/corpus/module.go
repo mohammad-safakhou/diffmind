@@ -37,6 +37,8 @@ type manifestCase struct {
 	Ref          string      `json:"ref"`
 	Domain       string      `json:"domain,omitempty"`
 	Language     string      `json:"language,omitempty"`
+	Framework    string      `json:"framework,omitempty"`
+	FrameworkVer string      `json:"framework_version,omitempty"`
 	Tags         []string    `json:"tags,omitempty"`
 	Expect       expectation `json:"expect"`
 	AnalyzeFlags []string    `json:"analyze_flags"`
@@ -62,6 +64,8 @@ type caseReport struct {
 	Ref          string         `json:"ref"`
 	Domain       string         `json:"domain,omitempty"`
 	Language     string         `json:"language,omitempty"`
+	Framework    string         `json:"framework,omitempty"`
+	FrameworkVer string         `json:"framework_version,omitempty"`
 	Tags         []string       `json:"tags,omitempty"`
 	DurationMS   int64          `json:"duration_ms"`
 	CaseOutDir   string         `json:"case_out_dir"`
@@ -261,6 +265,8 @@ func runCase(ctx context.Context, c manifestCase, manifestDir string, outDir str
 		Ref:          ref,
 		Domain:       strings.TrimSpace(c.Domain),
 		Language:     strings.TrimSpace(c.Language),
+		Framework:    strings.TrimSpace(c.Framework),
+		FrameworkVer: strings.TrimSpace(c.FrameworkVer),
 		Tags:         append([]string(nil), c.Tags...),
 		DurationMS:   time.Since(start).Milliseconds(),
 		CaseOutDir:   caseOutDir,

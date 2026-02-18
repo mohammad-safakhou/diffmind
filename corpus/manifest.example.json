@@ -6,6 +6,11 @@
       "name": "self",
       "source": "..",
       "ref": "HEAD",
+      "domain": "logic",
+      "language": "go",
+      "framework": "stdlib",
+      "framework_version": "1.x",
+      "tags": ["critical"],
       "expect": {
         "min_entities": 1,
         "required_types": [
