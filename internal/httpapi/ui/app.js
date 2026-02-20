@@ -12,6 +12,21 @@ const state = {
   selectedNodeId: '',
   selectedEdgeId: '',
   lastCompare: null,
+  lastPointer: { x: 0, y: 0, inside: false },
+  layoutCache: {},
+  layoutAsyncInFlight: {},
+  layoutEngineNote: '',
+  workflowFocusNodeIDs: [],
+  workflowFocusEdgeIDs: [],
+  operator: {
+    sessionID: '',
+    startedAt: '',
+    activeTask: '',
+    taskStartedAtMS: 0,
+    events: [],
+    taskStats: {},
+    latestTelemetry: null,
+  },
   compareHistoryNextBefore: '',
   auth: {
     tenant: 'default',
@@ -63,6 +78,11 @@ const runtimeResult = document.getElementById('runtimeResult');
 const finalSigners = document.getElementById('finalSigners');
 const finalSummary = document.getElementById('finalSummary');
 const finalResult = document.getElementById('finalResult');
+const mergeExpectedLinksPath = document.getElementById('mergeExpectedLinksPath');
+const mergeOutPath = document.getElementById('mergeOutPath');
+const mergeFailOnGate = document.getElementById('mergeFailOnGate');
+const mergeQualitySummary = document.getElementById('mergeQualitySummary');
+const mergeQualityResult = document.getElementById('mergeQualityResult');
 const edgesBody = document.querySelector('#edgesTable tbody');
 const details = document.getElementById('selectionDetails');
 const graphSvg = document.getElementById('graphSvg');
@@ -71,6 +91,8 @@ const layoutMode = document.getElementById('layoutMode');
 const architectureOnly = document.getElementById('architectureOnly');
 const collapseByService = document.getElementById('collapseByService');
 const showLabels = document.getElementById('showLabels');
+const topologyOnly = document.getElementById('topologyOnly');
+const showServiceAnchors = document.getElementById('showServiceAnchors');
 const maxNodesInput = document.getElementById('maxNodes');
 const maxEdgesInput = document.getElementById('maxEdges');
 const graphWarning = document.getElementById('graphWarning');
@@ -79,6 +101,10 @@ const authPrincipal = document.getElementById('authPrincipal');
 const authRoles = document.getElementById('authRoles');
 const authScopes = document.getElementById('authScopes');
 const authStatus = document.getElementById('authStatus');
+const opsSessionID = document.getElementById('opsSessionID');
+const opsSummary = document.getElementById('opsSummary');
+const opsSlaSummary = document.getElementById('opsSlaSummary');
+const opsTelemetryResult = document.getElementById('opsTelemetryResult');
 
 const edgeColors = {
   service_calls_service: '#264653',
@@ -290,14 +316,56 @@ function architectureNodeTypes() {
     'database',
     'topic',
     'table',
-    'deployment',
     'runtime_unit',
     'dependency',
-    'pipeline_step',
-    'build_artifact',
-    'environment',
-    'owner',
+    'unresolved_api_call',
   ]);
+}
+
+function hideableServiceAnchorEdge(edge, nodeByID) {
+  const source = nodeByID.get(edge.source_id);
+  const target = nodeByID.get(edge.target_id);
+  if (!source || !target) return false;
+  if (source.type !== 'service' && target.type !== 'service') return false;
+
+  // Keep cross-service topology links; hide single-service ownership/anchor spokes by default.
+  if (edge.type === 'service_calls_service') {
+    return source.service_id === target.service_id;
+  }
+  if (edge.type === 'service_calls_endpoint' && source.type === 'service') {
+    return source.service_id === target.service_id;
+  }
+  if (edge.type === 'queue_delivers_to_service' && target.type === 'service') {
+    if (!source.service_id || !target.service_id) {
+      return true;
+    }
+    return source.service_id === target.service_id;
+  }
+  if (edge.type.startsWith('service_')) {
+    return true;
+  }
+  return false;
+}
+
+function keepEdgeInTopology(edge) {
+  const t = String(edge.type || '');
+  if (t.startsWith('service_')) {
+    const keepServiceEdges = new Set([
+      'service_calls_service',
+      'service_calls_endpoint',
+      'service_publishes_queue',
+      'service_reads_db',
+      'service_writes_db',
+    ]);
+    return keepServiceEdges.has(t);
+  }
+  if (t === 'queue_delivers_to_service') {
+    return true;
+  }
+  if (t.endsWith('_owned_by')) {
+    return false;
+  }
+  return true;
 }
 
 function aggregateByService(raw) {
@@ -375,6 +443,7 @@ function applyDisplayFilters(raw) {
   const rawNodes = Array.isArray(raw.nodes) ? raw.nodes : [];
   const rawEdges = Array.isArray(raw.edges) ? raw.edges : [];
   const rawServiceIDs = new Set(rawNodes.map((n) => n.service_id).filter((v) => !!v));
+  const rawNodeByID = new Map(rawNodes.map((n) => [n.id, n]));
   let nodes = Array.isArray(raw.nodes) ? [...raw.nodes] : [];
   let edges = Array.isArray(raw.edges) ? [...raw.edges] : [];
 
@@ -383,6 +452,28 @@ function applyDisplayFilters(raw) {
     const keepNode = new Set(nodes.filter((n) => allowed.has(n.type)).map((n) => n.id));
     nodes = nodes.filter((n) => keepNode.has(n.id));
     edges = edges.filter((e) => keepNode.has(e.source_id) && keepNode.has(e.target_id));
+  }
+  if (topologyOnly && topologyOnly.checked) {
+    edges = edges.filter((e) => keepEdgeInTopology(e));
+    const keepNode = new Set();
+    for (const e of edges) {
+      keepNode.add(e.source_id);
+      keepNode.add(e.target_id);
+    }
+    nodes = nodes.filter((n) => n.type === 'service' || keepNode.has(n.id));
+  }
+  if (!showServiceAnchors || !showServiceAnchors.checked) {
+    const before = edges.length;
+    edges = edges.filter((e) => !hideableServiceAnchorEdge(e, rawNodeByID));
+    const hidden = before - edges.length;
+    if (hidden > 0) {
+      const keepNode = new Set();
+      for (const e of edges) {
+        keepNode.add(e.source_id);
+        keepNode.add(e.target_id);
+      }
+      nodes = nodes.filter((n) => n.type !== 'service' || keepNode.has(n.id));
+    }
   }
 
   let base = { ...raw, nodes, edges };
@@ -433,6 +524,9 @@ function applyDisplayFilters(raw) {
   }
   if (nodes.length < fullNodes) note.push(`nodes ${nodes.length}/${fullNodes}`);
   if (edges.length < fullEdges) note.push(`edges ${edges.length}/${fullEdges}`);
+  if ((!showServiceAnchors || !showServiceAnchors.checked) && edges.length < fullEdges) {
+    note.push('service-anchor edges hidden');
+  }
   graphWarning.textContent = note.length > 0
     ? `View is compressed for readability: ${note.join(', ')}.`
     : '';
@@ -447,6 +541,143 @@ function applyDisplayFilters(raw) {
       edge_count: edges.length,
     },
   };
+}
+
+function graphSignature(graph) {
+  if (!graph) return 'none';
+  return [
+    graph.graph_id || 'graph',
+    (graph.nodes || []).length,
+    (graph.edges || []).length,
+    state.layout,
+  ].join(':');
+}
+
+function getCachedLayout(graph) {
+  const sig = graphSignature(graph);
+  if (state.layoutCache[sig]) {
+    return state.layoutCache[sig];
+  }
+  state.layoutEngineNote = '';
+  let layout = null;
+  if (state.layout === 'service_map') {
+    layout = computeServiceMapLayout(graph);
+  } else if (state.layout === 'layered_arch') {
+    layout = computeLayeredArchitectureLayout(graph);
+  } else if (state.layout === 'dagre_engine') {
+    layout = computeDagreLayoutIfAvailable(graph);
+    if (!layout) {
+      state.layoutEngineNote = 'dagre plugin not loaded, fallback to layered architecture.';
+      layout = computeLayeredArchitectureLayout(graph);
+    }
+  } else if (state.layout === 'elk_engine') {
+    layout = computeELKLayoutIfCachedOrSchedule(graph, sig);
+    if (!layout) {
+      state.layoutEngineNote = 'elk plugin not loaded or still computing, fallback to layered architecture.';
+      layout = computeLayeredArchitectureLayout(graph);
+    }
+  } else if (state.layout === 'service_lanes') {
+    layout = { w: 1200, h: 520, position: computeServiceLanePositions(graph.nodes || [], 1200, 520), sections: [] };
+  } else {
+    layout = { w: 1200, h: 520, position: computeGridPositions(graph.nodes || [], 1200, 520), sections: [] };
+  }
+  state.layoutCache[sig] = layout;
+  return layout;
+}
+
+function computeDagreLayoutIfAvailable(graph) {
+  if (!window.dagre || !window.graphlib) {
+    return null;
+  }
+  const g = new window.graphlib.Graph();
+  g.setGraph({
+    rankdir: 'LR',
+    nodesep: 54,
+    ranksep: 130,
+    marginx: 48,
+    marginy: 48,
+  });
+  g.setDefaultEdgeLabel(() => ({}));
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  const edges = Array.isArray(graph.edges) ? graph.edges : [];
+  for (const n of nodes) {
+    g.setNode(n.id, { width: 140, height: 34 });
+  }
+  for (const e of edges) {
+    if (g.hasNode(e.source_id) && g.hasNode(e.target_id)) {
+      g.setEdge(e.source_id, e.target_id);
+    }
+  }
+  window.dagre.layout(g);
+  const pos = {};
+  let maxX = 1200;
+  let maxY = 700;
+  for (const n of nodes) {
+    const p = g.node(n.id);
+    if (!p) continue;
+    pos[n.id] = { x: Number(p.x) || 0, y: Number(p.y) || 0 };
+    maxX = Math.max(maxX, (Number(p.x) || 0) + 80);
+    maxY = Math.max(maxY, (Number(p.y) || 0) + 80);
+  }
+  const layered = computeLayeredArchitectureLayout(graph);
+  return {
+    w: maxX,
+    h: maxY,
+    position: pos,
+    sections: layered.sections || [],
+  };
+}
+
+function computeELKLayoutIfCachedOrSchedule(graph, sig) {
+  if (state.layoutCache[sig]) {
+    return state.layoutCache[sig];
+  }
+  if (state.layoutAsyncInFlight[sig]) {
+    return null;
+  }
+  if (typeof window.ELK !== 'function') {
+    return null;
+  }
+  const elk = new window.ELK();
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  const edges = Array.isArray(graph.edges) ? graph.edges : [];
+  const elkGraph = {
+    id: 'root',
+    layoutOptions: {
+      'elk.algorithm': 'layered',
+      'elk.direction': 'RIGHT',
+      'elk.spacing.nodeNode': '48',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '120',
+    },
+    children: nodes.map((n) => ({ id: n.id, width: 140, height: 34 })),
+    edges: edges.map((e) => ({ id: e.id || `${e.source_id}->${e.target_id}`, sources: [e.source_id], targets: [e.target_id] })),
+  };
+  state.layoutAsyncInFlight[sig] = true;
+  elk.layout(elkGraph).then((out) => {
+    const pos = {};
+    let maxX = 1200;
+    let maxY = 700;
+    for (const child of out.children || []) {
+      pos[child.id] = {
+        x: (Number(child.x) || 0) + (Number(child.width) || 0) / 2,
+        y: (Number(child.y) || 0) + (Number(child.height) || 0) / 2,
+      };
+      maxX = Math.max(maxX, (Number(child.x) || 0) + (Number(child.width) || 0) + 80);
+      maxY = Math.max(maxY, (Number(child.y) || 0) + (Number(child.height) || 0) + 80);
+    }
+    const layered = computeLayeredArchitectureLayout(graph);
+    state.layoutCache[sig] = {
+      w: maxX,
+      h: maxY,
+      position: pos,
+      sections: layered.sections || [],
+    };
+    delete state.layoutAsyncInFlight[sig];
+    renderSVG();
+  }).catch(() => {
+    delete state.layoutAsyncInFlight[sig];
+  });
+  return null;
 }
 
 async function loadGraph() {
@@ -464,6 +695,7 @@ async function loadGraph() {
   state.rawGraph = graph;
   state.rawSummary = summaryPayload;
   state.graph = applyDisplayFilters(graph);
+  state.layoutCache = {};
   state.nodeById = {};
   state.selectedNodeId = '';
   state.selectedEdgeId = '';
@@ -912,6 +1144,61 @@ async function runFinalGateAttestation() {
   finalResult.textContent = JSON.stringify(payload, null, 2);
 }
 
+function selectedGraphID() {
+  const selected = graphSelect && graphSelect.value ? graphSelect.value.trim() : '';
+  if (selected) {
+    return selected;
+  }
+  if (state.graph && state.graph.graph_id) {
+    return String(state.graph.graph_id);
+  }
+  return '';
+}
+
+async function runMergeQualityAssess() {
+  const graphID = selectedGraphID();
+  if (!graphID) {
+    mergeQualitySummary.textContent = 'Select a graph first.';
+    return;
+  }
+  mergeQualitySummary.textContent = `Running merge quality assessment for graph ${graphID}...`;
+  const body = {
+    fail_on_gate: Boolean(mergeFailOnGate && mergeFailOnGate.checked),
+  };
+  const expectPath = (mergeExpectedLinksPath && mergeExpectedLinksPath.value ? mergeExpectedLinksPath.value : '').trim();
+  if (expectPath) {
+    body.expect_links_path = expectPath;
+  }
+  const outPath = (mergeOutPath && mergeOutPath.value ? mergeOutPath.value : '').trim();
+  if (outPath) {
+    body.out_path = outPath;
+  }
+  const payload = await fetchJSON(`/graphs/${encodeURIComponent(graphID)}/merge-quality`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  mergeQualitySummary.textContent = `Merge quality assess completed: graph_id=${payload.graph_id}, passed=${Boolean(payload.passed)}`;
+  mergeQualityResult.textContent = JSON.stringify(payload, null, 2);
+}
+
+async function loadMergeQualityReport() {
+  const graphID = selectedGraphID();
+  if (!graphID) {
+    mergeQualitySummary.textContent = 'Select a graph first.';
+    return;
+  }
+  let url = `/graphs/${encodeURIComponent(graphID)}/merge-quality`;
+  const outPath = (mergeOutPath && mergeOutPath.value ? mergeOutPath.value : '').trim();
+  if (outPath) {
+    url += `?path=${encodeURIComponent(outPath)}`;
+  }
+  const payload = await fetchJSON(url);
+  const report = payload.report || {};
+  mergeQualitySummary.textContent = `Loaded merge quality report for graph ${graphID}: passed=${Boolean(report.passed)}`;
+  mergeQualityResult.textContent = JSON.stringify(payload, null, 2);
+}
+
 async function loadFinalReadiness() {
   const payload = await fetchJSON('/final/readiness');
   const report = payload.report || {};
@@ -924,6 +1211,172 @@ async function loadFinalDecision() {
   const text = payload.content || '';
   finalSummary.textContent = `Loaded final gate decision from ${payload.path}`;
   finalResult.textContent = text;
+}
+
+function runOperatorExposeScan() {
+  operatorTaskStart('expose_scan');
+  const graph = state.graph;
+  const exposureNodes = (graph?.nodes || []).filter((n) => canonicalNodeSection(n) === 'exposure');
+  if (exposureNodes.length === 0) {
+    details.textContent = 'Expose scan dead-end: no exposure nodes in current view.';
+    operatorTaskEnd('expose_scan', false, true, { exposure_count: 0 });
+    return;
+  }
+  const first = exposureNodes[0];
+  state.selectedNodeId = first.id;
+  state.selectedEdgeId = '';
+  applyWorkflowFocus([first.id], []);
+  details.textContent = `Expose scan selected ${first.label || first.id}.`;
+  operatorTaskEnd('expose_scan', true, false, { exposure_count: exposureNodes.length, selected_node_id: first.id });
+}
+
+function runOperatorTracePath() {
+  operatorTaskStart('trace_path');
+  const graph = state.graph;
+  const start = state.selectedNodeId || ((graph?.nodes || []).find((n) => canonicalNodeSection(n) === 'exposure') || {}).id || '';
+  if (!start) {
+    details.textContent = 'Trace path dead-end: select a node first or ensure exposure nodes exist.';
+    operatorTaskEnd('trace_path', false, true, { reason: 'missing_start_node' });
+    return;
+  }
+  const trace = findPathToDependency(graph, start);
+  if ((trace.nodeIDs || []).length === 0) {
+    details.textContent = `Trace path dead-end: no dependency path found from ${start}.`;
+    operatorTaskEnd('trace_path', false, true, { start_node_id: start });
+    return;
+  }
+  state.selectedNodeId = start;
+  state.selectedEdgeId = '';
+  applyWorkflowFocus(trace.nodeIDs, trace.edgeIDs);
+  details.textContent = `Trace path complete from ${start}. nodes=${trace.nodeIDs.length}, edges=${trace.edgeIDs.length}`;
+  operatorTaskEnd('trace_path', true, false, { start_node_id: start, path_nodes: trace.nodeIDs.length, path_edges: trace.edgeIDs.length });
+}
+
+function runOperatorDependencyMap() {
+  operatorTaskStart('dependency_map');
+  const graph = state.graph;
+  const deps = (graph?.nodes || []).filter((n) => canonicalNodeSection(n) === 'dependencies');
+  if (deps.length === 0) {
+    details.textContent = 'Dependency map dead-end: no dependency nodes in current view.';
+    operatorTaskEnd('dependency_map', false, true, { dependency_count: 0 });
+    return;
+  }
+  const depIDs = deps.map((n) => n.id);
+  const depIDSet = new Set(depIDs);
+  const depEdges = (graph.edges || [])
+    .filter((e) => depIDSet.has(e.source_id) || depIDSet.has(e.target_id))
+    .map((e) => e.id);
+  applyWorkflowFocus(depIDs, depEdges);
+  details.textContent = `Dependency map complete: nodes=${depIDs.length}, edges=${depEdges.length}.`;
+  operatorTaskEnd('dependency_map', true, false, { dependency_count: depIDs.length, edge_count: depEdges.length });
+}
+
+function runOperatorExportFocusedSubgraph() {
+  operatorTaskStart('export_focused_subgraph');
+  const graph = state.graph;
+  const nodeSet = new Set(state.workflowFocusNodeIDs || []);
+  if (state.selectedNodeId) {
+    nodeSet.add(state.selectedNodeId);
+  }
+  if (nodeSet.size === 0) {
+    details.textContent = 'Export dead-end: no focused nodes. Run Expose Scan or Trace Path first.';
+    operatorTaskEnd('export_focused_subgraph', false, true, { reason: 'no_focus' });
+    return;
+  }
+  const nodes = (graph.nodes || []).filter((n) => nodeSet.has(n.id));
+  const edges = (graph.edges || []).filter((e) => nodeSet.has(e.source_id) && nodeSet.has(e.target_id));
+  const payload = {
+    graph_id: graph.graph_id,
+    generated_at_utc: nowISO(),
+    nodes,
+    edges,
+    meta: {
+      node_count: nodes.length,
+      edge_count: edges.length,
+      source: 'operator_workflow',
+    },
+  };
+  const data = JSON.stringify(payload, null, 2);
+  const blob = new Blob([data], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `focused_subgraph_${graph.graph_id || 'graph'}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  details.textContent = `Focused subgraph exported: nodes=${nodes.length}, edges=${edges.length}.`;
+  operatorTaskEnd('export_focused_subgraph', true, false, { node_count: nodes.length, edge_count: edges.length });
+}
+
+function startOperatorSession() {
+  const provided = (opsSessionID && opsSessionID.value ? opsSessionID.value.trim() : '');
+  state.operator.sessionID = provided || `ops-${Date.now()}`;
+  state.operator.startedAt = nowISO();
+  state.operator.events = [];
+  state.operator.taskStats = {};
+  if (opsSessionID) opsSessionID.value = state.operator.sessionID;
+  trackOperatorEvent('session_started');
+}
+
+function endOperatorSession() {
+  if (!state.operator.sessionID) return;
+  trackOperatorEvent('session_ended', { task_summary: state.operator.taskStats });
+}
+
+function exportOperatorTelemetry() {
+  const payload = {
+    session_id: state.operator.sessionID,
+    started_at_utc: state.operator.startedAt,
+    exported_at_utc: nowISO(),
+    events: state.operator.events,
+    task_summary: state.operator.taskStats,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `ops_telemetry_${state.operator.sessionID || 'session'}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function loadOperatorTelemetry() {
+  const payload = await fetchJSON('/ops/ui-telemetry');
+  state.operator.latestTelemetry = payload;
+  if (opsTelemetryResult) {
+    opsTelemetryResult.textContent = JSON.stringify(payload, null, 2);
+  }
+  if (opsSummary) {
+    const s = payload.summary || {};
+    opsSummary.textContent = `Telemetry loaded: events=${s.total_events || 0}, sessions=${s.total_sessions || 0}, dead_ends=${s.dead_end_events || 0}`;
+  }
+}
+
+function validateOperatorSLA() {
+  const telemetry = state.operator.latestTelemetry;
+  if (!telemetry || !telemetry.summary) {
+    if (opsSlaSummary) opsSlaSummary.textContent = 'SLA validation requires loaded telemetry. Click Load Telemetry first.';
+    return;
+  }
+  const summaryPayload = telemetry.summary || {};
+  const byTask = summaryPayload.by_task || {};
+  const avgByTask = summaryPayload.avg_duration_ms_by_task || {};
+  const totalEvents = Number(summaryPayload.total_events || 0);
+  const deadEndEvents = Number(summaryPayload.dead_end_events || 0);
+  const deadEndRatio = totalEvents > 0 ? deadEndEvents / totalEvents : 0;
+  const requiredTasks = ['expose_scan', 'trace_path', 'dependency_map', 'export_focused_subgraph'];
+  const missingTasks = requiredTasks.filter((t) => Number(byTask[t] || 0) === 0);
+  const slowTasks = requiredTasks.filter((t) => Number(avgByTask[t] || 0) > 60000);
+  const pass = missingTasks.length === 0 && slowTasks.length === 0 && deadEndRatio <= 0.25;
+  const message = [
+    `operator_sla_passed=${pass}`,
+    `dead_end_ratio=${deadEndRatio.toFixed(2)}`,
+    `missing_tasks=${missingTasks.length > 0 ? missingTasks.join(',') : 'none'}`,
+    `slow_tasks=${slowTasks.length > 0 ? slowTasks.join(',') : 'none'}`,
+  ].join(' | ');
+  if (opsSlaSummary) {
+    opsSlaSummary.textContent = message;
+  }
 }
 
 function renderEdges() {
@@ -1222,9 +1675,258 @@ function computeServiceMapLayout(graph) {
   };
 }
 
+function computeLayeredArchitectureLayout(graph) {
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  const edges = Array.isArray(graph.edges) ? graph.edges : [];
+  const sectionOrder = ['exposure', 'logic', 'dependencies'];
+  const sectionIdx = { exposure: 0, logic: 1, dependencies: 2 };
+  const nodesByID = new Map(nodes.map((n) => [n.id, n]));
+  const inDegree = new Map();
+  const adjacency = new Map();
+  const depth = new Map();
+
+  for (const n of nodes) {
+    inDegree.set(n.id, 0);
+    adjacency.set(n.id, []);
+    depth.set(n.id, 0);
+  }
+  for (const e of edges) {
+    if (!nodesByID.has(e.source_id) || !nodesByID.has(e.target_id)) continue;
+    adjacency.get(e.source_id).push(e.target_id);
+    inDegree.set(e.target_id, (inDegree.get(e.target_id) || 0) + 1);
+  }
+
+  const queue = [];
+  for (const n of nodes) {
+    if ((inDegree.get(n.id) || 0) === 0) queue.push(n.id);
+  }
+  while (queue.length > 0) {
+    const id = queue.shift();
+    const base = depth.get(id) || 0;
+    for (const next of adjacency.get(id) || []) {
+      if ((depth.get(next) || 0) < base + 1) {
+        depth.set(next, base + 1);
+      }
+      const d = (inDegree.get(next) || 0) - 1;
+      inDegree.set(next, d);
+      if (d === 0) queue.push(next);
+    }
+  }
+
+  const sectionBuckets = new Map(sectionOrder.map((s) => [s, new Map()]));
+  for (const n of nodes) {
+    const section = canonicalNodeSection(n);
+    const groups = sectionBuckets.get(section) || new Map();
+    const d = depth.get(n.id) || 0;
+    if (!groups.has(d)) groups.set(d, []);
+    groups.get(d).push(n);
+    sectionBuckets.set(section, groups);
+  }
+
+  const canvasWidth = 3000;
+  const padX = 60;
+  const padY = 54;
+  const sectionGap = 26;
+  const sectionWidth = Math.floor((canvasWidth - padX * 2 - sectionGap * 2) / 3);
+  const xStep = 160;
+  const yStep = 38;
+  const sectionMinHeight = 680;
+  const position = {};
+  const sections = [];
+  let maxY = padY + sectionMinHeight;
+
+  for (const section of sectionOrder) {
+    const idx = sectionIdx[section] || 0;
+    const xBase = padX + idx * (sectionWidth + sectionGap);
+    const depthGroups = sectionBuckets.get(section) || new Map();
+    const sortedDepths = Array.from(depthGroups.keys()).sort((a, b) => a - b);
+    let sectionBottom = padY + 60;
+    const groupBoxes = [];
+    for (const d of sortedDepths) {
+      const members = (depthGroups.get(d) || [])
+        .slice()
+        .sort((a, b) => (a.type + a.id).localeCompare(b.type + b.id));
+      const layerX = xBase + 28 + Math.min(d, 8) * xStep;
+      const layerTop = sectionBottom;
+      members.forEach((n, i) => {
+        position[n.id] = {
+          x: Math.min(layerX, xBase + sectionWidth - 42),
+          y: layerTop + i * yStep + 18,
+        };
+      });
+      const h = Math.max(52, members.length * yStep + 18);
+      groupBoxes.push({
+        name: `Layer ${d + 1}`,
+        x: layerX - 18,
+        y: layerTop,
+        w: Math.max(110, sectionWidth - (layerX - xBase) - 22),
+        h,
+      });
+      sectionBottom = layerTop + h + 12;
+    }
+    const sectionHeight = Math.max(sectionMinHeight, sectionBottom - padY + 20);
+    maxY = Math.max(maxY, padY + sectionHeight + 40);
+    sections.push({
+      key: section,
+      title: section === 'exposure' ? '1. Exposure' : section === 'logic' ? '2. Logic' : '3. Dependencies',
+      x: xBase,
+      y: padY,
+      w: sectionWidth,
+      h: sectionHeight,
+      groups: groupBoxes,
+    });
+  }
+  return {
+    w: canvasWidth,
+    h: maxY,
+    position,
+    sections,
+  };
+}
+
+function nowISO() {
+  return new Date().toISOString();
+}
+
+function summarizeOperatorTelemetry() {
+  const stats = state.operator.taskStats || {};
+  const lines = Object.keys(stats)
+    .sort()
+    .map((k) => {
+      const s = stats[k];
+      const avg = s.completed > 0 ? Math.round(s.totalDurationMS / s.completed) : 0;
+      return `${k}: completed=${s.completed || 0}, dead_ends=${s.deadEnds || 0}, avg_ms=${avg}`;
+    });
+  return lines.join('\n');
+}
+
+async function pushOperatorTelemetry(event) {
+  try {
+    await fetchJSON('/ops/ui-telemetry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(event),
+    });
+  } catch (_) {
+    // Keep UI usable when telemetry endpoint is unavailable.
+  }
+}
+
+function trackOperatorEvent(eventType, payload = {}) {
+  const event = {
+    tenant_id: state.auth.tenant || 'default',
+    principal: state.auth.principal || 'ui-user',
+    session_id: state.operator.sessionID || '',
+    event_type: eventType,
+    timestamp_utc: nowISO(),
+    ...payload,
+  };
+  state.operator.events.push(event);
+  if (opsTelemetryResult) {
+    opsTelemetryResult.textContent = JSON.stringify(
+      {
+        session_id: state.operator.sessionID,
+        started_at_utc: state.operator.startedAt,
+        events: state.operator.events.slice(-80),
+        task_summary: state.operator.taskStats,
+      },
+      null,
+      2,
+    );
+  }
+  if (opsSummary) {
+    opsSummary.textContent = `Session=${state.operator.sessionID || 'none'} | events=${state.operator.events.length}`;
+  }
+  pushOperatorTelemetry(event);
+}
+
+function ensureOperatorSession() {
+  if (!state.operator.sessionID) {
+    const id = `ops-${Date.now()}`;
+    state.operator.sessionID = id;
+    state.operator.startedAt = nowISO();
+    if (opsSessionID) opsSessionID.value = id;
+    trackOperatorEvent('session_started');
+  }
+}
+
+function operatorTaskStart(taskID) {
+  ensureOperatorSession();
+  state.operator.activeTask = taskID;
+  state.operator.taskStartedAtMS = Date.now();
+  if (!state.operator.taskStats[taskID]) {
+    state.operator.taskStats[taskID] = { completed: 0, deadEnds: 0, totalDurationMS: 0 };
+  }
+  trackOperatorEvent('task_started', { task_id: taskID });
+}
+
+function operatorTaskEnd(taskID, success, deadEnd, metadata = {}) {
+  const duration = Math.max(0, Date.now() - (state.operator.taskStartedAtMS || Date.now()));
+  const s = state.operator.taskStats[taskID] || { completed: 0, deadEnds: 0, totalDurationMS: 0 };
+  s.totalDurationMS += duration;
+  if (success) s.completed += 1;
+  if (deadEnd) s.deadEnds += 1;
+  state.operator.taskStats[taskID] = s;
+  state.operator.activeTask = '';
+  state.operator.taskStartedAtMS = 0;
+  trackOperatorEvent('task_completed', {
+    task_id: taskID,
+    status: success ? 'success' : 'failed',
+    duration_ms: duration,
+    dead_end: !!deadEnd,
+    metadata,
+  });
+  if (opsSummary) {
+    const summary = summarizeOperatorTelemetry();
+    opsSummary.textContent = summary ? `Task summary\n${summary}` : 'No telemetry recorded yet.';
+  }
+}
+
+function applyWorkflowFocus(nodeIDs, edgeIDs) {
+  state.workflowFocusNodeIDs = Array.from(new Set(nodeIDs || []));
+  state.workflowFocusEdgeIDs = Array.from(new Set(edgeIDs || []));
+  renderEdges();
+  renderSVG();
+}
+
+function findPathToDependency(graph, startNodeID) {
+  const nodesByID = new Map((graph.nodes || []).map((n) => [n.id, n]));
+  const neighbors = new Map();
+  for (const n of graph.nodes || []) neighbors.set(n.id, []);
+  for (const e of graph.edges || []) {
+    if (neighbors.has(e.source_id)) neighbors.get(e.source_id).push({ id: e.target_id, edgeID: e.id });
+  }
+  const q = [{ id: startNodeID, pathNodes: [startNodeID], pathEdges: [] }];
+  const seen = new Set([startNodeID]);
+  while (q.length > 0) {
+    const cur = q.shift();
+    const node = nodesByID.get(cur.id);
+    if (node && canonicalNodeSection(node) === 'dependencies' && cur.id !== startNodeID) {
+      return { nodeIDs: cur.pathNodes, edgeIDs: cur.pathEdges };
+    }
+    for (const next of neighbors.get(cur.id) || []) {
+      if (seen.has(next.id)) continue;
+      seen.add(next.id);
+      q.push({
+        id: next.id,
+        pathNodes: cur.pathNodes.concat([next.id]),
+        pathEdges: cur.pathEdges.concat([next.edgeID]),
+      });
+    }
+  }
+  return { nodeIDs: [], edgeIDs: [] };
+}
+
 function svgPoint(evt) {
-  const rect = graphSvg.getBoundingClientRect();
-  return { x: evt.clientX - rect.left, y: evt.clientY - rect.top };
+  const pt = graphSvg.createSVGPoint();
+  pt.x = evt.clientX;
+  pt.y = evt.clientY;
+  const matrix = graphSvg.getScreenCTM();
+  if (!matrix) {
+    return { x: 0, y: 0 };
+  }
+  const out = pt.matrixTransform(matrix.inverse());
+  return { x: out.x, y: out.y };
 }
 
 function applyViewport(g) {
@@ -1239,20 +1941,17 @@ function renderSVG() {
     return;
   }
 
-  let w = 1200;
-  let h = 520;
   const nodes = graph.nodes;
-  let position = {};
-  let serviceMapLayout = null;
-  if (state.layout === 'service_map') {
-    serviceMapLayout = computeServiceMapLayout(graph);
-    w = serviceMapLayout.w;
-    h = serviceMapLayout.h;
-    position = serviceMapLayout.position;
-  } else if (state.layout === 'service_lanes') {
-    position = computeServiceLanePositions(nodes, w, h);
-  } else {
-    position = computeGridPositions(nodes, w, h);
+  const computed = getCachedLayout(graph);
+  const w = computed.w || 1200;
+  const h = computed.h || 520;
+  const position = computed.position || {};
+  const serviceMapLayout = computed;
+  if (state.layoutEngineNote) {
+    const base = graphWarning && graphWarning.textContent ? `${graphWarning.textContent} ` : '';
+    if (graphWarning) {
+      graphWarning.textContent = `${base}${state.layoutEngineNote}`.trim();
+    }
   }
   graphSvg.setAttribute('viewBox', `0 0 ${w} ${h}`);
 
@@ -1269,6 +1968,8 @@ function renderSVG() {
       }
     }
   }
+  const workflowNodeSet = new Set(state.workflowFocusNodeIDs || []);
+  const workflowEdgeSet = new Set(state.workflowFocusEdgeIDs || []);
 
   const root = document.createElementNS('http://www.w3.org/2000/svg', 'g');
   applyViewport(root);
@@ -1322,7 +2023,27 @@ function renderSVG() {
     }
   }
 
-  for (const edge of graph.edges || []) {
+  let drawableEdges = graph.edges || [];
+  const denseMode = drawableEdges.length > 6000 && state.viewport.scale < 0.95;
+  if (denseMode) {
+    const importantEdgeIDs = new Set([
+      ...Array.from(selectedNodeEdges),
+      ...Array.from(workflowEdgeSet),
+      state.selectedEdgeId,
+    ].filter((v) => !!v));
+    const pinned = drawableEdges.filter((e) => importantEdgeIDs.has(e.id));
+    const rest = drawableEdges
+      .filter((e) => !importantEdgeIDs.has(e.id))
+      .slice()
+      .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0))
+      .slice(0, 3500);
+    drawableEdges = pinned.concat(rest);
+    if (details && !state.selectedNodeId && !state.selectedEdgeId) {
+      details.textContent = `Dense mode active: rendering ${drawableEdges.length}/${(graph.edges || []).length} edges at current zoom for smooth navigation.`;
+    }
+  }
+
+  for (const edge of drawableEdges) {
     const s = position[edge.source_id];
     const t = position[edge.target_id];
     if (!s || !t) continue;
@@ -1341,6 +2062,10 @@ function renderSVG() {
       stroke = '#d62828';
       opacity = 0.95;
       width = 3.2;
+    } else if (workflowEdgeSet.has(edge.id)) {
+      stroke = '#7c3aed';
+      opacity = 0.96;
+      width = 2.9;
     } else if (selectedNode) {
       if (selectedNodeEdges.has(edge.id)) {
         stroke = '#007f5f';
@@ -1374,7 +2099,7 @@ function renderSVG() {
     label.setAttribute('y', p.y + 4);
     label.setAttribute('font-size', '11');
     label.setAttribute('fill', '#0f172a');
-    label.textContent = short(node.label || node.id, 28);
+    label.textContent = node.id === selectedNode ? (node.label || node.id) : short(node.label || node.id, 28);
     const shouldShowLabel = (showLabels && showLabels.checked) || node.id === selectedNode || (selectedNode && neighborhood.has(node.id)) || state.viewport.scale >= 1.35;
     if (!shouldShowLabel) {
       label.setAttribute('display', 'none');
@@ -1383,10 +2108,15 @@ function renderSVG() {
     if (node.id === selectedNode) {
       circle.setAttribute('stroke', '#1d3557');
       circle.setAttribute('stroke-width', '3');
+    } else if (workflowNodeSet.has(node.id)) {
+      circle.setAttribute('stroke', '#7c3aed');
+      circle.setAttribute('stroke-width', '2.4');
     } else if (selectedNode && !neighborhood.has(node.id)) {
       circle.setAttribute('opacity', '0.2');
       label.setAttribute('opacity', '0.2');
     }
+    const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+    title.textContent = `${node.label || node.id}\n${node.id}\n${node.type}`;
 
     g.addEventListener('click', (evt) => {
       evt.stopPropagation();
@@ -1398,7 +2128,7 @@ function renderSVG() {
         state.selectedEdgeId = '';
         const inbound = (graph.edges || []).filter((e) => e.target_id === node.id).length;
         const outbound = (graph.edges || []).filter((e) => e.source_id === node.id).length;
-        details.textContent = `Node ${node.label || node.id}\nType: ${node.type}\nService: ${node.service_id || 'n/a'}\nInbound edges: ${inbound}\nOutbound edges: ${outbound}\nDouble click to filter graph to this service.`;
+        details.textContent = `Node ID: ${node.id}\nNode Label: ${node.label || node.id}\nFull Name: ${node.label || node.id}\nType: ${node.type}\nService: ${node.service_id || 'n/a'}\nInbound edges: ${inbound}\nOutbound edges: ${outbound}\nDouble click to filter graph to this service.`;
       }
       renderEdges();
       renderSVG();
@@ -1416,6 +2146,7 @@ function renderSVG() {
       });
     });
 
+    g.appendChild(title);
     g.appendChild(circle);
     g.appendChild(label);
     root.appendChild(g);
@@ -1424,6 +2155,8 @@ function renderSVG() {
   graphSvg.onclick = () => {
     state.selectedNodeId = '';
     state.selectedEdgeId = '';
+    state.workflowFocusNodeIDs = [];
+    state.workflowFocusEdgeIDs = [];
     details.textContent = 'Focus cleared.';
     renderEdges();
     renderSVG();
@@ -1431,13 +2164,14 @@ function renderSVG() {
 }
 
 function setScale(nextScale) {
-  setScaleAt(nextScale, { x: graphSvg.clientWidth / 2, y: graphSvg.clientHeight / 2 });
+  setScaleAt(nextScale, currentZoomAnchor());
 }
 
 function setScaleAt(nextScale, anchor) {
   const oldScale = state.viewport.scale;
   const clamped = Math.max(0.2, Math.min(3, nextScale));
-  const a = anchor || { x: graphSvg.clientWidth / 2, y: graphSvg.clientHeight / 2 };
+  const vb = graphSvg.viewBox.baseVal;
+  const a = anchor || { x: vb.x + vb.width / 2, y: vb.y + vb.height / 2 };
   const worldX = (a.x - state.viewport.tx) / oldScale;
   const worldY = (a.y - state.viewport.ty) / oldScale;
   state.viewport.scale = clamped;
@@ -1449,6 +2183,14 @@ function setScaleAt(nextScale, anchor) {
 function fitView() {
   state.viewport = { scale: 1, tx: 0, ty: 0 };
   renderSVG();
+}
+
+function currentZoomAnchor() {
+  if (state.lastPointer && state.lastPointer.inside) {
+    return { x: state.lastPointer.x, y: state.lastPointer.y };
+  }
+  const vb = graphSvg.viewBox.baseVal;
+  return { x: vb.x + vb.width / 2, y: vb.y + vb.height / 2 };
 }
 
 async function buildGraph(e) {
@@ -1784,6 +2526,22 @@ function wireEvents() {
       });
     });
   }
+  const runMergeQualityBtn = document.getElementById('runMergeQualityBtn');
+  if (runMergeQualityBtn) {
+    runMergeQualityBtn.addEventListener('click', () => {
+      runMergeQualityAssess().catch((err) => {
+        mergeQualitySummary.textContent = `Merge quality assess failed: ${err.message}`;
+      });
+    });
+  }
+  const loadMergeQualityBtn = document.getElementById('loadMergeQualityBtn');
+  if (loadMergeQualityBtn) {
+    loadMergeQualityBtn.addEventListener('click', () => {
+      loadMergeQualityReport().catch((err) => {
+        mergeQualitySummary.textContent = `Load merge quality failed: ${err.message}`;
+      });
+    });
+  }
   const loadFinalReadinessBtn = document.getElementById('loadFinalReadinessBtn');
   if (loadFinalReadinessBtn) {
     loadFinalReadinessBtn.addEventListener('click', () => {
@@ -1810,18 +2568,63 @@ function wireEvents() {
   });
   layoutMode.addEventListener('change', () => {
     state.layout = layoutMode.value;
+    state.layoutCache = {};
+    state.layoutAsyncInFlight = {};
+    state.layoutEngineNote = '';
     renderSVG();
   });
   confidenceMin.addEventListener('input', () => {
     confidenceMinLabel.textContent = Number(confidenceMin.value || '0').toFixed(2);
   });
-  document.getElementById('zoomInBtn').addEventListener('click', () => setScale(state.viewport.scale * 1.1));
-  document.getElementById('zoomOutBtn').addEventListener('click', () => setScale(state.viewport.scale / 1.1));
+  document.getElementById('zoomInBtn').addEventListener('click', () => setScale(state.viewport.scale * 1.07));
+  document.getElementById('zoomOutBtn').addEventListener('click', () => setScale(state.viewport.scale / 1.07));
   document.getElementById('fitBtn').addEventListener('click', fitView);
   document.getElementById('resetViewBtn').addEventListener('click', fitView);
+  const opsStartSessionBtn = document.getElementById('opsStartSessionBtn');
+  if (opsStartSessionBtn) {
+    opsStartSessionBtn.addEventListener('click', startOperatorSession);
+  }
+  const opsEndSessionBtn = document.getElementById('opsEndSessionBtn');
+  if (opsEndSessionBtn) {
+    opsEndSessionBtn.addEventListener('click', endOperatorSession);
+  }
+  const opsExportTelemetryBtn = document.getElementById('opsExportTelemetryBtn');
+  if (opsExportTelemetryBtn) {
+    opsExportTelemetryBtn.addEventListener('click', exportOperatorTelemetry);
+  }
+  const opsLoadTelemetryBtn = document.getElementById('opsLoadTelemetryBtn');
+  if (opsLoadTelemetryBtn) {
+    opsLoadTelemetryBtn.addEventListener('click', () => {
+      loadOperatorTelemetry().catch((err) => {
+        if (opsSummary) opsSummary.textContent = `Load telemetry failed: ${err.message}`;
+      });
+    });
+  }
+  const opsValidateSlaBtn = document.getElementById('opsValidateSlaBtn');
+  if (opsValidateSlaBtn) {
+    opsValidateSlaBtn.addEventListener('click', validateOperatorSLA);
+  }
+  const opsTaskExposeBtn = document.getElementById('opsTaskExposeBtn');
+  if (opsTaskExposeBtn) {
+    opsTaskExposeBtn.addEventListener('click', runOperatorExposeScan);
+  }
+  const opsTaskTraceBtn = document.getElementById('opsTaskTraceBtn');
+  if (opsTaskTraceBtn) {
+    opsTaskTraceBtn.addEventListener('click', runOperatorTracePath);
+  }
+  const opsTaskDepsBtn = document.getElementById('opsTaskDepsBtn');
+  if (opsTaskDepsBtn) {
+    opsTaskDepsBtn.addEventListener('click', runOperatorDependencyMap);
+  }
+  const opsTaskExportBtn = document.getElementById('opsTaskExportBtn');
+  if (opsTaskExportBtn) {
+    opsTaskExportBtn.addEventListener('click', runOperatorExportFocusedSubgraph);
+  }
   document.getElementById('clearFocusBtn').addEventListener('click', () => {
     state.selectedNodeId = '';
     state.selectedEdgeId = '';
+    state.workflowFocusNodeIDs = [];
+    state.workflowFocusEdgeIDs = [];
     details.textContent = 'Focus cleared.';
     renderEdges();
     renderSVG();
@@ -1829,6 +2632,7 @@ function wireEvents() {
   document.getElementById('applyViewBtn').addEventListener('click', () => {
     if (!state.rawGraph) return;
     state.graph = applyDisplayFilters(state.rawGraph);
+    state.layoutCache = {};
     state.nodeById = {};
     for (const n of state.graph.nodes || []) {
       state.nodeById[n.id] = n;
@@ -1839,29 +2643,46 @@ function wireEvents() {
   });
   architectureOnly.addEventListener('change', () => document.getElementById('applyViewBtn').click());
   collapseByService.addEventListener('change', () => document.getElementById('applyViewBtn').click());
+  topologyOnly.addEventListener('change', () => document.getElementById('applyViewBtn').click());
+  if (showServiceAnchors) {
+    showServiceAnchors.addEventListener('change', () => document.getElementById('applyViewBtn').click());
+  }
   showLabels.addEventListener('change', () => renderSVG());
   maxNodesInput.addEventListener('change', () => document.getElementById('applyViewBtn').click());
   maxEdgesInput.addEventListener('change', () => document.getElementById('applyViewBtn').click());
   graphSvg.addEventListener('wheel', (evt) => {
     evt.preventDefault();
     const anchor = svgPoint(evt);
-    const factor = Math.exp(-evt.deltaY * 0.001);
+    const factor = Math.exp(-evt.deltaY * 0.00018);
     setScaleAt(state.viewport.scale * factor, anchor);
+    trackOperatorEvent('navigate_zoom', { scale: state.viewport.scale });
   }, { passive: false });
+  graphSvg.addEventListener('mouseenter', () => {
+    state.lastPointer.inside = true;
+  });
+  graphSvg.addEventListener('mouseleave', () => {
+    state.lastPointer.inside = false;
+  });
+  graphSvg.addEventListener('mousemove', (evt) => {
+    const p = svgPoint(evt);
+    state.lastPointer = { x: p.x, y: p.y, inside: true };
+  });
   graphSvg.addEventListener('mousedown', (evt) => {
     state.dragging = true;
     state.dragStart = svgPoint(evt);
     graphSvg.classList.add('dragging');
+    trackOperatorEvent('navigate_pan_start');
   });
   window.addEventListener('mouseup', () => {
     state.dragging = false;
     state.dragStart = null;
     graphSvg.classList.remove('dragging');
+    trackOperatorEvent('navigate_pan_end');
   });
   window.addEventListener('mousemove', (evt) => {
     if (!state.dragging || !state.dragStart) return;
     const p = svgPoint(evt);
-    const panFactor = 0.72;
+    const panFactor = 0.85;
     state.viewport.tx += (p.x - state.dragStart.x) * panFactor;
     state.viewport.ty += (p.y - state.dragStart.y) * panFactor;
     state.dragStart = p;
@@ -1882,6 +2703,9 @@ async function bootstrap() {
   loadAuth();
   saveAuth();
   wireEvents();
+  if (opsSessionID && !opsSessionID.value) {
+    opsSessionID.value = '';
+  }
   confidenceMinLabel.textContent = Number(confidenceMin.value || '0').toFixed(2);
   try {
     await loadDefaults();

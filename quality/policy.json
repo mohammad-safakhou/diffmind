@@ -10,7 +10,13 @@
     "drift_precision": 0.95,
     "drift_recall": 0.90,
     "drift_f1": 0.92,
-    "benchmark_p95_ms_max": 5000
+    "benchmark_p95_ms_max": 5000,
+    "merge_quality_required": true,
+    "merge_quality_benchmark_required": true,
+    "merge_quality_linkage_precision": 0.95,
+    "merge_quality_linkage_recall": 0.95,
+    "merge_quality_identity_precision": 0.95,
+    "merge_quality_identity_recall": 0.95
   },
   "severity1": {
     "regressions_max": 0

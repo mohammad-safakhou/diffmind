@@ -18,8 +18,11 @@ type Adapter interface {
 }
 
 type AdapterProbe struct {
-	Available bool
-	Reason    string
+	Available            bool
+	Reason               string
+	ToolPath             string
+	ToolVersion          string
+	ToolchainFingerprint string
 }
 
 type adapterBuiltin struct{}
@@ -30,20 +33,67 @@ func (adapterBuiltin) Capabilities() []string {
 	return []string{"deterministic", "semantic_ast", "regex_fallback"}
 }
 func (adapterBuiltin) Probe(_ string) AdapterProbe {
-	return AdapterProbe{Available: true, Reason: "built-in adapter available"}
+	return AdapterProbe{
+		Available:            true,
+		Reason:               "built-in adapter available",
+		ToolVersion:          analyzerVersion,
+		ToolchainFingerprint: analyzerVersion,
+	}
 }
 func (adapterBuiltin) Plan(extractorSelection string) ([]Extractor, error) {
 	return resolveExtractors(extractorSelection)
 }
 
-func builtInAdapters() []Adapter {
-	return []Adapter{adapterBuiltin{}}
+type adapterGopls struct{}
+
+func (adapterGopls) Name() string    { return "gopls" }
+func (adapterGopls) Version() string { return "v1" }
+func (adapterGopls) Capabilities() []string {
+	return []string{"go", "lsp", "semantic"}
+}
+func (adapterGopls) Probe(root string) AdapterProbe {
+	return probeGopls(root)
+}
+func (adapterGopls) Plan(extractorSelection string) ([]Extractor, error) {
+	return resolveExtractors(extractorSelection)
+}
+
+type adapterTsserver struct{}
+
+func (adapterTsserver) Name() string    { return "tsserver" }
+func (adapterTsserver) Version() string { return "v1" }
+func (adapterTsserver) Capabilities() []string {
+	return []string{"typescript", "javascript", "lsp", "semantic"}
+}
+func (adapterTsserver) Probe(root string) AdapterProbe {
+	return probeTsserver(root)
+}
+func (adapterTsserver) Plan(extractorSelection string) ([]Extractor, error) {
+	return resolveExtractors(extractorSelection)
+}
+
+type adapterPyright struct{}
+
+func (adapterPyright) Name() string    { return "pyright" }
+func (adapterPyright) Version() string { return "v1" }
+func (adapterPyright) Capabilities() []string {
+	return []string{"python", "lsp", "semantic"}
+}
+func (adapterPyright) Probe(root string) AdapterProbe {
+	return probePyright(root)
+}
+func (adapterPyright) Plan(extractorSelection string) ([]Extractor, error) {
+	return resolveExtractors(extractorSelection)
+}
+
+func availableAdapters() []Adapter {
+	return []Adapter{adapterBuiltin{}, adapterGopls{}, adapterTsserver{}, adapterPyright{}}
 }
 
 func resolveAdapters(csv string) ([]Adapter, error) {
-	all := builtInAdapters()
+	all := availableAdapters()
 	if strings.TrimSpace(csv) == "" {
-		return all, nil
+		return []Adapter{adapterBuiltin{}}, nil
 	}
 
 	byName := make(map[string]Adapter, len(all))
@@ -88,13 +138,15 @@ func adapterNames(adapters []Adapter) []string {
 	return out
 }
 
-func replayKey(snapshotID string, adapterName string, adapterVersion string, extractors []string) string {
+func replayKey(snapshotID string, adapterName string, adapterVersion string, toolchainSHA string, extractors []string) string {
 	h := sha256.New()
 	_, _ = h.Write([]byte(strings.TrimSpace(snapshotID)))
 	_, _ = h.Write([]byte("|"))
 	_, _ = h.Write([]byte(strings.TrimSpace(adapterName)))
 	_, _ = h.Write([]byte("|"))
 	_, _ = h.Write([]byte(strings.TrimSpace(adapterVersion)))
+	_, _ = h.Write([]byte("|"))
+	_, _ = h.Write([]byte(strings.TrimSpace(toolchainSHA)))
 	_, _ = h.Write([]byte("|"))
 	names := append([]string(nil), extractors...)
 	sort.Strings(names)

@@ -161,6 +161,113 @@ Build combined graph:
 go run ./cmd/extractor graph build --mode multi --manifest graph/services.yaml --out .diffmind
 ```
 
+Assess merge/link quality (M8-focused):
+
+```bash
+go run ./cmd/extractor graph assess \
+  --index .diffmind/graph/index.json \
+  --out .diffmind/graph/merge_quality_report.json \
+  --fail-on-gate
+```
+
+Optional benchmark mode against expected links:
+
+```bash
+cat > .diffmind/graph/expected_links.json <<'JSON'
+{
+  "service_calls_service": [
+    {
+      "source_service_id": "checkout",
+      "source_repo_path": "/repos/checkout",
+      "target_service_id": "orders",
+      "target_repo_path": "/repos/orders"
+    }
+  ],
+  "canonical_service_aliases": [
+    {
+      "source_service_id": "orders-service",
+      "source_repo_path": "/repos/orders",
+      "canonical_key": "orders",
+      "env_scope": "prod"
+    }
+  ]
+}
+JSON
+
+go run ./cmd/extractor graph assess \
+  --index .diffmind/graph/index.json \
+  --expect-links .diffmind/graph/expected_links.json \
+  --out .diffmind/graph/merge_quality_report.json \
+  --fail-on-gate
+```
+
+Validation rules for `--expect-links`:
+- `service_calls_service`: each item requires `source_service_id` and `target_service_id`.
+- `canonical_service_aliases`: each item requires `source_service_id` and `canonical_key`.
+- File must contain at least one non-empty benchmark section.
+
+Inspect the assessment report:
+
+```bash
+jq '{graph_id,passed,metrics,gates,benchmark}' .diffmind/graph/merge_quality_report.json
+```
+
+Benchmark trend artifacts are also written to:
+- `.diffmind/graph/history/index.json`
+- `.diffmind/graph/history/<run_id>_<graph_id>.json`
+
+Run merge-quality assessment via HTTP API:
+
+```bash
+curl -s -X POST http://localhost:8080/graphs/merge-quality \
+  -H 'content-type: application/json' \
+  -d '{
+    "index_path": ".diffmind/graph/index.json",
+    "expect_links_path": ".diffmind/graph/expected_links.json",
+    "out_path": ".diffmind/graph/merge_quality_report.json",
+    "fail_on_gate": true
+  }' | jq
+```
+
+Graph-scoped variant (pins `graph_path` from `graph_id`):
+
+```bash
+curl -s -X POST http://localhost:8080/graphs/<graph_id>/merge-quality \
+  -H 'content-type: application/json' \
+  -d '{
+    "expect_links_path": ".diffmind/graph/expected_links.json",
+    "out_path": ".diffmind/graph/merge_quality_report.json",
+    "fail_on_gate": true
+  }' | jq
+```
+
+If `out_path` is omitted in the graph-scoped endpoint, the report is written to:
+`.diffmind/graph/<graph_id>/merge_quality_report.json`.
+
+On benchmark failures, inspect:
+- `benchmark.service_calls_service.false_positive_samples`
+- `benchmark.service_calls_service.false_negative_samples`
+- `benchmark.canonical_service_aliases.false_positive_samples`
+- `benchmark.canonical_service_aliases.false_negative_samples`
+
+Run quality evaluation + gate with merge-linkage benchmark enforcement:
+
+```bash
+go run ./cmd/extractor quality evaluate \
+  --corpus .diffmind/corpus/report.json \
+  --golden corpus/golden/summary.json \
+  --merge-quality .diffmind/graph/merge_quality_report.json \
+  --graph-index .diffmind/graph/index.json \
+  --merge-quality-expect-links .diffmind/graph/expected_links.json \
+  --merge-quality-auto \
+  --out .diffmind/quality/report.json
+
+go run ./cmd/extractor quality gate \
+  --report .diffmind/quality/report.json \
+  --policy quality/policy.json \
+  --out .diffmind/quality/gate_result.json
+```
+
 Why outputs stay separated:
 
 - service identity is keyed by `service_id` (plus repo metadata), so node/edge ownership is explicit even when graph is merged.

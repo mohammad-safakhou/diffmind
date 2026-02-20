@@ -34,6 +34,11 @@ func Authorize(ctx Context, req Request) Decision {
 			return Decision{Allow: true, Reason: "compliance_mutation_permitted"}
 		}
 		return Decision{Allow: false, Reason: "compliance_mutation_forbidden"}
+	case ActionOperateOps:
+		if ctx.HasRole("tenant_admin") || ctx.HasScope("ops:write") || ctx.HasScope("audit:export") {
+			return Decision{Allow: true, Reason: "ops_mutation_permitted"}
+		}
+		return Decision{Allow: false, Reason: "ops_mutation_forbidden"}
 	case ActionReadEvidence:
 		if ctx.HasRole("analyst") || ctx.HasRole("tenant_admin") || ctx.HasScope("graph:read") || ctx.HasScope("evidence:read") {
 			return Decision{Allow: true, Reason: "evidence_read_permitted"}

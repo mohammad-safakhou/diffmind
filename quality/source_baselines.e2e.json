@@ -1,0 +1,20 @@
+{
+  "default": {
+    "min_precision": 0.50,
+    "min_recall": 0.50,
+    "min_f1": 0.50,
+    "min_pass_rate": 0.50,
+    "min_task_pass_rate": 1.0,
+    "min_section_coverage_ratio": 0.66
+  },
+  "sources": {
+    "checkout-service": {
+      "min_precision": 0.70,
+      "min_recall": 0.65,
+      "min_f1": 0.67,
+      "min_task_pass_rate": 1.0,
+      "min_section_coverage_ratio": 0.66,
+      "require_contract_gate": true
+    }
+  }
+}

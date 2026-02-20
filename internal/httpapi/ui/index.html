@@ -142,6 +142,16 @@
         <label class="check">
           <input id="showLabels" type="checkbox" /> Always show labels
         </label>
+        <label class="check">
+          <input id="topologyOnly" type="checkbox" checked /> Topology focus
+        </label>
+      </div>
+      <div class="row">
+        <label class="check">
+          <input id="showServiceAnchors" type="checkbox" /> Show service anchor edges
+        </label>
+      </div>
+      <div class="row">
         <label>Max Edges
           <input id="maxEdges" type="number" min="0" step="100" value="5000" />
         </label>
@@ -159,6 +169,9 @@
         <label>Layout
           <select id="layoutMode">
             <option value="service_map">service map</option>
+            <option value="layered_arch">layered architecture</option>
+            <option value="dagre_engine">dagre (if loaded)</option>
+            <option value="elk_engine">elk layered (if loaded)</option>
             <option value="grid">grid</option>
             <option value="service_lanes">service lanes</option>
           </select>
@@ -173,6 +186,34 @@
       </div>
       <div class="actions">
         <button id="clearFocusBtn" type="button">Clear Focus</button>
+      </div>
+      <div class="compareBox">
+        <h3>Operator Workflow (M3)</h3>
+        <div class="row">
+          <label>Session ID
+            <input id="opsSessionID" placeholder="auto-generated on start" />
+          </label>
+          <label>Workflow Controls
+            <div class="actions">
+              <button id="opsStartSessionBtn" type="button">Start Session</button>
+              <button id="opsEndSessionBtn" type="button">End Session</button>
+              <button id="opsExportTelemetryBtn" type="button">Export Telemetry</button>
+              <button id="opsLoadTelemetryBtn" type="button">Load Telemetry</button>
+            </div>
+          </label>
+        </div>
+        <div class="actions">
+          <button id="opsTaskExposeBtn" type="button">1. Expose Scan</button>
+          <button id="opsTaskTraceBtn" type="button">2. Trace Path</button>
+          <button id="opsTaskDepsBtn" type="button">3. Dependency Map</button>
+          <button id="opsTaskExportBtn" type="button">4. Export Focused Subgraph</button>
+        </div>
+        <div id="opsSummary" class="muted"></div>
+        <div class="actions">
+          <button id="opsValidateSlaBtn" type="button">Validate Operator SLA</button>
+        </div>
+        <div id="opsSlaSummary" class="muted"></div>
+        <pre id="opsTelemetryResult" class="details"></pre>
       </div>
 
       <div id="summary" class="summary"></div>
@@ -204,6 +245,30 @@
         </div>
         <div id="compareSummary" class="muted"></div>
         <div id="compareResults" class="details"></div>
+      </div>
+      <div class="compareBox">
+        <h3>Merge Quality (M8)</h3>
+        <div class="row">
+          <label>Expected Links Path
+            <input id="mergeExpectedLinksPath" placeholder=".diffmind/graph/expected_links.json" />
+          </label>
+          <label>Output Path (optional)
+            <input id="mergeOutPath" placeholder="(default) .diffmind/graph/&lt;graph_id&gt;/merge_quality_report.json" />
+          </label>
+        </div>
+        <div class="row">
+          <label class="check">
+            <input id="mergeFailOnGate" type="checkbox" checked /> Fail on gate
+          </label>
+          <label>Controls
+            <div class="actions">
+              <button id="runMergeQualityBtn" type="button">Run Assess (Graph)</button>
+              <button id="loadMergeQualityBtn" type="button">Load Report</button>
+            </div>
+          </label>
+        </div>
+        <div id="mergeQualitySummary" class="muted"></div>
+        <pre id="mergeQualityResult" class="details"></pre>
       </div>
       <div class="compareBox">
         <h3>Product Query Templates</h3>

@@ -18,6 +18,18 @@ type GraphMeta struct {
 	Services        []ServiceMeta   `json:"services"`
 	Provenance      GraphProvenance `json:"provenance,omitempty"`
 	Freshness       GraphFreshness  `json:"freshness,omitempty"`
+	QueryPagination QueryPagination `json:"query_pagination,omitempty"`
+}
+
+type QueryPagination struct {
+	NodeLimit      int  `json:"node_limit,omitempty"`
+	EdgeLimit      int  `json:"edge_limit,omitempty"`
+	TotalNodes     int  `json:"total_nodes,omitempty"`
+	TotalEdges     int  `json:"total_edges,omitempty"`
+	ReturnedNodes  int  `json:"returned_nodes,omitempty"`
+	ReturnedEdges  int  `json:"returned_edges,omitempty"`
+	NodesTruncated bool `json:"nodes_truncated,omitempty"`
+	EdgesTruncated bool `json:"edges_truncated,omitempty"`
 }
 
 type ServiceMeta struct {

@@ -40,31 +40,27 @@ Repo extractor core for generating auditable repository intelligence bundles.
 
 ## Documentation Index
 
-- End-to-end setup and first graph run:
-  - `docs/getting_started_graph.md`
-- Graph feature plan and milestones:
-  - `docs/M10_service_graph_plan.md`
-- Graph benchmark baseline policy:
-  - `docs/graph_performance_baseline.md`
-- Versioning/rollback policy:
-  - `docs/versioning_policy.md`
-- Ontology v2 schema and compatibility mapping:
+- Canonical docs index:
+  - `docs/README.md`
+- Current implementation audit:
+  - `docs/CURRENT_IMPLEMENTATION_STATUS.md`
+- Remaining work plan:
+  - `docs/REMAINING_EXECUTION_PLAN.md`
+- Archive record:
+  - `docs/ARCHIVE_2026-02-19.md`
+- Runtime/finalgate compatibility docs:
   - `docs/ontology_v2_schema.md`
-- Analyzer adapter runtime contract:
-  - `docs/analyzer_adapter_runtime.md`
-- Analyzer offline toolchain policy:
-  - `docs/analyzer_offline_toolchain_policy.md`
-- Quality evaluation and gate runbook:
+  - `docs/runtime_reconciliation_runbook.md`
+  - `docs/m13_security_architecture.md`
   - `docs/m14_quality_runbook.md`
-- Product API contracts and query templates:
   - `docs/m15_product_api_contracts.md`
-  - `docs/m15_query_templates.json`
-- Operations runbook and rollout policy:
   - `docs/m16_operations_runbook.md`
-  - `docs/m16_rollout_policy.json`
-- Final completion gate artifacts:
-  - `docs/m17_question_catalog.json`
   - `docs/m17_completion_runbook.md`
+- Runtime-critical data files:
+  - `docs/graph_performance_baseline.md`
+  - `docs/m15_query_templates.json`
+  - `docs/m16_rollout_policy.json`
+  - `docs/m17_question_catalog.json`
 
 ## Module Contracts
 

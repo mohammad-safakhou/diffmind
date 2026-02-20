@@ -22,9 +22,12 @@ type collector struct {
 	evidenceByID map[string]facts.Evidence
 	factByID     map[string]facts.Fact
 	report       Report
+	adapterName  string
+	adapterVer   string
+	toolchainSHA string
 }
 
-func analyze(ctx context.Context, root string, forcedSnapshotID string, adapterSelection string, extractorSelection string) (result, error) {
+func analyze(ctx context.Context, root string, forcedSnapshotID string, adapterSelection string, extractorSelection string, includeTests bool, allowMissingAdapters bool) (result, error) {
 	_ = ctx
 	inv, err := snapshot.BuildInventory(root, snapshot.InventoryOptions{ExcludeDirs: map[string]struct{}{
 		".git": {}, ".diffmind": {}, ".gocache": {}, "bin": {}, "node_modules": {},
@@ -38,7 +41,7 @@ func analyze(ctx context.Context, root string, forcedSnapshotID string, adapterS
 		snapshotID = deriveSnapshotID(root, inv)
 	}
 
-	files, err := loadFiles(root, inv)
+	files, err := loadFiles(root, inv, includeTests)
 	if err != nil {
 		return result{}, err
 	}
@@ -70,8 +73,14 @@ func analyze(ctx context.Context, root string, forcedSnapshotID string, adapterS
 			Available:    probe.Available,
 			Selected:     true,
 			Reason:       strings.TrimSpace(probe.Reason),
+			ToolPath:     strings.TrimSpace(probe.ToolPath),
+			ToolVersion:  strings.TrimSpace(probe.ToolVersion),
+			ToolchainSHA: strings.TrimSpace(probe.ToolchainFingerprint),
 		}
 		if !probe.Available {
+			if strings.TrimSpace(adapterSelection) != "" && !allowMissingAdapters {
+				return result{}, fmt.Errorf("adapter %q unavailable: %s (rerun with --allow-missing-adapters to continue)", ad.Name(), strings.TrimSpace(probe.Reason))
+			}
 			c.report.AdapterPlan = append(c.report.AdapterPlan, planItem)
 			continue
 		}
@@ -87,21 +96,30 @@ func analyze(ctx context.Context, root string, forcedSnapshotID string, adapterS
 
 		beforeFacts := len(c.factByID)
 		beforeEvidence := len(c.evidenceByID)
+		c.adapterName = ad.Name()
+		c.adapterVer = ad.Version()
+		c.toolchainSHA = strings.TrimSpace(probe.ToolchainFingerprint)
 		for _, f := range files {
 			for _, ex := range extractors {
 				ex.Extract(c, f)
 				executedExtractors[ex.Name()] = struct{}{}
 			}
 		}
-
-		c.report.AdapterRuns = append(c.report.AdapterRuns, AdapterRunItem{
+		if extractorSelected(extractors, "config") {
+			detectSpringProfileResolvedConfig(c, files)
+		}
+		run := AdapterRunItem{
 			Name:          ad.Name(),
 			Version:       ad.Version(),
+			ToolPath:      strings.TrimSpace(probe.ToolPath),
+			ToolVersion:   strings.TrimSpace(probe.ToolVersion),
+			ToolchainSHA:  strings.TrimSpace(probe.ToolchainFingerprint),
 			Extractors:    extractorNames(extractors),
 			FactsAdded:    len(c.factByID) - beforeFacts,
 			EvidenceAdded: len(c.evidenceByID) - beforeEvidence,
-			ReplayKey:     replayKey(snapshotID, ad.Name(), ad.Version(), extractorNames(extractors)),
-		})
+			ReplayKey:     replayKey(snapshotID, ad.Name(), ad.Version(), strings.TrimSpace(probe.ToolchainFingerprint), extractorNames(extractors)),
+		}
+		c.report.AdapterRuns = append(c.report.AdapterRuns, run)
 	}
 
 	if len(executedExtractors) > 0 {
@@ -124,10 +142,23 @@ func analyze(ctx context.Context, root string, forcedSnapshotID string, adapterS
 	return result{bundle: bundle, report: c.report}, nil
 }
 
-func loadFiles(root string, inv []snapshot.FileEntry) ([]sourceFile, error) {
+func extractorSelected(extractors []Extractor, name string) bool {
+	target := strings.TrimSpace(strings.ToLower(name))
+	for _, ex := range extractors {
+		if strings.TrimSpace(strings.ToLower(ex.Name())) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func loadFiles(root string, inv []snapshot.FileEntry, includeTests bool) ([]sourceFile, error) {
 	out := make([]sourceFile, 0, len(inv))
 	for _, entry := range inv {
 		if entry.FileType == "binary" {
+			continue
+		}
+		if !includeTests && isTestSourcePath(entry.Path) {
 			continue
 		}
 		abs := filepath.Join(root, filepath.FromSlash(entry.Path))
@@ -146,6 +177,18 @@ func loadFiles(root string, inv []snapshot.FileEntry) ([]sourceFile, error) {
 	return out, nil
 }
 
+func isTestSourcePath(path string) bool {
+	p := strings.ToLower(strings.TrimSpace(filepath.ToSlash(path)))
+	if p == "" {
+		return false
+	}
+	if strings.HasPrefix(p, "src/test/") || strings.HasPrefix(p, "src/tests/") || strings.Contains(p, "/src/test/") || strings.Contains(p, "/src/tests/") || strings.Contains(p, "/__tests__/") {
+		return true
+	}
+	base := filepath.Base(p)
+	return strings.HasSuffix(base, "_test.go") || strings.HasSuffix(base, ".test.js") || strings.HasSuffix(base, ".test.ts") || strings.HasSuffix(base, ".spec.js") || strings.HasSuffix(base, ".spec.ts")
+}
+
 func (c *collector) addFactWithEvidence(factType string, attrs map[string]any, file sourceFile, line int, col int, snippet string, increment func()) {
 	if line < 1 {
 		line = 1
@@ -157,7 +200,7 @@ func (c *collector) addFactWithEvidence(factType string, attrs map[string]any, f
 	ev := facts.NewEvidence(c.snapshotID, file.Path, line, col, line, endCol, snippet)
 	c.evidenceByID[ev.ID] = ev
 
-	fact := facts.NewFact(factType, attrs, []string{ev.ID}, 0.9, c.provenance)
+	fact := facts.NewFact(factType, c.normalizeAttrs(attrs), []string{ev.ID}, 0.9, c.provenance)
 	if _, exists := c.factByID[fact.ID]; !exists {
 		c.factByID[fact.ID] = fact
 		increment()
@@ -173,11 +216,42 @@ func (c *collector) addFactMultiEvidence(factType string, attrs map[string]any, 
 	if len(ids) == 0 {
 		return
 	}
-	fact := facts.NewFact(factType, attrs, ids, 0.9, c.provenance)
+	fact := facts.NewFact(factType, c.normalizeAttrs(attrs), ids, 0.9, c.provenance)
 	if _, exists := c.factByID[fact.ID]; !exists {
 		c.factByID[fact.ID] = fact
 		increment()
 	}
+}
+
+func (c *collector) normalizeAttrs(attrs map[string]any) map[string]any {
+	if attrs == nil {
+		attrs = map[string]any{}
+	}
+	if strings.TrimSpace(c.adapterName) != "" {
+		if _, ok := attrs["adapter_id"]; !ok {
+			attrs["adapter_id"] = c.adapterName
+		}
+		if _, ok := attrs["provenance_adapter_id"]; !ok {
+			attrs["provenance_adapter_id"] = c.adapterName
+		}
+	}
+	if strings.TrimSpace(c.adapterVer) != "" {
+		if _, ok := attrs["adapter_version"]; !ok {
+			attrs["adapter_version"] = c.adapterVer
+		}
+		if _, ok := attrs["provenance_version"]; !ok {
+			attrs["provenance_version"] = c.adapterVer
+		}
+	}
+	if strings.TrimSpace(c.toolchainSHA) != "" {
+		if _, ok := attrs["toolchain_sha"]; !ok {
+			attrs["toolchain_sha"] = c.toolchainSHA
+		}
+		if _, ok := attrs["provenance_toolchain_sha"]; !ok {
+			attrs["provenance_toolchain_sha"] = c.toolchainSHA
+		}
+	}
+	return attrs
 }
 
 func (c *collector) bundle() facts.Bundle {

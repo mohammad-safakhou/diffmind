@@ -1,0 +1,24 @@
+{
+  "thresholds": {
+    "pass_rate": 0.95,
+    "precision": 0.40,
+    "recall": 0.90,
+    "f1": 0.60,
+    "calibration_error_max": 1.0,
+    "adversarial_pass_rate": 0.0,
+    "framework_matrix_pass_rate": 0.0,
+    "drift_precision": 0.0,
+    "drift_recall": 0.0,
+    "drift_f1": 0.0,
+    "benchmark_p95_ms_max": 0,
+    "merge_quality_required": true,
+    "merge_quality_benchmark_required": false,
+    "merge_quality_linkage_precision": 0.0,
+    "merge_quality_linkage_recall": 0.0,
+    "merge_quality_identity_precision": 0.0,
+    "merge_quality_identity_recall": 0.0
+  },
+  "severity1": {
+    "regressions_max": 10
+  }
+}

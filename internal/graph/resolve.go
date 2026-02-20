@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"diffmind/internal/bundleio"
 	"diffmind/internal/facts"
 	"diffmind/internal/graphschema"
 )
@@ -73,11 +74,6 @@ func (g *graphBuilder) addEndpointNodes() {
 }
 
 func (g *graphBuilder) resolveAPIEdges() {
-	byServiceID := map[string]*serviceInput{}
-	for i := range g.services {
-		byServiceID[g.services[i].spec.ID] = &g.services[i]
-	}
-
 	for i := range g.services {
 		sourceService := &g.services[i]
 		for _, e := range sourceService.bundle.Entities {
@@ -90,31 +86,93 @@ func (g *graphBuilder) resolveAPIEdges() {
 			}
 
 			srcServiceNode := serviceNodeID(sourceService.spec.ID)
-			target := fmt.Sprint(e.Attributes["target"])
+			rawTarget := strings.TrimSpace(fmt.Sprint(e.Attributes["target"]))
+			target := g.resolveExternalCallTarget(sourceService, rawTarget)
+			targetServiceHint := strings.TrimSpace(fmt.Sprint(e.Attributes["target_service"]))
+			baseURLRefHint := strings.TrimSpace(fmt.Sprint(e.Attributes["base_url_ref"]))
 			method := strings.ToUpper(strings.TrimSpace(fmt.Sprint(e.Attributes["method"])))
 			if method == "" {
 				method = "UNKNOWN"
 			}
 
 			var targetSvc *serviceInput
-			targetSvc = g.matchTargetService(target, sourceService.spec.ID)
+			ambiguousCandidates := []string{}
 			inferred := false
+			serviceMatch := ""
+			targetSvc, inferred, serviceMatch = g.matchTargetServiceFromHints(sourceService, targetServiceHint, baseURLRefHint)
 			if targetSvc == nil {
-				targetSvc = g.inferTargetService(target, sourceService.spec.ID)
-				inferred = true
+				var candidates []string
+				targetSvc, candidates = g.matchTargetServiceDetailed(target, sourceService.spec.ID)
+				if len(candidates) > 1 {
+					ambiguousCandidates = candidates
+				}
+				if targetSvc != nil {
+					serviceMatch = "target_url"
+				}
+			}
+			if targetSvc == nil && rawTarget != target {
+				var candidates []string
+				targetSvc, candidates = g.matchTargetServiceDetailed(rawTarget, sourceService.spec.ID)
+				if len(candidates) > 1 {
+					ambiguousCandidates = candidates
+				}
+				if targetSvc != nil {
+					serviceMatch = "target_raw"
+				}
 			}
 			if targetSvc == nil {
+				var candidates []string
+				targetSvc, candidates = g.inferTargetServiceDetailed(target, sourceService.spec.ID)
+				if len(candidates) > 1 {
+					ambiguousCandidates = candidates
+				}
+				inferred = true
+				if targetSvc != nil {
+					serviceMatch = "target_alias_inferred"
+				}
+			}
+			if targetSvc == nil {
+				if len(ambiguousCandidates) > 1 {
+					g.addUnresolvedAPICall(sourceService, e, method, rawTarget, target, targetServiceHint, baseURLRefHint, ambiguousCandidates)
+					continue
+				}
 				continue
 			}
 
 			evidence := buildEvidenceRefs(sourceService.analyzer, e.FactIDs, e.EvidenceIDs)
 			serviceToServiceID := edgeID("service_calls_service", srcServiceNode, serviceNodeID(targetSvc.spec.ID), method+"|"+target)
+			attrs := map[string]any{
+				"method":            method,
+				"target":            target,
+				"library":           e.Attributes["library"],
+				"source_service_id": sourceService.spec.ID,
+				"source_repo_path":  sourceService.spec.RepoPath,
+				"target_service_id": targetSvc.spec.ID,
+				"target_repo_path":  targetSvc.spec.RepoPath,
+			}
+			if target != rawTarget {
+				attrs["target_raw"] = rawTarget
+				attrs["resolved_from_config"] = true
+			}
+			if targetServiceHint != "" {
+				attrs["target_service_hint"] = targetServiceHint
+			}
+			if baseURLRefHint != "" {
+				attrs["base_url_ref"] = baseURLRefHint
+			}
+			if serviceMatch != "" {
+				attrs["service_match"] = serviceMatch
+			}
+			if len(ambiguousCandidates) > 1 {
+				attrs["service_match_ambiguous"] = true
+				attrs["service_match_candidates"] = ambiguousCandidates
+			}
 			g.addEdge(graphschema.Edge{
 				ID:           serviceToServiceID,
 				Type:         "service_calls_service",
 				SourceID:     srcServiceNode,
 				TargetID:     serviceNodeID(targetSvc.spec.ID),
-				Attributes:   map[string]any{"method": method, "target": target, "library": e.Attributes["library"]},
+				Attributes:   attrs,
 				Confidence:   edgeConfidence(e.Confidence, inferred),
 				Inferred:     inferred,
 				EvidenceRefs: evidence,
@@ -125,22 +183,247 @@ func (g *graphBuilder) resolveAPIEdges() {
 				continue
 			}
 			serviceToEndpointID := edgeID("service_calls_endpoint", srcServiceNode, endpointID, method+"|"+target)
+			epAttrs := map[string]any{
+				"method":                 method,
+				"target":                 target,
+				"target_path_normalized": normalizePath(target),
+				"source_service_id":      sourceService.spec.ID,
+				"source_repo_path":       sourceService.spec.RepoPath,
+				"target_service_id":      targetSvc.spec.ID,
+				"target_repo_path":       targetSvc.spec.RepoPath,
+			}
+			if target != rawTarget {
+				epAttrs["target_raw"] = rawTarget
+				epAttrs["resolved_from_config"] = true
+			}
+			if targetServiceHint != "" {
+				epAttrs["target_service_hint"] = targetServiceHint
+			}
+			if baseURLRefHint != "" {
+				epAttrs["base_url_ref"] = baseURLRefHint
+			}
+			if serviceMatch != "" {
+				epAttrs["service_match"] = serviceMatch
+			}
+			if len(ambiguousCandidates) > 1 {
+				epAttrs["service_match_ambiguous"] = true
+				epAttrs["service_match_candidates"] = ambiguousCandidates
+			}
 			g.addEdge(graphschema.Edge{
-				ID:       serviceToEndpointID,
-				Type:     "service_calls_endpoint",
-				SourceID: srcServiceNode,
-				TargetID: endpointID,
-				Attributes: map[string]any{
-					"method":                 method,
-					"target":                 target,
-					"target_path_normalized": normalizePath(target),
-				},
+				ID:           serviceToEndpointID,
+				Type:         "service_calls_endpoint",
+				SourceID:     srcServiceNode,
+				TargetID:     endpointID,
+				Attributes:   epAttrs,
 				Confidence:   edgeConfidence(e.Confidence, inferred),
 				Inferred:     inferred,
 				EvidenceRefs: evidence,
 			})
 		}
 	}
+}
+
+func (g *graphBuilder) addUnresolvedAPICall(
+	sourceService *serviceInput,
+	entity bundleio.Entity,
+	method string,
+	rawTarget string,
+	resolvedTarget string,
+	targetServiceHint string,
+	baseURLRefHint string,
+	candidates []string,
+) {
+	if sourceService == nil {
+		return
+	}
+	serviceNode := serviceNodeID(sourceService.spec.ID)
+	entityID := strings.TrimSpace(entity.ID)
+	if entityID == "" {
+		entityID = stableID(method + "|" + rawTarget + "|" + resolvedTarget + "|" + targetServiceHint + "|" + baseURLRefHint)
+	}
+	nodeID := unresolvedAPICallNodeID(sourceService.spec.ID, entityID)
+
+	attrs := map[string]any{
+		"protocol":                 "http",
+		"method":                   method,
+		"target":                   resolvedTarget,
+		"status":                   "needs_review",
+		"reason":                   "ambiguous_service_match",
+		"service_match_candidates": uniqueStrings(candidates),
+		"source_service_id":        sourceService.spec.ID,
+		"source_repo_path":         sourceService.spec.RepoPath,
+	}
+	if strings.TrimSpace(rawTarget) != "" && rawTarget != resolvedTarget {
+		attrs["target_raw"] = rawTarget
+		attrs["resolved_from_config"] = true
+	}
+	if strings.TrimSpace(targetServiceHint) != "" {
+		attrs["target_service_hint"] = targetServiceHint
+	}
+	if strings.TrimSpace(baseURLRefHint) != "" {
+		attrs["base_url_ref"] = baseURLRefHint
+	}
+
+	g.addNode(graphschema.Node{
+		ID:         nodeID,
+		Type:       "unresolved_api_call",
+		Label:      "unresolved API call: " + method,
+		ServiceID:  sourceService.spec.ID,
+		Attributes: attrs,
+		Confidence: edgeConfidence(entity.Confidence, true),
+		Inferred:   true,
+	})
+	evidence := buildEvidenceRefs(sourceService.analyzer, entity.FactIDs, entity.EvidenceIDs)
+	g.addEdge(graphschema.Edge{
+		ID:           edgeID("service_has_unresolved_api_call", serviceNode, nodeID, entityID),
+		Type:         "service_has_unresolved_api_call",
+		SourceID:     serviceNode,
+		TargetID:     nodeID,
+		Attributes:   map[string]any{"status": "needs_review", "reason": "ambiguous_service_match"},
+		Confidence:   edgeConfidence(entity.Confidence, true),
+		Inferred:     true,
+		EvidenceRefs: evidence,
+	})
+}
+
+func (g *graphBuilder) matchTargetServiceFromHints(sourceService *serviceInput, targetServiceHint string, baseURLRefHint string) (*serviceInput, bool, string) {
+	if sourceService == nil {
+		return nil, false, ""
+	}
+	if svc, inferred := g.matchServiceByHint(targetServiceHint, sourceService.spec.ID); svc != nil {
+		if inferred {
+			return svc, true, "target_service_inferred"
+		}
+		return svc, false, "target_service"
+	}
+	baseURL := g.resolveServiceHintValue(sourceService, baseURLRefHint)
+	if baseURL == "" {
+		return nil, false, ""
+	}
+	if svc := g.matchTargetService(baseURL, sourceService.spec.ID); svc != nil {
+		return svc, false, "base_url_ref"
+	}
+	if svc := g.inferTargetService(baseURL, sourceService.spec.ID); svc != nil {
+		return svc, true, "base_url_ref_inferred"
+	}
+	return nil, false, ""
+}
+
+func (g *graphBuilder) matchServiceByHint(rawHint string, sourceServiceID string) (*serviceInput, bool) {
+	hint := normalizeTarget(rawHint)
+	if hint == "" {
+		return nil, false
+	}
+	sourceEnv := g.serviceEnvTags(sourceServiceID)
+	cands := []string{hint}
+	for _, c := range canonicalServiceHintCandidates(hint) {
+		cands = append(cands, c)
+	}
+	cands = uniqueStrings(cands)
+	// Exact alias/canonical-key match first.
+	for i := range g.services {
+		svc := &g.services[i]
+		if svc.spec.ID == sourceServiceID {
+			continue
+		}
+		if !environmentsCompatible(sourceEnv, svc.envTags) {
+			continue
+		}
+		aliases := append(serviceAliases(svc.spec), canonicalServiceKeys(svc.spec)...)
+		for _, alias := range aliases {
+			alias = normalizeTarget(alias)
+			for _, cand := range cands {
+				if cand != "" && cand == alias {
+					return svc, false
+				}
+			}
+		}
+	}
+	// Fallback fuzzy alias contains match.
+	for i := range g.services {
+		svc := &g.services[i]
+		if svc.spec.ID == sourceServiceID {
+			continue
+		}
+		if !environmentsCompatible(sourceEnv, svc.envTags) {
+			continue
+		}
+		aliases := append(serviceAliases(svc.spec), canonicalServiceKeys(svc.spec)...)
+		for _, alias := range aliases {
+			alias = normalizeTarget(alias)
+			if len(alias) < 4 {
+				continue
+			}
+			for _, cand := range cands {
+				if len(cand) < 4 {
+					continue
+				}
+				if strings.Contains(cand, alias) || strings.Contains(alias, cand) {
+					return svc, true
+				}
+			}
+		}
+	}
+	return nil, false
+}
+
+func canonicalServiceHintCandidates(v string) []string {
+	v = normalizeTarget(v)
+	if v == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(v, func(r rune) bool {
+		return r == '.' || r == '/' || r == ':' || r == '@'
+	})
+	out := []string{v}
+	if len(parts) > 0 {
+		out = append(out, parts[len(parts)-1])
+	}
+	trimmed := strings.TrimPrefix(v, "service-")
+	trimmed = strings.TrimSuffix(trimmed, "-service")
+	trimmed = strings.TrimSuffix(trimmed, ".service")
+	if trimmed != "" {
+		out = append(out, trimmed)
+	}
+	return uniqueStrings(out)
+}
+
+func (g *graphBuilder) resolveServiceHintValue(svc *serviceInput, rawHint string) string {
+	rawHint = strings.TrimSpace(rawHint)
+	if rawHint == "" {
+		return ""
+	}
+	if strings.HasPrefix(rawHint, "http://") || strings.HasPrefix(rawHint, "https://") {
+		return rawHint
+	}
+	cfgKey := configKeyFromRef(rawHint)
+	if cfgKey == "" {
+		return ""
+	}
+	return preferredConfigResolvedValue(svc.bundle.Entities, cfgKey)
+}
+
+func configKeyFromRef(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(raw), "cfg:") {
+		return strings.TrimSpace(strings.TrimPrefix(raw, "cfg:"))
+	}
+	if strings.HasPrefix(raw, "${") && strings.HasSuffix(raw, "}") && len(raw) > 3 {
+		inner := strings.TrimSpace(raw[2 : len(raw)-1])
+		if idx := strings.Index(inner, ":"); idx >= 0 {
+			inner = strings.TrimSpace(inner[:idx])
+		}
+		return inner
+	}
+	if !strings.Contains(raw, "://") && !strings.Contains(raw, "/") {
+		if strings.Contains(raw, ".") || strings.Contains(raw, "_") || strings.Contains(raw, "-") {
+			return raw
+		}
+	}
+	return ""
 }
 
 func (g *graphBuilder) resolveCodeQueueAndDBEdges() {
@@ -155,7 +438,8 @@ func (g *graphBuilder) resolveCodeQueueAndDBEdges() {
 				continue
 			}
 			protocol := strings.ToLower(strings.TrimSpace(fmt.Sprint(e.Attributes["protocol"])))
-			target := strings.TrimSpace(fmt.Sprint(e.Attributes["target"]))
+			rawTarget := strings.TrimSpace(fmt.Sprint(e.Attributes["target"]))
+			target := g.resolveExternalCallTarget(svc, rawTarget)
 			method := strings.ToUpper(strings.TrimSpace(fmt.Sprint(e.Attributes["method"])))
 			if target == "" {
 				continue
@@ -178,33 +462,43 @@ func (g *graphBuilder) resolveCodeQueueAndDBEdges() {
 					})
 				}
 				if method == "CONSUME" {
+					attrs := map[string]any{
+						"topic":         target,
+						"source":        "analyzer",
+						"library":       e.Attributes["library"],
+						"canonical_key": canonical,
+					}
+					if target != rawTarget {
+						attrs["topic_raw"] = rawTarget
+						attrs["resolved_from_config"] = true
+					}
 					g.addEdge(graphschema.Edge{
-						ID:       edgeID("queue_delivers_to_service", queueID, src, target+"|"+method),
-						Type:     "queue_delivers_to_service",
-						SourceID: queueID,
-						TargetID: src,
-						Attributes: map[string]any{
-							"topic":         target,
-							"source":        "analyzer",
-							"library":       e.Attributes["library"],
-							"canonical_key": canonical,
-						},
+						ID:           edgeID("queue_delivers_to_service", queueID, src, target+"|"+method),
+						Type:         "queue_delivers_to_service",
+						SourceID:     queueID,
+						TargetID:     src,
+						Attributes:   attrs,
 						Confidence:   e.Confidence,
 						Inferred:     false,
 						EvidenceRefs: evidence,
 					})
 				} else {
+					attrs := map[string]any{
+						"topic":         target,
+						"source":        "analyzer",
+						"library":       e.Attributes["library"],
+						"canonical_key": canonical,
+					}
+					if target != rawTarget {
+						attrs["topic_raw"] = rawTarget
+						attrs["resolved_from_config"] = true
+					}
 					g.addEdge(graphschema.Edge{
-						ID:       edgeID("service_publishes_queue", src, queueID, target+"|"+method),
-						Type:     "service_publishes_queue",
-						SourceID: src,
-						TargetID: queueID,
-						Attributes: map[string]any{
-							"topic":         target,
-							"source":        "analyzer",
-							"library":       e.Attributes["library"],
-							"canonical_key": canonical,
-						},
+						ID:           edgeID("service_publishes_queue", src, queueID, target+"|"+method),
+						Type:         "service_publishes_queue",
+						SourceID:     src,
+						TargetID:     queueID,
+						Attributes:   attrs,
 						Confidence:   e.Confidence,
 						Inferred:     false,
 						EvidenceRefs: evidence,
@@ -226,33 +520,43 @@ func (g *graphBuilder) resolveCodeQueueAndDBEdges() {
 					})
 				}
 				if method == "READ" {
+					attrs := map[string]any{
+						"database":      target,
+						"source":        "analyzer",
+						"library":       e.Attributes["library"],
+						"canonical_key": canonical,
+					}
+					if target != rawTarget {
+						attrs["database_raw"] = rawTarget
+						attrs["resolved_from_config"] = true
+					}
 					g.addEdge(graphschema.Edge{
-						ID:       edgeID("service_reads_db", src, dbID, target+"|"+method),
-						Type:     "service_reads_db",
-						SourceID: src,
-						TargetID: dbID,
-						Attributes: map[string]any{
-							"database":      target,
-							"source":        "analyzer",
-							"library":       e.Attributes["library"],
-							"canonical_key": canonical,
-						},
+						ID:           edgeID("service_reads_db", src, dbID, target+"|"+method),
+						Type:         "service_reads_db",
+						SourceID:     src,
+						TargetID:     dbID,
+						Attributes:   attrs,
 						Confidence:   e.Confidence,
 						Inferred:     false,
 						EvidenceRefs: evidence,
 					})
 				} else {
+					attrs := map[string]any{
+						"database":      target,
+						"source":        "analyzer",
+						"library":       e.Attributes["library"],
+						"canonical_key": canonical,
+					}
+					if target != rawTarget {
+						attrs["database_raw"] = rawTarget
+						attrs["resolved_from_config"] = true
+					}
 					g.addEdge(graphschema.Edge{
-						ID:       edgeID("service_writes_db", src, dbID, target+"|"+method),
-						Type:     "service_writes_db",
-						SourceID: src,
-						TargetID: dbID,
-						Attributes: map[string]any{
-							"database":      target,
-							"source":        "analyzer",
-							"library":       e.Attributes["library"],
-							"canonical_key": canonical,
-						},
+						ID:           edgeID("service_writes_db", src, dbID, target+"|"+method),
+						Type:         "service_writes_db",
+						SourceID:     src,
+						TargetID:     dbID,
+						Attributes:   attrs,
 						Confidence:   e.Confidence,
 						Inferred:     false,
 						EvidenceRefs: evidence,
@@ -853,6 +1157,7 @@ func (g *graphBuilder) resolveDependencyOwnershipEdges() {
 func (g *graphBuilder) resolveCrossRepoCanonicalization() {
 	g.resolveCanonicalServices()
 	g.resolveCanonicalQueuesAndDatabases()
+	g.resolveCanonicalAPIHosts()
 }
 
 func (g *graphBuilder) resolveConfidenceAndConflictEdges() {
@@ -976,30 +1281,62 @@ func (g *graphBuilder) resolveCanonicalServices() {
 		if len(unique) < 2 {
 			continue
 		}
-		canonNodeID := canonicalServiceNodeID(key)
-		g.addNode(graphschema.Node{
-			ID:         canonNodeID,
-			Type:       "canonical_service",
-			Label:      key,
-			Attributes: map[string]any{"canonical_key": key, "member_count": len(unique)},
-			Confidence: 0.85,
-			Inferred:   true,
-		})
+		buckets := map[string][]serviceInput{}
 		for _, svc := range unique {
-			svcNodeID := serviceNodeID(svc.spec.ID)
-			if _, ok := seenService[svcNodeID+"|"+canonNodeID]; ok {
+			scope := serviceEnvironmentScope(svc.envTags)
+			buckets[scope] = append(buckets[scope], svc)
+		}
+		for scope, scopedMembers := range buckets {
+			scopedMembers = dedupeServices(scopedMembers)
+			if len(scopedMembers) < 2 {
 				continue
 			}
-			seenService[svcNodeID+"|"+canonNodeID] = struct{}{}
-			g.addEdge(graphschema.Edge{
-				ID:         edgeID("service_alias_of_canonical_service", svcNodeID, canonNodeID, key),
-				Type:       "service_alias_of_canonical_service",
-				SourceID:   svcNodeID,
-				TargetID:   canonNodeID,
-				Attributes: map[string]any{"canonical_key": key},
+			canonNodeID := canonicalServiceNodeIDScoped(key, scope)
+			label := key
+			if scope != "unknown" {
+				label = key + " [" + scope + "]"
+			}
+			g.addNode(graphschema.Node{
+				ID:    canonNodeID,
+				Type:  "canonical_service",
+				Label: label,
+				Attributes: map[string]any{
+					"canonical_key": key,
+					"member_count":  len(scopedMembers),
+					"env_scope":     scope,
+					"member_services": func() []string {
+						ids := make([]string, 0, len(scopedMembers))
+						for _, m := range scopedMembers {
+							ids = append(ids, m.spec.ID)
+						}
+						sort.Strings(ids)
+						return ids
+					}(),
+				},
 				Confidence: 0.85,
 				Inferred:   true,
 			})
+			for _, svc := range scopedMembers {
+				svcNodeID := serviceNodeID(svc.spec.ID)
+				if _, ok := seenService[svcNodeID+"|"+canonNodeID]; ok {
+					continue
+				}
+				seenService[svcNodeID+"|"+canonNodeID] = struct{}{}
+				g.addEdge(graphschema.Edge{
+					ID:       edgeID("service_alias_of_canonical_service", svcNodeID, canonNodeID, key+"|"+scope),
+					Type:     "service_alias_of_canonical_service",
+					SourceID: svcNodeID,
+					TargetID: canonNodeID,
+					Attributes: map[string]any{
+						"canonical_key":     key,
+						"env_scope":         scope,
+						"source_service_id": svc.spec.ID,
+						"source_repo_path":  svc.spec.RepoPath,
+					},
+					Confidence: 0.85,
+					Inferred:   true,
+				})
+			}
 		}
 	}
 }
@@ -1078,6 +1415,94 @@ func (g *graphBuilder) resolveCanonicalQueuesAndDatabases() {
 	}
 }
 
+func (g *graphBuilder) resolveCanonicalAPIHosts() {
+	hostToServiceSources := map[string]map[string]map[string]struct{}{}
+	addHost := func(host string, serviceID string, sourceKind string) {
+		host = canonicalHost(host)
+		if host == "" || serviceID == "" || sourceKind == "" {
+			return
+		}
+		services, ok := hostToServiceSources[host]
+		if !ok {
+			services = map[string]map[string]struct{}{}
+			hostToServiceSources[host] = services
+		}
+		kinds, ok := services[serviceID]
+		if !ok {
+			kinds = map[string]struct{}{}
+			services[serviceID] = kinds
+		}
+		kinds[sourceKind] = struct{}{}
+	}
+
+	for i := range g.services {
+		svc := &g.services[i]
+		for _, baseURL := range svc.spec.BaseURLs {
+			addHost(baseURL, svc.spec.ID, "base_url")
+		}
+		for _, e := range svc.bundle.Entities {
+			if e.Type != "ExternalCall" {
+				continue
+			}
+			protocol := strings.ToLower(strings.TrimSpace(fmt.Sprint(e.Attributes["protocol"])))
+			if protocol != "" && protocol != "http" {
+				continue
+			}
+			rawTarget := strings.TrimSpace(fmt.Sprint(e.Attributes["target"]))
+			target := g.resolveExternalCallTarget(svc, rawTarget)
+			addHost(target, svc.spec.ID, "external_call")
+		}
+	}
+
+	for host, serviceSources := range hostToServiceSources {
+		if len(serviceSources) < 2 {
+			continue
+		}
+		nodeID := canonicalAPIHostNodeID(host)
+		g.addNode(graphschema.Node{
+			ID:    nodeID,
+			Type:  "canonical_api_host",
+			Label: host,
+			Attributes: map[string]any{
+				"canonical_host": host,
+				"member_count":   len(serviceSources),
+				"member_services": func() []string {
+					ids := make([]string, 0, len(serviceSources))
+					for id := range serviceSources {
+						ids = append(ids, id)
+					}
+					sort.Strings(ids)
+					return ids
+				}(),
+			},
+			Confidence: 0.85,
+			Inferred:   true,
+		})
+		for serviceID, kinds := range serviceSources {
+			serviceNode := serviceNodeID(serviceID)
+			kindList := make([]string, 0, len(kinds))
+			for k := range kinds {
+				kindList = append(kindList, k)
+			}
+			sort.Strings(kindList)
+			g.addEdge(graphschema.Edge{
+				ID:       edgeID("service_alias_of_canonical_api_host", serviceNode, nodeID, host+"|"+strings.Join(kindList, ",")),
+				Type:     "service_alias_of_canonical_api_host",
+				SourceID: serviceNode,
+				TargetID: nodeID,
+				Attributes: map[string]any{
+					"canonical_host":    host,
+					"sources":           kindList,
+					"source_service_id": serviceID,
+					"source_repo_path":  g.serviceRepoPath(serviceID),
+				},
+				Confidence: 0.85,
+				Inferred:   true,
+			})
+		}
+	}
+}
+
 type bundleioEntityRef struct {
 	id          string
 	attributes  map[string]any
@@ -1087,38 +1512,100 @@ type bundleioEntityRef struct {
 }
 
 func (g *graphBuilder) matchTargetService(target string, sourceServiceID string) *serviceInput {
+	svc, _ := g.matchTargetServiceDetailed(target, sourceServiceID)
+	return svc
+}
+
+func (g *graphBuilder) matchTargetServiceDetailed(target string, sourceServiceID string) (*serviceInput, []string) {
 	normalizedTarget := normalizeTarget(target)
+	if normalizedTarget == "" {
+		return nil, nil
+	}
+	sourceEnv := g.serviceEnvTags(sourceServiceID)
+	var best *serviceInput
+	bestScore := -1
+	tied := []string{}
 	for i := range g.services {
 		svc := &g.services[i]
 		if svc.spec.ID == sourceServiceID {
+			continue
+		}
+		if !environmentsCompatible(sourceEnv, svc.envTags) {
 			continue
 		}
 		for _, u := range svc.spec.BaseURLs {
 			if u == "" {
 				continue
 			}
-			if strings.Contains(normalizedTarget, normalizeTarget(u)) {
-				return svc
+			candidate := normalizeTarget(u)
+			if candidate == "" || !strings.Contains(normalizedTarget, candidate) {
+				continue
+			}
+			score := len(candidate)
+			if canonicalHost(normalizedTarget) != "" && canonicalHost(normalizedTarget) == canonicalHost(candidate) {
+				score += 1000
+			}
+			if score > bestScore {
+				best = svc
+				bestScore = score
+				tied = []string{svc.spec.ID}
+				continue
+			}
+			if score == bestScore {
+				tied = append(tied, svc.spec.ID)
 			}
 		}
 	}
-	return nil
+	tied = uniqueStrings(tied)
+	if len(tied) > 1 {
+		return nil, tied
+	}
+	return best, tied
 }
 
 func (g *graphBuilder) inferTargetService(target string, sourceServiceID string) *serviceInput {
+	svc, _ := g.inferTargetServiceDetailed(target, sourceServiceID)
+	return svc
+}
+
+func (g *graphBuilder) inferTargetServiceDetailed(target string, sourceServiceID string) (*serviceInput, []string) {
 	normalizedTarget := normalizeTarget(target)
+	if normalizedTarget == "" {
+		return nil, nil
+	}
+	sourceEnv := g.serviceEnvTags(sourceServiceID)
+	var best *serviceInput
+	bestScore := -1
+	tied := []string{}
 	for i := range g.services {
 		svc := &g.services[i]
 		if svc.spec.ID == sourceServiceID {
 			continue
 		}
+		if !environmentsCompatible(sourceEnv, svc.envTags) {
+			continue
+		}
 		for _, alias := range serviceAliases(svc.spec) {
-			if alias != "" && strings.Contains(normalizedTarget, alias) {
-				return svc
+			score := aliasMatchScore(normalizedTarget, alias)
+			if score <= 0 {
+				continue
+			}
+			if score > bestScore {
+				best = svc
+				bestScore = score
+				tied = []string{svc.spec.ID}
+				continue
+			}
+			if score == bestScore {
+				tied = append(tied, svc.spec.ID)
 			}
 		}
 	}
-	return nil
+	tied = uniqueStrings(tied)
+	if len(tied) > 1 {
+		return nil, tied
+	}
+	return best, tied
 }
 
 func (g *graphBuilder) matchTargetEndpoint(targetService serviceInput, method string, target string) string {
@@ -1225,6 +1712,45 @@ func normalizeTarget(v string) string {
 	v = strings.TrimSpace(strings.ToLower(v))
 	v = strings.Trim(v, "\"'")
 	return v
+}
+
+func aliasMatchScore(target string, alias string) int {
+	alias = normalizeTarget(alias)
+	if alias == "" {
+		return 0
+	}
+	// Ignore weak aliases to reduce false-positive service links.
+	if len(alias) < 4 {
+		return 0
+	}
+	if target == alias {
+		return 3000 + len(alias)
+	}
+	tokens := tokenizeTarget(target)
+	for _, tok := range tokens {
+		if tok == alias {
+			return 2000 + len(alias)
+		}
+	}
+	if strings.Contains(target, alias) {
+		return 1000 + len(alias)
+	}
+	return 0
+}
+
+func tokenizeTarget(v string) []string {
+	if v == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(v, func(r rune) bool {
+		switch r {
+		case '/', ':', '.', '-', '_', '?', '&', '=', '#':
+			return true
+		default:
+			return false
+		}
+	})
+	return uniqueStrings(parts)
 }
 
 func normalizePath(v string) string {
@@ -1356,12 +1882,23 @@ func canonicalServiceNodeID(key string) string {
 	return "canon:svc:" + stableID(strings.ToLower(strings.TrimSpace(key)))
 }
 
+func canonicalServiceNodeIDScoped(key string, scope string) string {
+	if strings.TrimSpace(scope) == "" {
+		scope = "unknown"
+	}
+	return "canon:svc:" + stableID(strings.ToLower(strings.TrimSpace(key+"|"+scope)))
+}
+
 func canonicalQueueNodeID(key string) string {
 	return "canon:queue:" + stableID(strings.ToLower(strings.TrimSpace(key)))
 }
 
 func canonicalDatabaseNodeID(key string) string {
 	return "canon:db:" + stableID(strings.ToLower(strings.TrimSpace(key)))
+}
+
+func canonicalAPIHostNodeID(host string) string {
+	return "canon:host:" + stableID(strings.ToLower(strings.TrimSpace(host)))
 }
 
 func configNodeID(serviceID string, key string, env string) string {
@@ -1374,6 +1911,10 @@ func environmentNodeID(env string) string {
 
 func sensitiveSurfaceNodeID(serviceID, entityID string) string {
 	return "sens:" + serviceID + ":" + entityID
+}
+
+func unresolvedAPICallNodeID(serviceID, entityID string) string {
+	return "unresolved_api:" + serviceID + ":" + entityID
 }
 
 func queueNodeID(topic string) string {
@@ -1409,6 +1950,109 @@ func uniqueStrings(values []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func detectServiceEnvironments(spec serviceSpec, entities []bundleio.Entity) map[string]struct{} {
+	out := map[string]struct{}{}
+	add := func(v string) {
+		if n := normalizeEnvironmentTag(v); n != "" {
+			out[n] = struct{}{}
+		}
+	}
+	for _, e := range entities {
+		switch e.Type {
+		case "ConfigKey", "Deployment", "SensitiveSurface":
+			add(fmt.Sprint(e.Attributes["environment"]))
+		}
+	}
+	for _, u := range spec.BaseURLs {
+		add(envTagFromText(u))
+	}
+	add(envTagFromText(spec.ID))
+	add(envTagFromText(spec.Name))
+	add(envTagFromText(spec.RepoPath))
+	return out
+}
+
+func envTagFromText(v string) string {
+	s := strings.ToLower(strings.TrimSpace(v))
+	switch {
+	case strings.Contains(s, "production"), strings.Contains(s, "prod"):
+		return "prod"
+	case strings.Contains(s, "staging"), strings.Contains(s, "stage"), strings.Contains(s, "preprod"):
+		return "stage"
+	case strings.Contains(s, "development"), strings.Contains(s, "dev"):
+		return "dev"
+	case strings.Contains(s, "local"):
+		return "local"
+	case strings.Contains(s, "test"), strings.Contains(s, "qa"):
+		return "test"
+	default:
+		return ""
+	}
+}
+
+func normalizeEnvironmentTag(v string) string {
+	s := strings.ToLower(strings.TrimSpace(v))
+	switch s {
+	case "prod", "production":
+		return "prod"
+	case "staging", "stage", "preprod", "pre-production":
+		return "stage"
+	case "dev", "development":
+		return "dev"
+	case "test", "qa":
+		return "test"
+	case "local":
+		return "local"
+	default:
+		if s == "" {
+			return ""
+		}
+		return envTagFromText(s)
+	}
+}
+
+func serviceEnvironmentScope(tags map[string]struct{}) string {
+	if len(tags) == 0 {
+		return "unknown"
+	}
+	keys := make([]string, 0, len(tags))
+	for k := range tags {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, "+")
+}
+
+func environmentsCompatible(source map[string]struct{}, target map[string]struct{}) bool {
+	if len(source) == 0 || len(target) == 0 {
+		return true
+	}
+	for k := range source {
+		if _, ok := target[k]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *graphBuilder) serviceEnvTags(serviceID string) map[string]struct{} {
+	for i := range g.services {
+		if g.services[i].spec.ID == serviceID {
+			return g.services[i].envTags
+		}
+	}
+	return nil
+}
+
+func (g *graphBuilder) serviceRepoPath(serviceID string) string {
+	for i := range g.services {
+		if g.services[i].spec.ID == serviceID {
+			return g.services[i].spec.RepoPath
+		}
+	}
+	return ""
 }
 
 func cloneMap(in map[string]any) map[string]any {
@@ -1581,7 +2225,86 @@ func graphNodeIDForEntity(serviceID string, entityType string, entityID string) 
 		return conflictNodeID(serviceID, entityID)
 	case "SensitiveSurface":
 		return sensitiveSurfaceNodeID(serviceID, entityID)
+	case "UnresolvedAPICall":
+		return unresolvedAPICallNodeID(serviceID, entityID)
 	default:
 		return ""
+	}
+}
+
+func (g *graphBuilder) resolveExternalCallTarget(svc *serviceInput, rawTarget string) string {
+	rawTarget = strings.TrimSpace(rawTarget)
+	if rawTarget == "" || svc == nil {
+		return rawTarget
+	}
+	cfgKey := strings.TrimSpace(strings.TrimPrefix(rawTarget, "cfg:"))
+	if cfgKey == rawTarget || cfgKey == "" {
+		return rawTarget
+	}
+	resolved := preferredConfigResolvedValue(svc.bundle.Entities, cfgKey)
+	if strings.TrimSpace(resolved) == "" {
+		return rawTarget
+	}
+	return strings.TrimSpace(resolved)
+}
+
+func preferredConfigResolvedValue(entities []bundleio.Entity, key string) string {
+	type candidate struct {
+		value string
+		env   string
+	}
+	keyLower := strings.ToLower(strings.TrimSpace(key))
+	if keyLower == "" {
+		return ""
+	}
+	cands := make([]candidate, 0, 8)
+	for _, e := range entities {
+		if e.Type != "ConfigKey" {
+			continue
+		}
+		entityKey := strings.ToLower(strings.TrimSpace(fmt.Sprint(e.Attributes["key"])))
+		if entityKey != keyLower {
+			continue
+		}
+		resolved := strings.TrimSpace(fmt.Sprint(e.Attributes["resolved_value"]))
+		if resolved == "" || strings.EqualFold(resolved, "[REDACTED]") {
+			continue
+		}
+		env := strings.ToLower(strings.TrimSpace(fmt.Sprint(e.Attributes["environment"])))
+		if env == "" {
+			env = "default"
+		}
+		cands = append(cands, candidate{value: resolved, env: env})
+	}
+	if len(cands) == 0 {
+		return ""
+	}
+	sort.Slice(cands, func(i, j int) bool {
+		pi := envPriority(cands[i].env)
+		pj := envPriority(cands[j].env)
+		if pi == pj {
+			return cands[i].value < cands[j].value
+		}
+		return pi < pj
+	})
+	return cands[0].value
+}
+
+func envPriority(env string) int {
+	switch strings.ToLower(strings.TrimSpace(env)) {
+	case "prod", "production":
+		return 0
+	case "staging", "stage", "preprod", "preproduction":
+		return 1
+	case "local":
+		return 2
+	case "dev", "development":
+		return 3
+	case "test", "qa":
+		return 4
+	case "default":
+		return 5
+	default:
+		return 6
 	}
 }

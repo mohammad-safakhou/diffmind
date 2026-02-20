@@ -1,0 +1,64 @@
+{
+  "templates": [
+    {
+      "id": "service-exposure-overview",
+      "method": "POST",
+      "path": "/query/execute",
+      "payload": {
+        "graph_id": "${graph_id}",
+        "service_id": "${service_id}",
+        "section": "exposure",
+        "include_inferred": true,
+        "include_disputed": true,
+        "explain": true,
+        "node_limit": 200,
+        "edge_limit": 200
+      }
+    },
+    {
+      "id": "service-dependency-overview",
+      "method": "POST",
+      "path": "/query/execute",
+      "payload": {
+        "graph_id": "${graph_id}",
+        "service_id": "${service_id}",
+        "section": "dependencies",
+        "include_inferred": true,
+        "include_disputed": true,
+        "explain": true,
+        "node_limit": 300,
+        "edge_limit": 300
+      }
+    },
+    {
+      "id": "open-conflicts",
+      "method": "POST",
+      "path": "/query/execute",
+      "payload": {
+        "graph_id": "${graph_id}",
+        "type": "conflict",
+        "conflict_status": "open",
+        "include_inferred": true,
+        "include_disputed": true,
+        "explain": true,
+        "node_limit": 500,
+        "edge_limit": 200
+      }
+    },
+    {
+      "id": "low-confidence-review",
+      "method": "POST",
+      "path": "/query/execute",
+      "payload": {
+        "graph_id": "${graph_id}",
+        "confidence_min": 0.0,
+        "verification_state": "needs_review",
+        "include_inferred": true,
+        "include_disputed": true,
+        "explain": true,
+        "node_limit": 600,
+        "edge_limit": 600
+      }
+    }
+  ]
+}

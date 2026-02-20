@@ -1,49 +1,28 @@
-# M13 Security And Compliance Architecture
+# M13 Security Architecture (Active Summary)
 
-## Scope
-This document describes the M13 implementation for enterprise security and compliance in DiffMind.
+## Implemented Security Surface
 
-## 1. Tenant Isolation + RBAC/ABAC
-- Auth context is extracted from HTTP headers:
-  - `X-DiffMind-Tenant`
-  - `X-DiffMind-Principal`
-  - `X-DiffMind-Roles`
-  - `X-DiffMind-Scopes`
-  - optional `X-DiffMind-Attr-*` attributes
-- Tenant isolation is enforced in policy decisions and graph ownership:
-  - Graph artifacts carry `meta.tenant_id`.
-  - Graph index carries `tenant_id` in summaries.
-  - Cross-tenant compare is rejected.
-- RBAC/ABAC policy engine (`internal/security/policy.go`) defines action-based authorization.
+1. Central authorization policy in `internal/security/policy.go`.
+2. Tenant-aware authorization + audit logging in HTTP handlers.
+3. Compliance/audit endpoints under `/compliance/audit*`.
+4. Evidence redaction controls for sensitive payloads.
+5. Token auth context extraction in `internal/security/types.go` + `internal/security/jwt.go`.
 
-## 2. Redaction Policy
-- Sensitive fields are redacted unless caller has explicit permission.
-- Redaction applies to graph response attributes and evidence metadata.
-- Secret-like keys and values are masked (`[REDACTED]`).
-- Raw evidence paths/line locations require elevated scope (`evidence:raw`) or admin role.
+## Current Auth Model
 
-## 3. Encryption + Key Management Standards
-- Compliance audit export supports optional AES-256-GCM encryption.
-- Key material is provided via:
-  - `DIFFMIND_AUDIT_EXPORT_KEY_B64` (base64-encoded 32-byte key)
-  - `DIFFMIND_KMS_KEY_ID` (key identifier metadata)
+1. `DIFFMIND_AUTH_MODE=header` (default): API auth context is derived from `X-DiffMind-*` headers.
+2. `DIFFMIND_AUTH_MODE=jwt`: `Authorization: Bearer <token>` is required and verified.
+3. `DIFFMIND_AUTH_MODE=auto`: JWT is preferred when bearer is present; otherwise header mode is used.
+4. JWT claim mapping supports tenant/principal/roles/scopes/attrs claim configuration via `DIFFMIND_AUTH_*` env vars.
+5. HS256 and RS256 signature verification are supported.
+6. RS256 supports OIDC discovery + JWKS key retrieval/rotation:
+   `DIFFMIND_AUTH_JWT_OIDC_ISSUER`, `DIFFMIND_AUTH_JWT_JWKS_URL`, `DIFFMIND_AUTH_JWT_JWKS_CACHE_SECONDS`.
+7. IdP claim contract templates are supported via `DIFFMIND_AUTH_PROFILE`:
+   `custom`, `keycloak`, `entra`, `cognito`.
+8. Nested claim path mapping is supported for JWT claims (example: `realm_access.roles`).
 
-## 4. Audit Logging
-- Full audit event logging is implemented for authorized/denied operations on query and mutating endpoints.
-- Events are persisted as JSONL at `.diffmind/audit/events.jsonl` (or corresponding output root).
-- Event schema includes action, tenant, principal, path, method, decision, and reason.
+## Remaining Security Work
 
-## 5. Retention + Compliance Export Workflows
-- New API endpoints:
-  - `GET /compliance/audit` (read events)
-  - `POST /compliance/audit/export` (export audit events, optional encryption)
-  - `POST /compliance/audit/retention` (prune events by retention days)
-- Retention pruning is tenant-scoped under authorization.
+1. None in active scope.
 
-## 6. Verification
-- Unit/integration tests added for:
-  - authorization behavior and tenant isolation
-  - sensitive redaction
-  - audit append/list/prune/export
-  - compliance API endpoints
-- Full repository test suite passes with M13 changes.
+Legacy detailed document: `docs/archive/2026-02-19-legacy/m13_security_architecture.md`.

@@ -1,45 +1,63 @@
-# M14 Quality And Evaluation Runbook
+# M14 Quality Runbook (Active)
 
-## Goal
-Continuously measure extraction quality and block releases on critical regressions.
-
-## Commands
-1. Evaluate corpus output against golden baseline:
+## Evaluate Quality
 
 ```bash
-extractor quality evaluate \
-  --corpus .diffmind/corpus/report.json \
-  --golden corpus/golden/summary.json \
+go run ./cmd/extractor quality evaluate \
+  --corpus .diffmind/corpus-fixtures/report.json \
+  --golden .diffmind/golden/report.json \
+  --graph-index .diffmind/service/graph/index.json \
+  --merge-quality-auto \
   --out .diffmind/quality/report.json \
   --dashboard .diffmind/quality/dashboard.md \
   --triage .diffmind/quality/triage.md
 ```
 
-2. Enforce release gate policy:
+## Apply Quality Gate
 
 ```bash
-extractor quality gate \
+go run ./cmd/extractor quality gate \
   --report .diffmind/quality/report.json \
   --policy quality/policy.json \
   --out .diffmind/quality/gate_result.json
-
-Policy now includes matrix/drift/benchmark thresholds in addition to base precision/recall gates:
-`framework_matrix_pass_rate`, `drift_precision`, `drift_recall`, `drift_f1`, `benchmark_p95_ms_max`.
 ```
 
-## CI/CD Integration
-- Add the gate command as a required check.
-- Any non-zero exit from `quality gate` blocks release.
+## Release Gate (M6) With Source Baselines
 
-## Triage Process
-1. Open `.diffmind/quality/triage.md` and prioritize `sev1` regressions first.
-2. Re-run failing corpus cases to confirm reproducibility.
-3. Compare entity-count deltas vs golden baseline.
-4. Patch parser/analyzer/consolidation and re-run `quality evaluate` + `quality gate`.
-5. Release only when `quality gate` passes and `sev1` regressions are zero.
+```bash
+bash scripts/release_gate_m6.sh \
+  --source ./checkout-service \
+  --source-baselines quality/source_baselines.e2e.json \
+  --require-real-suite true \
+  --strict true
+```
 
-## Required Artifacts
-- `.diffmind/quality/report.json`
-- `.diffmind/quality/dashboard.md`
-- `.diffmind/quality/triage.md`
-- `.diffmind/quality/gate_result.json`
+## Calibrate Source Baselines From Release-Gate Summary
+
+```bash
+go run ./cmd/extractor quality calibrate-baselines \
+  --summary .diffmind/release-gate-m6/summary.json \
+  --out quality/source_baselines.e2e.json \
+  --min-samples 2
+```
+
+## Calibrate From Multiple Historical Summaries
+
+```bash
+go run ./cmd/extractor quality calibrate-baselines \
+  --summary .diffmind/release-gate-m6/summary.json \
+  --summaries .diffmind/release-gate-history/run-001/summary.json,.diffmind/release-gate-history/run-002/summary.json \
+  --out quality/source_baselines.e2e.json \
+  --min-samples 2
+```
+
+## Automated Calibration Script
+
+```bash
+bash scripts/calibrate_real_repo_baselines.sh \
+  --summary-glob ".diffmind/release-gate-history/*/summary.json" \
+  --out quality/source_baselines.e2e.json \
+  --min-samples 2
+```
+
+Legacy detailed runbook: `docs/archive/2026-02-19-legacy/m14_quality_runbook.md`.

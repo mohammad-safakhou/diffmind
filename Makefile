@@ -1,7 +1,7 @@
 BINARY=extractor
 GOCACHE?=$(CURDIR)/.gocache
 
-.PHONY: run snapshot scan parse analyze bundle query diff serve graph-build graph-serve graph-ui-build corpus corpus-self golden golden-update bench build test lint fmt migrate up down logs
+.PHONY: run snapshot scan parse analyze bundle query diff serve graph-build graph-serve graph-ui-build graph-m8-e2e corpus corpus-self golden golden-update bench build test lint fmt migrate up down logs
 
 run:
 	mkdir -p $(GOCACHE)
@@ -49,6 +49,9 @@ graph-serve:
 
 graph-ui-build:
 	@echo "Graph UI is embedded static assets under internal/httpapi/ui; no separate frontend build step required."
+
+graph-m8-e2e:
+	./scripts/e2e_m8_validation.sh --source ./checkout-service --clean true
 
 corpus:
 	mkdir -p $(GOCACHE)

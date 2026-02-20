@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"diffmind/internal/config"
+	"diffmind/internal/facts"
 	"diffmind/internal/store"
 )
 
@@ -25,7 +26,7 @@ func Run(ctx context.Context, args []string) error {
 		return fmt.Errorf("resolve source path: %w", err)
 	}
 
-	res, err := analyze(ctx, root, opts.SnapshotID, opts.Adapters, opts.Extractors)
+	res, err := analyze(ctx, root, opts.SnapshotID, opts.Adapters, opts.Extractors, opts.IncludeTests, opts.AllowMissingAdapters)
 	if err != nil {
 		return err
 	}
@@ -55,6 +56,28 @@ func Run(ctx context.Context, args []string) error {
 		res.report.LLMTracePath = tracePath
 		res.report.FactsCount = len(res.bundle.Facts)
 		res.report.EvidenceCount = len(res.bundle.Evidence)
+	}
+
+	if err := executeAdapterTools(opts.OutDir, root, &res.report); err != nil {
+		return err
+	}
+	if err := mergeAdapterSemanticToolOutputs(root, &res); err != nil {
+		return err
+	}
+	if err := facts.ValidateBundle(res.bundle); err != nil {
+		return fmt.Errorf("validate analyzer bundle after adapter semantic merge: %w", err)
+	}
+
+	if err := writeAdapterRunManifests(opts.OutDir, &res.report); err != nil {
+		return err
+	}
+	resolvedProfilesPath, resolvedProfilesSHA, ok, err := writeResolvedConfigProfilesArtifact(opts.OutDir, &res.report, res.bundle)
+	if err != nil {
+		return err
+	}
+	if ok {
+		res.report.ResolvedConfigProfilesPath = resolvedProfilesPath
+		res.report.ResolvedConfigProfilesSHA256 = resolvedProfilesSHA
 	}
 
 	manifestPath, manifestSHA, err := writeToolchainManifest(opts.OutDir, &res.report)
@@ -111,8 +134,10 @@ func parseOptions(args []string) (Options, error) {
 	snapshotID := fs.String("snapshot-id", "", "Optional snapshot id")
 	persist := fs.Bool("persist", false, "Persist analyzer facts/evidence into Postgres")
 	offline := fs.Bool("offline", true, "Run in offline self-hosted mode (disables network-bound augmentations)")
+	allowMissingAdapters := fs.Bool("allow-missing-adapters", false, "Allow selected adapters to be unavailable without failing analyze")
+	includeTests := fs.Bool("include-tests", false, "Include test source files (default: false)")
 	extractors := fs.String("extractors", "", "Comma-separated extractor names (default: all built-ins)")
-	adapters := fs.String("adapters", "", "Comma-separated analyzer adapter names (default: all built-ins)")
+	adapters := fs.String("adapters", "", "Comma-separated analyzer adapter names (default: builtin)")
 	llmAugment := fs.Bool("llm-augment", false, "Enable bounded LLM augmentation")
 	llmModel := fs.String("llm-model", "gpt-5-mini", "LLM model for augmentation")
 	llmTask := fs.String("llm-task", "augment-routes-http-config", "LLM augmentation task")
@@ -123,18 +148,20 @@ func parseOptions(args []string) (Options, error) {
 		return Options{}, fmt.Errorf("parse analyze flags: %w", err)
 	}
 	return Options{
-		Source:      *source,
-		OutDir:      *outDir,
-		SnapshotID:  *snapshotID,
-		Persist:     *persist,
-		Offline:     *offline,
-		Extractors:  *extractors,
-		Adapters:    *adapters,
-		LLMAugment:  *llmAugment,
-		LLMModel:    *llmModel,
-		LLMTask:     *llmTask,
-		LLMMaxFiles: *llmMaxFiles,
-		LLMMaxChars: *llmMaxChars,
+		Source:               *source,
+		OutDir:               *outDir,
+		SnapshotID:           *snapshotID,
+		Persist:              *persist,
+		Offline:              *offline,
+		AllowMissingAdapters: *allowMissingAdapters,
+		IncludeTests:         *includeTests,
+		Extractors:           *extractors,
+		Adapters:             *adapters,
+		LLMAugment:           *llmAugment,
+		LLMModel:             *llmModel,
+		LLMTask:              *llmTask,
+		LLMMaxFiles:          *llmMaxFiles,
+		LLMMaxChars:          *llmMaxChars,
 	}, nil
 }
 
@@ -149,12 +176,12 @@ func filterAnalyzeArgs(args []string) []string {
 				i++
 				filtered = append(filtered, args[i])
 			}
-		case arg == "--persist" || arg == "--llm-augment" || arg == "--offline":
+		case arg == "--persist" || arg == "--llm-augment" || arg == "--offline" || arg == "--include-tests" || arg == "--allow-missing-adapters":
 			filtered = append(filtered, arg)
 		case strings.HasPrefix(arg, "--source=") || strings.HasPrefix(arg, "--out=") || strings.HasPrefix(arg, "--snapshot-id=") ||
 			strings.HasPrefix(arg, "--extractors=") ||
 			strings.HasPrefix(arg, "--adapters=") ||
-			strings.HasPrefix(arg, "--persist=") || strings.HasPrefix(arg, "--offline=") || strings.HasPrefix(arg, "--llm-augment=") || strings.HasPrefix(arg, "--llm-model=") ||
+			strings.HasPrefix(arg, "--persist=") || strings.HasPrefix(arg, "--offline=") || strings.HasPrefix(arg, "--include-tests=") || strings.HasPrefix(arg, "--allow-missing-adapters=") || strings.HasPrefix(arg, "--llm-augment=") || strings.HasPrefix(arg, "--llm-model=") ||
 			strings.HasPrefix(arg, "--llm-task=") || strings.HasPrefix(arg, "--llm-max-files=") || strings.HasPrefix(arg, "--llm-max-chars="):
 			filtered = append(filtered, arg)
 		}

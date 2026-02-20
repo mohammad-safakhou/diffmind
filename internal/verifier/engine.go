@@ -11,19 +11,21 @@ import (
 	"diffmind/internal/consolidation"
 )
 
-func verify(bundle consolidation.IntelligenceBundle, opts Options) (consolidation.IntelligenceBundle, Report, error) {
+func verify(bundle consolidation.IntelligenceBundle, opts Options) (consolidation.IntelligenceBundle, Report, []ReviewQueueItem, error) {
 	if opts.PromoteThreshold <= 0 || opts.PromoteThreshold > 1 {
-		return consolidation.IntelligenceBundle{}, Report{}, fmt.Errorf("promote threshold must be in (0,1]")
+		return consolidation.IntelligenceBundle{}, Report{}, nil, fmt.Errorf("promote threshold must be in (0,1]")
 	}
 	if opts.DisputeThreshold <= 0 || opts.DisputeThreshold > 1 {
-		return consolidation.IntelligenceBundle{}, Report{}, fmt.Errorf("dispute threshold must be in (0,1]")
+		return consolidation.IntelligenceBundle{}, Report{}, nil, fmt.Errorf("dispute threshold must be in (0,1]")
 	}
 	if opts.DisputeThreshold > opts.PromoteThreshold {
-		return consolidation.IntelligenceBundle{}, Report{}, fmt.Errorf("dispute threshold cannot exceed promote threshold")
+		return consolidation.IntelligenceBundle{}, Report{}, nil, fmt.Errorf("dispute threshold cannot exceed promote threshold")
 	}
 
+	conflictsBySubject := indexConflictEntities(bundle.Entities)
 	out := make([]consolidation.Entity, 0, len(bundle.Entities))
 	decisions := make([]consolidation.Entity, 0, len(bundle.Entities)/2)
+	reviewQueue := make([]ReviewQueueItem, 0, len(bundle.Entities)/2)
 	report := Report{
 		GeneratedAt:     time.Now().UTC(),
 		SnapshotID:      bundle.SnapshotID,
@@ -37,7 +39,25 @@ func verify(bundle consolidation.IntelligenceBundle, opts Options) (consolidatio
 		if entity.Attributes == nil {
 			entity.Attributes = map[string]any{}
 		}
-		status, reason := classifyEntity(entity, opts)
+		status, reason := classifyEntityPass1(entity, opts)
+		if status == "needs_review" || status == "disputed" {
+			report.HypothesisCandidates++
+		}
+		if opts.StrictEvidence && isCriticalEntityType(entity.Type) && len(entity.EvidenceIDs) == 0 {
+			status = "disputed"
+			reason = "critical claim missing evidence ids"
+			report.MissingEvidenceCritical++
+		}
+		if opts.TwoPass {
+			subjectKey := conflictSubjectKey(entity.Type, entity.NaturalKey)
+			if _, conflicted := conflictsBySubject[subjectKey]; conflicted {
+				if status != "disputed" {
+					report.ContradictionDisputes++
+				}
+				status = "disputed"
+				reason = "contradiction pass flagged subject from conflict entity"
+			}
+		}
 		entity.Attributes["verification_status"] = status
 		entity.Attributes["verification_reason"] = reason
 		entity.Attributes["verified_by"] = verifierID
@@ -60,10 +80,12 @@ func verify(bundle consolidation.IntelligenceBundle, opts Options) (consolidatio
 		if status == "needs_review" || status == "disputed" {
 			decision := buildDecisionEntity(bundle.SnapshotID, entity, status, reason, report.GeneratedAt)
 			decisions = append(decisions, decision)
+			reviewQueue = append(reviewQueue, buildReviewQueueItem(entity, status, reason, report.GeneratedAt))
 		}
 	}
 
 	report.DecisionEntitiesAdded = len(decisions)
+	report.ReviewQueueItems = len(reviewQueue)
 	total := len(bundle.Entities)
 	if total > 0 {
 		report.UnresolvedLowConfidenceRate = float64(report.UnresolvedLowConfidence) / float64(total)
@@ -76,17 +98,33 @@ func verify(bundle consolidation.IntelligenceBundle, opts Options) (consolidatio
 		}
 		return out[i].Type < out[j].Type
 	})
+	sort.Slice(reviewQueue, func(i, j int) bool {
+		if reviewQueue[i].Priority == reviewQueue[j].Priority {
+			if reviewQueue[i].EntityType == reviewQueue[j].EntityType {
+				return reviewQueue[i].NaturalKey < reviewQueue[j].NaturalKey
+			}
+			return reviewQueue[i].EntityType < reviewQueue[j].EntityType
+		}
+		return reviewQueue[i].Priority < reviewQueue[j].Priority
+	})
 
 	verified := consolidation.IntelligenceBundle{
 		SnapshotID:  bundle.SnapshotID,
 		GeneratedAt: time.Now().UTC(),
 		Entities:    out,
 	}
+	if len(reviewQueue) > 0 {
+		reviewQueueEntity := buildReviewQueueEntity(bundle.SnapshotID, reviewQueue, report.GeneratedAt)
+		verified.Entities = append(verified.Entities, reviewQueueEntity)
+	}
 	report.OutputEntities = len(out)
-	return verified, report, nil
+	if len(reviewQueue) > 0 {
+		report.OutputEntities++
+	}
+	return verified, report, reviewQueue, nil
 }
 
-func classifyEntity(e consolidation.Entity, opts Options) (string, string) {
+func classifyEntityPass1(e consolidation.Entity, opts Options) (string, string) {
 	if strings.EqualFold(e.Type, "Conflict") {
 		return "disputed", "conflict entity requires adjudication"
 	}
@@ -100,6 +138,29 @@ func classifyEntity(e consolidation.Entity, opts Options) (string, string) {
 		return "disputed", "confidence below dispute threshold"
 	}
 	return "needs_review", "confidence in review band"
+}
+
+func indexConflictEntities(entities []consolidation.Entity) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, e := range entities {
+		if !strings.EqualFold(strings.TrimSpace(e.Type), "Conflict") {
+			continue
+		}
+		if e.Attributes == nil {
+			continue
+		}
+		entityType := strings.TrimSpace(fmt.Sprint(e.Attributes["entity_type"]))
+		entityNaturalKey := strings.TrimSpace(fmt.Sprint(e.Attributes["entity_natural_key"]))
+		if entityType == "" || entityNaturalKey == "" || entityType == "<nil>" || entityNaturalKey == "<nil>" {
+			continue
+		}
+		out[conflictSubjectKey(entityType, entityNaturalKey)] = struct{}{}
+	}
+	return out
+}
+
+func conflictSubjectKey(entityType, naturalKey string) string {
+	return strings.ToLower(strings.TrimSpace(entityType)) + "|" + strings.TrimSpace(naturalKey)
 }
 
 func buildDecisionEntity(snapshotID string, subject consolidation.Entity, status string, reason string, now time.Time) consolidation.Entity {
@@ -126,6 +187,107 @@ func buildDecisionEntity(snapshotID string, subject consolidation.Entity, status
 		FactIDs:     append([]string(nil), subject.FactIDs...),
 		Confidence:  0.8,
 	}
+}
+
+func buildReviewQueueEntity(snapshotID string, items []ReviewQueueItem, now time.Time) consolidation.Entity {
+	const maxEmbeddedItems = 200
+	embedded := items
+	truncated := false
+	if len(items) > maxEmbeddedItems {
+		embedded = append([]ReviewQueueItem(nil), items[:maxEmbeddedItems]...)
+		truncated = true
+	}
+	criticalCount := 0
+	for _, it := range items {
+		if it.Priority == "p1" {
+			criticalCount++
+		}
+	}
+	naturalKey := fmt.Sprintf("snapshot=%s|items=%d|critical=%d", snapshotID, len(items), criticalCount)
+	return consolidation.Entity{
+		ID:         stableEntityID(snapshotID, "VerificationReviewQueue", naturalKey),
+		Type:       "VerificationReviewQueue",
+		NaturalKey: naturalKey,
+		Attributes: map[string]any{
+			"snapshot_id":              snapshotID,
+			"verifier_id":              verifierID,
+			"verifier_version":         verifierVersion,
+			"created_at_utc":           now.Format(time.RFC3339),
+			"item_count":               len(items),
+			"critical_item_count":      criticalCount,
+			"embedded_item_limit":      maxEmbeddedItems,
+			"embedded_items_truncated": truncated,
+			"items":                    embedded,
+		},
+		Confidence: 0.9,
+	}
+}
+
+func buildReviewQueueItem(entity consolidation.Entity, status, reason string, now time.Time) ReviewQueueItem {
+	return ReviewQueueItem{
+		EntityID:      entity.ID,
+		EntityType:    entity.Type,
+		NaturalKey:    entity.NaturalKey,
+		Status:        status,
+		Reason:        reason,
+		Confidence:    entity.Confidence,
+		EvidenceIDs:   cloneStringSlice(entity.EvidenceIDs),
+		FactIDs:       cloneStringSlice(entity.FactIDs),
+		Section:       attrString(entity.Attributes, "section"),
+		Class:         attrString(entity.Attributes, "class"),
+		Priority:      reviewPriority(entity.Type, status, reason),
+		CreatedAtUTC:  now.Format(time.RFC3339),
+		VerifierID:    verifierID,
+		SourceAdapter: attrString(entity.Attributes, "adapter_id"),
+	}
+}
+
+func reviewPriority(entityType, status, reason string) string {
+	typ := strings.ToLower(strings.TrimSpace(entityType))
+	if strings.Contains(strings.ToLower(reason), "missing evidence") {
+		return "p1"
+	}
+	switch typ {
+	case "endpoint", "externalcall", "queue", "topic", "database", "table", "dependency", "sensitivesurface":
+		if status == "disputed" {
+			return "p1"
+		}
+		return "p2"
+	default:
+		if status == "disputed" {
+			return "p2"
+		}
+		return "p3"
+	}
+}
+
+func isCriticalEntityType(entityType string) bool {
+	switch strings.ToLower(strings.TrimSpace(entityType)) {
+	case "endpoint", "externalcall", "queue", "topic", "database", "table", "dependency", "sensitivesurface":
+		return true
+	default:
+		return false
+	}
+}
+
+func attrString(attrs map[string]any, key string) string {
+	if attrs == nil {
+		return ""
+	}
+	raw, ok := attrs[key]
+	if !ok || raw == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(raw))
+}
+
+func cloneStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return []string{}
+	}
+	out := make([]string, len(values))
+	copy(out, values)
+	return out
 }
 
 func stableEntityID(snapshotID string, entityType string, naturalKey string) string {

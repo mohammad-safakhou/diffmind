@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"diffmind/internal/audit"
+	"diffmind/internal/graph"
 	"diffmind/internal/ops"
 )
 
@@ -131,12 +132,28 @@ type milestoneClosureReport struct {
 	Milestones     []milestoneStatus `json:"milestones"`
 }
 
+type closureRuleCheck struct {
+	Name   string `json:"name"`
+	Passed bool   `json:"passed"`
+	Detail string `json:"detail"`
+}
+
+type closureRulesReport struct {
+	GeneratedAtUTC      string             `json:"generated_at_utc"`
+	OverallPassed       bool               `json:"overall_passed"`
+	ContractReportPath  string             `json:"contract_report_path"`
+	ContractReportFound bool               `json:"contract_report_found"`
+	Checks              []closureRuleCheck `json:"checks"`
+}
+
 type closeoutOptions struct {
 	Attest               options
 	MilestoneReportPath  string
 	BenchmarkReportPath  string
 	SecurityReportPath   string
 	OperationsReportPath string
+	ClosureRulesPath     string
+	ContractReportPath   string
 	QualityReportPath    string
 	CorpusReportPath     string
 	PerformancePolicy    string
@@ -160,14 +177,16 @@ func Run(_ context.Context, args []string) error {
 }
 
 type options struct {
-	QualityGatePath string
-	SLOPath         string
-	TemplatesPath   string
-	CatalogPath     string
-	GraphIndexPath  string
-	ReportPath      string
-	DecisionPath    string
-	Signers         []string
+	QualityGatePath       string
+	MergeQualityPath      string
+	MergeQualityExpectRef string
+	SLOPath               string
+	TemplatesPath         string
+	CatalogPath           string
+	GraphIndexPath        string
+	ReportPath            string
+	DecisionPath          string
+	Signers               []string
 }
 
 func runAttest(args []string) error {
@@ -197,6 +216,10 @@ func runCloseout(args []string) error {
 	if err != nil {
 		return err
 	}
+	appendCloseoutAuditEvent(opts)
+	if err := ensureMergeQualityForCloseout(opts.Attest); err != nil {
+		return err
+	}
 	readiness, err := evaluate(opts.Attest)
 	if err != nil {
 		return err
@@ -220,6 +243,10 @@ func runCloseout(args []string) error {
 	if err := writeJSON(opts.OperationsReportPath, opsDrill); err != nil {
 		return err
 	}
+	closureRules := evaluateClosureRules(opts, readiness, opsDrill)
+	if err := writeJSON(opts.ClosureRulesPath, closureRules); err != nil {
+		return err
+	}
 
 	milestones := buildMilestoneClosure(readiness, benchmark, security, opsDrill)
 	if err := writeJSON(opts.MilestoneReportPath, milestones); err != nil {
@@ -227,9 +254,52 @@ func runCloseout(args []string) error {
 	}
 
 	fmt.Println(opts.MilestoneReportPath)
-	allPassed := readiness.OverallPassed && benchmark.Passed && security.Passed && opsDrill.Passed && milestones.OverallPassed
+	allPassed := readiness.OverallPassed && benchmark.Passed && security.Passed && opsDrill.Passed && milestones.OverallPassed && closureRules.OverallPassed
 	if !allPassed {
 		return errors.New("final closeout failed")
+	}
+	return nil
+}
+
+func appendCloseoutAuditEvent(opts closeoutOptions) {
+	root := strings.TrimSpace(opts.AuditRoot)
+	if root == "" {
+		root = ".diffmind"
+	}
+	_ = audit.AppendEvent(root, audit.Event{
+		Timestamp: time.Now().UTC(),
+		Action:    "final_closeout",
+		TenantID:  "default",
+		Principal: "finalgate.closeout",
+		Method:    "POST",
+		Path:      "/final/closeout",
+		Decision:  "allow",
+		Metadata: map[string]any{
+			"quality_gate": strings.TrimSpace(opts.Attest.QualityGatePath),
+			"graph_index":  strings.TrimSpace(opts.Attest.GraphIndexPath),
+		},
+	})
+}
+
+func ensureMergeQualityForCloseout(att options) error {
+	mergePath := strings.TrimSpace(att.MergeQualityPath)
+	if mergePath == "" {
+		return nil
+	}
+	_, statErr := os.Stat(mergePath)
+	if statErr == nil {
+		return nil
+	}
+	if !os.IsNotExist(statErr) {
+		return fmt.Errorf("stat merge quality report: %w", statErr)
+	}
+	_, assessErr := graph.Assess(context.Background(), graph.AssessRequest{
+		IndexPath:       strings.TrimSpace(att.GraphIndexPath),
+		OutPath:         mergePath,
+		ExpectLinksPath: strings.TrimSpace(att.MergeQualityExpectRef),
+	})
+	if assessErr != nil {
+		return fmt.Errorf("auto-generate merge quality report: %w", assessErr)
 	}
 	return nil
 }
@@ -237,6 +307,8 @@ func runCloseout(args []string) error {
 func parseOptions(args []string) (options, error) {
 	fs := flag.NewFlagSet("finalgate attest", flag.ContinueOnError)
 	qualityGate := fs.String("quality-gate", filepath.Join(".diffmind", "quality", "gate_result.json"), "Quality gate result path")
+	mergeQuality := fs.String("merge-quality", filepath.Join(".diffmind", "graph", "merge_quality_report.json"), "Graph merge quality report path")
+	mergeQualityExpectRef := fs.String("merge-quality-expect-links", "", "Expected service links JSON used for merge benchmark verification")
 	slo := fs.String("slo", filepath.Join(".diffmind", "ops", "slo_report.json"), "SLO report path")
 	templates := fs.String("templates", filepath.Join("docs", "m15_query_templates.json"), "Product query templates path")
 	catalog := fs.String("catalog", filepath.Join("docs", "m17_question_catalog.json"), "Question catalog path")
@@ -248,14 +320,16 @@ func parseOptions(args []string) (options, error) {
 		return options{}, fmt.Errorf("parse finalgate flags: %w", err)
 	}
 	return options{
-		QualityGatePath: strings.TrimSpace(*qualityGate),
-		SLOPath:         strings.TrimSpace(*slo),
-		TemplatesPath:   strings.TrimSpace(*templates),
-		CatalogPath:     strings.TrimSpace(*catalog),
-		GraphIndexPath:  strings.TrimSpace(*graphIndex),
-		ReportPath:      strings.TrimSpace(*report),
-		DecisionPath:    strings.TrimSpace(*decision),
-		Signers:         splitCSV(*signers),
+		QualityGatePath:       strings.TrimSpace(*qualityGate),
+		MergeQualityPath:      strings.TrimSpace(*mergeQuality),
+		MergeQualityExpectRef: strings.TrimSpace(*mergeQualityExpectRef),
+		SLOPath:               strings.TrimSpace(*slo),
+		TemplatesPath:         strings.TrimSpace(*templates),
+		CatalogPath:           strings.TrimSpace(*catalog),
+		GraphIndexPath:        strings.TrimSpace(*graphIndex),
+		ReportPath:            strings.TrimSpace(*report),
+		DecisionPath:          strings.TrimSpace(*decision),
+		Signers:               splitCSV(*signers),
 	}, nil
 }
 
@@ -264,6 +338,9 @@ func evaluate(opts options) (readinessReport, error) {
 
 	qualityPassed, qualityDetail := checkQualityGate(opts.QualityGatePath)
 	checks = append(checks, check{Name: "m0_m16_quality_gate", Passed: qualityPassed, Detail: qualityDetail})
+
+	mergePassed, mergeDetail := checkMergeQualityGate(opts.MergeQualityPath, opts.MergeQualityExpectRef)
+	checks = append(checks, check{Name: "m8_merge_quality_gate", Passed: mergePassed, Detail: mergeDetail})
 
 	sloPassed, sloDetail := checkSLO(opts.SLOPath)
 	checks = append(checks, check{Name: "m16_slo_gate", Passed: sloPassed, Detail: sloDetail})
@@ -283,7 +360,7 @@ func evaluate(opts options) (readinessReport, error) {
 	attPassed, attDetail := checkAttestation(opts.Signers)
 	checks = append(checks, check{Name: "final_attestation_signed", Passed: attPassed, Detail: attDetail})
 
-	allMilestones := qualityPassed && sloPassed && qcovPassed && apiCovPassed && explainPassed && tracePassed
+	allMilestones := qualityPassed && mergePassed && sloPassed && qcovPassed && apiCovPassed && explainPassed && tracePassed
 	checks = append(checks, check{Name: "all_m0_m16_gates_satisfied", Passed: allMilestones, Detail: boolDetail(allMilestones, "core milestone gates satisfied", "core milestone gate(s) failed")})
 
 	overall := true
@@ -306,6 +383,8 @@ func evaluate(opts options) (readinessReport, error) {
 func parseCloseoutOptions(args []string) (closeoutOptions, error) {
 	fs := flag.NewFlagSet("finalgate closeout", flag.ContinueOnError)
 	qualityGate := fs.String("quality-gate", filepath.Join(".diffmind", "quality", "gate_result.json"), "Quality gate result path")
+	mergeQuality := fs.String("merge-quality", filepath.Join(".diffmind", "graph", "merge_quality_report.json"), "Graph merge quality report path")
+	mergeQualityExpectRef := fs.String("merge-quality-expect-links", "", "Expected service links JSON used for merge benchmark verification")
 	slo := fs.String("slo", filepath.Join(".diffmind", "ops", "slo_report.json"), "SLO report path")
 	templates := fs.String("templates", filepath.Join("docs", "m15_query_templates.json"), "Product query templates path")
 	catalog := fs.String("catalog", filepath.Join("docs", "m17_question_catalog.json"), "Question catalog path")
@@ -318,10 +397,12 @@ func parseCloseoutOptions(args []string) (closeoutOptions, error) {
 	benchmarkReport := fs.String("out-benchmark", filepath.Join(".diffmind", "final", "benchmark_evidence_report.json"), "Benchmark evidence report output")
 	securityReport := fs.String("out-security", filepath.Join(".diffmind", "final", "security_validation_report.json"), "Security validation report output")
 	opsReport := fs.String("out-ops", filepath.Join(".diffmind", "final", "operations_drill_report.json"), "Operations drill report output")
+	closureRulesReport := fs.String("out-closure-rules", filepath.Join(".diffmind", "final", "closure_rules_report.json"), "Closure rules report output")
 
 	qualityReport := fs.String("quality-report", filepath.Join(".diffmind", "quality", "report.json"), "Quality evaluation report path")
 	corpusReport := fs.String("corpus-report", filepath.Join(".diffmind", "corpus", "report.json"), "Corpus report path")
 	perfPolicy := fs.String("performance-policy", filepath.Join("docs", "graph_performance_baseline.md"), "Performance baseline policy path")
+	contractReport := fs.String("contract-report", filepath.Join(".diffmind", "graph", "contract_report.json"), "Graph contract report path")
 	auditRoot := fs.String("audit-root", ".diffmind", "Audit root for security/ops checks")
 	drillSource := fs.String("drill-source", ".diffmind", "Source root for backup/restore drill")
 	drillOut := fs.String("drill-out", filepath.Join(".diffmind", "final", "drills"), "Output directory for ops drill artifacts")
@@ -330,14 +411,16 @@ func parseCloseoutOptions(args []string) (closeoutOptions, error) {
 		return closeoutOptions{}, fmt.Errorf("parse finalgate closeout flags: %w", err)
 	}
 	att := options{
-		QualityGatePath: strings.TrimSpace(*qualityGate),
-		SLOPath:         strings.TrimSpace(*slo),
-		TemplatesPath:   strings.TrimSpace(*templates),
-		CatalogPath:     strings.TrimSpace(*catalog),
-		GraphIndexPath:  strings.TrimSpace(*graphIndex),
-		ReportPath:      strings.TrimSpace(*report),
-		DecisionPath:    strings.TrimSpace(*decision),
-		Signers:         splitCSV(*signers),
+		QualityGatePath:       strings.TrimSpace(*qualityGate),
+		MergeQualityPath:      strings.TrimSpace(*mergeQuality),
+		MergeQualityExpectRef: strings.TrimSpace(*mergeQualityExpectRef),
+		SLOPath:               strings.TrimSpace(*slo),
+		TemplatesPath:         strings.TrimSpace(*templates),
+		CatalogPath:           strings.TrimSpace(*catalog),
+		GraphIndexPath:        strings.TrimSpace(*graphIndex),
+		ReportPath:            strings.TrimSpace(*report),
+		DecisionPath:          strings.TrimSpace(*decision),
+		Signers:               splitCSV(*signers),
 	}
 	return closeoutOptions{
 		Attest:               att,
@@ -345,6 +428,8 @@ func parseCloseoutOptions(args []string) (closeoutOptions, error) {
 		BenchmarkReportPath:  strings.TrimSpace(*benchmarkReport),
 		SecurityReportPath:   strings.TrimSpace(*securityReport),
 		OperationsReportPath: strings.TrimSpace(*opsReport),
+		ClosureRulesPath:     strings.TrimSpace(*closureRulesReport),
+		ContractReportPath:   strings.TrimSpace(*contractReport),
 		QualityReportPath:    strings.TrimSpace(*qualityReport),
 		CorpusReportPath:     strings.TrimSpace(*corpusReport),
 		PerformancePolicy:    strings.TrimSpace(*perfPolicy),
@@ -460,6 +545,131 @@ func runOperationsDrills(ctx context.Context, opts closeoutOptions) operationsDr
 	return rep
 }
 
+func evaluateClosureRules(opts closeoutOptions, readiness readinessReport, opsDrill operationsDrillReport) closureRulesReport {
+	rep := closureRulesReport{
+		GeneratedAtUTC: time.Now().UTC().Format(time.RFC3339),
+		Checks:         []closureRuleCheck{},
+	}
+	contractPath := strings.TrimSpace(opts.ContractReportPath)
+	contractFound := false
+	contractPassed := false
+	evidencePassed := false
+	evidenceDetail := "contract report missing"
+	if contractPath != "" {
+		if st, err := os.Stat(contractPath); err == nil && !st.IsDir() {
+			contractFound = true
+			contractPassed, evidencePassed, evidenceDetail = evaluateContractReport(contractPath)
+		}
+	}
+	rep.ContractReportPath = contractPath
+	rep.ContractReportFound = contractFound
+	rep.Checks = append(rep.Checks, closureRuleCheck{
+		Name:   "contract_report_gate",
+		Passed: contractFound && contractPassed,
+		Detail: boolDetail(contractFound && contractPassed, "contract report present and passed", "contract report missing or failed"),
+	})
+	rep.Checks = append(rep.Checks, closureRuleCheck{
+		Name:   "evidence_sampling_gate",
+		Passed: contractFound && evidencePassed,
+		Detail: evidenceDetail,
+	})
+
+	productValidationPassed := checkByName(readiness, "question_catalog_coverage_100") &&
+		checkByName(readiness, "question_catalog_api_coverage_100") &&
+		checkByName(readiness, "explainability_traceability_100")
+	rep.Checks = append(rep.Checks, closureRuleCheck{
+		Name:   "product_task_validation_gate",
+		Passed: productValidationPassed,
+		Detail: boolDetail(productValidationPassed, "product task validation checks passed", "product task validation checks failed"),
+	})
+
+	opsValidationPassed := opsDrill.Passed && checkByName(readiness, "m16_slo_gate")
+	rep.Checks = append(rep.Checks, closureRuleCheck{
+		Name:   "ops_validation_gate",
+		Passed: opsValidationPassed,
+		Detail: boolDetail(opsValidationPassed, "ops drill and slo validation passed", "ops drill and/or slo validation failed"),
+	})
+
+	rep.OverallPassed = true
+	for _, c := range rep.Checks {
+		if !c.Passed {
+			rep.OverallPassed = false
+			break
+		}
+	}
+	return rep
+}
+
+func evaluateContractReport(path string) (bool, bool, string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, false, fmt.Sprintf("contract report read failed: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return false, false, fmt.Sprintf("contract report decode failed: %v", err)
+	}
+	passed, ok := payload["passed"].(bool)
+	if !ok {
+		return false, false, "contract report missing passed flag"
+	}
+	evidenceLinks := collectContractEvidenceLinks(payload)
+	if len(evidenceLinks) == 0 {
+		return passed, false, "no evidence_samples links found in contract report"
+	}
+	validLinks := 0
+	for _, link := range evidenceLinks {
+		if strings.HasPrefix(strings.TrimSpace(link), "graph://") {
+			validLinks++
+		}
+	}
+	if validLinks == 0 {
+		return passed, false, "evidence samples missing graph:// references"
+	}
+	return passed, true, fmt.Sprintf("evidence samples valid (%d graph links)", validLinks)
+}
+
+func collectContractEvidenceLinks(payload map[string]any) []string {
+	out := []string{}
+	surfaces, ok := payload["surfaces"].(map[string]any)
+	if !ok {
+		return out
+	}
+	collectFromSampleArray := func(raw any) {
+		items, ok := raw.([]any)
+		if !ok {
+			return
+		}
+		for _, item := range items {
+			sample, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			links, ok := sample["links"].([]any)
+			if !ok {
+				continue
+			}
+			for _, lv := range links {
+				if s, ok := lv.(string); ok {
+					s = strings.TrimSpace(s)
+					if s != "" {
+						out = append(out, s)
+					}
+				}
+			}
+		}
+	}
+	for _, v := range surfaces {
+		surface, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		collectFromSampleArray(surface["evidence_samples"])
+		collectFromSampleArray(surface["false_positive_evidence_samples"])
+	}
+	return out
+}
+
 func buildMilestoneClosure(readiness readinessReport, benchmark benchmarkEvidenceReport, security securityValidationReport, opsDrill operationsDrillReport) milestoneClosureReport {
 	items := []milestoneStatus{
 		{ID: "M0", Name: "Program Charter And Question Catalog", Passed: checkByName(readiness, "question_catalog_coverage_100"), Detail: "question catalog coverage gate", Evidence: []string{"docs/m17_question_catalog.json"}},
@@ -470,7 +680,7 @@ func buildMilestoneClosure(readiness readinessReport, benchmark benchmarkEvidenc
 		{ID: "M5", Name: "Runtime/CI/CD Intelligence", Passed: fileExists(filepath.Join("docs", "runtime_reconciliation_runbook.md")), Detail: "runtime/cicd runbook present", Evidence: []string{"docs/runtime_reconciliation_runbook.md"}},
 		{ID: "M6", Name: "Config And Operational Surface", Passed: fileExists(filepath.Join("internal", "graph", "resolve.go")), Detail: "graph resolver/config extraction code present", Evidence: []string{"internal/graph/resolve.go"}},
 		{ID: "M7", Name: "Dependency And Internal Topology", Passed: fileExists(filepath.Join("internal", "graph", "resolve.go")), Detail: "dependency topology resolver present", Evidence: []string{"internal/graph/resolve.go"}},
-		{ID: "M8", Name: "Cross-Repo Company Graph", Passed: fileExists(filepath.Join("internal", "graph", "module.go")), Detail: "graph builder module present", Evidence: []string{"internal/graph/module.go"}},
+		{ID: "M8", Name: "Cross-Repo Company Graph", Passed: fileExists(filepath.Join("internal", "graph", "module.go")) && checkByName(readiness, "m8_merge_quality_gate"), Detail: "graph builder module present and merge-quality gate", Evidence: []string{"internal/graph/module.go", ".diffmind/graph/merge_quality_report.json"}},
 		{ID: "M9", Name: "Confidence/Conflict/Adjudication", Passed: fileExists(filepath.Join("internal", "verifier", "module.go")), Detail: "verifier/adjudication module present", Evidence: []string{"internal/verifier/module.go"}},
 		{ID: "M10", Name: "Agentic Verification Plane", Passed: fileExists(filepath.Join("internal", "analyzers", "llm_client.go")), Detail: "agentic verification integration present", Evidence: []string{"internal/analyzers/llm_client.go"}},
 		{ID: "M11", Name: "Query Language And Serving APIs", Passed: fileExists(filepath.Join("internal", "query", "module.go")), Detail: "query module present", Evidence: []string{"internal/query/module.go"}},
@@ -562,6 +772,99 @@ func checkQualityGate(path string) (bool, string) {
 		return false, "quality gate failed"
 	}
 	return true, "quality gate passed"
+}
+
+func checkMergeQualityGate(path string, expectLinksPath string) (bool, string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, "merge quality report missing"
+		}
+		return false, fmt.Sprintf("read failed: %v", err)
+	}
+	var payload struct {
+		Passed    *bool          `json:"passed"`
+		Benchmark map[string]any `json:"benchmark"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return false, fmt.Sprintf("decode failed: %v", err)
+	}
+	if payload.Passed == nil {
+		return false, "merge quality report missing passed field"
+	}
+	if !*payload.Passed {
+		return false, "merge quality gate failed"
+	}
+	if strings.TrimSpace(expectLinksPath) != "" {
+		if payload.Benchmark == nil {
+			return false, "merge quality benchmark missing"
+		}
+		benchmarkPassed, ok := payload.Benchmark["passed"].(bool)
+		if !ok {
+			return false, "merge quality benchmark missing passed field"
+		}
+		if !benchmarkPassed {
+			detail := benchmarkMismatchDetails(payload.Benchmark)
+			if detail != "" {
+				return false, "merge quality benchmark failed: " + detail
+			}
+			return false, "merge quality benchmark failed"
+		}
+	}
+	return true, "merge quality gate passed"
+}
+
+func benchmarkMismatchDetails(benchmark map[string]any) string {
+	parts := make([]string, 0, 2)
+	appendSection := func(section string, short string) {
+		raw, ok := benchmark[section]
+		if !ok {
+			return
+		}
+		sec, ok := raw.(map[string]any)
+		if !ok {
+			return
+		}
+		fp := firstStringSample(sec["false_positive_samples"])
+		fn := firstStringSample(sec["false_negative_samples"])
+		if fp == "" && fn == "" {
+			return
+		}
+		if fp != "" && fn != "" {
+			parts = append(parts, fmt.Sprintf("%s fp=%q fn=%q", short, fp, fn))
+			return
+		}
+		if fp != "" {
+			parts = append(parts, fmt.Sprintf("%s fp=%q", short, fp))
+			return
+		}
+		parts = append(parts, fmt.Sprintf("%s fn=%q", short, fn))
+	}
+	appendSection("service_calls_service", "linkage")
+	appendSection("canonical_service_aliases", "identity")
+	return strings.Join(parts, "; ")
+}
+
+func firstStringSample(v any) string {
+	switch x := v.(type) {
+	case []any:
+		for _, item := range x {
+			if s, ok := item.(string); ok {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					return s
+				}
+			}
+		}
+	case []string:
+		for _, s := range x {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 func checkSLO(path string) (bool, string) {
@@ -877,19 +1180,19 @@ func filterArgs(args []string) []string {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
-		case arg == "--quality-gate" || arg == "--slo" || arg == "--templates" || arg == "--catalog" || arg == "--graph-index" || arg == "--out-report" || arg == "--out-decision" || arg == "--signers" ||
-			arg == "--out-milestones" || arg == "--out-benchmark" || arg == "--out-security" || arg == "--out-ops" || arg == "--quality-report" ||
-			arg == "--corpus-report" || arg == "--performance-policy" || arg == "--audit-root" || arg == "--drill-source" || arg == "--drill-out":
+		case arg == "--quality-gate" || arg == "--merge-quality" || arg == "--merge-quality-expect-links" || arg == "--slo" || arg == "--templates" || arg == "--catalog" || arg == "--graph-index" || arg == "--out-report" || arg == "--out-decision" || arg == "--signers" ||
+			arg == "--out-milestones" || arg == "--out-benchmark" || arg == "--out-security" || arg == "--out-ops" || arg == "--out-closure-rules" || arg == "--quality-report" ||
+			arg == "--corpus-report" || arg == "--performance-policy" || arg == "--contract-report" || arg == "--audit-root" || arg == "--drill-source" || arg == "--drill-out":
 			out = append(out, arg)
 			if i+1 < len(args) {
 				i++
 				out = append(out, args[i])
 			}
-		case strings.HasPrefix(arg, "--quality-gate=") || strings.HasPrefix(arg, "--slo=") || strings.HasPrefix(arg, "--templates=") || strings.HasPrefix(arg, "--catalog=") || strings.HasPrefix(arg, "--graph-index=") ||
+		case strings.HasPrefix(arg, "--quality-gate=") || strings.HasPrefix(arg, "--merge-quality=") || strings.HasPrefix(arg, "--merge-quality-expect-links=") || strings.HasPrefix(arg, "--slo=") || strings.HasPrefix(arg, "--templates=") || strings.HasPrefix(arg, "--catalog=") || strings.HasPrefix(arg, "--graph-index=") ||
 			strings.HasPrefix(arg, "--out-report=") || strings.HasPrefix(arg, "--out-decision=") || strings.HasPrefix(arg, "--signers=") ||
 			strings.HasPrefix(arg, "--out-milestones=") || strings.HasPrefix(arg, "--out-benchmark=") || strings.HasPrefix(arg, "--out-security=") ||
-			strings.HasPrefix(arg, "--out-ops=") || strings.HasPrefix(arg, "--quality-report=") || strings.HasPrefix(arg, "--corpus-report=") ||
-			strings.HasPrefix(arg, "--performance-policy=") || strings.HasPrefix(arg, "--audit-root=") || strings.HasPrefix(arg, "--drill-source=") ||
+			strings.HasPrefix(arg, "--out-ops=") || strings.HasPrefix(arg, "--out-closure-rules=") || strings.HasPrefix(arg, "--quality-report=") || strings.HasPrefix(arg, "--corpus-report=") ||
+			strings.HasPrefix(arg, "--performance-policy=") || strings.HasPrefix(arg, "--contract-report=") || strings.HasPrefix(arg, "--audit-root=") || strings.HasPrefix(arg, "--drill-source=") ||
 			strings.HasPrefix(arg, "--drill-out="):
 			out = append(out, arg)
 		}

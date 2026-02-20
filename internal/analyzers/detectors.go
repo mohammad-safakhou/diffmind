@@ -70,6 +70,9 @@ var (
 	reGHUses       = regexp.MustCompile(`^\s*-?\s*uses\s*:\s*(.+)$`)
 	reGHRun        = regexp.MustCompile(`^\s*-?\s*run\s*:\s*(.+)$`)
 	reGHSecret     = regexp.MustCompile(`secrets\.[A-Za-z0-9_]+`)
+	reGitLabStage  = regexp.MustCompile(`^\s*stage\s*:\s*([A-Za-z0-9_\-]+)\s*$`)
+	reJenkinsStage = regexp.MustCompile(`(?i)\bstage\s*\(\s*['"]([^'"]+)['"]\s*\)`)
+	reJenkinsSh    = regexp.MustCompile(`(?i)\bsh\s+['"]([^'"]+)['"]`)
 )
 
 func detectRuntimeUnits(c *collector, file sourceFile) {
@@ -411,8 +414,10 @@ func detectCIIaC(c *collector, file sourceFile) {
 
 	if base == ".gitlab-ci.yml" || base == "jenkinsfile" {
 		c.addFactWithEvidence("PipelineStep", map[string]any{"provider": base, "kind": "pipeline-file", "value": file.Path}, file, 1, 1, file.Path, func() { c.report.PipelineSteps++ })
-		for i, line := range file.Lines {
-			detectBuildArtifactsFromCommand(c, file, i+1, 1, line, line, base)
+		if base == ".gitlab-ci.yml" {
+			detectGitLabPipelineDetails(c, file)
+		} else {
+			detectJenkinsPipelineDetails(c, file)
 		}
 	}
 
@@ -511,6 +516,75 @@ func detectCIIaC(c *collector, file sourceFile) {
 	}
 }
 
+func detectGitLabPipelineDetails(c *collector, file sourceFile) {
+	inScript := false
+	scriptIndent := 0
+	for i, line := range file.Lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		if inScript && indent <= scriptIndent && !strings.HasPrefix(strings.TrimSpace(line), "-") {
+			inScript = false
+		}
+		if m := reGitLabStage.FindStringSubmatch(line); len(m) >= 2 {
+			stage := strings.TrimSpace(m[1])
+			if stage != "" {
+				c.addFactWithEvidence("PipelineStep", map[string]any{
+					"provider": "gitlab-ci",
+					"kind":     "stage",
+					"value":    stage,
+				}, file, i+1, 1, line, func() { c.report.PipelineSteps++ })
+			}
+		}
+		if strings.HasPrefix(trimmed, "script:") {
+			inScript = true
+			scriptIndent = indent
+			continue
+		}
+		if inScript && strings.HasPrefix(strings.TrimSpace(line), "-") {
+			cmd := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "-"))
+			if cmd == "" {
+				continue
+			}
+			c.addFactWithEvidence("PipelineStep", map[string]any{
+				"provider": "gitlab-ci",
+				"kind":     "run",
+				"value":    cmd,
+			}, file, i+1, 1, line, func() { c.report.PipelineSteps++ })
+			detectBuildArtifactsFromCommand(c, file, i+1, 1, line, cmd, "gitlab-ci")
+		}
+	}
+}
+
+func detectJenkinsPipelineDetails(c *collector, file sourceFile) {
+	for i, line := range file.Lines {
+		if m := reJenkinsStage.FindStringSubmatch(line); len(m) >= 2 {
+			stage := strings.TrimSpace(m[1])
+			if stage != "" {
+				c.addFactWithEvidence("PipelineStep", map[string]any{
+					"provider": "jenkins",
+					"kind":     "stage",
+					"value":    stage,
+				}, file, i+1, 1, line, func() { c.report.PipelineSteps++ })
+			}
+		}
+		if m := reJenkinsSh.FindStringSubmatch(line); len(m) >= 2 {
+			cmd := strings.TrimSpace(m[1])
+			if cmd == "" {
+				continue
+			}
+			c.addFactWithEvidence("PipelineStep", map[string]any{
+				"provider": "jenkins",
+				"kind":     "run",
+				"value":    cmd,
+			}, file, i+1, 1, line, func() { c.report.PipelineSteps++ })
+			detectBuildArtifactsFromCommand(c, file, i+1, 1, line, cmd, "jenkins")
+		}
+	}
+}
+
 func detectBuildArtifactsFromCommand(c *collector, file sourceFile, line int, col int, snippet string, cmd string, provider string) {
 	cmd = strings.TrimSpace(cmd)
 	if cmd == "" {
@@ -582,6 +656,9 @@ func recordConfigKey(c *collector, file sourceFile, line int, col int, snippet s
 func inferEnvironmentScope(path string, key string) string {
 	p := strings.ToLower(path)
 	k := strings.ToLower(key)
+	if profile, ok := springConfigManifestProfile(path); ok {
+		return normalizeSpringProfile(profile)
+	}
 	switch {
 	case strings.Contains(p, "prod"), strings.Contains(k, "prod_"), strings.Contains(k, ".prod"):
 		return "prod"
@@ -597,6 +674,9 @@ func inferEnvironmentScope(path string, key string) string {
 }
 
 func isConfigManifestFile(path string) bool {
+	if _, ok := springConfigManifestProfile(path); ok {
+		return true
+	}
 	base := strings.ToLower(filepath.Base(path))
 	lower := strings.ToLower(path)
 	if strings.HasPrefix(base, ".env") {

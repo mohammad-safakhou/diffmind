@@ -25,6 +25,54 @@
       }
     },
     {
+      "id": "runtime-service",
+      "product": "runtime",
+      "method": "GET",
+      "path": "/products/runtime/${graph_id}",
+      "query": {
+        "service": "${service_id}",
+        "explain": true
+      }
+    },
+    {
+      "id": "topology-service",
+      "product": "topology",
+      "method": "GET",
+      "path": "/products/topology/${graph_id}",
+      "query": {
+        "service": "${service_id}",
+        "explain": true
+      }
+    },
+    {
+      "id": "company-identity",
+      "product": "company",
+      "method": "GET",
+      "path": "/products/company/${graph_id}",
+      "query": {
+        "explain": true
+      }
+    },
+    {
+      "id": "trust-posture",
+      "product": "trust",
+      "method": "GET",
+      "path": "/products/trust/${graph_id}",
+      "query": {
+        "explain": true
+      }
+    },
+    {
+      "id": "architecture-task-traces",
+      "product": "architecture",
+      "method": "GET",
+      "path": "/products/architecture/${graph_id}",
+      "query": {
+        "service": "${service_id}",
+        "explain": true
+      }
+    },
+    {
       "id": "mapper-impact",
       "product": "mapper",
       "method": "GET",

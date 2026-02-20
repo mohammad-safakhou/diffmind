@@ -34,6 +34,7 @@ func detectNPMDependencies(c *collector, file sourceFile) {
 	if err := json.Unmarshal([]byte(file.Text), &doc); err != nil {
 		return
 	}
+	internalScope := npmInternalScope(doc)
 	recordMap := func(scope string, m map[string]any) {
 		for name, raw := range m {
 			version := strings.TrimSpace(strings.Trim(strings.TrimSpace(toString(raw)), `"'`))
@@ -44,7 +45,7 @@ func detectNPMDependencies(c *collector, file sourceFile) {
 			if line < 1 {
 				line = 1
 			}
-			recordDependency(c, file, line, 1, lineSnippet(file, line), "npm", name, version, scope, false)
+			recordDependency(c, file, line, 1, lineSnippet(file, line), "npm", name, version, scope, isNPMInternalDependency(name, internalScope))
 		}
 	}
 	if m, ok := toStringAnyMap(doc["dependencies"]); ok {
@@ -56,10 +57,17 @@ func detectNPMDependencies(c *collector, file sourceFile) {
 }
 
 func detectGoModDependencies(c *collector, file sourceFile) {
+	modulePath := ""
+	moduleNS := ""
 	inRequireBlock := false
 	for i, line := range file.Lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "module ") {
+			modulePath = strings.TrimSpace(strings.TrimPrefix(trimmed, "module "))
+			moduleNS = moduleNamespace(modulePath)
 			continue
 		}
 		if trimmed == "require (" {
@@ -70,16 +78,13 @@ func detectGoModDependencies(c *collector, file sourceFile) {
 			inRequireBlock = false
 			continue
 		}
-		if strings.HasPrefix(trimmed, "module ") {
-			continue
-		}
 		if strings.HasPrefix(trimmed, "require ") && !inRequireBlock {
 			trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "require "))
 		}
 		if m := reGoReqLine.FindStringSubmatch(trimmed); len(m) >= 3 {
 			name := strings.TrimSpace(m[1])
 			version := strings.TrimSpace(m[2])
-			internal := strings.HasPrefix(name, "internal/") || strings.Contains(name, "/internal/")
+			internal := isGoInternalDependency(name, modulePath, moduleNS)
 			recordDependency(c, file, i+1, 1, line, "go", name, version, "runtime", internal)
 		}
 	}
@@ -112,6 +117,7 @@ func detectMavenDependencies(c *collector, file sourceFile) {
 		Scope      string
 	}
 	inDep := false
+	rootGroupID := ""
 	cur := dep{}
 	startLine := 1
 	for i, line := range file.Lines {
@@ -136,12 +142,18 @@ func detectMavenDependencies(c *collector, file sourceFile) {
 				if scope == "" {
 					scope = "runtime"
 				}
-				recordDependency(c, file, startLine, 1, lineSnippet(file, startLine), "maven", name, version, scope, false)
+				internal := strings.TrimSpace(cur.GroupID) != "" && strings.EqualFold(strings.TrimSpace(cur.GroupID), strings.TrimSpace(rootGroupID))
+				recordDependency(c, file, startLine, 1, lineSnippet(file, startLine), "maven", name, version, scope, internal)
 			}
 			inDep = false
 			continue
 		}
 		if !inDep {
+			if rootGroupID == "" {
+				if val := extractXMLTagValue(trimmed, "groupId"); val != "" {
+					rootGroupID = val
+				}
+			}
 			continue
 		}
 		if val := extractXMLTagValue(trimmed, "groupId"); val != "" {
@@ -270,4 +282,54 @@ func extractXMLTagValue(line string, tag string) string {
 		return ""
 	}
 	return strings.TrimSpace(line[start : start+end])
+}
+
+func npmInternalScope(doc map[string]any) string {
+	name := strings.TrimSpace(toString(doc["name"]))
+	if !strings.HasPrefix(name, "@") {
+		return ""
+	}
+	if idx := strings.Index(name, "/"); idx > 0 {
+		return strings.TrimSpace(name[:idx+1])
+	}
+	return ""
+}
+
+func isNPMInternalDependency(depName string, scope string) bool {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(depName), scope)
+}
+
+func moduleNamespace(modulePath string) string {
+	modulePath = strings.TrimSpace(modulePath)
+	if modulePath == "" {
+		return ""
+	}
+	parts := strings.Split(modulePath, "/")
+	if len(parts) >= 2 {
+		return parts[0] + "/" + parts[1]
+	}
+	return modulePath
+}
+
+func isGoInternalDependency(depName string, modulePath string, moduleNS string) bool {
+	name := strings.TrimSpace(depName)
+	if name == "" {
+		return false
+	}
+	if strings.HasPrefix(name, "internal/") || strings.Contains(name, "/internal/") {
+		return true
+	}
+	mod := strings.TrimSpace(modulePath)
+	if mod != "" && (name == mod || strings.HasPrefix(name, mod+"/")) {
+		return true
+	}
+	ns := strings.TrimSpace(moduleNS)
+	if ns != "" && strings.HasPrefix(name, ns+"/") {
+		return true
+	}
+	return false
 }

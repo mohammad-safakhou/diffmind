@@ -94,7 +94,7 @@ func nodeSectionForType(typ string) string {
 	switch strings.ToLower(strings.TrimSpace(typ)) {
 	case "endpoint", "sensitive_surface":
 		return SectionExposure
-	case "queue", "topic", "database", "table", "dependency", "build_artifact":
+	case "queue", "topic", "database", "table", "dependency", "build_artifact", "canonical_api_host":
 		return SectionDependencies
 	default:
 		return SectionLogic
@@ -133,12 +133,16 @@ func nodeClassForType(typ string) string {
 		return "conflict"
 	case "verification_decision":
 		return "verification_decision"
+	case "unresolved_api_call":
+		return "verification_decision"
 	case "sensitive_surface":
 		return "sensitive_input"
 	case "environment":
 		return "environment"
 	case "build_artifact":
 		return "build_artifact"
+	case "canonical_api_host":
+		return "api_host"
 	default:
 		return "domain_entity"
 	}
@@ -148,8 +152,10 @@ func edgeSectionForType(typ string) string {
 	switch strings.ToLower(strings.TrimSpace(typ)) {
 	case "service_calls_endpoint", "service_exposes_endpoint", "queue_delivers_to_service", "service_exposes_sensitive_surface":
 		return SectionExposure
-	case "service_calls_service", "service_depends_on_dependency", "service_reads_db", "service_writes_db", "service_publishes_queue", "dependency_owned_by", "dependency_has_risk", "service_has_dependency_risk":
+	case "service_calls_service", "service_depends_on_dependency", "service_reads_db", "service_writes_db", "service_publishes_queue", "dependency_owned_by", "dependency_has_risk", "service_has_dependency_risk", "service_alias_of_canonical_api_host":
 		return SectionDependencies
+	case "service_has_unresolved_api_call":
+		return SectionLogic
 	default:
 		return SectionLogic
 	}
@@ -191,6 +197,10 @@ func edgeClassForType(typ string) string {
 		return "runtime_link"
 	case "service_has_conflict", "service_has_verification_decision", "verification_decision_targets_entity":
 		return "verification_link"
+	case "service_has_unresolved_api_call":
+		return "verification_link"
+	case "service_alias_of_canonical_api_host":
+		return "service_call"
 	case "service_exposes_sensitive_surface", "config_has_sensitive_surface":
 		return "sensitive_surface_link"
 	default:

@@ -81,7 +81,7 @@ type BuildResult struct {
 
 func Run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("graph subcommand is required: build|discover")
+		return errors.New("graph subcommand is required: build|discover|assess|contract")
 	}
 
 	switch strings.ToLower(args[0]) {
@@ -89,6 +89,10 @@ func Run(ctx context.Context, args []string) error {
 		return runBuild(ctx, args[1:])
 	case "discover":
 		return runDiscover(ctx, args[1:])
+	case "assess":
+		return runAssess(ctx, args[1:])
+	case "contract":
+		return runContract(ctx, args[1:])
 	default:
 		return fmt.Errorf("unsupported graph subcommand %q", args[0])
 	}
@@ -456,6 +460,7 @@ type serviceInput struct {
 	analyzer      facts.Bundle
 	runtimeByID   map[string]bundleio.Entity
 	endpointNodes map[string]string
+	envTags       map[string]struct{}
 }
 
 type runReportMeta struct {
@@ -517,6 +522,7 @@ func buildGraph(services []serviceSpec, mode string) (graphschema.Graph, error) 
 			analyzer:      analyzer,
 			runtimeByID:   runtimeByID,
 			endpointNodes: map[string]string{},
+			envTags:       detectServiceEnvironments(spec, b.Entities),
 		})
 	}
 

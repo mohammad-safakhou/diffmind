@@ -186,6 +186,17 @@ button:hover { filter: brightness(1.08); }
   font-size: 14px;
 }
 
+#opsTaskExposeBtn,
+#opsTaskTraceBtn,
+#opsTaskDepsBtn,
+#opsTaskExportBtn {
+  min-width: 165px;
+}
+
+#opsValidateSlaBtn {
+  min-width: 190px;
+}
+
 #graphSvg {
   width: 100%;
   min-height: 640px;
