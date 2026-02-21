@@ -28,7 +28,12 @@ var (
 	javaSendMessageCallRe       = regexp.MustCompile(`(?i)\b(sqsClient|amazonSqs|amazonSQS|sqsAsyncClient|sqs)\s*\.\s*sendMessage\(`)
 	javaKafkaSendCallRe         = regexp.MustCompile(`(?i)\b(kafkaTemplate|kafkaProducer|kafkaOperations)\s*\.\s*send(Default)?\(`)
 	javaRabbitPublishCallRe     = regexp.MustCompile(`(?i)\b(rabbitTemplate|amqpTemplate)\s*\.\s*(convertAndSend|send)\(`)
+	javaSnsPublishCallRe        = regexp.MustCompile(`(?i)\b(snsClient|amazonSns|amazonSNS|snsAsyncClient|sns)\s*\.\s*publish\(`)
+	javaTopicArnBuilderStringRe = regexp.MustCompile(`(?i)\btopicArn\(\s*"([^"]+)"\s*\)`)
+	javaTopicArnBuilderVarRe    = regexp.MustCompile(`(?i)\btopicArn\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)`)
 	javaValueFieldRe            = regexp.MustCompile(`^\s*(?:private|protected|public)?\s*(?:final\s+)?[A-Za-z0-9_<>\[\], ?]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=.*)?;`)
+	javaValueParamInlineRe      = regexp.MustCompile(`@Value\(\s*"\$\{([^}]+)\}"\s*\)\s*[A-Za-z0-9_<>\[\], ?]+\s+([A-Za-z_][A-Za-z0-9_]*)`)
+	javaFieldAssignRe           = regexp.MustCompile(`\bthis\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*;`)
 	javaJdbcReadCallRe          = regexp.MustCompile(`(?i)\.(query|queryForObject|queryForList|queryForMap)\(`)
 	javaJdbcWriteCallRe         = regexp.MustCompile(`(?i)\.(update|batchUpdate)\(`)
 	javaJpaReadCallRe           = regexp.MustCompile(`(?i)\.(createQuery|createNamedQuery)\(`)
@@ -133,7 +138,51 @@ func detectJavaInboundEndpointsSemantic(c *collector, file sourceFile) bool {
 				}, file, line, col, javaLineSnippet(file, line), func() { c.report.ExternalCalls++ })
 			}
 		}
+
+		if classNode.Kind() == "class_declaration" && strings.Contains(classNode.Utf8Text(content), "extends AbstractSqsListener") {
+			for i := uint(0); i < body.NamedChildCount(); i++ {
+				member := body.NamedChild(i)
+				if member == nil || member.Kind() != "constructor_declaration" {
+					continue
+				}
+				params := member.ChildByFieldName("parameters")
+				if params == nil {
+					continue
+				}
+				paramBindings := javaValueParamBindings(params.Utf8Text(content))
+				if len(paramBindings) == 0 {
+					continue
+				}
+				bodyNode := member.ChildByFieldName("body")
+				if bodyNode == nil {
+					continue
+				}
+				bodyText := bodyNode.Utf8Text(content)
+				superMatch := regexp.MustCompile(`super\(([^;]+)\);`).FindStringSubmatch(bodyText)
+				if len(superMatch) < 2 {
+					continue
+				}
+				args := strings.Split(superMatch[1], ",")
+				line, col := javaLineCol(member)
+				for _, arg := range args {
+					arg = strings.TrimSpace(arg)
+					key := strings.TrimSpace(paramBindings[arg])
+					if key == "" {
+						continue
+					}
+					c.addFactWithEvidence("ExternalCall", map[string]any{
+						"protocol":        "queue",
+						"method":          "CONSUME",
+						"target":          "cfg:" + key,
+						"library":         "java-abstract-sqs-subclass-semantic",
+						"queue_operation": "consume",
+						"queue_kind":      "sqs",
+					}, file, line, col, javaLineSnippet(file, line), func() { c.report.ExternalCalls++ })
+				}
+			}
+		}
 	})
+	detectJavaAbstractSqsConsumeFromText(c, file)
 	return true
 }
 
@@ -146,7 +195,7 @@ func detectJavaOutboundCallsSemantic(c *collector, file sourceFile) bool {
 	root := tree.RootNode()
 
 	walkJava(root, func(classNode *sitter.Node) {
-		if classNode == nil || classNode.Kind() != "class_declaration" {
+		if classNode == nil || (classNode.Kind() != "class_declaration" && classNode.Kind() != "interface_declaration") {
 			return
 		}
 		classModifiers := javaModifiersNode(classNode)
@@ -286,8 +335,17 @@ func detectJavaQueueAndDBCallsSemantic(c *collector, file sourceFile) bool {
 	defer tree.Close()
 	root := tree.RootNode()
 
-	valueBindings := javaValueFieldBindings(file.Lines)
+	valueBindings := javaValueBindings(file.Lines)
 	requestBindings := javaRequestQueueBindings(file.Lines, valueBindings)
+	publishBindings := javaPublishRequestTopicBindings(file.Lines, valueBindings)
+	hasSnsImport := false
+	for _, line := range file.Lines {
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "awssdk.services.sns") || strings.Contains(lower, "snsclient") {
+			hasSnsImport = true
+			break
+		}
+	}
 	walkJava(root, func(n *sitter.Node) {
 		if n == nil || n.Kind() != "method_invocation" {
 			return
@@ -324,6 +382,9 @@ func detectJavaQueueAndDBCallsSemantic(c *collector, file sourceFile) bool {
 			if target == "" {
 				target = "sqs:unknown-queue"
 			}
+			if target == "sqs:unknown-queue" && strings.Contains(strings.ToLower(file.Path), "abstractsqslistener") {
+				return
+			}
 			c.addFactWithEvidence("ExternalCall", map[string]any{
 				"protocol":        "queue",
 				"method":          "CONSUME",
@@ -337,6 +398,26 @@ func detectJavaQueueAndDBCallsSemantic(c *collector, file sourceFile) bool {
 			target := javaFirstQuoted(text)
 			if target == "" {
 				target = "kafka:unknown-topic"
+			}
+			lowerText := strings.ToLower(text)
+			if javaSnsPublishCallRe.MatchString(text) || (hasSnsImport && strings.Contains(lowerText, "publish(")) {
+				target := javaTopicTargetFromInvocation(text, valueBindings, "")
+				if target == "" {
+					if arg := javaFirstCallArgIdentifier(text); arg != "" {
+						target = strings.TrimSpace(publishBindings[arg])
+					}
+				}
+				if target == "" {
+					target = "sns:unknown-topic"
+				}
+				c.addFactWithEvidence("ExternalCall", map[string]any{
+					"protocol":        "queue",
+					"method":          "PUBLISH",
+					"target":          target,
+					"library":         "aws-sdk-sns-java-semantic",
+					"queue_operation": "publish",
+					"queue_kind":      "sns",
+				}, file, line, col, javaLineSnippet(file, line), func() { c.report.ExternalCalls++ })
 			}
 			c.addFactWithEvidence("ExternalCall", map[string]any{
 				"protocol":        "queue",
@@ -396,6 +477,31 @@ func detectJavaQueueAndDBCallsSemantic(c *collector, file sourceFile) bool {
 			}, file, line, col, javaLineSnippet(file, line), func() { c.report.ExternalCalls++ })
 		}
 	})
+	if hasSnsImport {
+		for i, line := range file.Lines {
+			lower := strings.ToLower(line)
+			if !strings.Contains(lower, ".publish(") {
+				continue
+			}
+			target := javaTopicTargetFromInvocation(line, valueBindings, "")
+			if target == "" {
+				if arg := javaFirstCallArgIdentifier(line); arg != "" {
+					target = strings.TrimSpace(publishBindings[arg])
+				}
+			}
+			if target == "" {
+				target = "sns:unknown-topic"
+			}
+			c.addFactWithEvidence("ExternalCall", map[string]any{
+				"protocol":        "queue",
+				"method":          "PUBLISH",
+				"target":          target,
+				"library":         "aws-sdk-sns-java-text",
+				"queue_operation": "publish",
+				"queue_kind":      "sns",
+			}, file, i+1, 1, line, func() { c.report.ExternalCalls++ })
+		}
+	}
 	return true
 }
 
@@ -687,7 +793,12 @@ func detectJavaFeignFromText(c *collector, file sourceFile) {
 			continue
 		}
 		if strings.HasPrefix(line, "@") {
-			methods, paths, matched := parseSpringMappingAnnotationDetailed(line)
+			rawAnn := line
+			for strings.Contains(rawAnn, "(") && !strings.Contains(rawAnn, ")") && i+1 < len(file.Lines) {
+				i++
+				rawAnn += " " + strings.TrimSpace(file.Lines[i])
+			}
+			methods, paths, matched := parseSpringMappingAnnotationDetailed(rawAnn)
 			if matched {
 				for _, m := range methods {
 					for _, p := range paths {
@@ -707,7 +818,7 @@ func detectJavaFeignFromText(c *collector, file sourceFile) {
 						if strings.TrimSpace(basePath) != "" {
 							attrs["base_path"] = normalizePath(basePath)
 						}
-						c.addFactWithEvidence("ExternalCall", attrs, file, i+1, 1, file.Lines[i], func() { c.report.ExternalCalls++ })
+						c.addFactWithEvidence("ExternalCall", attrs, file, i+1, 1, rawAnn, func() { c.report.ExternalCalls++ })
 					}
 				}
 			}
@@ -733,13 +844,32 @@ func javaJoinFeignTarget(baseURL string, basePath string, methodPath string) str
 	return strings.TrimRight(baseURL, "/") + methodPath
 }
 
-func javaValueFieldBindings(lines []string) map[string]string {
+func javaValueBindings(lines []string) map[string]string {
 	out := map[string]string{}
 	pendingKey := ""
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue
+		}
+		for _, m := range javaValueParamInlineRe.FindAllStringSubmatch(line, -1) {
+			if len(m) < 3 {
+				continue
+			}
+			key := strings.TrimSpace(m[1])
+			name := strings.TrimSpace(m[2])
+			if key != "" && name != "" {
+				out[name] = key
+			}
+		}
+		if m := javaFieldAssignRe.FindStringSubmatch(line); len(m) >= 3 {
+			field := strings.TrimSpace(m[1])
+			param := strings.TrimSpace(m[2])
+			if field != "" && param != "" {
+				if key := strings.TrimSpace(out[param]); key != "" {
+					out[field] = key
+				}
+			}
 		}
 		if m := reSpringValue.FindStringSubmatch(line); len(m) >= 2 {
 			pendingKey = strings.TrimSpace(m[1])
@@ -764,6 +894,70 @@ func javaValueFieldBindings(lines []string) map[string]string {
 	return out
 }
 
+func javaValueParamBindings(text string) map[string]string {
+	out := map[string]string{}
+	for _, m := range javaValueParamInlineRe.FindAllStringSubmatch(text, -1) {
+		if len(m) < 3 {
+			continue
+		}
+		key := strings.TrimSpace(m[1])
+		name := strings.TrimSpace(m[2])
+		if key != "" && name != "" {
+			out[name] = key
+		}
+	}
+	return out
+}
+
+func detectJavaAbstractSqsConsumeFromText(c *collector, file sourceFile) {
+	content := strings.Join(file.Lines, "\n")
+	if !strings.Contains(content, "extends AbstractSqsListener") {
+		return
+	}
+	paramBindings := map[string]string{}
+	for i, line := range file.Lines {
+		for _, m := range javaValueParamInlineRe.FindAllStringSubmatch(line, -1) {
+			if len(m) < 3 {
+				continue
+			}
+			key := strings.TrimSpace(m[1])
+			name := strings.TrimSpace(m[2])
+			if key != "" && name != "" {
+				paramBindings[name] = key
+			}
+		}
+		if !strings.Contains(line, "super(") {
+			continue
+		}
+		raw := strings.TrimSpace(line)
+		j := i
+		for !strings.Contains(raw, ");") && j+1 < len(file.Lines) {
+			j++
+			raw += " " + strings.TrimSpace(file.Lines[j])
+		}
+		m := regexp.MustCompile(`super\(([^;]+)\);`).FindStringSubmatch(raw)
+		if len(m) < 2 {
+			continue
+		}
+		args := strings.Split(m[1], ",")
+		for _, arg := range args {
+			arg = strings.TrimSpace(arg)
+			key := strings.TrimSpace(paramBindings[arg])
+			if key == "" {
+				continue
+			}
+			c.addFactWithEvidence("ExternalCall", map[string]any{
+				"protocol":        "queue",
+				"method":          "CONSUME",
+				"target":          "cfg:" + key,
+				"library":         "java-abstract-sqs-subclass-text",
+				"queue_operation": "consume",
+				"queue_kind":      "sqs",
+			}, file, i+1, 1, line, func() { c.report.ExternalCalls++ })
+		}
+	}
+}
+
 func javaQueueTargetFromInvocation(text string, valueBindings map[string]string, fallback string) string {
 	if target, ok := javaQueueTargetCandidate(text, valueBindings); ok {
 		return target
@@ -779,6 +973,28 @@ func javaQueueTargetCandidate(text string, valueBindings map[string]string) (str
 		}
 	}
 	if m := javaQueueURLBuilderVarRe.FindStringSubmatch(text); len(m) >= 2 {
+		if key := strings.TrimSpace(valueBindings[strings.TrimSpace(m[1])]); key != "" {
+			return "cfg:" + key, true
+		}
+	}
+	return "", false
+}
+
+func javaTopicTargetFromInvocation(text string, valueBindings map[string]string, fallback string) string {
+	if target, ok := javaTopicTargetCandidate(text, valueBindings); ok {
+		return target
+	}
+	return fallback
+}
+
+func javaTopicTargetCandidate(text string, valueBindings map[string]string) (string, bool) {
+	if m := javaTopicArnBuilderStringRe.FindStringSubmatch(text); len(m) >= 2 {
+		v := strings.TrimSpace(m[1])
+		if v != "" {
+			return v, true
+		}
+	}
+	if m := javaTopicArnBuilderVarRe.FindStringSubmatch(text); len(m) >= 2 {
 		if key := strings.TrimSpace(valueBindings[strings.TrimSpace(m[1])]); key != "" {
 			return "cfg:" + key, true
 		}
@@ -810,6 +1026,43 @@ func javaRequestQueueBindings(lines []string, valueBindings map[string]string) m
 			continue
 		}
 		if target, ok := javaQueueTargetCandidate(line, valueBindings); ok {
+			currentTarget = target
+		}
+		if strings.Contains(line, ".build()") {
+			if currentTarget != "" {
+				out[currentVar] = currentTarget
+			}
+			currentVar = ""
+			currentTarget = ""
+		}
+	}
+	return out
+}
+
+func javaPublishRequestTopicBindings(lines []string, valueBindings map[string]string) map[string]string {
+	out := map[string]string{}
+	currentVar := ""
+	currentTarget := ""
+	for _, line := range lines {
+		if m := regexp.MustCompile(`(?i)\b(?:[A-Za-z0-9_<>\[\], ?]+\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*PublishRequest\.builder\(`).FindStringSubmatch(line); len(m) >= 2 {
+			currentVar = strings.TrimSpace(m[1])
+			currentTarget = ""
+			if target, ok := javaTopicTargetCandidate(line, valueBindings); ok {
+				currentTarget = target
+			}
+			if strings.Contains(line, ".build()") {
+				if currentVar != "" && currentTarget != "" {
+					out[currentVar] = currentTarget
+				}
+				currentVar = ""
+				currentTarget = ""
+			}
+			continue
+		}
+		if currentVar == "" {
+			continue
+		}
+		if target, ok := javaTopicTargetCandidate(line, valueBindings); ok {
 			currentTarget = target
 		}
 		if strings.Contains(line, ".build()") {

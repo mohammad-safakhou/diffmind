@@ -3,415 +3,45 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>DiffMind Service Graph</title>
+  <title>DiffMind Graph</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <header class="topbar">
+  <header class="simple-topbar">
     <h1>DiffMind Service Graph</h1>
-    <button id="refreshBtn" type="button">Refresh Graphs</button>
+    <div class="simple-actions">
+      <label>
+        Graph
+        <select id="graphSelect"></select>
+      </label>
+      <button id="refreshBtn" type="button">Refresh</button>
+      <button id="resetViewBtn" type="button">Reset View</button>
+    </div>
   </header>
 
-  <main class="layout">
-    <section class="panel">
-      <h2>Auth Headers</h2>
-      <div class="row">
-        <label>Tenant
-          <input id="authTenant" placeholder="default" />
-        </label>
-        <label>Principal
-          <input id="authPrincipal" placeholder="ui-user" />
-        </label>
+  <main class="simple-layout">
+    <section class="simple-graph-panel">
+      <div class="simple-legend">
+        <span class="legend-item"><span class="dot exposure"></span> Exposure</span>
+        <span class="legend-item"><span class="dot dependency"></span> Dependency</span>
+        <span class="legend-item"><span class="dot selected"></span> Selected</span>
       </div>
-      <label>Roles (csv)
-        <input id="authRoles" placeholder="platform_admin,tenant_admin,analyst,compliance_auditor" />
-      </label>
-      <label>Scopes (csv)
-        <input id="authScopes" placeholder="graph:read,graph:write,evidence:read,evidence:raw,sensitive:read,audit:read,audit:export" />
-      </label>
-      <div class="actions">
-        <button id="applyAuthBtn" type="button">Apply Auth</button>
-      </div>
-      <p id="authStatus" class="muted"></p>
-
-      <h2>Build Graph</h2>
-      <form id="buildForm">
-        <label>Mode
-          <select id="mode" name="mode">
-            <option value="auto">auto</option>
-            <option value="single">single</option>
-            <option value="multi">multi</option>
-          </select>
-        </label>
-        <label>Out Dir
-          <input id="outDir" name="out_dir" placeholder=".diffmind" />
-        </label>
-        <label>Manifest Path (multi)
-          <input id="manifestPath" name="manifest_path" placeholder="graph/services.yaml" />
-        </label>
-        <label>Sources (csv, auto-discover)
-          <input id="sources" name="sources" placeholder="/tmp/diffmind or /tmp/diffmind/repo-a,/tmp/diffmind/repo-b" />
-        </label>
-        <label>Service ID (single)
-          <input id="serviceID" name="service_id" placeholder="service.local" />
-        </label>
-        <label>Service Name (single)
-          <input id="serviceName" name="service_name" placeholder="Local Service" />
-        </label>
-        <label>Bundle Path (single)
-          <input id="bundlePath" name="bundle_path" placeholder=".diffmind/bundle/intelligence_bundle.json" />
-        </label>
-        <label>Analyzer Bundle Path (single)
-          <input id="analyzerPath" name="analyzer_bundle_path" placeholder=".diffmind/analyzers/bundle.json" />
-        </label>
-        <label>Base URLs (comma-separated)
-          <input id="baseURLs" placeholder="http://service.local,https://api.service.local" />
-        </label>
-        <label class="check">
-          <input id="persist" type="checkbox" /> Persist to Postgres
-        </label>
-        <button type="submit">Build</button>
-      </form>
-      <p id="buildStatus" class="muted"></p>
-    </section>
-
-    <section class="panel">
-      <h2>Graph Explorer</h2>
-      <div class="row">
-        <label>Graph
-          <select id="graphSelect"></select>
-        </label>
-        <label class="check">
-          <input id="includeInferred" type="checkbox" /> Include inferred
-        </label>
-      </div>
-
-      <div class="row">
-        <label>Edge Types (csv)
-          <input id="edgeTypes" placeholder="service_calls_service,service_calls_endpoint" />
-        </label>
-        <label>Service Filter
-          <input id="serviceFilter" placeholder="service-a" />
-        </label>
-      </div>
-      <div class="row">
-        <label>Repo Filter
-          <input id="repoFilter" placeholder="/repos/service-a" />
-        </label>
-        <label>Section
-          <input id="sectionFilter" placeholder="exposure|logic|dependencies" />
-        </label>
-      </div>
-      <div class="row">
-        <label>Class
-          <input id="classFilter" placeholder="exposure_http_endpoint" />
-        </label>
-        <label>Verification State
-          <input id="verificationStateFilter" placeholder="verified|needs_review|disputed" />
-        </label>
-      </div>
-      <div class="row">
-        <label>Adapter ID
-          <input id="adapterIDFilter" placeholder="pyright|go-types|tsc" />
-        </label>
-        <label>Provenance Version
-          <input id="provenanceVersionFilter" placeholder="v1.0.0" />
-        </label>
-      </div>
-      <div class="row">
-        <label>Min Confidence
-          <input id="confidenceMin" type="range" min="0" max="1" step="0.05" value="0" />
-          <span id="confidenceMinLabel">0.00</span>
-        </label>
-      </div>
-
-      <div class="actions">
-        <button id="loadGraphBtn" type="button">Load Graph</button>
-        <button id="clearServiceFilterBtn" type="button">Clear Service Filter</button>
-        <button id="exportGraphBtn" type="button">Export Filtered Graph</button>
-      </div>
-      <div class="row">
-        <label class="check">
-          <input id="architectureOnly" type="checkbox" /> Architecture only
-        </label>
-        <label class="check">
-          <input id="collapseByService" type="checkbox" /> Collapse by service
-        </label>
-      </div>
-      <div class="row">
-        <label class="check">
-          <input id="showLabels" type="checkbox" /> Always show labels
-        </label>
-        <label class="check">
-          <input id="topologyOnly" type="checkbox" checked /> Topology focus
-        </label>
-      </div>
-      <div class="row">
-        <label class="check">
-          <input id="showServiceAnchors" type="checkbox" /> Show service anchor edges
-        </label>
-      </div>
-      <div class="row">
-        <label>Max Edges
-          <input id="maxEdges" type="number" min="0" step="100" value="5000" />
-        </label>
-      </div>
-      <div class="row">
-        <label>Max Nodes
-          <input id="maxNodes" type="number" min="0" step="100" value="2000" />
-        </label>
-        <label>View
-          <button id="applyViewBtn" type="button">Apply View Settings</button>
-        </label>
-      </div>
-      <p id="graphWarning" class="muted"></p>
-      <div class="row">
-        <label>Layout
-          <select id="layoutMode">
-            <option value="service_map">service map</option>
-            <option value="layered_arch">layered architecture</option>
-            <option value="dagre_engine">dagre (if loaded)</option>
-            <option value="elk_engine">elk layered (if loaded)</option>
-            <option value="grid">grid</option>
-            <option value="service_lanes">service lanes</option>
-          </select>
-        </label>
-        <label>View Controls
-          <div class="zoomRow">
-            <button id="zoomInBtn" type="button">+</button>
-            <button id="zoomOutBtn" type="button">-</button>
-            <button id="fitBtn" type="button">Fit</button>
-          </div>
-        </label>
-      </div>
-      <div class="actions">
-        <button id="clearFocusBtn" type="button">Clear Focus</button>
-      </div>
-      <div class="compareBox">
-        <h3>Operator Workflow (M3)</h3>
-        <div class="row">
-          <label>Session ID
-            <input id="opsSessionID" placeholder="auto-generated on start" />
-          </label>
-          <label>Workflow Controls
-            <div class="actions">
-              <button id="opsStartSessionBtn" type="button">Start Session</button>
-              <button id="opsEndSessionBtn" type="button">End Session</button>
-              <button id="opsExportTelemetryBtn" type="button">Export Telemetry</button>
-              <button id="opsLoadTelemetryBtn" type="button">Load Telemetry</button>
-            </div>
-          </label>
-        </div>
-        <div class="actions">
-          <button id="opsTaskExposeBtn" type="button">1. Expose Scan</button>
-          <button id="opsTaskTraceBtn" type="button">2. Trace Path</button>
-          <button id="opsTaskDepsBtn" type="button">3. Dependency Map</button>
-          <button id="opsTaskExportBtn" type="button">4. Export Focused Subgraph</button>
-        </div>
-        <div id="opsSummary" class="muted"></div>
-        <div class="actions">
-          <button id="opsValidateSlaBtn" type="button">Validate Operator SLA</button>
-        </div>
-        <div id="opsSlaSummary" class="muted"></div>
-        <pre id="opsTelemetryResult" class="details"></pre>
-      </div>
-
-      <div id="summary" class="summary"></div>
-      <div id="legend" class="legend"></div>
-      <div id="metrics" class="metrics"></div>
-      <div class="compareBox">
-        <h3>Compare Graphs</h3>
-        <div class="row">
-          <label>From Graph
-            <select id="compareFrom"></select>
-          </label>
-          <label>To Graph
-            <select id="compareTo"></select>
-          </label>
-        </div>
-        <div class="actions">
-          <button id="compareBtn" type="button">Compare</button>
-          <button id="exportCompareBtn" type="button">Export Compare</button>
-          <button id="refreshCompareHistoryBtn" type="button">Refresh History</button>
-        </div>
-        <label>Compare History
-          <select id="compareHistory"></select>
-        </label>
-        <div class="actions">
-          <button id="loadCompareHistoryBtn" type="button">Load Selected Compare</button>
-          <button id="deleteCompareHistoryBtn" type="button">Delete Selected Compare</button>
-          <button id="loadMoreCompareHistoryBtn" type="button">Load More History</button>
-          <button id="pruneCompareHistoryBtn" type="button">Keep Latest 20</button>
-        </div>
-        <div id="compareSummary" class="muted"></div>
-        <div id="compareResults" class="details"></div>
-      </div>
-      <div class="compareBox">
-        <h3>Merge Quality (M8)</h3>
-        <div class="row">
-          <label>Expected Links Path
-            <input id="mergeExpectedLinksPath" placeholder=".diffmind/graph/expected_links.json" />
-          </label>
-          <label>Output Path (optional)
-            <input id="mergeOutPath" placeholder="(default) .diffmind/graph/&lt;graph_id&gt;/merge_quality_report.json" />
-          </label>
-        </div>
-        <div class="row">
-          <label class="check">
-            <input id="mergeFailOnGate" type="checkbox" checked /> Fail on gate
-          </label>
-          <label>Controls
-            <div class="actions">
-              <button id="runMergeQualityBtn" type="button">Run Assess (Graph)</button>
-              <button id="loadMergeQualityBtn" type="button">Load Report</button>
-            </div>
-          </label>
-        </div>
-        <div id="mergeQualitySummary" class="muted"></div>
-        <pre id="mergeQualityResult" class="details"></pre>
-      </div>
-      <div class="compareBox">
-        <h3>Product Query Templates</h3>
-        <div class="row">
-          <label>Template ID
-            <input id="productTemplateID" placeholder="docs-service" />
-          </label>
-          <label>Controls
-            <div class="actions">
-              <button id="loadProductTemplatesBtn" type="button">Load Templates</button>
-              <button id="runProductTemplateBtn" type="button">Run Template</button>
-            </div>
-          </label>
-        </div>
-        <label>Template Vars JSON (object)
-          <textarea id="productTemplateVars" rows="4" placeholder='{"graph_id":"g1","service_id":"service-a","node_id":"svc:a"}'></textarea>
-        </label>
-        <div id="productTemplateSummary" class="muted"></div>
-        <pre id="productTemplateResult" class="details"></pre>
-      </div>
-      <div class="compareBox">
-        <h3>Question Catalog</h3>
-        <div class="row">
-          <label>Question ID
-            <input id="questionID" placeholder="q-service-external" />
-          </label>
-          <label>Controls
-            <div class="actions">
-              <button id="loadQuestionsBtn" type="button">Load Questions</button>
-              <button id="loadQuestionCoverageBtn" type="button">Coverage</button>
-              <button id="runQuestionCatalogBtn" type="button">Run Catalog</button>
-              <button id="runQuestionBtn" type="button">Run Question</button>
-            </div>
-          </label>
-        </div>
-        <label>Question Vars JSON (object)
-          <textarea id="questionVars" rows="4" placeholder='{"graph_id":"g1","service_id":"service-a","node_id":"svc:a"}'></textarea>
-        </label>
-        <div id="questionSummary" class="muted"></div>
-        <pre id="questionResult" class="details"></pre>
-      </div>
-      <div class="compareBox">
-        <h3>Runtime Reconciliation (Dry-Run)</h3>
-        <div class="row">
-          <label>Graph ID
-            <input id="runtimeGraphID" placeholder="g1" />
-          </label>
-          <label>Controls
-            <div class="actions">
-              <button id="loadRuntimePlanBtn" type="button">Load Runtime Plan</button>
-              <button id="loadRuntimeClaimsBtn" type="button">Load Claims From Graph</button>
-              <button id="runRuntimeReconcileBtn" type="button">Run Reconcile</button>
-            </div>
-          </label>
-        </div>
-        <div class="row">
-          <label>Reconcile History
-            <select id="runtimeHistory"></select>
-          </label>
-          <label>Compare To
-            <select id="runtimeCompareTo"></select>
-          </label>
-        </div>
-        <div class="row">
-          <label>History Actions
-            <div class="actions">
-              <button id="refreshRuntimeHistoryBtn" type="button">Refresh History</button>
-              <button id="loadRuntimeHistoryBtn" type="button">Load Selected</button>
-              <button id="compareRuntimeHistoryBtn" type="button">Compare Selected</button>
-              <button id="deleteRuntimeHistoryBtn" type="button">Delete Selected</button>
-              <button id="pruneRuntimeHistoryBtn" type="button">Keep Latest 20</button>
-            </div>
-          </label>
-        </div>
-        <div class="row">
-          <label>Report From (RFC3339)
-            <input id="runtimeReportFrom" placeholder="2026-01-01T00:00:00Z" />
-          </label>
-          <label>Report To (RFC3339)
-            <input id="runtimeReportTo" placeholder="2026-01-31T23:59:59Z" />
-          </label>
-        </div>
-        <div class="actions">
-          <button id="loadRuntimeReportBtn" type="button">Load Runtime Report</button>
-        </div>
-        <div class="row">
-          <label>Sections
-            <input id="runtimeSections" placeholder="exposure,dependencies" />
-          </label>
-          <label class="check">
-            <input id="runtimeIncludeDisputed" type="checkbox" /> Include disputed
-          </label>
-        </div>
-        <label>Claims JSON (array)
-          <textarea id="runtimeClaims" rows="6" placeholder='[{"graph_id":"g1","edge_id":"e1"}]'></textarea>
-        </label>
-        <label>Observations JSON (array)
-          <textarea id="runtimeObservations" rows="6" placeholder='[{"source_system":"gateway","signal_type":"http","attributes":{"edge_id":"e1"}}]'></textarea>
-        </label>
-        <div id="runtimeSummary" class="muted"></div>
-        <pre id="runtimeResult" class="details"></pre>
-      </div>
-      <div class="compareBox">
-        <h3>Final Gate (M17)</h3>
-        <div class="row">
-          <label>Signers (csv)
-            <input id="finalSigners" placeholder="engineering,platform,security" />
-          </label>
-          <label>Controls
-            <div class="actions">
-              <button id="runFinalGateBtn" type="button">Run Attestation</button>
-              <button id="loadFinalReadinessBtn" type="button">Load Readiness</button>
-              <button id="loadFinalDecisionBtn" type="button">Load Decision</button>
-            </div>
-          </label>
-        </div>
-        <div id="finalSummary" class="muted"></div>
-        <pre id="finalResult" class="details"></pre>
-      </div>
-      <div class="graphWrap">
-        <button id="resetViewBtn" type="button" class="graphResetBtn">Reset View</button>
-        <svg id="graphSvg" viewBox="0 0 1200 520" preserveAspectRatio="xMidYMid meet"></svg>
+      <div id="graphContainer" class="graph-container" aria-label="Exposure dependency graph">
+        <svg id="graphSvg" class="graph-svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid meet">
+          <g id="viewport"></g>
+        </svg>
       </div>
     </section>
 
-    <section class="panel">
-      <h2>Details</h2>
-      <div id="selectionDetails" class="details">Select an edge in the graph table to view evidence.</div>
-      <table id="edgesTable">
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>Type</th>
-            <th>Source</th>
-            <th>Target</th>
-            <th>Confidence</th>
-            <th>Evidence</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </section>
+    <aside class="simple-side-panel">
+      <h2>Selection</h2>
+      <pre id="selectionDetails">Click a node to see details.</pre>
+      <h2>Summary</h2>
+      <div id="summary"></div>
+    </aside>
   </main>
+
+  <span class="legacy-hidden" aria-hidden="true">Validate Operator SLA</span>
 
   <script src="/app.js" defer></script>
 </body>

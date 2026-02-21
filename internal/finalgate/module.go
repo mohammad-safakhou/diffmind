@@ -473,7 +473,7 @@ func evaluateSecurityValidation(opts closeoutOptions) securityValidationReport {
 		GeneratedAtUTC:       time.Now().UTC().Format(time.RFC3339),
 		AuditRoot:            opts.AuditRoot,
 		SecurityPolicyPath:   filepath.Join("internal", "security", "policy.go"),
-		SecurityArchitecture: filepath.Join("docs", "m13_security_architecture.md"),
+		SecurityArchitecture: filepath.Join("docs", "archive", "2026-02-20-completed-docs", "m13_security_architecture.md"),
 	}
 	if events, err := audit.ListEvents(opts.AuditRoot, "", 100000); err == nil {
 		rep.AuditEvents = len(events)
@@ -685,11 +685,11 @@ func buildMilestoneClosure(readiness readinessReport, benchmark benchmarkEvidenc
 		{ID: "M10", Name: "Agentic Verification Plane", Passed: fileExists(filepath.Join("internal", "analyzers", "llm_client.go")), Detail: "agentic verification integration present", Evidence: []string{"internal/analyzers/llm_client.go"}},
 		{ID: "M11", Name: "Query Language And Serving APIs", Passed: fileExists(filepath.Join("internal", "query", "module.go")), Detail: "query module present", Evidence: []string{"internal/query/module.go"}},
 		{ID: "M12", Name: "Temporal And Incremental Updates", Passed: fileExists(filepath.Join("internal", "httpapi", "module.go")), Detail: "temporal/compare HTTP APIs present", Evidence: []string{"internal/httpapi/module.go"}},
-		{ID: "M13", Name: "Enterprise Security And Compliance", Passed: security.Passed, Detail: "security validation report", Evidence: []string{"docs/m13_security_architecture.md", "internal/security/policy.go"}},
-		{ID: "M14", Name: "Quality And Evaluation System", Passed: checkByName(readiness, "m0_m16_quality_gate") && benchmark.Passed, Detail: "quality gate and benchmark evidence", Evidence: []string{"docs/m14_quality_runbook.md"}},
-		{ID: "M15", Name: "Product Layer On Top Of Query", Passed: fileExists(filepath.Join("docs", "m15_product_api_contracts.md")) && checkByName(readiness, "question_catalog_api_coverage_100"), Detail: "product contracts and API coverage", Evidence: []string{"docs/m15_product_api_contracts.md"}},
-		{ID: "M16", Name: "Reliability And Operations", Passed: opsDrill.Passed && checkByName(readiness, "m16_slo_gate"), Detail: "ops drills and slo gate", Evidence: []string{"docs/m16_operations_runbook.md"}},
-		{ID: "M17", Name: "State-of-the-Art Completion Gate", Passed: readiness.OverallPassed && checkByName(readiness, "final_attestation_signed"), Detail: "final attestation and approvals", Evidence: []string{"docs/m17_completion_runbook.md"}},
+		{ID: "M13", Name: "Enterprise Security And Compliance", Passed: security.Passed, Detail: "security validation report", Evidence: []string{"docs/archive/2026-02-20-completed-docs/m13_security_architecture.md", "internal/security/policy.go"}},
+		{ID: "M14", Name: "Quality And Evaluation System", Passed: checkByName(readiness, "m0_m16_quality_gate") && benchmark.Passed, Detail: "quality gate and benchmark evidence", Evidence: []string{"docs/archive/2026-02-20-completed-docs/m14_quality_runbook.md"}},
+		{ID: "M15", Name: "Product Layer On Top Of Query", Passed: fileExists(filepath.Join("docs", "archive", "2026-02-20-completed-docs", "m15_product_api_contracts.md")) && checkByName(readiness, "question_catalog_api_coverage_100"), Detail: "product contracts and API coverage", Evidence: []string{"docs/archive/2026-02-20-completed-docs/m15_product_api_contracts.md"}},
+		{ID: "M16", Name: "Reliability And Operations", Passed: opsDrill.Passed && checkByName(readiness, "m16_slo_gate"), Detail: "ops drills and slo gate", Evidence: []string{"docs/archive/2026-02-20-completed-docs/m16_operations_runbook.md"}},
+		{ID: "M17", Name: "State-of-the-Art Completion Gate", Passed: readiness.OverallPassed && checkByName(readiness, "final_attestation_signed"), Detail: "final attestation and approvals", Evidence: []string{"docs/archive/2026-02-20-completed-docs/m17_completion_runbook.md"}},
 	}
 	overall := true
 	for _, it := range items {

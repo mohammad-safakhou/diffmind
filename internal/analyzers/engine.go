@@ -64,6 +64,13 @@ func analyze(ctx context.Context, root string, forcedSnapshotID string, adapterS
 	}
 
 	executedExtractors := map[string]struct{}{}
+	builtinSelected := false
+	for _, ad := range adapters {
+		if strings.EqualFold(strings.TrimSpace(ad.Name()), "builtin") {
+			builtinSelected = true
+			break
+		}
+	}
 	for _, ad := range adapters {
 		probe := ad.Probe(root)
 		planItem := AdapterPlanItem{
@@ -78,35 +85,42 @@ func analyze(ctx context.Context, root string, forcedSnapshotID string, adapterS
 			ToolchainSHA: strings.TrimSpace(probe.ToolchainFingerprint),
 		}
 		if !probe.Available {
-			if strings.TrimSpace(adapterSelection) != "" && !allowMissingAdapters {
+			if strings.TrimSpace(adapterSelection) != "" && !allowMissingAdapters && !isAdapterNotApplicableReason(probe.Reason) {
 				return result{}, fmt.Errorf("adapter %q unavailable: %s (rerun with --allow-missing-adapters to continue)", ad.Name(), strings.TrimSpace(probe.Reason))
 			}
 			c.report.AdapterPlan = append(c.report.AdapterPlan, planItem)
 			continue
 		}
-		extractors, err := ad.Plan(extractorSelection)
+		effectiveExtractorSelection := extractorSelection
+		// In mixed-adapter runs where builtin is present, non-builtin adapters should
+		// augment via tool semantic output instead of re-running the full deterministic
+		// extractor set (which duplicates facts and creates contradiction noise).
+		if builtinSelected && !strings.EqualFold(strings.TrimSpace(ad.Name()), "builtin") {
+			effectiveExtractorSelection = "none"
+		}
+
+		extractors, err := ad.Plan(effectiveExtractorSelection)
 		if err != nil {
 			return result{}, err
 		}
 		planItem.Extractors = extractorNames(extractors)
 		c.report.AdapterPlan = append(c.report.AdapterPlan, planItem)
-		if len(extractors) == 0 {
-			continue
-		}
 
 		beforeFacts := len(c.factByID)
 		beforeEvidence := len(c.evidenceByID)
 		c.adapterName = ad.Name()
 		c.adapterVer = ad.Version()
 		c.toolchainSHA = strings.TrimSpace(probe.ToolchainFingerprint)
-		for _, f := range files {
-			for _, ex := range extractors {
-				ex.Extract(c, f)
-				executedExtractors[ex.Name()] = struct{}{}
+		if len(extractors) > 0 {
+			for _, f := range files {
+				for _, ex := range extractors {
+					ex.Extract(c, f)
+					executedExtractors[ex.Name()] = struct{}{}
+				}
 			}
-		}
-		if extractorSelected(extractors, "config") {
-			detectSpringProfileResolvedConfig(c, files)
+			if extractorSelected(extractors, "config") {
+				detectSpringProfileResolvedConfig(c, files)
+			}
 		}
 		run := AdapterRunItem{
 			Name:          ad.Name(),
@@ -140,6 +154,17 @@ func analyze(ctx context.Context, root string, forcedSnapshotID string, adapterS
 	c.report.EvidenceCount = len(bundle.Evidence)
 
 	return result{bundle: bundle, report: c.report}, nil
+}
+
+func isAdapterNotApplicableReason(reason string) bool {
+	r := strings.ToLower(strings.TrimSpace(reason))
+	if r == "" {
+		return false
+	}
+	return strings.Contains(r, "no go.mod or .go files detected in source") ||
+		strings.Contains(r, "no typescript/javascript source files detected in source") ||
+		strings.Contains(r, "no python source files detected in source") ||
+		strings.Contains(r, "no java source files detected in source")
 }
 
 func extractorSelected(extractors []Extractor, name string) bool {

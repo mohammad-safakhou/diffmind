@@ -44,6 +44,9 @@ func BuildInventory(root string, opts InventoryOptions) ([]FileEntry, error) {
 		if !d.Type().IsRegular() {
 			return nil
 		}
+		if shouldExcludeFile(rel) {
+			return nil
+		}
 
 		entry, err := buildFileEntry(path, rel)
 		if err != nil {
@@ -140,7 +143,20 @@ func shouldExcludeDir(relativePath string, exclude map[string]struct{}) bool {
 	if _, ok := exclude[base]; ok {
 		return true
 	}
+	switch strings.ToLower(strings.TrimSpace(base)) {
+	case ".idea", ".settings", ".metadata", ".jdtls", ".gradle", "target", "build", "out":
+		return true
+	}
 	if strings.Contains(relativePath, "/.git/") {
+		return true
+	}
+	return false
+}
+
+func shouldExcludeFile(relativePath string) bool {
+	base := strings.ToLower(strings.TrimSpace(filepath.Base(relativePath)))
+	switch base {
+	case ".classpath", ".project", ".factorypath":
 		return true
 	}
 	return false

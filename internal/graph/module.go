@@ -324,9 +324,15 @@ func singleServiceFromOptions(opts options) serviceSpec {
 		name = id
 	}
 	baseURLs := splitCSV(opts.BaseURLs)
+	repoPath := ""
+	outputRoot := deriveOutputRootFromBundlePath(opts.BundlePath)
+	if strings.TrimSpace(outputRoot) != "" {
+		repoPath = discoverRepoPathFromRunReport(outputRoot)
+	}
 	return serviceSpec{
 		ID:             id,
 		Name:           name,
+		RepoPath:       strings.TrimSpace(repoPath),
 		TenantID:       normalizeTenantID(opts.TenantID),
 		BundlePath:     opts.BundlePath,
 		AnalyzerBundle: opts.AnalyzerBundlePath,
@@ -459,6 +465,7 @@ type serviceInput struct {
 	bundle        bundleio.Bundle
 	analyzer      facts.Bundle
 	runtimeByID   map[string]bundleio.Entity
+	evidenceByID  map[string]facts.Evidence
 	endpointNodes map[string]string
 	envTags       map[string]struct{}
 }
@@ -503,6 +510,13 @@ func buildGraph(services []serviceSpec, mode string) (graphschema.Graph, error) 
 		if err != nil {
 			return graphschema.Graph{}, err
 		}
+		if strings.TrimSpace(spec.RepoPath) == "" {
+			outputRoot := deriveOutputRootFromBundlePath(spec.BundlePath)
+			snapMeta := discoverSnapshotMetadata(outputRoot, b.SnapshotID)
+			if strings.TrimSpace(snapMeta.RepoLocator) != "" {
+				spec.RepoPath = strings.TrimSpace(snapMeta.RepoLocator)
+			}
+		}
 		var analyzer facts.Bundle
 		if strings.TrimSpace(spec.AnalyzerBundle) != "" {
 			data, err := os.ReadFile(spec.AnalyzerBundle)
@@ -516,11 +530,16 @@ func buildGraph(services []serviceSpec, mode string) (graphschema.Graph, error) 
 				runtimeByID[e.ID] = e
 			}
 		}
+		evidenceByID := map[string]facts.Evidence{}
+		for _, ev := range analyzer.Evidence {
+			evidenceByID[ev.ID] = ev
+		}
 		inputs = append(inputs, serviceInput{
 			spec:          spec,
 			bundle:        b,
 			analyzer:      analyzer,
 			runtimeByID:   runtimeByID,
+			evidenceByID:  evidenceByID,
 			endpointNodes: map[string]string{},
 			envTags:       detectServiceEnvironments(spec, b.Entities),
 		})
@@ -543,6 +562,8 @@ func buildGraph(services []serviceSpec, mode string) (graphschema.Graph, error) 
 	gb.resolveRuntimeBuildDeployEdges()
 	gb.resolveConfigAndSensitiveEdges()
 	gb.resolveDependencyOwnershipEdges()
+	gb.resolveDependencyOperationEdges()
+	gb.resolveExposureDependencyEdges()
 	gb.resolveCrossRepoCanonicalization()
 	gb.resolveConfidenceAndConflictEdges()
 	gb.resolveVerificationDecisionEdges()
@@ -701,7 +722,7 @@ func trimUnconnectedNodes(nodes []graphschema.Node, edges []graphschema.Edge) []
 	}
 	out := make([]graphschema.Node, 0, len(nodes))
 	for _, n := range nodes {
-		// Always keep service nodes as top-level architecture anchors.
+		// Keep service nodes in stored graph; default API projection can hide them.
 		if n.Type == "service" {
 			out = append(out, n)
 			continue
@@ -770,12 +791,17 @@ func discoverRunReportMetadata(outputRoot string) runReportMeta {
 
 func discoverSnapshotMetadata(outputRoot string, snapshotID string) snapshotMeta {
 	if strings.TrimSpace(outputRoot) == "" || strings.TrimSpace(snapshotID) == "" {
-		return snapshotMeta{}
+		return discoverAnySnapshotMetadata(outputRoot)
 	}
 	path := filepath.Join(outputRoot, "snapshots", snapshotID, "snapshot.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return snapshotMeta{}
+		altPath := filepath.Join(outputRoot, "artifacts", "snapshots", snapshotID, "snapshot.json")
+		data, err = os.ReadFile(altPath)
+		if err != nil {
+			return discoverAnySnapshotMetadata(outputRoot)
+		}
+		path = altPath
 	}
 	var meta struct {
 		RepoLocator string `json:"repo_locator"`
@@ -793,6 +819,44 @@ func discoverSnapshotMetadata(outputRoot string, snapshotID string) snapshotMeta
 		CommitSHA:   strings.TrimSpace(meta.CommitSHA),
 		SourceType:  strings.TrimSpace(meta.SourceType),
 	}
+}
+
+func discoverAnySnapshotMetadata(outputRoot string) snapshotMeta {
+	if strings.TrimSpace(outputRoot) == "" {
+		return snapshotMeta{}
+	}
+	globs := []string{
+		filepath.Join(outputRoot, "artifacts", "snapshots", "*", "snapshot.json"),
+		filepath.Join(outputRoot, "snapshots", "*", "snapshot.json"),
+	}
+	for _, g := range globs {
+		matches, _ := filepath.Glob(g)
+		if len(matches) == 0 {
+			continue
+		}
+		sort.Strings(matches)
+		data, err := os.ReadFile(matches[len(matches)-1])
+		if err != nil {
+			continue
+		}
+		var meta struct {
+			RepoLocator string `json:"repo_locator"`
+			Ref         string `json:"ref"`
+			CommitSHA   string `json:"commit_sha"`
+			SourceType  string `json:"source_type"`
+		}
+		if err := json.Unmarshal(data, &meta); err != nil {
+			continue
+		}
+		return snapshotMeta{
+			Path:        matches[len(matches)-1],
+			RepoLocator: strings.TrimSpace(meta.RepoLocator),
+			Ref:         strings.TrimSpace(meta.Ref),
+			CommitSHA:   strings.TrimSpace(meta.CommitSHA),
+			SourceType:  strings.TrimSpace(meta.SourceType),
+		}
+	}
+	return snapshotMeta{}
 }
 
 func fileSHA256(path string) (string, error) {

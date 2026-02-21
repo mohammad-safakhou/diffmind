@@ -14,9 +14,12 @@ var (
 	jstsMethodOptionRe  = regexp.MustCompile(`(?i)\bmethod\s*:\s*["']([A-Za-z]+)["']`)
 	jstsURLFieldRe      = regexp.MustCompile(`(?i)\burl\s*:\s*["']([^"']+)["']`)
 	jstsTopicFieldRe    = regexp.MustCompile(`(?i)\btopic\s*:\s*["']([^"']+)["']`)
+	jstsTopicArnFieldRe = regexp.MustCompile(`(?i)\btopicarn\s*:\s*["']([^"']+)["']`)
 	jstsQueueURLFieldRe = regexp.MustCompile(`(?i)\bqueueurl\s*:\s*["']([^"']+)["']`)
 	jstsQuotedStringRe  = regexp.MustCompile(`["']([^"']+)["']`)
 	jstsPrismaModelRe   = regexp.MustCompile(`(?i)\bprisma\.([a-zA-Z0-9_]+)\.`)
+	jstsSQSClientDeclRe = regexp.MustCompile(`(?i)\b(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*new\s+(?:AWS\.)?(?:SQSClient|SQS)\s*\(`)
+	jstsSNSClientDeclRe = regexp.MustCompile(`(?i)\b(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*new\s+(?:AWS\.)?(?:SNSClient|SNS)\s*\(`)
 )
 
 func detectJSTSInboundEndpointsSemantic(c *collector, file sourceFile) bool {
@@ -175,12 +178,69 @@ func detectJSTSQueueAndDBCallsSemantic(c *collector, file sourceFile) bool {
 	}
 	defer tree.Close()
 	root := tree.RootNode()
+	awsServiceClients := collectJSTSAWSServiceClientsFromText(file.Lines)
 
 	scanJSTSCallExpressions(root, func(call *sitter.Node) {
 		text := strings.TrimSpace(call.Utf8Text(content))
 		lower := strings.ToLower(text)
 		line, col := jstsLineCol(call)
 		snippet := lineSnippet(file, line)
+		member, callName, args := parseJSTSCallShape(call, content)
+
+		if member != "" && strings.EqualFold(strings.TrimSpace(callName), "send") && len(args) > 0 {
+			switch awsServiceClients[member] {
+			case "sqs":
+				argText := strings.TrimSpace(args[0].Utf8Text(content))
+				lowerArg := strings.ToLower(argText)
+				method := ""
+				switch {
+				case strings.Contains(lowerArg, "sendmessagecommand"):
+					method = "PUBLISH"
+				case strings.Contains(lowerArg, "receivemessagecommand"):
+					method = "CONSUME"
+				}
+				if method != "" {
+					target := firstMatchGroup(argText, jstsQueueURLFieldRe)
+					if target == "" {
+						target = "sqs:unknown-queue"
+					}
+					op := "publish"
+					if method == "CONSUME" {
+						op = "consume"
+					}
+					c.addFactWithEvidence("ExternalCall", map[string]any{
+						"protocol":        "queue",
+						"method":          method,
+						"target":          target,
+						"library":         "aws-sdk-js-v3-sqs-semantic",
+						"queue_operation": op,
+						"queue_kind":      "sqs",
+					}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+					return
+				}
+			case "sns":
+				argText := strings.TrimSpace(args[0].Utf8Text(content))
+				lowerArg := strings.ToLower(argText)
+				if strings.Contains(lowerArg, "publishcommand") {
+					target := firstMatchGroup(argText, jstsTopicArnFieldRe)
+					if target == "" {
+						target = firstMatchGroup(argText, jstsTopicFieldRe)
+					}
+					if target == "" {
+						target = "sns:unknown-topic"
+					}
+					c.addFactWithEvidence("ExternalCall", map[string]any{
+						"protocol":        "queue",
+						"method":          "PUBLISH",
+						"target":          target,
+						"library":         "aws-sdk-js-v3-sns-semantic",
+						"queue_operation": "publish",
+						"queue_kind":      "sns",
+					}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+					return
+				}
+			}
+		}
 
 		if strings.Contains(lower, ".send(") {
 			if topic := firstMatchGroup(text, jstsTopicFieldRe); topic != "" {
@@ -286,7 +346,6 @@ func detectJSTSQueueAndDBCallsSemantic(c *collector, file sourceFile) bool {
 			}
 		}
 
-		member, callName, args := parseJSTSCallShape(call, content)
 		if member != "" {
 			m := strings.ToLower(strings.TrimSpace(callName))
 			if m == "exec" || m == "execsync" || m == "spawn" {
@@ -307,6 +366,19 @@ func detectJSTSQueueAndDBCallsSemantic(c *collector, file sourceFile) bool {
 		}
 	})
 	return true
+}
+
+func collectJSTSAWSServiceClientsFromText(lines []string) map[string]string {
+	out := map[string]string{}
+	for _, line := range lines {
+		if m := jstsSQSClientDeclRe.FindStringSubmatch(line); len(m) >= 2 {
+			out[strings.TrimSpace(m[1])] = "sqs"
+		}
+		if m := jstsSNSClientDeclRe.FindStringSubmatch(line); len(m) >= 2 {
+			out[strings.TrimSpace(m[1])] = "sns"
+		}
+	}
+	return out
 }
 
 func parseJSTSAST(file sourceFile) (*sitter.Tree, []byte, bool) {

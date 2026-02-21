@@ -168,7 +168,15 @@ func buildEvidencePack(root string, snapshotID string, maxFiles int, maxChars in
 		return nil, 0, err
 	}
 
-	keywords := []string{"route", "router", "endpoint", "request", "fetch", "axios", "getenv", "process.env", "@value", "viper", "http.", "openapi", "terraform", "k8s", "workflow", "ci", "service", "mapping"}
+	keywords := []string{
+		"route", "router", "endpoint", "controller", "request", "response",
+		"fetch", "axios", "http.", "resttemplate", "webclient", "feign",
+		"queue", "topic", "publish", "consume", "listener", "scheduler", "cron",
+		"sqs", "sns", "kafka", "rabbit", "amqp",
+		"database", "query", "insert", "update", "delete",
+		"getenv", "process.env", "@value", "viper",
+		"openapi", "terraform", "k8s", "workflow", "ci", "service", "mapping",
+	}
 	items := make([]llmPackItem, 0)
 	seen := map[string]struct{}{}
 	filesUsed := map[string]struct{}{}
@@ -258,8 +266,22 @@ func buildLLMPrompt(task string, deterministic facts.Bundle, pack []llmPackItem)
 	b.WriteString("- do not create facts without evidence_ids.\n")
 	b.WriteString("- keep confidence in [0,1].\n")
 	b.WriteString("- return concise attributes; do not hallucinate file paths.\n")
+	b.WriteString("- prioritize resolving exposure/dependency facts with unknown targets/methods.\n")
+	b.WriteString("- use cfg:KEY form when target comes from config key references.\n")
 	b.WriteString("Deterministic summary:\n")
 	b.WriteString(fmt.Sprintf("facts=%d evidence=%d\n", len(deterministic.Facts), len(deterministic.Evidence)))
+	unknownCalls := 0
+	for _, f := range deterministic.Facts {
+		if f.Type != "ExternalCall" {
+			continue
+		}
+		target := strings.ToLower(strings.TrimSpace(fmt.Sprint(f.Attributes["target"])))
+		method := strings.ToLower(strings.TrimSpace(fmt.Sprint(f.Attributes["method"])))
+		if strings.Contains(target, "unknown") || method == "" || method == "unknown" {
+			unknownCalls++
+		}
+	}
+	b.WriteString(fmt.Sprintf("external_calls_with_unknowns=%d\n", unknownCalls))
 	b.WriteString("Evidence pack:\n")
 	for _, item := range pack {
 		ev := item.Evidence

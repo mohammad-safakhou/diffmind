@@ -42,20 +42,23 @@ type ContractResult struct {
 type graphContractFile struct {
 	ServiceID  string `json:"service_id,omitempty"`
 	Thresholds struct {
-		EndpointsRecallMin       float64 `json:"endpoints_recall_min,omitempty"`
-		QueuePublishRecallMin    float64 `json:"queue_publish_recall_min,omitempty"`
-		QueueConsumeRecallMin    float64 `json:"queue_consume_recall_min,omitempty"`
-		SchedulerRecallMin       float64 `json:"scheduler_recall_min,omitempty"`
-		DependenciesRecallMin    float64 `json:"dependencies_recall_min,omitempty"`
-		EndpointsPrecisionMin    float64 `json:"endpoints_precision_min,omitempty"`
-		DependenciesPrecisionMin float64 `json:"dependencies_precision_min,omitempty"`
+		EndpointsRecallMin             float64 `json:"endpoints_recall_min,omitempty"`
+		QueuePublishRecallMin          float64 `json:"queue_publish_recall_min,omitempty"`
+		QueueConsumeRecallMin          float64 `json:"queue_consume_recall_min,omitempty"`
+		SchedulerRecallMin             float64 `json:"scheduler_recall_min,omitempty"`
+		DependenciesRecallMin          float64 `json:"dependencies_recall_min,omitempty"`
+		EndpointsPrecisionMin          float64 `json:"endpoints_precision_min,omitempty"`
+		DependenciesPrecisionMin       float64 `json:"dependencies_precision_min,omitempty"`
+		ExposureDependencyRecallMin    float64 `json:"exposure_dependency_recall_min,omitempty"`
+		ExposureDependencyPrecisionMin float64 `json:"exposure_dependency_precision_min,omitempty"`
 	} `json:"thresholds,omitempty"`
 	Expected struct {
-		Endpoints      []string `json:"endpoints,omitempty"`
-		QueuePublishes []string `json:"queue_publishes,omitempty"`
-		QueueConsumes  []string `json:"queue_consumes,omitempty"`
-		Schedulers     []string `json:"schedulers,omitempty"`
-		Dependencies   []string `json:"dependencies,omitempty"`
+		Endpoints               []string `json:"endpoints,omitempty"`
+		QueuePublishes          []string `json:"queue_publishes,omitempty"`
+		QueueConsumes           []string `json:"queue_consumes,omitempty"`
+		Schedulers              []string `json:"schedulers,omitempty"`
+		Dependencies            []string `json:"dependencies,omitempty"`
+		ExposureDependencyLinks []string `json:"exposure_dependency_links,omitempty"`
 	} `json:"expected"`
 }
 
@@ -66,11 +69,12 @@ type graphContractReport struct {
 	GeneratedAtUTC string `json:"generated_at_utc"`
 	ServiceID      string `json:"service_id,omitempty"`
 	Surfaces       struct {
-		Endpoints      contractSurfaceResult `json:"endpoints"`
-		QueuePublishes contractSurfaceResult `json:"queue_publishes"`
-		QueueConsumes  contractSurfaceResult `json:"queue_consumes"`
-		Schedulers     contractSurfaceResult `json:"schedulers"`
-		Dependencies   contractSurfaceResult `json:"dependencies"`
+		Endpoints               contractSurfaceResult `json:"endpoints"`
+		QueuePublishes          contractSurfaceResult `json:"queue_publishes"`
+		QueueConsumes           contractSurfaceResult `json:"queue_consumes"`
+		Schedulers              contractSurfaceResult `json:"schedulers"`
+		Dependencies            contractSurfaceResult `json:"dependencies"`
+		ExposureDependencyLinks contractSurfaceResult `json:"exposure_dependency_links"`
 	} `json:"surfaces"`
 	Gates struct {
 		EndpointsRecallMin struct {
@@ -108,6 +112,16 @@ type graphContractReport struct {
 			Observed  float64 `json:"observed"`
 			Passed    bool    `json:"passed"`
 		} `json:"dependencies_precision_min"`
+		ExposureDependencyRecallMin struct {
+			Threshold float64 `json:"threshold"`
+			Observed  float64 `json:"observed"`
+			Passed    bool    `json:"passed"`
+		} `json:"exposure_dependency_recall_min"`
+		ExposureDependencyPrecisionMin struct {
+			Threshold float64 `json:"threshold"`
+			Observed  float64 `json:"observed"`
+			Passed    bool    `json:"passed"`
+		} `json:"exposure_dependency_precision_min"`
 	} `json:"gates"`
 	Passed bool `json:"passed"`
 }
@@ -272,6 +286,7 @@ func evaluateGraphContract(graph graphschema.Graph, graphPath string, contractPa
 	rep.Surfaces.QueueConsumes = compareSets(contract.Expected.QueueConsumes, observed.QueueConsumes, observed.QueueConsumeEvidence)
 	rep.Surfaces.Schedulers = compareSets(contract.Expected.Schedulers, observed.Schedulers, observed.SchedulerEvidence)
 	rep.Surfaces.Dependencies = compareSets(contract.Expected.Dependencies, observed.Dependencies, observed.DependencyEvidence)
+	rep.Surfaces.ExposureDependencyLinks = compareSets(contract.Expected.ExposureDependencyLinks, observed.ExposureDependencyLinks, observed.ExposureDependencyLinkEvidence)
 
 	endpointRecallMin := contract.Thresholds.EndpointsRecallMin
 	if endpointRecallMin <= 0 {
@@ -300,6 +315,14 @@ func evaluateGraphContract(graph graphschema.Graph, graphPath string, contractPa
 	dependencyPrecisionMin := contract.Thresholds.DependenciesPrecisionMin
 	if dependencyPrecisionMin <= 0 {
 		dependencyPrecisionMin = 0.75
+	}
+	exposureDependencyRecallMin := contract.Thresholds.ExposureDependencyRecallMin
+	if exposureDependencyRecallMin <= 0 {
+		exposureDependencyRecallMin = 0.80
+	}
+	exposureDependencyPrecisionMin := contract.Thresholds.ExposureDependencyPrecisionMin
+	if exposureDependencyPrecisionMin <= 0 {
+		exposureDependencyPrecisionMin = 0.60
 	}
 
 	rep.Gates.EndpointsRecallMin.Threshold = endpointRecallMin
@@ -330,27 +353,39 @@ func evaluateGraphContract(graph graphschema.Graph, graphPath string, contractPa
 	rep.Gates.DependenciesPrecisionMin.Observed = rep.Surfaces.Dependencies.Precision
 	rep.Gates.DependenciesPrecisionMin.Passed = rep.Surfaces.Dependencies.Expected == 0 || rep.Surfaces.Dependencies.Observed == 0 || rep.Surfaces.Dependencies.Precision >= dependencyPrecisionMin
 
+	rep.Gates.ExposureDependencyRecallMin.Threshold = exposureDependencyRecallMin
+	rep.Gates.ExposureDependencyRecallMin.Observed = rep.Surfaces.ExposureDependencyLinks.Recall
+	rep.Gates.ExposureDependencyRecallMin.Passed = rep.Surfaces.ExposureDependencyLinks.Expected == 0 || rep.Surfaces.ExposureDependencyLinks.Recall >= exposureDependencyRecallMin
+
+	rep.Gates.ExposureDependencyPrecisionMin.Threshold = exposureDependencyPrecisionMin
+	rep.Gates.ExposureDependencyPrecisionMin.Observed = rep.Surfaces.ExposureDependencyLinks.Precision
+	rep.Gates.ExposureDependencyPrecisionMin.Passed = rep.Surfaces.ExposureDependencyLinks.Expected == 0 || rep.Surfaces.ExposureDependencyLinks.Observed == 0 || rep.Surfaces.ExposureDependencyLinks.Precision >= exposureDependencyPrecisionMin
+
 	rep.Passed = rep.Gates.EndpointsRecallMin.Passed &&
 		rep.Gates.QueuePublishRecallMin.Passed &&
 		rep.Gates.QueueConsumeRecallMin.Passed &&
 		rep.Gates.SchedulerRecallMin.Passed &&
 		rep.Gates.DependenciesRecallMin.Passed &&
 		rep.Gates.EndpointsPrecisionMin.Passed &&
-		rep.Gates.DependenciesPrecisionMin.Passed
+		rep.Gates.DependenciesPrecisionMin.Passed &&
+		rep.Gates.ExposureDependencyRecallMin.Passed &&
+		rep.Gates.ExposureDependencyPrecisionMin.Passed
 	return rep
 }
 
 type observedSurfaces struct {
-	Endpoints            []string
-	QueuePublishes       []string
-	QueueConsumes        []string
-	Schedulers           []string
-	Dependencies         []string
-	EndpointEvidence     map[string][]string
-	QueuePublishEvidence map[string][]string
-	QueueConsumeEvidence map[string][]string
-	SchedulerEvidence    map[string][]string
-	DependencyEvidence   map[string][]string
+	Endpoints                      []string
+	QueuePublishes                 []string
+	QueueConsumes                  []string
+	Schedulers                     []string
+	Dependencies                   []string
+	ExposureDependencyLinks        []string
+	EndpointEvidence               map[string][]string
+	QueuePublishEvidence           map[string][]string
+	QueueConsumeEvidence           map[string][]string
+	SchedulerEvidence              map[string][]string
+	DependencyEvidence             map[string][]string
+	ExposureDependencyLinkEvidence map[string][]string
 }
 
 func extractObservedContractSurfaces(graph graphschema.Graph) observedSurfaces {
@@ -369,6 +404,8 @@ func extractObservedContractSurfaces(graph graphschema.Graph) observedSurfaces {
 	queueConsumeEvidence := map[string][]string{}
 	schedulerEvidence := map[string][]string{}
 	dependencyEvidence := map[string][]string{}
+	exposureDependencyLinks := map[string]struct{}{}
+	exposureDependencyLinkEvidence := map[string][]string{}
 
 	for _, n := range graph.Nodes {
 		switch n.Type {
@@ -460,19 +497,115 @@ func extractObservedContractSurfaces(graph graphschema.Graph) observedSurfaces {
 			}
 		}
 	}
+	for _, e := range graph.Edges {
+		if e.Type != "exposure_reaches_dependency" {
+			continue
+		}
+		src, srcOK := nodeByID[e.SourceID]
+		dst, dstOK := nodeByID[e.TargetID]
+		if !srcOK || !dstOK {
+			continue
+		}
+		srcKey := endpointSurfaceKey(src)
+		if srcKey == "" {
+			continue
+		}
+		dstKey := dependencySurfaceKey(dst, e, nodeByID)
+		if dstKey == "" {
+			continue
+		}
+		link := srcKey + " => " + dstKey
+		exposureDependencyLinks[link] = struct{}{}
+		exposureDependencyLinkEvidence[link] = appendUnique(exposureDependencyLinkEvidence[link], fmt.Sprintf("graph://edge/%s", e.ID))
+		exposureDependencyLinkEvidence[link] = appendUnique(exposureDependencyLinkEvidence[link], fmt.Sprintf("graph://node/%s", src.ID))
+		exposureDependencyLinkEvidence[link] = appendUnique(exposureDependencyLinkEvidence[link], fmt.Sprintf("graph://node/%s", dst.ID))
+	}
 
 	return observedSurfaces{
-		Endpoints:            sortedSetKeys(endpoints),
-		QueuePublishes:       sortedSetKeys(queuePub),
-		QueueConsumes:        sortedSetKeys(queueCon),
-		Schedulers:           sortedSetKeys(schedulers),
-		Dependencies:         sortedSetKeys(deps),
-		EndpointEvidence:     endpointEvidence,
-		QueuePublishEvidence: queuePublishEvidence,
-		QueueConsumeEvidence: queueConsumeEvidence,
-		SchedulerEvidence:    schedulerEvidence,
-		DependencyEvidence:   dependencyEvidence,
+		Endpoints:                      sortedSetKeys(endpoints),
+		QueuePublishes:                 sortedSetKeys(queuePub),
+		QueueConsumes:                  sortedSetKeys(queueCon),
+		Schedulers:                     sortedSetKeys(schedulers),
+		Dependencies:                   sortedSetKeys(deps),
+		ExposureDependencyLinks:        sortedSetKeys(exposureDependencyLinks),
+		EndpointEvidence:               endpointEvidence,
+		QueuePublishEvidence:           queuePublishEvidence,
+		QueueConsumeEvidence:           queueConsumeEvidence,
+		SchedulerEvidence:              schedulerEvidence,
+		DependencyEvidence:             dependencyEvidence,
+		ExposureDependencyLinkEvidence: exposureDependencyLinkEvidence,
 	}
+}
+
+func endpointSurfaceKey(n graphschema.Node) string {
+	method := strings.ToUpper(strings.TrimSpace(fmt.Sprint(n.Attributes["method"])))
+	path := strings.TrimSpace(fmt.Sprint(n.Attributes["path"]))
+	if method == "" {
+		method = "ANY"
+	}
+	if path == "" {
+		label := strings.TrimSpace(n.Label)
+		if label == "" {
+			return ""
+		}
+		return label
+	}
+	return method + " " + path
+}
+
+func dependencySurfaceKey(n graphschema.Node, edge graphschema.Edge, nodeByID map[string]graphschema.Node) string {
+	switch n.Type {
+	case "dependency_operation":
+		protocol := strings.ToLower(strings.TrimSpace(fmt.Sprint(n.Attributes["protocol"])))
+		method := strings.ToUpper(strings.TrimSpace(fmt.Sprint(n.Attributes["method"])))
+		target := strings.TrimSpace(fmt.Sprint(n.Attributes["target"]))
+		if protocol == "http" && target != "" {
+			return "http:" + method + " " + target
+		}
+		if protocol == "queue" && target != "" {
+			return "queue:" + target
+		}
+		if protocol == "db" {
+			repo := strings.TrimSpace(fmt.Sprint(n.Attributes["repository"]))
+			op := strings.TrimSpace(fmt.Sprint(n.Attributes["operation"]))
+			if repo != "" && op != "" {
+				return "dbop:" + repo + "." + op
+			}
+			if target != "" {
+				return "db:" + target
+			}
+		}
+	case "database":
+		if label := strings.TrimSpace(n.Label); label != "" {
+			return "db:" + label
+		}
+	case "queue", "topic":
+		if label := strings.TrimSpace(n.Label); label != "" {
+			return "queue:" + label
+		}
+	case "dependency":
+		if name := strings.TrimSpace(fmt.Sprint(n.Attributes["name"])); name != "" {
+			return "service:" + name
+		}
+	}
+	// Fallback: derive from neighboring service/endpoint semantics where possible.
+	if t := strings.TrimSpace(fmt.Sprint(edge.Attributes["target_service_id"])); t != "" {
+		return "service:" + t
+	}
+	if other, ok := nodeByID[edge.TargetID]; ok && other.Type == "endpoint" {
+		method := strings.ToUpper(strings.TrimSpace(fmt.Sprint(other.Attributes["method"])))
+		path := strings.TrimSpace(fmt.Sprint(other.Attributes["path"]))
+		if path != "" {
+			if method == "" {
+				method = "ANY"
+			}
+			return "http:" + method + " " + path
+		}
+	}
+	if label := strings.TrimSpace(n.Label); label != "" {
+		return label
+	}
+	return ""
 }
 
 func compareSets(expected []string, observed []string, evidence map[string][]string) contractSurfaceResult {

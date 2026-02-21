@@ -86,8 +86,22 @@ func (adapterPyright) Plan(extractorSelection string) ([]Extractor, error) {
 	return resolveExtractors(extractorSelection)
 }
 
+type adapterJdtls struct{}
+
+func (adapterJdtls) Name() string    { return "jdtls" }
+func (adapterJdtls) Version() string { return "v1" }
+func (adapterJdtls) Capabilities() []string {
+	return []string{"java", "lsp", "semantic"}
+}
+func (adapterJdtls) Probe(root string) AdapterProbe {
+	return probeJdtls(root)
+}
+func (adapterJdtls) Plan(extractorSelection string) ([]Extractor, error) {
+	return resolveExtractors(extractorSelection)
+}
+
 func availableAdapters() []Adapter {
-	return []Adapter{adapterBuiltin{}, adapterGopls{}, adapterTsserver{}, adapterPyright{}}
+	return []Adapter{adapterBuiltin{}, adapterGopls{}, adapterTsserver{}, adapterPyright{}, adapterJdtls{}}
 }
 
 func resolveAdapters(csv string) ([]Adapter, error) {

@@ -3,3 +3,4 @@ bin/
 .gocache/
 .diffmind*/
 .DS_Store
+.codebases

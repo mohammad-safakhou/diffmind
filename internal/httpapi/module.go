@@ -1760,6 +1760,9 @@ func handleGraphByID(graphRoot string) http.HandlerFunc {
 			graph = filterGraph(graph, filters)
 		}
 		graph = applyStrictPublishPolicy(graph, parsePublishPolicy(r))
+		if !isAdvancedGraphView(r) {
+			graph = projectRootLeafGraph(graph)
+		}
 		includeSensitive := parseBoolDefault(r.URL.Query().Get("include_sensitive"), false)
 		graph = security.RedactGraph(graph, authCtx, includeSensitive)
 		graph = annotateGraphFreshness(graph, time.Now().UTC(), parseMaxAgeHours(r.URL.Query().Get("max_age_hours")))
@@ -2379,6 +2382,11 @@ func parsePublishPolicy(r *http.Request) publishPolicy {
 	}
 }
 
+func isAdvancedGraphView(r *http.Request) bool {
+	view := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("view")))
+	return view == "advanced" || view == "full"
+}
+
 func hasGraphFilter(f graphFilters) bool {
 	return !f.IncludeInferred || f.EdgeTypeFilter != "" || f.TypeFilter != "" || f.ServiceFilter != "" || f.RepoFilter != "" || f.NodeFilter != "" || f.SectionFilter != "" || f.ClassFilter != "" || f.ConfidenceMin > 0 || f.Verification != "" || f.AdapterID != "" || f.ProvVersion != "" || f.ConflictStatus != "" || f.Environment != "" || f.QueryText != ""
 }
@@ -2644,6 +2652,82 @@ func applyStrictPublishPolicy(graph graphschema.Graph, policy publishPolicy) gra
 	graph.Edges = edges
 	graph.Stats = recomputeGraphStats(nodes, edges)
 	return graph
+}
+
+func projectRootLeafGraph(graph graphschema.Graph) graphschema.Graph {
+	nodeKeep := map[string]struct{}{}
+	edges := make([]graphschema.Edge, 0, len(graph.Edges))
+	for _, e := range graph.Edges {
+		if !strings.EqualFold(strings.TrimSpace(e.Type), "exposure_reaches_dependency") {
+			continue
+		}
+		edges = append(edges, e)
+		nodeKeep[e.SourceID] = struct{}{}
+		nodeKeep[e.TargetID] = struct{}{}
+	}
+	if len(edges) == 0 {
+		// Backward compatibility for older graphs that do not yet emit root->leaf edges.
+		return graph
+	}
+
+	nodes := make([]graphschema.Node, 0, len(graph.Nodes))
+	for _, n := range graph.Nodes {
+		if _, ok := nodeKeep[n.ID]; !ok {
+			// Keep unconnected endpoint exposures visible (they indicate uncovered paths).
+			if isDefaultExposureNode(n) {
+				nodes = append(nodes, n)
+			}
+			continue
+		}
+		nodes = append(nodes, n)
+	}
+
+	filteredNodes := make([]graphschema.Node, 0, len(nodes))
+	nodeIDSet := map[string]struct{}{}
+	for _, n := range nodes {
+		if !(isDefaultExposureNode(n) || isDefaultDependencyNode(n)) {
+			continue
+		}
+		filteredNodes = append(filteredNodes, n)
+		nodeIDSet[n.ID] = struct{}{}
+	}
+	filteredEdges := make([]graphschema.Edge, 0, len(edges))
+	for _, e := range edges {
+		if _, ok := nodeIDSet[e.SourceID]; !ok {
+			continue
+		}
+		if _, ok := nodeIDSet[e.TargetID]; !ok {
+			continue
+		}
+		filteredEdges = append(filteredEdges, e)
+	}
+
+	graph.Nodes = filteredNodes
+	graph.Edges = filteredEdges
+	graph.Stats = recomputeGraphStats(filteredNodes, filteredEdges)
+	return graph
+}
+
+func isDefaultExposureNode(n graphschema.Node) bool {
+	if strings.ToLower(strings.TrimSpace(n.Type)) != "endpoint" {
+		return false
+	}
+	sec := strings.ToLower(strings.TrimSpace(n.Section))
+	return sec == graphschema.SectionExposure || sec == ""
+}
+
+func isDefaultDependencyNode(n graphschema.Node) bool {
+	t := strings.ToLower(strings.TrimSpace(n.Type))
+	switch t {
+	case "dependency_operation", "database", "queue", "topic", "table", "canonical_api_host":
+		return true
+	case "dependency":
+		// Hide package inventory dependencies in default exposure->dependency view.
+		ecosystem := strings.TrimSpace(fmt.Sprint(n.Attributes["ecosystem"]))
+		return ecosystem == ""
+	default:
+		return false
+	}
 }
 
 func shouldKeepByPublishPolicy(section string, verificationState string, attrs map[string]any, inferred bool, policy publishPolicy) bool {

@@ -35,7 +35,7 @@ func TestNormalizeGraphSemanticsDefaults(t *testing.T) {
 	}
 
 	ep := g.Nodes[1]
-	if ep.Section != SectionExposure || ep.Class != "api_endpoint" || ep.VerificationState != VerificationVerified {
+	if ep.Section != SectionExposure || ep.Class != "exposure_http_endpoint" || ep.VerificationState != VerificationVerified {
 		t.Fatalf("unexpected endpoint semantics: section=%s class=%s verification=%s", ep.Section, ep.Class, ep.VerificationState)
 	}
 
@@ -45,7 +45,7 @@ func TestNormalizeGraphSemanticsDefaults(t *testing.T) {
 	}
 
 	edge := g.Edges[0]
-	if edge.Section != SectionExposure || edge.Class != "api_call" || edge.VerificationState != VerificationVerified {
+	if edge.Section != SectionExposure || edge.Class != "dependency_api_call" || edge.VerificationState != VerificationVerified {
 		t.Fatalf("unexpected edge semantics: section=%s class=%s verification=%s", edge.Section, edge.Class, edge.VerificationState)
 	}
 }

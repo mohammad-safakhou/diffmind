@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -57,6 +58,11 @@ func (g *graphBuilder) addEndpointNodes() {
 			})
 			endpointNode := g.nodeByID[nodeID]
 			endpointNode.Attributes["path_normalized"] = normalizePath(path)
+			pathParams := extractPathParams(path)
+			if len(pathParams) > 0 {
+				endpointNode.Attributes["path_params"] = pathParams
+			}
+			attachEndpointInputShape(endpointNode.Attributes, method, path)
 			g.nodeByID[nodeID] = endpointNode
 			svc.endpointNodes[e.ID] = nodeID
 			g.addEdge(graphschema.Edge{
@@ -462,6 +468,44 @@ func (g *graphBuilder) resolveCodeQueueAndDBEdges() {
 					})
 				}
 				if method == "CONSUME" {
+					consumeNodeID := endpointNodeID(svc.spec.ID, e.ID)
+					if _, exists := g.nodeByID[consumeNodeID]; !exists {
+						consumeAttrs := map[string]any{
+							"direction":       "inbound",
+							"method":          "CONSUME",
+							"path":            target,
+							"path_normalized": normalizePath(target),
+							"framework":       "queue-consumer",
+							"protocol":        "queue",
+							"topic":           target,
+							"canonical_key":   canonical,
+							"source":          "analyzer",
+							"library":         e.Attributes["library"],
+						}
+						if target != rawTarget {
+							consumeAttrs["topic_raw"] = rawTarget
+							consumeAttrs["resolved_from_config"] = true
+						}
+						g.addNode(graphschema.Node{
+							ID:         consumeNodeID,
+							Type:       "endpoint",
+							Label:      "CONSUME " + target,
+							ServiceID:  svc.spec.ID,
+							Attributes: consumeAttrs,
+							Confidence: e.Confidence,
+							Inferred:   false,
+						})
+						g.addEdge(graphschema.Edge{
+							ID:           edgeID("service_exposes_endpoint", src, consumeNodeID, target+"|consume"),
+							Type:         "service_exposes_endpoint",
+							SourceID:     src,
+							TargetID:     consumeNodeID,
+							Attributes:   map[string]any{"source": "semantic_queue_consumer"},
+							Confidence:   e.Confidence,
+							Inferred:     false,
+							EvidenceRefs: evidence,
+						})
+					}
 					attrs := map[string]any{
 						"topic":         target,
 						"source":        "analyzer",
@@ -567,13 +611,1041 @@ func (g *graphBuilder) resolveCodeQueueAndDBEdges() {
 	}
 }
 
+func (g *graphBuilder) resolveDependencyOperationEdges() {
+	for i := range g.services {
+		svc := &g.services[i]
+		serviceNode := serviceNodeID(svc.spec.ID)
+		for _, e := range svc.bundle.Entities {
+			if e.Type != "ExternalCall" {
+				continue
+			}
+			protocol := strings.ToLower(strings.TrimSpace(fmt.Sprint(e.Attributes["protocol"])))
+			if protocol == "" {
+				continue
+			}
+			method := strings.ToUpper(strings.TrimSpace(fmt.Sprint(e.Attributes["method"])))
+			rawTarget := strings.TrimSpace(fmt.Sprint(e.Attributes["target"]))
+			target := g.resolveExternalCallTarget(svc, rawTarget)
+			if strings.TrimSpace(target) == "" {
+				target = rawTarget
+			}
+			if target == "" {
+				continue
+			}
+			kind := dependencyOpKindFromExternal(protocol, method)
+			opID := dependencyOperationNodeID(svc.spec.ID, protocol, method, target)
+			opAttrs := map[string]any{
+				"protocol":       protocol,
+				"method":         method,
+				"target":         target,
+				"operation":      strings.ToLower(protocol) + ":" + method + ":" + target,
+				"operation_kind": kind,
+				"source":         "semantic_external_call",
+				"library":        e.Attributes["library"],
+			}
+			if target != rawTarget {
+				opAttrs["target_raw"] = rawTarget
+				opAttrs["resolved_from_config"] = true
+			}
+			if f := strings.TrimSpace(fmt.Sprint(e.Attributes["file"])); f != "" {
+				opAttrs["file"] = f
+			}
+			if line := asInt(e.Attributes["line"]); line > 0 {
+				opAttrs["line"] = line
+			}
+			if col := asInt(e.Attributes["col"]); col > 0 {
+				opAttrs["col"] = col
+			}
+			g.addNode(graphschema.Node{
+				ID:         opID,
+				Type:       "dependency_operation",
+				Label:      fmt.Sprintf("%s %s", method, target),
+				ServiceID:  svc.spec.ID,
+				Attributes: opAttrs,
+				Confidence: e.Confidence,
+				Inferred:   false,
+			})
+			evidence := buildEvidenceRefs(svc.analyzer, e.FactIDs, e.EvidenceIDs)
+			g.addEdge(graphschema.Edge{
+				ID:           edgeID("service_depends_on_dependency", serviceNode, opID, protocol+"|"+method+"|"+target),
+				Type:         "service_depends_on_dependency",
+				SourceID:     serviceNode,
+				TargetID:     opID,
+				Attributes:   map[string]any{"protocol": protocol, "method": method, "operation_kind": kind, "source": "semantic_external_call"},
+				Confidence:   e.Confidence,
+				Inferred:     false,
+				EvidenceRefs: evidence,
+			})
+		}
+		for _, e := range svc.bundle.Entities {
+			if e.Type != "CodeCall" {
+				continue
+			}
+			filePath := strings.ToLower(strings.TrimSpace(fmt.Sprint(e.Attributes["file"])))
+			if filePath == "" || !strings.Contains(filePath, "/repository/") {
+				continue
+			}
+			callee := strings.TrimSpace(fmt.Sprint(e.Attributes["callee"]))
+			if callee == "" || !looksLikeDependencyOperation(callee) {
+				continue
+			}
+			repoName := repositoryNameFromPath(filePath)
+			if repoName == "" {
+				repoName = "repository"
+			}
+			opKind := dependencyOperationKind(callee)
+			label := fmt.Sprintf("dbop:%s.%s", repoName, callee)
+			nodeID := "depop:" + svc.spec.ID + ":" + stableID(repoName+"|"+callee)
+			attrs := map[string]any{
+				"protocol":       "db",
+				"repository":     repoName,
+				"operation":      callee,
+				"operation_kind": opKind,
+				"file":           filePath,
+				"line":           e.Attributes["line"],
+				"col":            e.Attributes["col"],
+				"source":         "semantic_code_call",
+			}
+			g.addNode(graphschema.Node{
+				ID:         nodeID,
+				Type:       "dependency_operation",
+				Label:      label,
+				ServiceID:  svc.spec.ID,
+				Attributes: attrs,
+				Confidence: e.Confidence,
+				Inferred:   false,
+			})
+			evidence := buildEvidenceRefs(svc.analyzer, e.FactIDs, e.EvidenceIDs)
+			g.addEdge(graphschema.Edge{
+				ID:           edgeID("service_depends_on_dependency", serviceNode, nodeID, repoName+"|"+callee),
+				Type:         "service_depends_on_dependency",
+				SourceID:     serviceNode,
+				TargetID:     nodeID,
+				Attributes:   map[string]any{"protocol": "db", "operation_kind": opKind, "source": "semantic_code_call"},
+				Confidence:   e.Confidence,
+				Inferred:     false,
+				EvidenceRefs: evidence,
+			})
+		}
+	}
+}
+
+func (g *graphBuilder) resolveExposureDependencyEdges() {
+	for i := range g.services {
+		svc := &g.services[i]
+		symbolsByID, symbolsByFile, symbolsByShort := indexCallableSymbols(*svc)
+		if len(symbolsByID) == 0 {
+			continue
+		}
+
+		endpointHandlers, endpointEvidence := g.resolveEndpointHandlers(*svc, symbolsByFile)
+		if len(endpointHandlers) == 0 {
+			continue
+		}
+
+		callAdj := g.resolveServiceCallAdjacency(*svc, symbolsByFile, symbolsByShort)
+		dependencyOwners, dependencyEvidence := g.resolveDependencyOwners(*svc, symbolsByFile)
+		if len(dependencyOwners) == 0 {
+			continue
+		}
+
+		for endpointNodeID, handlerIDs := range endpointHandlers {
+			depthBySymbol := traverseReachableSymbols(callAdj, handlerIDs, 14)
+			if len(depthBySymbol) == 0 {
+				continue
+			}
+
+			for depID, ownerIDs := range dependencyOwners {
+				if _, ok := g.nodeByID[depID]; !ok {
+					continue
+				}
+				minHops := -1
+				matchedOwners := make([]string, 0, 2)
+				for ownerID := range ownerIDs {
+					hops, ok := depthBySymbol[ownerID]
+					if !ok {
+						continue
+					}
+					if minHops < 0 || hops < minHops {
+						minHops = hops
+					}
+					matchedOwners = append(matchedOwners, ownerID)
+				}
+				if minHops < 0 {
+					continue
+				}
+				sort.Strings(matchedOwners)
+
+				edgeIDVal := edgeID("exposure_reaches_dependency", endpointNodeID, depID, strings.Join(matchedOwners, "|"))
+				ev := append([]graphschema.EvidenceRef{}, endpointEvidence[endpointNodeID]...)
+				ev = append(ev, dependencyEvidence[depID]...)
+				ev = dedupeEvidenceRefs(ev)
+
+				attrs := map[string]any{
+					"source":                      "explicit_call_graph",
+					"resolver":                    "endpoint_call_graph_v1",
+					"service_id":                  svc.spec.ID,
+					"handler_symbol_ids":          append([]string(nil), handlerIDs...),
+					"dependency_owner_symbol_ids": append([]string(nil), matchedOwners...),
+					"hop_count":                   minHops + 1,
+				}
+				confidence := 0.92
+				if minHops <= 1 {
+					confidence = 0.97
+				}
+				g.addEdge(graphschema.Edge{
+					ID:           edgeIDVal,
+					Type:         "exposure_reaches_dependency",
+					SourceID:     endpointNodeID,
+					TargetID:     depID,
+					Attributes:   attrs,
+					Confidence:   confidence,
+					Inferred:     false,
+					EvidenceRefs: ev,
+				})
+			}
+		}
+	}
+}
+
+type callableSymbol struct {
+	ID      string
+	Name    string
+	Short   string
+	File    string
+	Line    int
+	FactIDs []string
+	EvIDs   []string
+}
+
+func indexCallableSymbols(svc serviceInput) (map[string]callableSymbol, map[string][]callableSymbol, map[string][]callableSymbol) {
+	outByID := map[string]callableSymbol{}
+	outByFile := map[string][]callableSymbol{}
+	outByShort := map[string][]callableSymbol{}
+	for _, e := range svc.bundle.Entities {
+		if e.Type != "CodeSymbol" {
+			continue
+		}
+		kind := strings.ToLower(strings.TrimSpace(fmt.Sprint(e.Attributes["symbol_kind"])))
+		if kind == "" {
+			kind = strings.ToLower(strings.TrimSpace(fmt.Sprint(e.Attributes["kind"])))
+		}
+		if kind != "method" && kind != "function" && kind != "constructor" {
+			continue
+		}
+		name := strings.TrimSpace(fmt.Sprint(e.Attributes["name"]))
+		if name == "" {
+			continue
+		}
+		file, line, _ := entitySourceLocation(svc, e)
+		if file == "" || line <= 0 {
+			continue
+		}
+		id := "sym:" + svc.spec.ID + ":" + stableID(file+"|"+name+"|"+fmt.Sprint(line))
+		sym := callableSymbol{
+			ID:      id,
+			Name:    name,
+			Short:   shortSymbolName(name),
+			File:    file,
+			Line:    line,
+			FactIDs: append([]string(nil), e.FactIDs...),
+			EvIDs:   append([]string(nil), e.EvidenceIDs...),
+		}
+		outByID[id] = sym
+		outByFile[file] = append(outByFile[file], sym)
+		if sym.Short != "" {
+			outByShort[sym.Short] = append(outByShort[sym.Short], sym)
+		}
+	}
+	for file := range outByFile {
+		sort.Slice(outByFile[file], func(i, j int) bool { return outByFile[file][i].Line < outByFile[file][j].Line })
+	}
+	return outByID, outByFile, outByShort
+}
+
+func (g *graphBuilder) resolveEndpointHandlers(svc serviceInput, symbolsByFile map[string][]callableSymbol) (map[string][]string, map[string][]graphschema.EvidenceRef) {
+	handlers := map[string][]string{}
+	evidence := map[string][]graphschema.EvidenceRef{}
+	for _, e := range svc.bundle.Entities {
+		if e.Type != "Endpoint" {
+			continue
+		}
+		endpointNodeID := svc.endpointNodes[e.ID]
+		if endpointNodeID == "" {
+			continue
+		}
+		file, line, _ := entitySourceLocation(svc, e)
+		if file == "" {
+			continue
+		}
+		candidates := symbolsByFile[file]
+		if len(candidates) == 0 {
+			continue
+		}
+		if sym, ok := nearestCallableAtOrAfter(candidates, line); ok {
+			handlers[endpointNodeID] = []string{sym.ID}
+			evidence[endpointNodeID] = buildEvidenceRefs(svc.analyzer, e.FactIDs, e.EvidenceIDs)
+			continue
+		}
+		if sym, ok := nearestCallableAtOrBefore(candidates, line); ok {
+			handlers[endpointNodeID] = []string{sym.ID}
+			evidence[endpointNodeID] = buildEvidenceRefs(svc.analyzer, e.FactIDs, e.EvidenceIDs)
+		}
+	}
+	return handlers, evidence
+}
+
+func (g *graphBuilder) resolveServiceCallAdjacency(
+	svc serviceInput,
+	symbolsByFile map[string][]callableSymbol,
+	symbolsByShort map[string][]callableSymbol,
+) map[string]map[string]struct{} {
+	adj := map[string]map[string]struct{}{}
+	lineCache := map[string]string{}
+	for _, e := range svc.bundle.Entities {
+		if e.Type != "CodeCall" {
+			continue
+		}
+		file, line, _ := entitySourceLocation(svc, e)
+		if file == "" || line <= 0 {
+			continue
+		}
+		calleeName := shortSymbolName(strings.TrimSpace(fmt.Sprint(e.Attributes["callee"])))
+		if calleeName == "" {
+			continue
+		}
+		var callerIDs []string
+		callerName := shortSymbolName(strings.TrimSpace(fmt.Sprint(e.Attributes["caller"])))
+		if callerName != "" {
+			callerIDs = append(callerIDs, pickPreferredSymbols(symbolsByShort[callerName], file, "")...)
+		}
+		if len(callerIDs) == 0 {
+			if caller, ok := nearestCallableAtOrBefore(symbolsByFile[file], line); ok {
+				callerIDs = append(callerIDs, caller.ID)
+			}
+		}
+		if len(callerIDs) == 0 {
+			continue
+		}
+
+		lineText := sourceLineText(svc, file, line, lineCache)
+		receiverHint := receiverHintForCallee(lineText, calleeName)
+		callees := pickPreferredSymbols(symbolsByShort[calleeName], file, receiverHint)
+		if len(callees) == 0 {
+			continue
+		}
+		for _, callerID := range callerIDs {
+			for _, calleeID := range callees {
+				if callerID == calleeID {
+					continue
+				}
+				if adj[callerID] == nil {
+					adj[callerID] = map[string]struct{}{}
+				}
+				adj[callerID][calleeID] = struct{}{}
+			}
+		}
+	}
+	return adj
+}
+
+func (g *graphBuilder) resolveDependencyOwners(svc serviceInput, symbolsByFile map[string][]callableSymbol) (map[string]map[string]struct{}, map[string][]graphschema.EvidenceRef) {
+	owners := map[string]map[string]struct{}{}
+	evidence := map[string][]graphschema.EvidenceRef{}
+
+	addOwner := func(depID string, ownerID string, ev []graphschema.EvidenceRef) {
+		if depID == "" || ownerID == "" {
+			return
+		}
+		if owners[depID] == nil {
+			owners[depID] = map[string]struct{}{}
+		}
+		owners[depID][ownerID] = struct{}{}
+		evidence[depID] = append(evidence[depID], ev...)
+	}
+
+	for _, e := range svc.bundle.Entities {
+		switch e.Type {
+		case "ExternalCall":
+			protocol := strings.ToLower(strings.TrimSpace(fmt.Sprint(e.Attributes["protocol"])))
+			if protocol == "" {
+				continue
+			}
+			method := strings.ToUpper(strings.TrimSpace(fmt.Sprint(e.Attributes["method"])))
+			targetRaw := strings.TrimSpace(fmt.Sprint(e.Attributes["target"]))
+			target := g.resolveExternalCallTarget(&svc, targetRaw)
+			if target == "" {
+				target = targetRaw
+			}
+			if target == "" {
+				continue
+			}
+			file, line, _ := entitySourceLocation(svc, e)
+			if file == "" || line <= 0 {
+				continue
+			}
+			owner, ok := nearestCallableAtOrBefore(symbolsByFile[file], line)
+			if !ok {
+				continue
+			}
+			depID := dependencyOperationNodeID(svc.spec.ID, protocol, method, target)
+			addOwner(depID, owner.ID, buildEvidenceRefs(svc.analyzer, e.FactIDs, e.EvidenceIDs))
+		case "CodeCall":
+			filePath := strings.ToLower(strings.TrimSpace(fmt.Sprint(e.Attributes["file"])))
+			callee := strings.TrimSpace(fmt.Sprint(e.Attributes["callee"]))
+			if filePath == "" || !strings.Contains(filePath, "/repository/") || callee == "" || !looksLikeDependencyOperation(callee) {
+				continue
+			}
+			repoName := repositoryNameFromPath(filePath)
+			if repoName == "" {
+				repoName = "repository"
+			}
+			file, line, _ := entitySourceLocation(svc, e)
+			if file == "" || line <= 0 {
+				continue
+			}
+			owner, ok := nearestCallableAtOrBefore(symbolsByFile[file], line)
+			if !ok {
+				continue
+			}
+			depID := "depop:" + svc.spec.ID + ":" + stableID(repoName+"|"+callee)
+			addOwner(depID, owner.ID, buildEvidenceRefs(svc.analyzer, e.FactIDs, e.EvidenceIDs))
+		}
+	}
+	for depID := range evidence {
+		evidence[depID] = dedupeEvidenceRefs(evidence[depID])
+	}
+	return owners, evidence
+}
+
+func traverseReachableSymbols(adj map[string]map[string]struct{}, starts []string, maxDepth int) map[string]int {
+	out := map[string]int{}
+	if maxDepth < 0 {
+		return out
+	}
+	type state struct {
+		id    string
+		depth int
+	}
+	queue := make([]state, 0, len(starts))
+	for _, id := range starts {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		if _, exists := out[id]; exists {
+			continue
+		}
+		out[id] = 0
+		queue = append(queue, state{id: id, depth: 0})
+	}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if cur.depth >= maxDepth {
+			continue
+		}
+		for next := range adj[cur.id] {
+			nextDepth := cur.depth + 1
+			prevDepth, seen := out[next]
+			if seen && prevDepth <= nextDepth {
+				continue
+			}
+			out[next] = nextDepth
+			queue = append(queue, state{id: next, depth: nextDepth})
+		}
+	}
+	return out
+}
+
+func pickPreferredSymbols(candidates []callableSymbol, preferredFile string, receiverHint string) []string {
+	if len(candidates) == 0 {
+		return nil
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].File == candidates[j].File {
+			return candidates[i].Line < candidates[j].Line
+		}
+		return candidates[i].File < candidates[j].File
+	})
+	out := make([]string, 0, 24)
+	receiverNorm := normalizeIdentifier(receiverHint)
+	if receiverNorm != "" {
+		matchedReceiver := make([]string, 0, 8)
+		for _, c := range candidates {
+			base := strings.TrimSuffix(filepath.Base(c.File), filepath.Ext(c.File))
+			baseNorm := normalizeIdentifier(base)
+			if baseNorm == "" {
+				continue
+			}
+			if strings.Contains(baseNorm, receiverNorm) || strings.Contains(receiverNorm, baseNorm) {
+				matchedReceiver = append(matchedReceiver, c.ID)
+			}
+		}
+		if len(matchedReceiver) > 0 {
+			return dedupeStrings(matchedReceiver)
+		}
+	}
+	for _, c := range candidates {
+		if c.File == preferredFile {
+			out = append(out, c.ID)
+		}
+	}
+	// Keep preferred-file candidates first, but retain cross-file options
+	// because many framework/service calls share method names.
+	for _, c := range candidates {
+		if c.File == preferredFile {
+			continue
+		}
+		out = append(out, c.ID)
+		if len(out) >= 24 {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return dedupeStrings(out)
+}
+
+func sourceLineText(svc serviceInput, relFile string, line int, cache map[string]string) string {
+	if strings.TrimSpace(svc.spec.RepoPath) == "" || strings.TrimSpace(relFile) == "" || line <= 0 {
+		return ""
+	}
+	key := relFile + ":" + fmt.Sprint(line)
+	if v, ok := cache[key]; ok {
+		return v
+	}
+	abs := filepath.Join(svc.spec.RepoPath, filepath.FromSlash(relFile))
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		cache[key] = ""
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	if line < 1 || line > len(lines) {
+		cache[key] = ""
+		return ""
+	}
+	text := strings.TrimSpace(lines[line-1])
+	cache[key] = text
+	return text
+}
+
+func receiverHintForCallee(line string, callee string) string {
+	line = strings.TrimSpace(line)
+	callee = strings.TrimSpace(callee)
+	if line == "" || callee == "" {
+		return ""
+	}
+	token := "." + callee + "("
+	idx := strings.Index(line, token)
+	if idx <= 0 {
+		return ""
+	}
+	left := strings.TrimSpace(line[:idx])
+	if left == "" {
+		return ""
+	}
+	parts := strings.FieldsFunc(left, func(r rune) bool {
+		return !(r == '_' || r == '$' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'))
+	})
+	if len(parts) == 0 {
+		return ""
+	}
+	return parts[len(parts)-1]
+}
+
+func normalizeIdentifier(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(v))
+	for _, r := range v {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func entitySourceLocation(svc serviceInput, e bundleio.Entity) (string, int, int) {
+	file := strings.TrimSpace(fmt.Sprint(e.Attributes["file"]))
+	line := asInt(e.Attributes["line"])
+	col := asInt(e.Attributes["col"])
+	if file != "" && line > 0 {
+		return filepath.ToSlash(file), line, col
+	}
+	for _, evID := range e.EvidenceIDs {
+		if ev, ok := svc.evidenceByID[evID]; ok {
+			if strings.TrimSpace(ev.FilePath) != "" {
+				return filepath.ToSlash(strings.TrimSpace(ev.FilePath)), ev.StartLine, ev.StartCol
+			}
+		}
+	}
+	return "", 0, 0
+}
+
+func nearestCallableAtOrAfter(symbols []callableSymbol, line int) (callableSymbol, bool) {
+	if len(symbols) == 0 {
+		return callableSymbol{}, false
+	}
+	bestIdx := -1
+	bestDelta := 1 << 30
+	for i, s := range symbols {
+		if s.Line < line {
+			continue
+		}
+		delta := s.Line - line
+		if delta < bestDelta {
+			bestIdx = i
+			bestDelta = delta
+		}
+	}
+	if bestIdx < 0 {
+		return callableSymbol{}, false
+	}
+	return symbols[bestIdx], true
+}
+
+func nearestCallableAtOrBefore(symbols []callableSymbol, line int) (callableSymbol, bool) {
+	if len(symbols) == 0 {
+		return callableSymbol{}, false
+	}
+	bestIdx := -1
+	bestLine := -1
+	for i, s := range symbols {
+		if s.Line <= 0 || s.Line > line {
+			continue
+		}
+		if s.Line > bestLine {
+			bestIdx = i
+			bestLine = s.Line
+		}
+	}
+	if bestIdx < 0 {
+		return callableSymbol{}, false
+	}
+	return symbols[bestIdx], true
+}
+
+func shortSymbolName(name string) string {
+	n := strings.TrimSpace(name)
+	if n == "" {
+		return ""
+	}
+	if idx := strings.Index(n, "("); idx >= 0 {
+		n = n[:idx]
+	}
+	n = strings.TrimSpace(n)
+	if idx := strings.LastIndex(n, "."); idx >= 0 {
+		n = n[idx+1:]
+	}
+	if idx := strings.LastIndex(n, "#"); idx >= 0 {
+		n = n[idx+1:]
+	}
+	return strings.TrimSpace(n)
+}
+
+type scoredDependencyPath struct {
+	depID string
+	path  dependencyPath
+	node  graphschema.Node
+	score int
+}
+
+type dependencyPath struct {
+	NodeIDs    []string
+	EdgeIDs    []string
+	EdgeTypes  []string
+	Confidence float64
+}
+
+func shortestDependencyPaths(adj map[string][]graphschema.Edge, nodeByID map[string]graphschema.Node, startID string, maxDepth int) map[string]dependencyPath {
+	type state struct {
+		nodeID     string
+		nodePath   []string
+		edgePath   []string
+		typePath   []string
+		confidence float64
+	}
+	out := map[string]dependencyPath{}
+	queue := []state{{nodeID: startID, nodePath: []string{startID}, confidence: 1.0}}
+	seenDepth := map[string]int{startID: 0}
+
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		curDepth := len(cur.edgePath)
+		if curDepth > maxDepth {
+			continue
+		}
+		if cur.nodeID != startID {
+			if n, ok := nodeByID[cur.nodeID]; ok && isDependencyNode(n) {
+				if _, exists := out[cur.nodeID]; !exists {
+					out[cur.nodeID] = dependencyPath{
+						NodeIDs:    append([]string(nil), cur.nodePath...),
+						EdgeIDs:    append([]string(nil), cur.edgePath...),
+						EdgeTypes:  append([]string(nil), cur.typePath...),
+						Confidence: cur.confidence,
+					}
+				}
+			}
+		}
+
+		for _, e := range adj[cur.nodeID] {
+			nextDepth := curDepth + 1
+			prevDepth, seen := seenDepth[e.TargetID]
+			if seen && prevDepth <= nextDepth {
+				continue
+			}
+			seenDepth[e.TargetID] = nextDepth
+			nextConf := cur.confidence
+			if original, ok := edgeByIDSafe(adj, cur.nodeID, e.ID); ok {
+				if original.Confidence > 0 && original.Confidence < nextConf {
+					nextConf = original.Confidence
+				}
+			}
+			queue = append(queue, state{
+				nodeID:     e.TargetID,
+				nodePath:   append(append([]string(nil), cur.nodePath...), e.TargetID),
+				edgePath:   append(append([]string(nil), cur.edgePath...), e.ID),
+				typePath:   append(append([]string(nil), cur.typePath...), e.Type),
+				confidence: nextConf,
+			})
+		}
+	}
+	return out
+}
+
+func edgeByIDSafe(adj map[string][]graphschema.Edge, nodeID string, edgeID string) (graphschema.Edge, bool) {
+	for _, e := range adj[nodeID] {
+		if e.ID == edgeID {
+			return e, true
+		}
+	}
+	return graphschema.Edge{}, false
+}
+
+func rootLeafBridgeEdgeType(edgeType string) bool {
+	switch strings.ToLower(strings.TrimSpace(edgeType)) {
+	case "service_exposes_endpoint",
+		"service_depends_on_dependency",
+		"service_reads_db",
+		"service_writes_db",
+		"service_publishes_queue",
+		"queue_delivers_to_service",
+		"service_calls_service",
+		"service_calls_endpoint":
+		return true
+	default:
+		return false
+	}
+}
+
+func isExposureNode(n graphschema.Node) bool {
+	t := strings.ToLower(strings.TrimSpace(n.Type))
+	if t == "endpoint" {
+		return true
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(n.Class)), "exposure_") {
+		return true
+	}
+	if strings.EqualFold(n.Section, graphschema.SectionExposure) {
+		return true
+	}
+	return false
+}
+
+func isDependencyNode(n graphschema.Node) bool {
+	t := strings.ToLower(strings.TrimSpace(n.Type))
+	switch t {
+	case "database", "table", "queue", "topic", "canonical_api_host", "dependency_operation":
+		return true
+	case "dependency":
+		// Package-level dependency inventory is not a terminal runtime dependency operation.
+		ecosystem := strings.TrimSpace(fmt.Sprint(n.Attributes["ecosystem"]))
+		if ecosystem != "" {
+			return false
+		}
+		return true
+	default:
+		return strings.EqualFold(n.Section, graphschema.SectionDependencies) && t != "service"
+	}
+}
+
+func extractPathParams(path string) []string {
+	raw := strings.TrimSpace(path)
+	if raw == "" {
+		return nil
+	}
+	out := []string{}
+	for {
+		start := strings.Index(raw, "{")
+		if start < 0 {
+			break
+		}
+		rest := raw[start+1:]
+		end := strings.Index(rest, "}")
+		if end < 0 {
+			break
+		}
+		name := strings.TrimSpace(rest[:end])
+		if name != "" {
+			out = append(out, name)
+		}
+		raw = rest[end+1:]
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return uniqueStrings(out)
+}
+
+func attachEndpointInputShape(attrs map[string]any, method string, path string) {
+	if attrs == nil {
+		return
+	}
+	pathParams := extractPathParams(path)
+	if len(pathParams) == 0 {
+		if existing := stringSliceAttr(attrs, "path_params"); len(existing) > 0 {
+			pathParams = existing
+		}
+	}
+	queryParams := stringSliceAttr(attrs, "query_params")
+	if len(queryParams) == 0 {
+		queryParams = stringSliceAttr(attrs, "request_query_params")
+	}
+	bodyFields := stringSliceAttr(attrs, "body_fields")
+	if len(bodyFields) == 0 {
+		bodyFields = stringSliceAttr(attrs, "request_body_fields")
+	}
+	bodyExpected := false
+	switch strings.ToUpper(strings.TrimSpace(method)) {
+	case "POST", "PUT", "PATCH":
+		bodyExpected = true
+	}
+	attrs["input_shape"] = map[string]any{
+		"path_params":   pathParams,
+		"query_params":  queryParams,
+		"body_fields":   bodyFields,
+		"body_expected": bodyExpected,
+	}
+}
+
+func looksLikeDependencyOperation(name string) bool {
+	l := strings.ToLower(strings.TrimSpace(name))
+	if l == "" {
+		return false
+	}
+	prefixes := []string{"find", "save", "update", "delete", "insert", "remove", "exists", "count", "query", "select"}
+	for _, p := range prefixes {
+		if strings.HasPrefix(l, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func dependencyOperationKind(name string) string {
+	l := strings.ToLower(strings.TrimSpace(name))
+	switch {
+	case strings.HasPrefix(l, "find"), strings.HasPrefix(l, "get"), strings.HasPrefix(l, "exists"), strings.HasPrefix(l, "count"), strings.HasPrefix(l, "query"), strings.HasPrefix(l, "select"):
+		return "read"
+	default:
+		return "write"
+	}
+}
+
+func repositoryNameFromPath(path string) string {
+	base := filepath.Base(path)
+	base = strings.TrimSpace(strings.TrimSuffix(base, filepath.Ext(base)))
+	if base == "" {
+		return ""
+	}
+	return base
+}
+
+func dependencyOperationNodeID(serviceID string, protocol string, method string, target string) string {
+	return "depop:" + serviceID + ":" + stableID(strings.ToLower(protocol)+"|"+strings.ToUpper(method)+"|"+target)
+}
+
+func dependencyOpKindFromExternal(protocol string, method string) string {
+	p := strings.ToLower(strings.TrimSpace(protocol))
+	m := strings.ToUpper(strings.TrimSpace(method))
+	switch p {
+	case "db":
+		if strings.HasPrefix(m, "READ") || strings.HasPrefix(m, "GET") || strings.HasPrefix(m, "SELECT") || strings.HasPrefix(m, "FIND") {
+			return "read"
+		}
+		return "write"
+	case "queue":
+		if strings.Contains(m, "CONSUME") || strings.Contains(m, "READ") {
+			return "consume"
+		}
+		return "publish"
+	case "http":
+		if m == "GET" || m == "HEAD" {
+			return "read"
+		}
+		return "write"
+	default:
+		return "call"
+	}
+}
+
+func gatherPathEvidence(edgeIDs []string, edgeByID map[string]graphschema.Edge) []graphschema.EvidenceRef {
+	if len(edgeIDs) == 0 {
+		return nil
+	}
+	out := make([]graphschema.EvidenceRef, 0, 8)
+	seen := map[string]struct{}{}
+	for _, id := range edgeIDs {
+		e, ok := edgeByID[id]
+		if !ok {
+			continue
+		}
+		for _, ref := range e.EvidenceRefs {
+			key := ref.EvidenceID + "|" + ref.FactID + "|" + ref.FilePath + "|" + fmt.Sprint(ref.StartLine) + "|" + fmt.Sprint(ref.StartCol)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, ref)
+		}
+	}
+	return out
+}
+
+func exposureSearchTokens(n graphschema.Node) map[string]struct{} {
+	out := map[string]struct{}{}
+	addTextTokens := func(v string) {
+		for _, tok := range splitMeaningfulTokens(v) {
+			out[tok] = struct{}{}
+		}
+	}
+	addTextTokens(n.Label)
+	addTextTokens(strings.TrimSpace(fmt.Sprint(n.Attributes["path"])))
+	addTextTokens(strings.TrimSpace(fmt.Sprint(n.Attributes["method"])))
+	return out
+}
+
+func dependencyPathScore(exposureTokens map[string]struct{}, dep graphschema.Node, path dependencyPath) int {
+	if len(exposureTokens) == 0 {
+		return 0
+	}
+	tokenMatches := 0
+	cands := []string{
+		dep.Label,
+		strings.TrimSpace(fmt.Sprint(dep.Attributes["repository"])),
+		strings.TrimSpace(fmt.Sprint(dep.Attributes["operation"])),
+		strings.TrimSpace(fmt.Sprint(dep.Attributes["target"])),
+		strings.TrimSpace(fmt.Sprint(dep.Attributes["name"])),
+	}
+	for _, c := range cands {
+		for _, tok := range splitMeaningfulTokens(c) {
+			if _, ok := exposureTokens[tok]; ok {
+				tokenMatches++
+			}
+		}
+	}
+	if tokenMatches < 3 {
+		return 0
+	}
+	score := tokenMatches
+	// Prefer shorter and more deterministic paths when semantic score ties.
+	if len(path.EdgeIDs) > 0 {
+		score += max(0, 6-len(path.EdgeIDs))
+	}
+	if path.Confidence > 0.85 {
+		score += 2
+	}
+	return score
+}
+
+func splitMeaningfulTokens(v string) []string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "" {
+		return nil
+	}
+	fields := strings.FieldsFunc(v, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+	})
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		f = strings.TrimSpace(f)
+		if len(f) < 2 {
+			continue
+		}
+		switch f {
+		case "get", "post", "put", "patch", "delete", "api", "v1", "v2", "id":
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+func stringSliceAttr(attrs map[string]any, key string) []string {
+	if attrs == nil {
+		return nil
+	}
+	raw, ok := attrs[key]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []string:
+		return uniqueStrings(v)
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			s := strings.TrimSpace(fmt.Sprint(item))
+			if s == "" {
+				continue
+			}
+			out = append(out, s)
+		}
+		return uniqueStrings(out)
+	case string:
+		s := strings.TrimSpace(v)
+		if s == "" {
+			return nil
+		}
+		return []string{s}
+	default:
+		return nil
+	}
+}
+
+func asInt(v any) int {
+	switch t := v.(type) {
+	case int:
+		return t
+	case int32:
+		return int(t)
+	case int64:
+		return int(t)
+	case float64:
+		return int(t)
+	default:
+		return 0
+	}
+}
+
 func (g *graphBuilder) resolveManifestQueueAndDBEdges() {
 	queueNodes := map[string]string{}
 	dbNodes := map[string]string{}
 
 	for _, svc := range g.services {
 		src := serviceNodeID(svc.spec.ID)
-		for _, topic := range uniqueStrings(svc.spec.QueuePublishes) {
+		for _, rawTopic := range uniqueStrings(svc.spec.QueuePublishes) {
+			topic := strings.TrimSpace(rawTopic)
+			resolved := g.resolveExternalCallTarget(&svc, topic)
+			if strings.TrimSpace(resolved) != "" && resolved != topic {
+				topic = resolved
+			}
 			canonical := canonicalQueueKey(topic)
 			qNodeID := queueNodeID(topic)
 			queueNodes[topic] = qNodeID
@@ -586,16 +1658,21 @@ func (g *graphBuilder) resolveManifestQueueAndDBEdges() {
 				Inferred:   false,
 			})
 			g.addEdge(graphschema.Edge{
-				ID:         edgeID("service_publishes_queue", src, qNodeID, topic),
+				ID:         edgeID("service_publishes_queue", src, qNodeID, topic+"|PUBLISH"),
 				Type:       "service_publishes_queue",
 				SourceID:   src,
 				TargetID:   qNodeID,
-				Attributes: map[string]any{"topic": topic, "source": "manifest", "canonical_key": canonical},
+				Attributes: map[string]any{"topic": topic, "topic_raw": rawTopic, "source": "manifest", "canonical_key": canonical, "resolved_from_config": topic != rawTopic},
 				Confidence: 1.0,
 				Inferred:   false,
 			})
 		}
-		for _, topic := range uniqueStrings(svc.spec.QueueConsumes) {
+		for _, rawTopic := range uniqueStrings(svc.spec.QueueConsumes) {
+			topic := strings.TrimSpace(rawTopic)
+			resolved := g.resolveExternalCallTarget(&svc, topic)
+			if strings.TrimSpace(resolved) != "" && resolved != topic {
+				topic = resolved
+			}
 			canonical := canonicalQueueKey(topic)
 			qNodeID, ok := queueNodes[topic]
 			if !ok {
@@ -611,11 +1688,11 @@ func (g *graphBuilder) resolveManifestQueueAndDBEdges() {
 				})
 			}
 			g.addEdge(graphschema.Edge{
-				ID:         edgeID("queue_delivers_to_service", qNodeID, src, topic),
+				ID:         edgeID("queue_delivers_to_service", qNodeID, src, topic+"|CONSUME"),
 				Type:       "queue_delivers_to_service",
 				SourceID:   qNodeID,
 				TargetID:   src,
-				Attributes: map[string]any{"topic": topic, "source": "manifest", "canonical_key": canonical},
+				Attributes: map[string]any{"topic": topic, "topic_raw": rawTopic, "source": "manifest", "canonical_key": canonical, "resolved_from_config": topic != rawTopic},
 				Confidence: 1.0,
 				Inferred:   false,
 			})
@@ -2200,6 +3277,47 @@ func dedupeNodeRefs(in []nodeRef) []nodeRef {
 	return out
 }
 
+func dedupeStrings(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := map[string]struct{}{}
+	for _, v := range in {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
+}
+
+func dedupeEvidenceRefs(in []graphschema.EvidenceRef) []graphschema.EvidenceRef {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]graphschema.EvidenceRef, 0, len(in))
+	seen := map[string]struct{}{}
+	for _, ref := range in {
+		key := strings.Join([]string{
+			ref.SnapshotID,
+			ref.FilePath,
+			fmt.Sprint(ref.StartLine),
+			fmt.Sprint(ref.StartCol),
+			ref.EvidenceID,
+			ref.FactID,
+		}, "|")
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, ref)
+	}
+	return out
+}
+
 func graphNodeIDForEntity(serviceID string, entityType string, entityID string) string {
 	if strings.TrimSpace(entityID) == "" {
 		return ""
@@ -2266,8 +3384,12 @@ func preferredConfigResolvedValue(entities []bundleio.Entity, key string) string
 		if entityKey != keyLower {
 			continue
 		}
-		resolved := strings.TrimSpace(fmt.Sprint(e.Attributes["resolved_value"]))
-		if resolved == "" || strings.EqualFold(resolved, "[REDACTED]") {
+		rawResolved, ok := e.Attributes["resolved_value"]
+		if !ok || rawResolved == nil {
+			continue
+		}
+		resolved := strings.TrimSpace(fmt.Sprint(rawResolved))
+		if resolved == "" || strings.EqualFold(resolved, "[REDACTED]") || strings.EqualFold(resolved, "<nil>") {
 			continue
 		}
 		env := strings.ToLower(strings.TrimSpace(fmt.Sprint(e.Attributes["environment"])))

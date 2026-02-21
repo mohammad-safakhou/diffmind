@@ -4,16 +4,25 @@ Repo extractor core for generating auditable repository intelligence bundles.
 
 ## Quickstart
 
-1. Copy env defaults:
-   - `cp .env.example .env`
-2. Start dependencies:
-   - `make up`
-3. Run DB migrations:
-   - `make migrate`
-4. Run CLI help:
-   - `make run`
-5. Run tests:
-   - `make test`
+1. Install core tooling + language servers:
+   - `make setup`
+2. Verify environment:
+   - `make doctor`
+3. Run full extraction + graph build on a service:
+   - `make run-full SOURCE=/absolute/path/to/service OUT=$(pwd)/.diffmind`
+   - Optional multi-adapter run: `ADAPTERS=builtin,gopls,tsserver,pyright,jdtls make run-full SOURCE=/absolute/path/to/service OUT=$(pwd)/.diffmind`
+4. Start API/UI server:
+   - `make serve-out OUT=$(pwd)/.diffmind ADDR=:8080`
+5. Optional strict check (fails if any LSP is missing):
+   - `make doctor-strict`
+
+### Setup Targets
+
+- `make setup-core`: install core dependencies (`go`, `jq`, `ripgrep`, `node`, `java`)
+- `make setup-lsp`: install LSP tooling (`gopls`, `tsserver`, `pyright-langserver`, and `jdtls` where available)
+- `make setup`: run both setup phases and verify
+- `make run-e2e`: default end-to-end run pipeline script
+- `make run-full`: full semantic run with multi-adapter planning
 
 ## Main CLI Commands
 
@@ -42,20 +51,20 @@ Repo extractor core for generating auditable repository intelligence bundles.
 
 - Canonical docs index:
   - `docs/README.md`
-- Current implementation audit:
-  - `docs/CURRENT_IMPLEMENTATION_STATUS.md`
-- Remaining work plan:
-  - `docs/REMAINING_EXECUTION_PLAN.md`
-- Archive record:
-  - `docs/ARCHIVE_2026-02-19.md`
+- Final execution plan:
+  - `docs/FINAL_EXECUTION_PLAN.md`
+- Completed docs archive:
+  - `docs/archive/2026-02-20-completed-docs/`
+- Legacy archive:
+  - `docs/archive/2026-02-19-legacy/`
 - Runtime/finalgate compatibility docs:
   - `docs/ontology_v2_schema.md`
   - `docs/runtime_reconciliation_runbook.md`
-  - `docs/m13_security_architecture.md`
-  - `docs/m14_quality_runbook.md`
-  - `docs/m15_product_api_contracts.md`
-  - `docs/m16_operations_runbook.md`
-  - `docs/m17_completion_runbook.md`
+  - `docs/archive/2026-02-20-completed-docs/m13_security_architecture.md`
+  - `docs/archive/2026-02-20-completed-docs/m14_quality_runbook.md`
+  - `docs/archive/2026-02-20-completed-docs/m15_product_api_contracts.md`
+  - `docs/archive/2026-02-20-completed-docs/m16_operations_runbook.md`
+  - `docs/archive/2026-02-20-completed-docs/m17_completion_runbook.md`
 - Runtime-critical data files:
   - `docs/graph_performance_baseline.md`
   - `docs/m15_query_templates.json`

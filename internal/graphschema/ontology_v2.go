@@ -94,7 +94,7 @@ func nodeSectionForType(typ string) string {
 	switch strings.ToLower(strings.TrimSpace(typ)) {
 	case "endpoint", "sensitive_surface":
 		return SectionExposure
-	case "queue", "topic", "database", "table", "dependency", "build_artifact", "canonical_api_host":
+	case "queue", "topic", "database", "table", "dependency", "build_artifact", "canonical_api_host", "dependency_operation":
 		return SectionDependencies
 	default:
 		return SectionLogic
@@ -106,15 +106,15 @@ func nodeClassForType(typ string) string {
 	case "service":
 		return "service"
 	case "endpoint":
-		return "api_endpoint"
+		return "exposure_http_endpoint"
 	case "queue":
-		return "queue"
+		return "dependency_queue"
 	case "topic":
-		return "topic"
+		return "dependency_topic"
 	case "database":
-		return "database"
+		return "dependency_database"
 	case "table":
-		return "table"
+		return "dependency_table"
 	case "config_key":
 		return "config_key"
 	case "runtime_unit":
@@ -124,7 +124,9 @@ func nodeClassForType(typ string) string {
 	case "deployment":
 		return "deployment"
 	case "dependency":
-		return "external_dependency"
+		return "dependency_external_service"
+	case "dependency_operation":
+		return "dependency_operation"
 	case "owner":
 		return "ownership"
 	case "dependency_risk":
@@ -136,13 +138,13 @@ func nodeClassForType(typ string) string {
 	case "unresolved_api_call":
 		return "verification_decision"
 	case "sensitive_surface":
-		return "sensitive_input"
+		return "exposure_sensitive_input"
 	case "environment":
 		return "environment"
 	case "build_artifact":
 		return "build_artifact"
 	case "canonical_api_host":
-		return "api_host"
+		return "dependency_api_host"
 	default:
 		return "domain_entity"
 	}
@@ -150,7 +152,7 @@ func nodeClassForType(typ string) string {
 
 func edgeSectionForType(typ string) string {
 	switch strings.ToLower(strings.TrimSpace(typ)) {
-	case "service_calls_endpoint", "service_exposes_endpoint", "queue_delivers_to_service", "service_exposes_sensitive_surface":
+	case "service_calls_endpoint", "service_exposes_endpoint", "queue_delivers_to_service", "service_exposes_sensitive_surface", "exposure_reaches_dependency":
 		return SectionExposure
 	case "service_calls_service", "service_depends_on_dependency", "service_reads_db", "service_writes_db", "service_publishes_queue", "dependency_owned_by", "dependency_has_risk", "service_has_dependency_risk", "service_alias_of_canonical_api_host":
 		return SectionDependencies
@@ -164,19 +166,21 @@ func edgeSectionForType(typ string) string {
 func edgeClassForType(typ string) string {
 	switch strings.ToLower(strings.TrimSpace(typ)) {
 	case "service_calls_endpoint":
-		return "api_call"
+		return "dependency_api_call"
 	case "service_exposes_endpoint":
-		return "service_exposure"
+		return "exposure_service_entry"
+	case "exposure_reaches_dependency":
+		return "exposure_reaches_dependency"
 	case "service_calls_service":
-		return "service_call"
+		return "dependency_service_call"
 	case "service_publishes_queue":
-		return "queue_publish"
+		return "dependency_queue_publish"
 	case "queue_delivers_to_service":
-		return "queue_consume"
+		return "exposure_queue_consume"
 	case "service_reads_db":
-		return "db_read"
+		return "dependency_db_read"
 	case "service_writes_db":
-		return "db_write"
+		return "dependency_db_write"
 	case "service_depends_on_dependency":
 		return "dependency_link"
 	case "dependency_owned_by":

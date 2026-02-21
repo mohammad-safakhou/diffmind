@@ -74,8 +74,12 @@ func builtInExtractors() []Extractor {
 
 func resolveExtractors(csv string) ([]Extractor, error) {
 	all := builtInExtractors()
-	if strings.TrimSpace(csv) == "" {
+	trimmed := strings.TrimSpace(strings.ToLower(csv))
+	if trimmed == "" {
 		return all, nil
+	}
+	if trimmed == "none" {
+		return []Extractor{}, nil
 	}
 
 	byName := make(map[string]Extractor, len(all))

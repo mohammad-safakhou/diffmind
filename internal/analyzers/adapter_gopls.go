@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 func probeGopls(root string) AdapterProbe {
@@ -19,12 +20,25 @@ func probeGopls(root string) AdapterProbe {
 	}
 	path, err := exec.LookPath(bin)
 	if err != nil {
-		return AdapterProbe{Available: false, Reason: fmt.Sprintf("gopls binary not found (%s)", bin)}
+		if strings.EqualFold(bin, "gopls") {
+			if fallback := lookupGoBinTool("gopls"); fallback != "" {
+				path = fallback
+			} else {
+				return AdapterProbe{Available: false, Reason: fmt.Sprintf("gopls binary not found (%s)", bin)}
+			}
+		} else {
+			return AdapterProbe{Available: false, Reason: fmt.Sprintf("gopls binary not found (%s)", bin)}
+		}
 	}
 
 	ver, reason := probeToolVersion(path, "version")
 	if ver == "unknown" {
-		return AdapterProbe{Available: false, Reason: fmt.Sprintf("gopls probe failed: %s", reason)}
+		ok, lspReason := probeGoplsLSP(path, root, 10*time.Second)
+		if !ok {
+			return AdapterProbe{Available: false, Reason: fmt.Sprintf("gopls probe failed: %s", lspReason)}
+		}
+		ver = "lsp-probed"
+		reason = lspReason
 	}
 	return AdapterProbe{
 		Available:            true,
@@ -33,6 +47,29 @@ func probeGopls(root string) AdapterProbe {
 		ToolVersion:          ver,
 		ToolchainFingerprint: toolFingerprint(path, ver),
 	}
+}
+
+func lookupGoBinTool(name string) string {
+	if strings.TrimSpace(name) == "" {
+		return ""
+	}
+	out, err := exec.Command("go", "env", "GOPATH").Output()
+	if err != nil {
+		return ""
+	}
+	gopath := strings.TrimSpace(string(out))
+	if gopath == "" {
+		return ""
+	}
+	candidate := filepath.Join(gopath, "bin", name)
+	st, statErr := os.Stat(candidate)
+	if statErr != nil || st.IsDir() {
+		return ""
+	}
+	if st.Mode()&0o111 == 0 {
+		return ""
+	}
+	return candidate
 }
 
 func hasGoModuleOrSource(root string) bool {

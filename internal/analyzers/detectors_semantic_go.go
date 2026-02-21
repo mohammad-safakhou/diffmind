@@ -191,10 +191,13 @@ func detectGoQueueAndDBCallsSemantic(c *collector, file sourceFile) bool {
 		line, col, snippet := lineColSnippet(fset, file, call.Pos())
 
 		switch methodUpper {
-		case "WRITEMESSAGES", "SENDMESSAGE":
-			target := goTopicFromCallArgs(call.Args, fset)
+		case "WRITEMESSAGES":
+			target, queueKind := goQueueTargetFromCallArgs(call.Args, fset)
 			if target == "" {
 				target = "kafka:unknown-topic"
+			}
+			if queueKind == "" {
+				queueKind = "kafka"
 			}
 			c.addFactWithEvidence("ExternalCall", map[string]any{
 				"protocol":        "queue",
@@ -202,12 +205,31 @@ func detectGoQueueAndDBCallsSemantic(c *collector, file sourceFile) bool {
 				"target":          target,
 				"library":         "go-queue-semantic",
 				"queue_operation": "publish",
-				"queue_kind":      "kafka",
+				"queue_kind":      queueKind,
 			}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
-		case "CONSUME", "READMESSAGE":
-			target := goTopicFromCallArgs(call.Args, fset)
+		case "SENDMESSAGE":
+			target, queueKind := goQueueTargetFromCallArgs(call.Args, fset)
 			if target == "" {
-				target = "kafka:unknown-topic"
+				target = "queue:unknown"
+			}
+			if queueKind == "" {
+				queueKind = "queue"
+			}
+			c.addFactWithEvidence("ExternalCall", map[string]any{
+				"protocol":        "queue",
+				"method":          "PUBLISH",
+				"target":          target,
+				"library":         "go-queue-semantic",
+				"queue_operation": "publish",
+				"queue_kind":      queueKind,
+			}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+		case "CONSUME", "READMESSAGE", "RECEIVEMESSAGE":
+			target, queueKind := goQueueTargetFromCallArgs(call.Args, fset)
+			if target == "" {
+				target = "queue:unknown"
+			}
+			if queueKind == "" {
+				queueKind = "queue"
 			}
 			c.addFactWithEvidence("ExternalCall", map[string]any{
 				"protocol":        "queue",
@@ -215,7 +237,23 @@ func detectGoQueueAndDBCallsSemantic(c *collector, file sourceFile) bool {
 				"target":          target,
 				"library":         "go-queue-semantic",
 				"queue_operation": "consume",
-				"queue_kind":      "kafka",
+				"queue_kind":      queueKind,
+			}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+		case "PUBLISH":
+			target, queueKind := goQueueTargetFromCallArgs(call.Args, fset)
+			if target == "" {
+				target = "queue:unknown"
+			}
+			if queueKind == "" {
+				queueKind = "queue"
+			}
+			c.addFactWithEvidence("ExternalCall", map[string]any{
+				"protocol":        "queue",
+				"method":          "PUBLISH",
+				"target":          target,
+				"library":         "go-queue-semantic",
+				"queue_operation": "publish",
+				"queue_kind":      queueKind,
 			}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
 		case "OPEN":
 			if recv, ok := sel.X.(*ast.Ident); ok && sqlAliases[recv.Name] {
@@ -333,6 +371,20 @@ func normalizeGoMethod(expr ast.Expr, fset *token.FileSet, httpAliases map[strin
 }
 
 func normalizeGoExprAsPath(expr ast.Expr, fset *token.FileSet) string {
+	switch v := expr.(type) {
+	case *ast.UnaryExpr:
+		if v.Op == token.AND {
+			return normalizeGoExprAsPath(v.X, fset)
+		}
+	case *ast.CallExpr:
+		// Common helper wrappers such as aws.String("..."), ptr("..."), etc.
+		if len(v.Args) > 0 {
+			first := normalizeGoExprAsPath(v.Args[0], fset)
+			if first != "" && first != "unknown-target" {
+				return first
+			}
+		}
+	}
 	if lit, ok := expr.(*ast.BasicLit); ok && lit.Kind == token.STRING {
 		if s, err := strconv.Unquote(lit.Value); err == nil {
 			return strings.TrimSpace(s)
@@ -418,6 +470,103 @@ func goTopicFromCallArgs(args []ast.Expr, fset *token.FileSet) string {
 		}
 	}
 	return ""
+}
+
+func goQueueTargetFromCallArgs(args []ast.Expr, fset *token.FileSet) (string, string) {
+	keyTarget, keyKind := goQueueTargetFromStructuredArgs(args, fset)
+	if keyTarget != "" {
+		return keyTarget, keyKind
+	}
+	target := goTopicFromCallArgs(args, fset)
+	if target == "" {
+		for _, arg := range args {
+			if _, ok := arg.(*ast.Ident); ok {
+				continue
+			}
+			candidate := normalizeGoExprAsTarget(arg, fset)
+			if candidate == "" || candidate == "unknown-target" {
+				continue
+			}
+			target = candidate
+			break
+		}
+	}
+	kind := inferQueueKindFromTarget(target)
+	return target, kind
+}
+
+func goQueueTargetFromStructuredArgs(args []ast.Expr, fset *token.FileSet) (string, string) {
+	var visitExpr func(ast.Expr) (string, string)
+	visitExpr = func(expr ast.Expr) (string, string) {
+		switch n := expr.(type) {
+		case *ast.UnaryExpr:
+			if n.Op == token.AND {
+				return visitExpr(n.X)
+			}
+		case *ast.CompositeLit:
+			for _, el := range n.Elts {
+				kv, ok := el.(*ast.KeyValueExpr)
+				if !ok {
+					continue
+				}
+				key := strings.ToLower(strings.TrimSpace(exprString(kv.Key, fset)))
+				target := normalizeGoExprAsTarget(kv.Value, fset)
+				switch {
+				case strings.Contains(key, "queueurl"), strings.HasSuffix(key, "queue_url"):
+					return target, "sqs"
+				case strings.Contains(key, "topicarn"), strings.HasSuffix(key, "topic_arn"):
+					return target, "sns"
+				case strings.Contains(key, "topic"):
+					return target, "kafka"
+				case strings.Contains(key, "queue"):
+					return target, "queue"
+				}
+			}
+		}
+		return "", ""
+	}
+	for _, arg := range args {
+		if arg == nil {
+			continue
+		}
+		if kv, ok := arg.(*ast.KeyValueExpr); ok {
+			key := strings.ToLower(strings.TrimSpace(exprString(kv.Key, fset)))
+			target := normalizeGoExprAsTarget(kv.Value, fset)
+			switch {
+			case strings.Contains(key, "queueurl"), strings.HasSuffix(key, "queue_url"):
+				return target, "sqs"
+			case strings.Contains(key, "topicarn"), strings.HasSuffix(key, "topic_arn"):
+				return target, "sns"
+			case strings.Contains(key, "topic"):
+				return target, "kafka"
+			case strings.Contains(key, "queue"):
+				return target, "queue"
+			}
+		}
+		if target, kind := visitExpr(arg); target != "" {
+			return target, kind
+		}
+	}
+	return "", ""
+}
+
+func inferQueueKindFromTarget(target string) string {
+	v := strings.ToLower(strings.TrimSpace(target))
+	if v == "" || v == "unknown-target" {
+		return ""
+	}
+	switch {
+	case strings.Contains(v, "arn:aws:sns"), strings.Contains(v, "sns"):
+		return "sns"
+	case strings.Contains(v, "sqs"), strings.Contains(v, "queueurl"):
+		return "sqs"
+	case strings.Contains(v, "kafka"), strings.Contains(v, "topic"):
+		return "kafka"
+	case strings.Contains(v, "rabbit"), strings.Contains(v, "amqp"):
+		return "rabbitmq"
+	default:
+		return "queue"
+	}
 }
 
 func goSQLTargetFromCallArgs(args []ast.Expr, fset *token.FileSet) string {

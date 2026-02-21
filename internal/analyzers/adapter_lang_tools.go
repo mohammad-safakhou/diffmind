@@ -16,15 +16,31 @@ func probeTsserver(root string) AdapterProbe {
 	if !hasExtensions(root, ".ts", ".tsx", ".js", ".jsx") {
 		return AdapterProbe{Available: false, Reason: "no TypeScript/JavaScript source files detected in source"}
 	}
-	bin := strings.TrimSpace(os.Getenv("DIFFMIND_TSSERVER_BIN"))
+	configuredBin := strings.TrimSpace(os.Getenv("DIFFMIND_TSSERVER_BIN"))
+	bin := configuredBin
 	if bin == "" {
-		bin = "tsserver"
+		// Use the LSP wrapper by default. The raw `tsserver` binary is not LSP.
+		bin = "typescript-language-server"
 	}
 	path, err := exec.LookPath(bin)
 	if err != nil {
+		if configuredBin == "" {
+			return AdapterProbe{Available: false, Reason: "typescript-language-server binary not found (install with npm i -g typescript-language-server)"}
+		}
 		return AdapterProbe{Available: false, Reason: fmt.Sprintf("tsserver binary not found (%s)", bin)}
 	}
 	ver, reason := probeToolVersion(path, "--version")
+	// Preserve env override compatibility for tests/custom wrappers.
+	if configuredBin == "" {
+		ok, lspReason := probeTsserverLSP(path, root, 12*time.Second)
+		if !ok {
+			return AdapterProbe{Available: false, Reason: fmt.Sprintf("typescript lsp probe failed: %s", lspReason)}
+		}
+		if ver == "unknown" {
+			ver = "lsp-probed"
+		}
+		reason = lspReason
+	}
 	return AdapterProbe{
 		Available:            true,
 		Reason:               fmt.Sprintf("tsserver available at %s (%s)", path, reason),
@@ -47,6 +63,14 @@ func probePyright(root string) AdapterProbe {
 		return AdapterProbe{Available: false, Reason: fmt.Sprintf("pyright binary not found (%s)", bin)}
 	}
 	ver, reason := probeToolVersion(path, "--version")
+	if ver == "unknown" {
+		ok, lspReason := probePyrightLSP(path, root, 10*time.Second)
+		if !ok {
+			return AdapterProbe{Available: false, Reason: fmt.Sprintf("pyright probe failed: %s", lspReason)}
+		}
+		ver = "lsp-probed"
+		reason = lspReason
+	}
 	return AdapterProbe{
 		Available:            true,
 		Reason:               fmt.Sprintf("pyright available at %s (%s)", path, reason),

@@ -138,6 +138,8 @@ func detectPythonQueueAndDBCallsSemantic(c *collector, file sourceFile) bool {
 	}
 	defer tree.Close()
 	root := tree.RootNode()
+	moduleAliases := collectPythonModuleAliases(root, content)
+	serviceClients := collectPythonServiceClients(root, content, moduleAliases)
 
 	scanPythonCallExpressions(root, func(call *sitter.Node) {
 		fn := call.ChildByFieldName("function")
@@ -150,11 +152,66 @@ func detectPythonQueueAndDBCallsSemantic(c *collector, file sourceFile) bool {
 		snippet := pythonLineSnippet(file, line)
 
 		if fn.Kind() == "attribute" {
+			object := fn.ChildByFieldName("object")
 			attr := fn.ChildByFieldName("attribute")
-			if attr == nil {
+			if attr == nil || object == nil {
 				return
 			}
+			objectName := strings.TrimSpace(object.Utf8Text(content))
 			name := strings.ToLower(strings.TrimSpace(attr.Utf8Text(content)))
+
+			if service := strings.ToLower(strings.TrimSpace(serviceClients[objectName])); service != "" {
+				switch service {
+				case "sqs":
+					switch name {
+					case "send_message", "sendmessage":
+						target := pythonServiceTargetFromArgs(argsNode.Utf8Text(content), args, content, "queue_url", "QueueUrl")
+						if target == "" {
+							target = "sqs:unknown-queue"
+						}
+						c.addFactWithEvidence("ExternalCall", map[string]any{
+							"protocol":        "queue",
+							"method":          "PUBLISH",
+							"target":          target,
+							"library":         "python-boto3-sqs-semantic",
+							"queue_operation": "publish",
+							"queue_kind":      "sqs",
+						}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+						return
+					case "receive_message", "receivemessage":
+						target := pythonServiceTargetFromArgs(argsNode.Utf8Text(content), args, content, "queue_url", "QueueUrl")
+						if target == "" {
+							target = "sqs:unknown-queue"
+						}
+						c.addFactWithEvidence("ExternalCall", map[string]any{
+							"protocol":        "queue",
+							"method":          "CONSUME",
+							"target":          target,
+							"library":         "python-boto3-sqs-semantic",
+							"queue_operation": "consume",
+							"queue_kind":      "sqs",
+						}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+						return
+					}
+				case "sns":
+					if name == "publish" {
+						target := pythonServiceTargetFromArgs(argsNode.Utf8Text(content), args, content, "topic_arn", "TopicArn")
+						if target == "" {
+							target = "sns:unknown-topic"
+						}
+						c.addFactWithEvidence("ExternalCall", map[string]any{
+							"protocol":        "queue",
+							"method":          "PUBLISH",
+							"target":          target,
+							"library":         "python-boto3-sns-semantic",
+							"queue_operation": "publish",
+							"queue_kind":      "sns",
+						}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+						return
+					}
+				}
+			}
+
 			switch name {
 			case "send", "publish", "send_task", "apply_async", "send_message":
 				target := pythonTargetFromArgs(args, content)
@@ -263,6 +320,15 @@ func detectPythonQueueAndDBCallsSemantic(c *collector, file sourceFile) bool {
 	return true
 }
 
+func pythonServiceTargetFromArgs(argsText string, args []*sitter.Node, content []byte, keys ...string) string {
+	for _, key := range keys {
+		if v := extractPythonKeywordArgValue(argsText, key); v != "" {
+			return v
+		}
+	}
+	return pythonTargetFromArgs(args, content)
+}
+
 func parsePythonAST(file sourceFile) (*sitter.Tree, []byte, bool) {
 	if strings.ToLower(strings.TrimSpace(file.Ext)) != ".py" {
 		return nil, nil, false
@@ -359,6 +425,122 @@ func collectPythonHTTPClientSymbols(root *sitter.Node, content []byte) (map[stri
 		}
 	})
 	return aliases, direct
+}
+
+func collectPythonModuleAliases(root *sitter.Node, content []byte) map[string]string {
+	aliases := map[string]string{}
+	walkPython(root, func(n *sitter.Node) {
+		switch n.Kind() {
+		case "import_statement":
+			text := strings.TrimSpace(n.Utf8Text(content))
+			if !strings.HasPrefix(text, "import ") {
+				return
+			}
+			text = strings.TrimSpace(strings.TrimPrefix(text, "import "))
+			for _, part := range strings.Split(text, ",") {
+				part = strings.TrimSpace(part)
+				if part == "" {
+					continue
+				}
+				base := part
+				alias := part
+				if strings.Contains(part, " as ") {
+					p := strings.SplitN(part, " as ", 2)
+					base = strings.TrimSpace(p[0])
+					alias = strings.TrimSpace(p[1])
+				}
+				if alias == "" {
+					continue
+				}
+				aliases[alias] = base
+			}
+		case "import_from_statement":
+			text := strings.TrimSpace(n.Utf8Text(content))
+			if !strings.HasPrefix(text, "from ") {
+				return
+			}
+			remainder := strings.TrimSpace(strings.TrimPrefix(text, "from "))
+			idx := strings.Index(remainder, " import ")
+			if idx < 0 {
+				return
+			}
+			module := strings.TrimSpace(remainder[:idx])
+			items := strings.TrimSpace(remainder[idx+len(" import "):])
+			for _, part := range strings.Split(items, ",") {
+				part = strings.TrimSpace(part)
+				if part == "" {
+					continue
+				}
+				base := part
+				alias := part
+				if strings.Contains(part, " as ") {
+					p := strings.SplitN(part, " as ", 2)
+					base = strings.TrimSpace(p[0])
+					alias = strings.TrimSpace(p[1])
+				}
+				if alias == "" {
+					continue
+				}
+				aliases[alias] = module + "." + base
+			}
+		}
+	})
+	return aliases
+}
+
+func collectPythonServiceClients(root *sitter.Node, content []byte, moduleAliases map[string]string) map[string]string {
+	clients := map[string]string{}
+	walkPython(root, func(n *sitter.Node) {
+		if n.Kind() != "assignment" {
+			return
+		}
+		left := n.ChildByFieldName("left")
+		right := n.ChildByFieldName("right")
+		if left == nil || right == nil || left.Kind() != "identifier" || right.Kind() != "call" {
+			return
+		}
+		fn := right.ChildByFieldName("function")
+		argsNode := right.ChildByFieldName("arguments")
+		if fn == nil || argsNode == nil || fn.Kind() != "attribute" {
+			return
+		}
+		obj := fn.ChildByFieldName("object")
+		attr := fn.ChildByFieldName("attribute")
+		if obj == nil || attr == nil {
+			return
+		}
+		objName := strings.TrimSpace(obj.Utf8Text(content))
+		module := strings.ToLower(strings.TrimSpace(moduleAliases[objName]))
+		if module == "" {
+			module = strings.ToLower(strings.TrimSpace(objName))
+		}
+		action := strings.ToLower(strings.TrimSpace(attr.Utf8Text(content)))
+		if action != "client" && action != "resource" {
+			return
+		}
+		if !(strings.Contains(module, "boto3") || strings.Contains(module, "aioboto3")) {
+			return
+		}
+		service := normalizePythonArgument(firstPythonArg(argsNode), content)
+		service = strings.ToLower(strings.TrimSpace(service))
+		if service == "" {
+			return
+		}
+		target := strings.TrimSpace(left.Utf8Text(content))
+		if target == "" {
+			return
+		}
+		clients[target] = service
+	})
+	return clients
+}
+
+func firstPythonArg(node *sitter.Node) *sitter.Node {
+	args := pythonArgs(node)
+	if len(args) == 0 {
+		return nil
+	}
+	return args[0]
 }
 
 func scanPythonCallExpressions(root *sitter.Node, fn func(call *sitter.Node)) {

@@ -176,6 +176,44 @@ func TestRunAllowsMissingSelectedAdapterWhenFlagEnabled(t *testing.T) {
 	}
 }
 
+func TestRunSkipsUnavailableSelectedAdapterWhenNotApplicable(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, ".diffmind")
+	mustWrite(t, root, "app.py", "def main():\n    return 1\n")
+	t.Setenv("DIFFMIND_GOPLS_BIN", filepath.Join(t.TempDir(), "missing-gopls"))
+
+	if err := Run(context.Background(), []string{
+		"--source", root,
+		"--out", out,
+		"--snapshot-id", "snap-gopls-not-applicable",
+		"--adapters", "gopls",
+		"--extractors", "runtime",
+	}); err != nil {
+		t.Fatalf("Run failed for non-applicable adapter: %v", err)
+	}
+
+	reportData, err := os.ReadFile(filepath.Join(out, "analyzers", "report.json"))
+	if err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	var report Report
+	if err := json.Unmarshal(reportData, &report); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	if len(report.AdapterPlan) != 1 || report.AdapterPlan[0].Name != "gopls" {
+		t.Fatalf("unexpected adapter plan: %#v", report.AdapterPlan)
+	}
+	if report.AdapterPlan[0].Available {
+		t.Fatalf("expected gopls to be unavailable in plan")
+	}
+	if !strings.Contains(strings.ToLower(report.AdapterPlan[0].Reason), "no go.mod or .go files detected in source") {
+		t.Fatalf("unexpected not-applicable reason: %q", report.AdapterPlan[0].Reason)
+	}
+	if len(report.AdapterRuns) != 0 {
+		t.Fatalf("expected no adapter runs when adapter unavailable, got: %#v", report.AdapterRuns)
+	}
+}
+
 func TestRunWithAdapterSelectionWritesPlanAndRuns(t *testing.T) {
 	root := t.TempDir()
 	out := filepath.Join(root, ".diffmind")
@@ -580,6 +618,186 @@ func TestRunWithPyrightAdapterSelectionWritesPlanAndRuns(t *testing.T) {
 	}
 }
 
+func TestRunWithJdtlsAdapterSelectionWritesPlanAndRuns(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, ".diffmind")
+	mustWrite(t, root, "src/main/java/com/acme/App.java", "package com.acme;\npublic class App { public static void main(String[] args) {} }\n")
+
+	binDir := t.TempDir()
+	bin := filepath.Join(binDir, "jdtls")
+	mustWrite(t, binDir, "jdtls", "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo \"jdtls test-version\"\n  exit 0\nfi\nexit 1\n")
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatalf("chmod jdtls stub: %v", err)
+	}
+	t.Setenv("DIFFMIND_JDTLS_BIN", bin)
+
+	if err := Run(context.Background(), []string{
+		"--source", root,
+		"--out", out,
+		"--snapshot-id", "snap-jdtls",
+		"--adapters", "jdtls",
+		"--extractors", "semantic_model",
+	}); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	reportData, err := os.ReadFile(filepath.Join(out, "analyzers", "report.json"))
+	if err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	var report Report
+	if err := json.Unmarshal(reportData, &report); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	if len(report.Adapters) != 1 || report.Adapters[0] != "jdtls" {
+		t.Fatalf("unexpected adapters: %#v", report.Adapters)
+	}
+	if len(report.AdapterPlan) != 1 || report.AdapterPlan[0].Name != "jdtls" || !report.AdapterPlan[0].Available {
+		t.Fatalf("unexpected adapter plan: %#v", report.AdapterPlan)
+	}
+	if len(report.AdapterRuns) != 1 || report.AdapterRuns[0].Name != "jdtls" {
+		t.Fatalf("unexpected adapter runs: %#v", report.AdapterRuns)
+	}
+	if strings.TrimSpace(report.AdapterRuns[0].ToolExecStatus) != "executed" {
+		t.Fatalf("expected jdtls tool exec status executed, got: %q", report.AdapterRuns[0].ToolExecStatus)
+	}
+	if strings.TrimSpace(report.AdapterRuns[0].ToolOutputPath) == "" || strings.TrimSpace(report.AdapterRuns[0].ToolOutputSHA256) == "" {
+		t.Fatalf("expected jdtls tool output artifact metadata")
+	}
+
+	data, err := os.ReadFile(filepath.Join(out, "analyzers", "bundle.json"))
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+	var bundle facts.Bundle
+	if err := json.Unmarshal(data, &bundle); err != nil {
+		t.Fatalf("unmarshal bundle: %v", err)
+	}
+	if len(bundle.Facts) == 0 {
+		t.Fatalf("expected non-empty fact set for jdtls adapter run")
+	}
+	if !allFactsHaveAdapterAttr(bundle, "jdtls", "v1", report.AdapterRuns[0].ToolchainSHA) {
+		t.Fatalf("expected jdtls adapter provenance attributes on all facts")
+	}
+}
+
+func TestRunWithJdtlsAdapterSemanticStructuredOutputMergesFacts(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, ".diffmind")
+	mustWrite(t, root, "src/main/java/com/acme/App.java", "package com.acme;\npublic class App { public static void main(String[] args) {} }\n")
+
+	binDir := t.TempDir()
+	bin := filepath.Join(binDir, "jdtls")
+	mustWrite(t, binDir, "jdtls", "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo \"jdtls test-version\"\n  exit 0\nfi\nif [ \"$1\" = \"semantic-structured\" ]; then\n  cat <<'EOF'\n{\"packages\":[{\"name\":\"acme\",\"files\":[{\"path\":\"src/main/java/com/acme/App.java\",\"symbols\":[{\"name\":\"App\",\"kind\":\"class\",\"line\":1,\"col\":1,\"snippet\":\"class App\"}],\"calls\":[{\"caller\":\"App.main\",\"callee\":\"HttpClient.send\",\"kind\":\"method_call\",\"line\":1,\"col\":1,\"snippet\":\"HttpClient.send\"}],\"external_calls\":[{\"protocol\":\"http\",\"method\":\"GET\",\"target\":\"api.example.com\",\"line\":1,\"col\":1,\"snippet\":\"HttpClient.send\"}],\"dependencies\":[{\"module\":\"org.springframework:spring-web\",\"kind\":\"maven\",\"line\":1,\"col\":1,\"snippet\":\"<dependency>\"}]}]}]}\nEOF\n  exit 0\nfi\nexit 1\n")
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatalf("chmod jdtls stub: %v", err)
+	}
+	t.Setenv("DIFFMIND_JDTLS_BIN", bin)
+	t.Setenv("DIFFMIND_JDTLS_SEMANTIC_ARGS", "semantic-structured")
+
+	if err := Run(context.Background(), []string{
+		"--source", root,
+		"--out", out,
+		"--snapshot-id", "snap-jdtls-semantic-structured",
+		"--adapters", "jdtls",
+		"--extractors", "runtime",
+	}); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(out, "analyzers", "bundle.json"))
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+	var bundle facts.Bundle
+	if err := json.Unmarshal(data, &bundle); err != nil {
+		t.Fatalf("unmarshal bundle: %v", err)
+	}
+	if !hasFactTypeAndAttr(bundle, "CodeSymbol", "name", "App") {
+		t.Fatalf("expected structured semantic jdtls CodeSymbol fact")
+	}
+	if !hasFactTypeAndAttr(bundle, "CodeCall", "callee", "HttpClient.send") {
+		t.Fatalf("expected structured semantic jdtls CodeCall fact")
+	}
+	if !hasFactTypeAndAttr(bundle, "ExternalCall", "target", "api.example.com") {
+		t.Fatalf("expected structured semantic jdtls ExternalCall fact")
+	}
+	if !hasFactTypeAndAttr(bundle, "Dependency", "module", "org.springframework:spring-web") {
+		t.Fatalf("expected structured semantic jdtls Dependency fact")
+	}
+}
+
+func TestRunWithBuiltinAndJdtlsDoesNotDuplicateDeterministicFacts(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, ".diffmind")
+	mustWrite(t, root, "src/main/java/com/acme/App.java", "package com.acme;\npublic class App { public static void main(String[] args) {} }\n")
+
+	binDir := t.TempDir()
+	bin := filepath.Join(binDir, "jdtls")
+	mustWrite(t, binDir, "jdtls", "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo \"jdtls test-version\"\n  exit 0\nfi\nif [ \"$1\" = \"semantic-structured\" ]; then\n  cat <<'EOF'\n{\"packages\":[{\"name\":\"acme\",\"files\":[{\"path\":\"src/main/java/com/acme/App.java\",\"symbols\":[{\"name\":\"App\",\"kind\":\"class\",\"line\":1,\"col\":1,\"snippet\":\"class App\"}]}]}]}\nEOF\n  exit 0\nfi\nexit 1\n")
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatalf("chmod jdtls stub: %v", err)
+	}
+	t.Setenv("DIFFMIND_JDTLS_BIN", bin)
+	t.Setenv("DIFFMIND_JDTLS_SEMANTIC_ARGS", "semantic-structured")
+
+	if err := Run(context.Background(), []string{
+		"--source", root,
+		"--out", out,
+		"--snapshot-id", "snap-builtin-jdtls-no-dup",
+		"--adapters", "builtin,jdtls",
+		"--extractors", "runtime",
+	}); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	reportData, err := os.ReadFile(filepath.Join(out, "analyzers", "report.json"))
+	if err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	var report Report
+	if err := json.Unmarshal(reportData, &report); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	if len(report.AdapterRuns) != 2 {
+		t.Fatalf("expected 2 adapter runs, got %d", len(report.AdapterRuns))
+	}
+	var jdtlsRun *AdapterRunItem
+	for i := range report.AdapterRuns {
+		if report.AdapterRuns[i].Name == "jdtls" {
+			jdtlsRun = &report.AdapterRuns[i]
+			break
+		}
+	}
+	if jdtlsRun == nil {
+		t.Fatalf("expected jdtls adapter run")
+	}
+	if jdtlsRun.FactsAdded != 0 {
+		t.Fatalf("expected jdtls deterministic facts_added=0 in mixed mode, got %d", jdtlsRun.FactsAdded)
+	}
+	if jdtlsRun.ToolSemanticFactsAdded < 1 {
+		t.Fatalf("expected jdtls semantic facts added, got %d", jdtlsRun.ToolSemanticFactsAdded)
+	}
+
+	data, err := os.ReadFile(filepath.Join(out, "analyzers", "bundle.json"))
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+	var bundle facts.Bundle
+	if err := json.Unmarshal(data, &bundle); err != nil {
+		t.Fatalf("unmarshal bundle: %v", err)
+	}
+	runtimeUnits := 0
+	for _, f := range bundle.Facts {
+		if f.Type == "RuntimeUnit" {
+			runtimeUnits++
+		}
+	}
+	if runtimeUnits != 1 {
+		t.Fatalf("expected exactly 1 RuntimeUnit fact, got %d", runtimeUnits)
+	}
+}
+
 func TestRunWithTsserverAdapterSemanticStructuredOutputMergesFacts(t *testing.T) {
 	root := t.TempDir()
 	out := filepath.Join(root, ".diffmind")
@@ -794,6 +1012,46 @@ func run(ctx context.Context, r any, writer any, ch any) {
 	}
 }
 
+func TestGoSemanticQueueExtractionClassifiesSQSAndSNS(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, ".diffmind")
+
+	mustWrite(t, root, "cmd/main.go", `
+package main
+
+import "context"
+
+func run(ctx context.Context, sqsClient any, snsClient any) {
+	_, _ = sqsClient.SendMessage(ctx, &sqs.SendMessageInput{QueueUrl: "https://sqs.aws.local/orders"})
+	_, _ = sqsClient.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{QueueUrl: "https://sqs.aws.local/orders"})
+	_, _ = snsClient.Publish(ctx, &sns.PublishInput{TopicArn: "arn:aws:sns:eu-west-1:123456789012:orders-events"})
+}
+`)
+
+	if err := Run(context.Background(), []string{"--source", root, "--out", out, "--snapshot-id", "snap-go-queue-kinds", "--extractors", "queue_db"}); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(out, "analyzers", "bundle.json"))
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+	var bundle facts.Bundle
+	if err := json.Unmarshal(data, &bundle); err != nil {
+		t.Fatalf("unmarshal bundle: %v", err)
+	}
+
+	if !hasExternalCall(bundle, "PUBLISH", "https://sqs.aws.local/orders") {
+		t.Fatalf("expected semantic Go SQS publish call")
+	}
+	if !hasExternalCall(bundle, "CONSUME", "https://sqs.aws.local/orders") {
+		t.Fatalf("expected semantic Go SQS consume call")
+	}
+	if !hasExternalCall(bundle, "PUBLISH", "arn:aws:sns:eu-west-1:123456789012:orders-events") {
+		t.Fatalf("expected semantic Go SNS publish call")
+	}
+}
+
 func TestJSTSSemanticExtractionRouterAndAxiosClient(t *testing.T) {
 	root := t.TempDir()
 	out := filepath.Join(root, ".diffmind")
@@ -938,6 +1196,48 @@ async function runAll(producer: any, consumer: any, channel: any, sqs: any, pris
 	}
 }
 
+func TestJSTSSemanticDependencyExtractionAWSSDKV3(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, ".diffmind")
+
+	mustWrite(t, root, "internal/deps.ts", `
+import { SQSClient, SendMessageCommand, ReceiveMessageCommand } from "@aws-sdk/client-sqs";
+import { SNSClient, PublishCommand } from "@aws-sdk/client-sns";
+
+const sqsClient = new SQSClient({});
+const snsClient = new SNSClient({});
+
+async function runAll() {
+  await sqsClient.send(new SendMessageCommand({ QueueUrl: "https://sqs.aws.local/orders" }));
+  await sqsClient.send(new ReceiveMessageCommand({ QueueUrl: "https://sqs.aws.local/orders" }));
+  await snsClient.send(new PublishCommand({ TopicArn: "arn:aws:sns:eu-west-1:123456789012:orders-events" }));
+}
+`)
+
+	if err := Run(context.Background(), []string{"--source", root, "--out", out, "--snapshot-id", "snap-jsts-aws-v3", "--extractors", "queue_db"}); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(out, "analyzers", "bundle.json"))
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+	var bundle facts.Bundle
+	if err := json.Unmarshal(data, &bundle); err != nil {
+		t.Fatalf("unmarshal bundle: %v", err)
+	}
+
+	if !hasExternalCall(bundle, "PUBLISH", "https://sqs.aws.local/orders") {
+		t.Fatalf("expected semantic AWS SDK v3 SQS publish call")
+	}
+	if !hasExternalCall(bundle, "CONSUME", "https://sqs.aws.local/orders") {
+		t.Fatalf("expected semantic AWS SDK v3 SQS consume call")
+	}
+	if !hasExternalCall(bundle, "PUBLISH", "arn:aws:sns:eu-west-1:123456789012:orders-events") {
+		t.Fatalf("expected semantic AWS SDK v3 SNS publish call")
+	}
+}
+
 func TestPythonSemanticExtractionFlaskRouteAndRequests(t *testing.T) {
 	root := t.TempDir()
 	out := filepath.Join(root, ".diffmind")
@@ -1064,6 +1364,46 @@ def run_all(producer, consumer, sqs, session, celery_app):
 	}
 	if !hasExternalCallWithProtocolAndMethod(bundle, "command", "EXEC") {
 		t.Fatalf("expected semantic Python command execution call")
+	}
+}
+
+func TestPythonSemanticDependencyExtractionBoto3ServiceClients(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, ".diffmind")
+
+	mustWrite(t, root, "deps.py", `
+import boto3
+
+sqs = boto3.client("sqs")
+sns = boto3.client("sns")
+
+def run_all():
+    sqs.send_message(QueueUrl="https://sqs.aws.local/orders")
+    sqs.receive_message(QueueUrl="https://sqs.aws.local/orders")
+    sns.publish(TopicArn="arn:aws:sns:eu-west-1:123456789012:orders-events")
+`)
+
+	if err := Run(context.Background(), []string{"--source", root, "--out", out, "--snapshot-id", "snap-py-boto3", "--extractors", "queue_db"}); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(out, "analyzers", "bundle.json"))
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+	var bundle facts.Bundle
+	if err := json.Unmarshal(data, &bundle); err != nil {
+		t.Fatalf("unmarshal bundle: %v", err)
+	}
+
+	if !hasExternalCall(bundle, "PUBLISH", "https://sqs.aws.local/orders") {
+		t.Fatalf("expected semantic boto3 SQS publish call")
+	}
+	if !hasExternalCall(bundle, "CONSUME", "https://sqs.aws.local/orders") {
+		t.Fatalf("expected semantic boto3 SQS consume call")
+	}
+	if !hasExternalCall(bundle, "PUBLISH", "arn:aws:sns:eu-west-1:123456789012:orders-events") {
+		t.Fatalf("expected semantic boto3 SNS publish call")
 	}
 }
 
@@ -1763,6 +2103,114 @@ func TestM7DependencyOwnershipAndRiskExtraction(t *testing.T) {
 	}
 	if !hasDependencyRisk(bundle, "axios") {
 		t.Fatalf("expected dependency risk for floating axios version")
+	}
+}
+
+func TestJavaSemanticFeignInterfaceMultilinePath(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, ".diffmind")
+
+	mustWrite(t, root, "src/main/java/com/acme/client/BrochureClient.java", `
+package com.acme.client;
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.PostMapping;
+
+@FeignClient(name = "brochure", url = "${services.static-brochure-import.url}")
+public interface BrochureClient {
+  @PostMapping(
+      path = "static-brochure-import/start"
+  )
+  String start();
+}
+`)
+
+	if err := Run(context.Background(), []string{"--source", root, "--out", out, "--snapshot-id", "snap-java-feign-interface", "--extractors", "external_http"}); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(out, "analyzers", "bundle.json"))
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+	var bundle facts.Bundle
+	if err := json.Unmarshal(data, &bundle); err != nil {
+		t.Fatalf("unmarshal bundle: %v", err)
+	}
+	if !hasExternalCall(bundle, "POST", "${services.static-brochure-import.url}/static-brochure-import/start") {
+		t.Fatalf("expected multiline Feign interface mapping target")
+	}
+}
+
+func TestJavaSemanticQueueConsumeAndSnsPublishConfigResolution(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, ".diffmind")
+
+	mustWrite(t, root, "src/main/java/com/acme/sync/AbstractSqsListener.java", `
+package com.acme.sync;
+import org.springframework.scheduling.annotation.Scheduled;
+import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
+public abstract class AbstractSqsListener<T> {
+  protected final SqsClient sqsClient;
+  protected final String queueUrl;
+  public AbstractSqsListener(SqsClient sqsClient, String queueUrl) {
+    this.sqsClient = sqsClient;
+    this.queueUrl = queueUrl;
+  }
+  @Scheduled(fixedRate = 1000)
+  public void poll() {
+    ReceiveMessageRequest request = ReceiveMessageRequest.builder().queueUrl(queueUrl).build();
+    sqsClient.receiveMessage(request);
+  }
+}
+`)
+	mustWrite(t, root, "src/main/java/com/acme/sync/Consumer.java", `
+package com.acme.sync;
+import org.springframework.beans.factory.annotation.Value;
+import software.amazon.awssdk.services.sqs.SqsClient;
+public class Consumer extends AbstractSqsListener<String> {
+  public Consumer(SqsClient sqsClient, @Value("${services.aws.sqs.catalog-target-response-sqs.endpoint}") String queueUrl) {
+    super(sqsClient, queueUrl);
+  }
+}
+`)
+	mustWrite(t, root, "src/main/java/com/acme/sync/SnsPublisher.java", `
+package com.acme.sync;
+import org.springframework.beans.factory.annotation.Value;
+import software.amazon.awssdk.services.sns.SnsClient;
+import software.amazon.awssdk.services.sns.model.PublishRequest;
+public class SnsPublisher {
+  private SnsClient snsClient;
+  private String snsTopicArn;
+  public SnsPublisher(SnsClient snsClient, @Value("${services.aws.sns.campaign-topic-arn}") String snsTopicArn) {
+    this.snsClient = snsClient;
+    this.snsTopicArn = snsTopicArn;
+  }
+  public void send(String message) {
+    PublishRequest request = PublishRequest.builder().message(message).topicArn(snsTopicArn).build();
+    snsClient.publish(request);
+  }
+}
+`)
+
+	if err := Run(context.Background(), []string{"--source", root, "--out", out, "--snapshot-id", "snap-java-queue-sns", "--extractors", "endpoint,queue_db"}); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(out, "analyzers", "bundle.json"))
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+	var bundle facts.Bundle
+	if err := json.Unmarshal(data, &bundle); err != nil {
+		t.Fatalf("unmarshal bundle: %v", err)
+	}
+
+	if !hasExternalCall(bundle, "CONSUME", "cfg:services.aws.sqs.catalog-target-response-sqs.endpoint") {
+		t.Fatalf("expected queue consume target resolved from constructor @Value")
+	}
+	if !hasExternalCall(bundle, "PUBLISH", "cfg:services.aws.sns.campaign-topic-arn") {
+		t.Fatalf("expected sns publish target resolved from constructor @Value")
 	}
 }
 
