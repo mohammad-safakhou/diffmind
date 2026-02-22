@@ -1145,6 +1145,61 @@ axios({ url: "https://svc.local/delete", method: "DELETE" });
 	}
 }
 
+func TestJSTSSemanticExtractionNextPagesAndAppRoutes(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, ".diffmind")
+
+	mustWrite(t, root, "pages/api/orders.ts", `
+export default function handler(req: any, res: any) {
+  if (req.method === "GET") {
+    return res.status(200).json({ ok: true });
+  }
+  return res.status(405).end();
+}
+`)
+	mustWrite(t, root, "pages/products/[id].tsx", `
+export default function ProductPage() {
+  return null;
+}
+`)
+	mustWrite(t, root, "app/api/translate/route.ts", `
+export async function POST(req: Request) {
+  return new Response("ok");
+}
+`)
+	mustWrite(t, root, "app/dashboard/page.tsx", `
+export default function DashboardPage() {
+  return null;
+}
+`)
+
+	if err := Run(context.Background(), []string{"--source", root, "--out", out, "--snapshot-id", "snap-jsts-next-routes", "--extractors", "endpoint"}); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(out, "analyzers", "bundle.json"))
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+	var bundle facts.Bundle
+	if err := json.Unmarshal(data, &bundle); err != nil {
+		t.Fatalf("unmarshal bundle: %v", err)
+	}
+
+	if !hasEndpoint(bundle, "GET", "/api/orders") {
+		t.Fatalf("expected Next.js pages API endpoint")
+	}
+	if !hasEndpoint(bundle, "PAGE", "/products/{id}") {
+		t.Fatalf("expected Next.js pages route exposure")
+	}
+	if !hasEndpoint(bundle, "POST", "/api/translate") {
+		t.Fatalf("expected Next.js app API route endpoint")
+	}
+	if !hasEndpoint(bundle, "PAGE", "/dashboard") {
+		t.Fatalf("expected Next.js app page route exposure")
+	}
+}
+
 func TestJSTSSemanticDependencyExtractionQueueDBAndCommand(t *testing.T) {
 	root := t.TempDir()
 	out := filepath.Join(root, ".diffmind")
@@ -1817,6 +1872,56 @@ class App {
 	}
 	if report.CodeSymbols == 0 || report.CodeCalls == 0 {
 		t.Fatalf("expected non-zero semantic model counters in report: %+v", report)
+	}
+}
+
+func TestSemanticModelExtractsJSTSFunctionLikeSymbols(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, ".diffmind")
+
+	mustWrite(t, root, "ts/functions.ts", `
+const plain = 1
+export const loadSettings = async () => {
+  return await fetch("/api/settings")
+}
+let mutate = function() { return null }
+client.refresh = async () => {
+  return true
+}
+loadSettings()
+mutate()
+client.refresh()
+`)
+
+	if err := Run(context.Background(), []string{"--source", root, "--out", out, "--snapshot-id", "snap-semantic-jsts-symbols", "--extractors", "semantic_model"}); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(out, "analyzers", "bundle.json"))
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+	var bundle facts.Bundle
+	if err := json.Unmarshal(data, &bundle); err != nil {
+		t.Fatalf("unmarshal bundle: %v", err)
+	}
+
+	if !hasFactTypeAndAttr(bundle, "CodeSymbol", "name", "loadSettings") {
+		t.Fatalf("expected CodeSymbol for const arrow function")
+	}
+	if !hasFactTypeAndAttr(bundle, "CodeSymbol", "name", "mutate") {
+		t.Fatalf("expected CodeSymbol for function expression assignment")
+	}
+	if !hasFactTypeAndAttr(bundle, "CodeSymbol", "name", "client.refresh") {
+		t.Fatalf("expected CodeSymbol for assignment expression function")
+	}
+	for _, f := range bundle.Facts {
+		if f.Type != "CodeSymbol" {
+			continue
+		}
+		if name, _ := f.Attributes["name"].(string); name == "plain" {
+			t.Fatalf("did not expect non-function variable to be extracted as CodeSymbol")
+		}
 	}
 }
 

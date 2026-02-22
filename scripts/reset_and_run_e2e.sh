@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-SOURCE_PATH="${1:-$ROOT_DIR/checkout-service}"
+SOURCE_PATH="${1:-$ROOT_DIR/.codebases/checkout-service}"
 OUT_DIR="${2:-$ROOT_DIR/.diffmind}"
 REF="${REF:-HEAD}"
 SERVE="${SERVE:-false}"

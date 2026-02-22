@@ -24,6 +24,7 @@ var (
 	reFetch        = regexp.MustCompile(`\bfetch\(\s*([^,\)]+)`)
 	reAxios        = regexp.MustCompile(`\baxios\.(get|post|put|patch|delete)\(\s*["']([^"']+)["']`)
 	reRestTemplate = regexp.MustCompile(`\brestTemplate\.(getForObject|postForObject|exchange)\(`)
+	reSimpleToken  = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$\.]*$`)
 
 	reKafkaTopicAttr = regexp.MustCompile(`\bTopic\s*:\s*["']([^"']+)["']`)
 	reKafkaWrite     = regexp.MustCompile(`\bWriteMessages\(`)
@@ -191,7 +192,11 @@ func detectOutboundCalls(c *collector, file sourceFile) {
 		c.addFactWithEvidence("ExternalCall", map[string]any{"protocol": "http", "method": "UNKNOWN", "target": "request-object", "library": "go-net-http"}, file, m.line, m.col, m.text, func() { c.report.ExternalCalls++ })
 	}
 	for _, m := range regexMatchesByLine(file.Lines, reFetch) {
-		c.addFactWithEvidence("ExternalCall", map[string]any{"protocol": "http", "method": "UNKNOWN", "target": strings.TrimSpace(m.groups[0]), "library": "fetch"}, file, m.line, m.col, m.text, func() { c.report.ExternalCalls++ })
+		target := strings.TrimSpace(m.groups[0])
+		if !isLikelyExternalFetchTarget(target) {
+			continue
+		}
+		c.addFactWithEvidence("ExternalCall", map[string]any{"protocol": "http", "method": "UNKNOWN", "target": target, "library": "fetch"}, file, m.line, m.col, m.text, func() { c.report.ExternalCalls++ })
 	}
 	for _, m := range regexMatchesByLine(file.Lines, reAxios) {
 		c.addFactWithEvidence("ExternalCall", map[string]any{"protocol": "http", "method": strings.ToUpper(m.groups[0]), "target": m.groups[1], "library": "axios"}, file, m.line, m.col, m.text, func() { c.report.ExternalCalls++ })
@@ -199,6 +204,28 @@ func detectOutboundCalls(c *collector, file sourceFile) {
 	for _, m := range regexMatchesByLine(file.Lines, reRestTemplate) {
 		c.addFactWithEvidence("ExternalCall", map[string]any{"protocol": "http", "method": strings.ToUpper(m.groups[0]), "target": "java-expression", "library": "resttemplate"}, file, m.line, m.col, m.text, func() { c.report.ExternalCalls++ })
 	}
+}
+
+func isLikelyExternalFetchTarget(target string) bool {
+	t := strings.TrimSpace(strings.Trim(target, "\"'"))
+	if t == "" {
+		return false
+	}
+	l := strings.ToLower(t)
+	if strings.HasPrefix(l, "data:") {
+		return false
+	}
+	if strings.HasPrefix(t, "http://") || strings.HasPrefix(t, "https://") || strings.HasPrefix(t, "/") || strings.HasPrefix(t, "${") {
+		return true
+	}
+	if strings.Contains(t, "://") {
+		return true
+	}
+	// Bare variables/tokens (request, input, url.href, etc.) are too ambiguous.
+	if reSimpleToken.MatchString(t) {
+		return false
+	}
+	return true
 }
 
 func detectConfigKeys(c *collector, file sourceFile) {

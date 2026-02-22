@@ -59,6 +59,15 @@ select, button {
   padding: 0 10px;
 }
 
+input[type="search"] {
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 0 10px;
+  min-width: 260px;
+}
+
 button { cursor: pointer; }
 
 .simple-layout {
@@ -103,7 +112,9 @@ button { cursor: pointer; }
 }
 
 .dot.exposure { background: var(--exposure); }
+.dot.logic { background: #64748b; }
 .dot.dependency { background: var(--dependency); }
+.dot.branch { background: #f59e0b; }
 .dot.selected { background: var(--selected); }
 
 .graph-container {
@@ -129,6 +140,54 @@ button { cursor: pointer; }
 .simple-side-panel h2 {
   margin: 8px 0;
   font-size: 14px;
+}
+.purpose-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 8px;
+  color: #334155;
+  font-size: 12px;
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.search-label {
+  min-width: 340px;
+}
+
+.control-group {
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  background: #f8fafc;
+}
+
+.control-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.filter-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px;
+}
+
+.filter-grid label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #334155;
+  font-size: 12px;
+}
+
+.filter-grid input[type="checkbox"] {
+  margin: 0;
 }
 
 .legacy-hidden {

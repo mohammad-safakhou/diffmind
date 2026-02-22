@@ -114,9 +114,11 @@ func semanticSymbolKinds(language string) map[string]string {
 		}
 	case "javascript", "typescript":
 		return map[string]string{
-			"function_declaration": "function",
-			"method_definition":    "method",
-			"class_declaration":    "class",
+			"function_declaration":  "function",
+			"variable_declarator":   "function",
+			"assignment_expression": "function",
+			"method_definition":     "method",
+			"class_declaration":     "class",
 		}
 	case "python":
 		return map[string]string{
@@ -153,6 +155,26 @@ func semanticSymbolName(language string, node *sitter.Node, content []byte) stri
 	if node == nil {
 		return ""
 	}
+	if (language == "javascript" || language == "typescript") && node.Kind() == "variable_declarator" {
+		value := node.ChildByFieldName("value")
+		if !semanticIsFunctionLike(value) {
+			return ""
+		}
+		if name := node.ChildByFieldName("name"); name != nil {
+			return strings.TrimSpace(name.Utf8Text(content))
+		}
+		return ""
+	}
+	if (language == "javascript" || language == "typescript") && node.Kind() == "assignment_expression" {
+		right := node.ChildByFieldName("right")
+		if !semanticIsFunctionLike(right) {
+			return ""
+		}
+		if left := node.ChildByFieldName("left"); left != nil {
+			return strings.TrimSpace(left.Utf8Text(content))
+		}
+		return ""
+	}
 	if child := node.ChildByFieldName("name"); child != nil {
 		return strings.TrimSpace(child.Utf8Text(content))
 	}
@@ -173,6 +195,18 @@ func semanticSymbolName(language string, node *sitter.Node, content []byte) stri
 		}
 	}
 	return ""
+}
+
+func semanticIsFunctionLike(node *sitter.Node) bool {
+	if node == nil {
+		return false
+	}
+	switch strings.TrimSpace(node.Kind()) {
+	case "arrow_function", "function", "function_expression", "function_declaration", "generator_function", "generator_function_declaration":
+		return true
+	default:
+		return false
+	}
 }
 
 func semanticCallName(language string, node *sitter.Node, content []byte) string {

@@ -21,6 +21,12 @@ type nodeRef struct {
 	typ   string
 }
 
+const (
+	maxEvidenceRefsPerEdge           = 24
+	maxDependencyOwnerSymbolsPerEdge = 16
+	maxHandlerSymbolsPerEdge         = 8
+)
+
 func (g *graphBuilder) addServiceNodes() {
 	for _, svc := range g.services {
 		id := serviceNodeID(svc.spec.ID)
@@ -73,7 +79,7 @@ func (g *graphBuilder) addEndpointNodes() {
 				Attributes:   map[string]any{"source": "bundle"},
 				Confidence:   e.Confidence,
 				Inferred:     false,
-				EvidenceRefs: buildEvidenceRefs(svc.analyzer, e.FactIDs, e.EvidenceIDs),
+				EvidenceRefs: buildEvidenceRefsFromIndex(svc.bundle.SnapshotID, svc.evidenceByID, e.FactIDs, e.EvidenceIDs),
 			})
 		}
 	}
@@ -145,7 +151,7 @@ func (g *graphBuilder) resolveAPIEdges() {
 				continue
 			}
 
-			evidence := buildEvidenceRefs(sourceService.analyzer, e.FactIDs, e.EvidenceIDs)
+			evidence := buildEvidenceRefsFromIndex(sourceService.bundle.SnapshotID, sourceService.evidenceByID, e.FactIDs, e.EvidenceIDs)
 			serviceToServiceID := edgeID("service_calls_service", srcServiceNode, serviceNodeID(targetSvc.spec.ID), method+"|"+target)
 			attrs := map[string]any{
 				"method":            method,
@@ -279,7 +285,7 @@ func (g *graphBuilder) addUnresolvedAPICall(
 		Confidence: edgeConfidence(entity.Confidence, true),
 		Inferred:   true,
 	})
-	evidence := buildEvidenceRefs(sourceService.analyzer, entity.FactIDs, entity.EvidenceIDs)
+	evidence := buildEvidenceRefsFromIndex(sourceService.bundle.SnapshotID, sourceService.evidenceByID, entity.FactIDs, entity.EvidenceIDs)
 	g.addEdge(graphschema.Edge{
 		ID:           edgeID("service_has_unresolved_api_call", serviceNode, nodeID, entityID),
 		Type:         "service_has_unresolved_api_call",
@@ -445,12 +451,17 @@ func (g *graphBuilder) resolveCodeQueueAndDBEdges() {
 			}
 			protocol := strings.ToLower(strings.TrimSpace(fmt.Sprint(e.Attributes["protocol"])))
 			rawTarget := strings.TrimSpace(fmt.Sprint(e.Attributes["target"]))
+			if resolvedAny, ok := e.Attributes["target_resolved"]; ok && resolvedAny != nil {
+				if resolved := strings.TrimSpace(fmt.Sprint(resolvedAny)); resolved != "" && !strings.EqualFold(resolved, "<nil>") {
+					rawTarget = resolved
+				}
+			}
 			target := g.resolveExternalCallTarget(svc, rawTarget)
 			method := strings.ToUpper(strings.TrimSpace(fmt.Sprint(e.Attributes["method"])))
-			if target == "" {
+			if target == "" || isPlaceholderDependencyTarget(target) {
 				continue
 			}
-			evidence := buildEvidenceRefs(svc.analyzer, e.FactIDs, e.EvidenceIDs)
+			evidence := buildEvidenceRefsFromIndex(svc.bundle.SnapshotID, svc.evidenceByID, e.FactIDs, e.EvidenceIDs)
 			switch protocol {
 			case "queue":
 				canonical := canonicalQueueKey(target)
@@ -469,6 +480,7 @@ func (g *graphBuilder) resolveCodeQueueAndDBEdges() {
 				}
 				if method == "CONSUME" {
 					consumeNodeID := endpointNodeID(svc.spec.ID, e.ID)
+					svc.endpointNodes[e.ID] = consumeNodeID
 					if _, exists := g.nodeByID[consumeNodeID]; !exists {
 						consumeAttrs := map[string]any{
 							"direction":       "inbound",
@@ -615,6 +627,7 @@ func (g *graphBuilder) resolveDependencyOperationEdges() {
 	for i := range g.services {
 		svc := &g.services[i]
 		serviceNode := serviceNodeID(svc.spec.ID)
+		lineCache := map[string]string{}
 		for _, e := range svc.bundle.Entities {
 			if e.Type != "ExternalCall" {
 				continue
@@ -625,11 +638,16 @@ func (g *graphBuilder) resolveDependencyOperationEdges() {
 			}
 			method := strings.ToUpper(strings.TrimSpace(fmt.Sprint(e.Attributes["method"])))
 			rawTarget := strings.TrimSpace(fmt.Sprint(e.Attributes["target"]))
+			if resolvedAny, ok := e.Attributes["target_resolved"]; ok && resolvedAny != nil {
+				if resolved := strings.TrimSpace(fmt.Sprint(resolvedAny)); resolved != "" && !strings.EqualFold(resolved, "<nil>") {
+					rawTarget = resolved
+				}
+			}
 			target := g.resolveExternalCallTarget(svc, rawTarget)
 			if strings.TrimSpace(target) == "" {
 				target = rawTarget
 			}
-			if target == "" {
+			if target == "" || isPlaceholderDependencyTarget(target) {
 				continue
 			}
 			kind := dependencyOpKindFromExternal(protocol, method)
@@ -665,7 +683,7 @@ func (g *graphBuilder) resolveDependencyOperationEdges() {
 				Confidence: e.Confidence,
 				Inferred:   false,
 			})
-			evidence := buildEvidenceRefs(svc.analyzer, e.FactIDs, e.EvidenceIDs)
+			evidence := buildEvidenceRefsFromIndex(svc.bundle.SnapshotID, svc.evidenceByID, e.FactIDs, e.EvidenceIDs)
 			g.addEdge(graphschema.Edge{
 				ID:           edgeID("service_depends_on_dependency", serviceNode, opID, protocol+"|"+method+"|"+target),
 				Type:         "service_depends_on_dependency",
@@ -677,54 +695,53 @@ func (g *graphBuilder) resolveDependencyOperationEdges() {
 				EvidenceRefs: evidence,
 			})
 		}
+		dbTarget := g.primaryDatabaseTarget(*svc)
+		if dbTarget == "" {
+			continue
+		}
 		for _, e := range svc.bundle.Entities {
 			if e.Type != "CodeCall" {
 				continue
 			}
 			filePath := strings.ToLower(strings.TrimSpace(fmt.Sprint(e.Attributes["file"])))
-			if filePath == "" || !strings.Contains(filePath, "/repository/") {
-				continue
-			}
 			callee := strings.TrimSpace(fmt.Sprint(e.Attributes["callee"]))
-			if callee == "" || !looksLikeDependencyOperation(callee) {
+			file, line, _ := entitySourceLocation(*svc, e)
+			lineText := ""
+			if file != "" && line > 0 {
+				lineText = sourceLineText(*svc, file, line, lineCache)
+			}
+			protocol, method, ok := inferExternalOperationFromCodeCall(filePath, callee, lineText)
+			if !ok {
 				continue
 			}
-			repoName := repositoryNameFromPath(filePath)
-			if repoName == "" {
-				repoName = "repository"
-			}
-			opKind := dependencyOperationKind(callee)
-			label := fmt.Sprintf("dbop:%s.%s", repoName, callee)
-			nodeID := "depop:" + svc.spec.ID + ":" + stableID(repoName+"|"+callee)
-			attrs := map[string]any{
-				"protocol":       "db",
-				"repository":     repoName,
-				"operation":      callee,
-				"operation_kind": opKind,
-				"file":           filePath,
-				"line":           e.Attributes["line"],
-				"col":            e.Attributes["col"],
-				"source":         "semantic_code_call",
-			}
+			target := dbTarget
+			kind := dependencyOpKindFromExternal(protocol, method)
+			opID := dependencyOperationNodeID(svc.spec.ID, protocol, method, target)
 			g.addNode(graphschema.Node{
-				ID:         nodeID,
-				Type:       "dependency_operation",
-				Label:      label,
-				ServiceID:  svc.spec.ID,
-				Attributes: attrs,
-				Confidence: e.Confidence,
-				Inferred:   false,
+				ID:        opID,
+				Type:      "dependency_operation",
+				Label:     fmt.Sprintf("%s %s", method, target),
+				ServiceID: svc.spec.ID,
+				Attributes: map[string]any{
+					"protocol":       protocol,
+					"method":         method,
+					"target":         target,
+					"operation":      strings.ToLower(protocol) + ":" + method + ":" + target,
+					"operation_kind": kind,
+					"source":         "semantic_code_call_inferred",
+				},
+				Confidence: 0.74,
+				Inferred:   true,
 			})
-			evidence := buildEvidenceRefs(svc.analyzer, e.FactIDs, e.EvidenceIDs)
 			g.addEdge(graphschema.Edge{
-				ID:           edgeID("service_depends_on_dependency", serviceNode, nodeID, repoName+"|"+callee),
+				ID:           edgeID("service_depends_on_dependency", serviceNode, opID, protocol+"|"+method+"|"+target+"|codecall"),
 				Type:         "service_depends_on_dependency",
 				SourceID:     serviceNode,
-				TargetID:     nodeID,
-				Attributes:   map[string]any{"protocol": "db", "operation_kind": opKind, "source": "semantic_code_call"},
-				Confidence:   e.Confidence,
-				Inferred:     false,
-				EvidenceRefs: evidence,
+				TargetID:     opID,
+				Attributes:   map[string]any{"protocol": protocol, "method": method, "operation_kind": kind, "source": "semantic_code_call_inferred"},
+				Confidence:   0.74,
+				Inferred:     true,
+				EvidenceRefs: buildEvidenceRefsFromIndex(svc.bundle.SnapshotID, svc.evidenceByID, e.FactIDs, e.EvidenceIDs),
 			})
 		}
 	}
@@ -733,17 +750,17 @@ func (g *graphBuilder) resolveDependencyOperationEdges() {
 func (g *graphBuilder) resolveExposureDependencyEdges() {
 	for i := range g.services {
 		svc := &g.services[i]
-		symbolsByID, symbolsByFile, symbolsByShort := indexCallableSymbols(*svc)
+		symbolsByID, symbolsByFile, symbolsByShort, symbolsByName := indexCallableSymbols(*svc)
 		if len(symbolsByID) == 0 {
 			continue
 		}
 
-		endpointHandlers, endpointEvidence := g.resolveEndpointHandlers(*svc, symbolsByFile)
+		endpointHandlers, endpointEvidence := g.resolveEndpointHandlers(*svc, symbolsByFile, symbolsByShort, symbolsByName)
 		if len(endpointHandlers) == 0 {
 			continue
 		}
 
-		callAdj := g.resolveServiceCallAdjacency(*svc, symbolsByFile, symbolsByShort)
+		callAdj, _ := g.resolveServiceCallAdjacency(*svc, symbolsByID, symbolsByFile, symbolsByShort, symbolsByName)
 		dependencyOwners, dependencyEvidence := g.resolveDependencyOwners(*svc, symbolsByFile)
 		if len(dependencyOwners) == 0 {
 			continue
@@ -775,18 +792,23 @@ func (g *graphBuilder) resolveExposureDependencyEdges() {
 					continue
 				}
 				sort.Strings(matchedOwners)
+				matchedOwnerCount := len(matchedOwners)
+				matchedOwners = limitStrings(matchedOwners, maxDependencyOwnerSymbolsPerEdge)
+				handlerIDsLimited := limitStrings(dedupeStrings(handlerIDs), maxHandlerSymbolsPerEdge)
 
 				edgeIDVal := edgeID("exposure_reaches_dependency", endpointNodeID, depID, strings.Join(matchedOwners, "|"))
 				ev := append([]graphschema.EvidenceRef{}, endpointEvidence[endpointNodeID]...)
-				ev = append(ev, dependencyEvidence[depID]...)
-				ev = dedupeEvidenceRefs(ev)
+				ev = append(ev, limitEvidenceRefs(dependencyEvidence[depID], 8)...)
+				ev = limitEvidenceRefs(dedupeEvidenceRefs(ev), maxEvidenceRefsPerEdge)
 
 				attrs := map[string]any{
 					"source":                      "explicit_call_graph",
 					"resolver":                    "endpoint_call_graph_v1",
 					"service_id":                  svc.spec.ID,
-					"handler_symbol_ids":          append([]string(nil), handlerIDs...),
+					"handler_symbol_ids":          append([]string(nil), handlerIDsLimited...),
+					"handler_symbol_total":        len(dedupeStrings(handlerIDs)),
 					"dependency_owner_symbol_ids": append([]string(nil), matchedOwners...),
+					"dependency_owner_total":      matchedOwnerCount,
 					"hop_count":                   minHops + 1,
 				}
 				confidence := 0.92
@@ -808,6 +830,111 @@ func (g *graphBuilder) resolveExposureDependencyEdges() {
 	}
 }
 
+func (g *graphBuilder) resolveLogicPathEdges() {
+	for i := range g.services {
+		svc := &g.services[i]
+		symbolsByID, symbolsByFile, symbolsByShort, symbolsByName := indexCallableSymbols(*svc)
+		if len(symbolsByID) == 0 {
+			continue
+		}
+
+		endpointHandlers, endpointEvidence := g.resolveEndpointHandlers(*svc, symbolsByFile, symbolsByShort, symbolsByName)
+		if len(endpointHandlers) == 0 {
+			continue
+		}
+		callAdj, callEvidence := g.resolveServiceCallAdjacency(*svc, symbolsByID, symbolsByFile, symbolsByShort, symbolsByName)
+		dependencyOwners, dependencyEvidence := g.resolveDependencyOwners(*svc, symbolsByFile)
+
+		for endpointNodeID, handlerIDs := range endpointHandlers {
+			depthBySymbol := traverseReachableSymbols(callAdj, handlerIDs, 14)
+			if len(depthBySymbol) == 0 {
+				continue
+			}
+
+			for _, handlerID := range handlerIDs {
+				sym, ok := symbolsByID[handlerID]
+				if !ok {
+					continue
+				}
+				fnNodeID := g.ensureFunctionNode(*svc, sym)
+				ev := append([]graphschema.EvidenceRef{}, endpointEvidence[endpointNodeID]...)
+				ev = append(ev, buildSymbolEvidenceRef(svc, sym)...)
+				g.addEdge(graphschema.Edge{
+					ID:           edgeID("exposure_invokes_function", endpointNodeID, fnNodeID, svc.spec.ID),
+					Type:         "exposure_invokes_function",
+					SourceID:     endpointNodeID,
+					TargetID:     fnNodeID,
+					Attributes:   map[string]any{"source": "explicit_call_graph", "resolver": "endpoint_call_graph_v1", "service_id": svc.spec.ID, "hop_count": 1},
+					Confidence:   0.97,
+					Inferred:     false,
+					EvidenceRefs: limitEvidenceRefs(dedupeEvidenceRefs(ev), maxEvidenceRefsPerEdge),
+				})
+			}
+
+			for callerID := range depthBySymbol {
+				callerSym, ok := symbolsByID[callerID]
+				if !ok {
+					continue
+				}
+				callerNodeID := g.ensureFunctionNode(*svc, callerSym)
+				for calleeID := range callAdj[callerID] {
+					if _, reachable := depthBySymbol[calleeID]; !reachable {
+						continue
+					}
+					calleeSym, ok := symbolsByID[calleeID]
+					if !ok {
+						continue
+					}
+					calleeNodeID := g.ensureFunctionNode(*svc, calleeSym)
+					pair := callPairKey(callerID, calleeID)
+					ev := append([]graphschema.EvidenceRef{}, callEvidence[pair]...)
+					ev = append(ev, buildSymbolEvidenceRef(svc, callerSym)...)
+					ev = append(ev, buildSymbolEvidenceRef(svc, calleeSym)...)
+					g.addEdge(graphschema.Edge{
+						ID:           edgeID("function_calls_function", callerNodeID, calleeNodeID, svc.spec.ID),
+						Type:         "function_calls_function",
+						SourceID:     callerNodeID,
+						TargetID:     calleeNodeID,
+						Attributes:   map[string]any{"source": "explicit_call_graph", "resolver": "endpoint_call_graph_v1", "service_id": svc.spec.ID, "from_endpoint_id": endpointNodeID},
+						Confidence:   0.9,
+						Inferred:     false,
+						EvidenceRefs: limitEvidenceRefs(dedupeEvidenceRefs(ev), maxEvidenceRefsPerEdge),
+					})
+				}
+			}
+
+			for depID, ownerIDs := range dependencyOwners {
+				if _, ok := g.nodeByID[depID]; !ok {
+					continue
+				}
+				for ownerID := range ownerIDs {
+					depth, reachable := depthBySymbol[ownerID]
+					if !reachable {
+						continue
+					}
+					ownerSym, ok := symbolsByID[ownerID]
+					if !ok {
+						continue
+					}
+					ownerNodeID := g.ensureFunctionNode(*svc, ownerSym)
+					ev := append([]graphschema.EvidenceRef{}, limitEvidenceRefs(dependencyEvidence[depID], 8)...)
+					ev = append(ev, buildSymbolEvidenceRef(svc, ownerSym)...)
+					g.addEdge(graphschema.Edge{
+						ID:           edgeID("function_calls_dependency", ownerNodeID, depID, svc.spec.ID+"|"+ownerID),
+						Type:         "function_calls_dependency",
+						SourceID:     ownerNodeID,
+						TargetID:     depID,
+						Attributes:   map[string]any{"source": "explicit_call_graph", "resolver": "endpoint_call_graph_v1", "service_id": svc.spec.ID, "from_endpoint_id": endpointNodeID, "hop_count": depth + 1},
+						Confidence:   0.92,
+						Inferred:     false,
+						EvidenceRefs: limitEvidenceRefs(dedupeEvidenceRefs(ev), maxEvidenceRefsPerEdge),
+					})
+				}
+			}
+		}
+	}
+}
+
 type callableSymbol struct {
 	ID      string
 	Name    string
@@ -818,10 +945,11 @@ type callableSymbol struct {
 	EvIDs   []string
 }
 
-func indexCallableSymbols(svc serviceInput) (map[string]callableSymbol, map[string][]callableSymbol, map[string][]callableSymbol) {
+func indexCallableSymbols(svc serviceInput) (map[string]callableSymbol, map[string][]callableSymbol, map[string][]callableSymbol, map[string][]callableSymbol) {
 	outByID := map[string]callableSymbol{}
 	outByFile := map[string][]callableSymbol{}
 	outByShort := map[string][]callableSymbol{}
+	outByName := map[string][]callableSymbol{}
 	for _, e := range svc.bundle.Entities {
 		if e.Type != "CodeSymbol" {
 			continue
@@ -856,21 +984,38 @@ func indexCallableSymbols(svc serviceInput) (map[string]callableSymbol, map[stri
 		if sym.Short != "" {
 			outByShort[sym.Short] = append(outByShort[sym.Short], sym)
 		}
+		if key := normalizeSymbolLookup(name); key != "" {
+			outByName[key] = append(outByName[key], sym)
+		}
 	}
 	for file := range outByFile {
 		sort.Slice(outByFile[file], func(i, j int) bool { return outByFile[file][i].Line < outByFile[file][j].Line })
 	}
-	return outByID, outByFile, outByShort
+	return outByID, outByFile, outByShort, outByName
 }
 
-func (g *graphBuilder) resolveEndpointHandlers(svc serviceInput, symbolsByFile map[string][]callableSymbol) (map[string][]string, map[string][]graphschema.EvidenceRef) {
+func (g *graphBuilder) resolveEndpointHandlers(
+	svc serviceInput,
+	symbolsByFile map[string][]callableSymbol,
+	symbolsByShort map[string][]callableSymbol,
+	symbolsByName map[string][]callableSymbol,
+) (map[string][]string, map[string][]graphschema.EvidenceRef) {
 	handlers := map[string][]string{}
 	evidence := map[string][]graphschema.EvidenceRef{}
 	for _, e := range svc.bundle.Entities {
-		if e.Type != "Endpoint" {
+		endpointNodeID := ""
+		switch e.Type {
+		case "Endpoint":
+			endpointNodeID = svc.endpointNodes[e.ID]
+		case "ExternalCall":
+			protocol := strings.ToLower(strings.TrimSpace(fmt.Sprint(e.Attributes["protocol"])))
+			method := strings.ToUpper(strings.TrimSpace(fmt.Sprint(e.Attributes["method"])))
+			if protocol == "queue" && method == "CONSUME" {
+				endpointNodeID = svc.endpointNodes[e.ID]
+			}
+		default:
 			continue
 		}
-		endpointNodeID := svc.endpointNodes[e.ID]
 		if endpointNodeID == "" {
 			continue
 		}
@@ -878,18 +1023,38 @@ func (g *graphBuilder) resolveEndpointHandlers(svc serviceInput, symbolsByFile m
 		if file == "" {
 			continue
 		}
+		if handlerRaw := strings.TrimSpace(fmt.Sprint(e.Attributes["handler"])); handlerRaw != "" {
+			if exact := pickPreferredSymbols(symbolsByName[normalizeSymbolLookup(handlerRaw)], file, receiverFromQualifiedName(handlerRaw)); len(exact) > 0 {
+				handlers[endpointNodeID] = dedupeStrings(exact)
+				evidence[endpointNodeID] = buildEvidenceRefsFromIndex(svc.bundle.SnapshotID, svc.evidenceByID, e.FactIDs, e.EvidenceIDs)
+				continue
+			}
+			short := shortSymbolName(handlerRaw)
+			if short != "" {
+				receiverHint := receiverFromQualifiedName(handlerRaw)
+				candidateIDs := pickPreferredSymbols(symbolsByShort[short], file, receiverHint)
+				if len(candidateIDs) == 0 {
+					candidateIDs = pickPreferredSymbols(symbolsByShort[short], file, "")
+				}
+				if len(candidateIDs) > 0 {
+					handlers[endpointNodeID] = dedupeStrings(candidateIDs)
+					evidence[endpointNodeID] = buildEvidenceRefsFromIndex(svc.bundle.SnapshotID, svc.evidenceByID, e.FactIDs, e.EvidenceIDs)
+					continue
+				}
+			}
+		}
 		candidates := symbolsByFile[file]
 		if len(candidates) == 0 {
 			continue
 		}
 		if sym, ok := nearestCallableAtOrAfter(candidates, line); ok {
 			handlers[endpointNodeID] = []string{sym.ID}
-			evidence[endpointNodeID] = buildEvidenceRefs(svc.analyzer, e.FactIDs, e.EvidenceIDs)
+			evidence[endpointNodeID] = buildEvidenceRefsFromIndex(svc.bundle.SnapshotID, svc.evidenceByID, e.FactIDs, e.EvidenceIDs)
 			continue
 		}
 		if sym, ok := nearestCallableAtOrBefore(candidates, line); ok {
 			handlers[endpointNodeID] = []string{sym.ID}
-			evidence[endpointNodeID] = buildEvidenceRefs(svc.analyzer, e.FactIDs, e.EvidenceIDs)
+			evidence[endpointNodeID] = buildEvidenceRefsFromIndex(svc.bundle.SnapshotID, svc.evidenceByID, e.FactIDs, e.EvidenceIDs)
 		}
 	}
 	return handlers, evidence
@@ -897,10 +1062,13 @@ func (g *graphBuilder) resolveEndpointHandlers(svc serviceInput, symbolsByFile m
 
 func (g *graphBuilder) resolveServiceCallAdjacency(
 	svc serviceInput,
+	symbolsByID map[string]callableSymbol,
 	symbolsByFile map[string][]callableSymbol,
 	symbolsByShort map[string][]callableSymbol,
-) map[string]map[string]struct{} {
+	symbolsByName map[string][]callableSymbol,
+) (map[string]map[string]struct{}, map[string][]graphschema.EvidenceRef) {
 	adj := map[string]map[string]struct{}{}
+	evidence := map[string][]graphschema.EvidenceRef{}
 	lineCache := map[string]string{}
 	for _, e := range svc.bundle.Entities {
 		if e.Type != "CodeCall" {
@@ -910,14 +1078,19 @@ func (g *graphBuilder) resolveServiceCallAdjacency(
 		if file == "" || line <= 0 {
 			continue
 		}
-		calleeName := shortSymbolName(strings.TrimSpace(fmt.Sprint(e.Attributes["callee"])))
+		calleeRaw := strings.TrimSpace(fmt.Sprint(e.Attributes["callee"]))
+		calleeName := shortSymbolName(calleeRaw)
 		if calleeName == "" {
 			continue
 		}
 		var callerIDs []string
-		callerName := shortSymbolName(strings.TrimSpace(fmt.Sprint(e.Attributes["caller"])))
+		callerRaw := strings.TrimSpace(fmt.Sprint(e.Attributes["caller"]))
+		if callerRaw != "" {
+			callerIDs = append(callerIDs, pickPreferredSymbols(symbolsByName[normalizeSymbolLookup(callerRaw)], file, receiverFromQualifiedName(callerRaw))...)
+		}
+		callerName := shortSymbolName(callerRaw)
 		if callerName != "" {
-			callerIDs = append(callerIDs, pickPreferredSymbols(symbolsByShort[callerName], file, "")...)
+			callerIDs = append(callerIDs, pickPreferredSymbols(symbolsByShort[callerName], file, receiverFromQualifiedName(callerRaw))...)
 		}
 		if len(callerIDs) == 0 {
 			if caller, ok := nearestCallableAtOrBefore(symbolsByFile[file], line); ok {
@@ -930,9 +1103,37 @@ func (g *graphBuilder) resolveServiceCallAdjacency(
 
 		lineText := sourceLineText(svc, file, line, lineCache)
 		receiverHint := receiverHintForCallee(lineText, calleeName)
-		callees := pickPreferredSymbols(symbolsByShort[calleeName], file, receiverHint)
+		if receiverHint == "" {
+			receiverHint = receiverFromQualifiedName(calleeRaw)
+		}
+		callees := pickPreferredSymbols(symbolsByName[normalizeSymbolLookup(calleeRaw)], file, receiverHint)
+		if len(callees) == 0 {
+			callees = pickPreferredSymbols(symbolsByShort[calleeName], file, receiverHint)
+		}
 		if len(callees) == 0 {
 			continue
+		}
+		callerFiles := make([]string, 0, len(callerIDs))
+		for _, callerID := range callerIDs {
+			if sym, ok := symbolsByID[callerID]; ok {
+				callerFiles = append(callerFiles, sym.File)
+			}
+		}
+		if len(callerFiles) > 0 {
+			if receiverHint != "" && !isSelfReceiverHint(receiverHint) {
+				if crossFile := filterSymbolsExcludingFiles(callees, symbolsByID, callerFiles); len(crossFile) > 0 {
+					callees = crossFile
+				}
+			} else {
+				if narrowed := filterSymbolsToFiles(callees, symbolsByID, callerFiles); len(narrowed) > 0 {
+					callees = narrowed
+					// Dynamic dispatch bridge: when self-call resolves to an abstract
+					// declaration in base class, include likely subclass overrides.
+					if overrides := findLikelyOverrideCallees(svc, symbolsByID, symbolsByShort[calleeName], callerFiles, narrowed); len(overrides) > 0 {
+						callees = dedupeStrings(append(callees, overrides...))
+					}
+				}
+			}
 		}
 		for _, callerID := range callerIDs {
 			for _, calleeID := range callees {
@@ -943,15 +1144,22 @@ func (g *graphBuilder) resolveServiceCallAdjacency(
 					adj[callerID] = map[string]struct{}{}
 				}
 				adj[callerID][calleeID] = struct{}{}
+				key := callPairKey(callerID, calleeID)
+				evidence[key] = append(evidence[key], buildEvidenceRefsFromIndex(svc.bundle.SnapshotID, svc.evidenceByID, e.FactIDs, e.EvidenceIDs)...)
 			}
 		}
 	}
-	return adj
+	for key := range evidence {
+		evidence[key] = dedupeEvidenceRefs(evidence[key])
+	}
+	return adj, evidence
 }
 
 func (g *graphBuilder) resolveDependencyOwners(svc serviceInput, symbolsByFile map[string][]callableSymbol) (map[string]map[string]struct{}, map[string][]graphschema.EvidenceRef) {
 	owners := map[string]map[string]struct{}{}
 	evidence := map[string][]graphschema.EvidenceRef{}
+	lineCache := map[string]string{}
+	depCandidates := map[string][]string{}
 
 	addOwner := func(depID string, ownerID string, ev []graphschema.EvidenceRef) {
 		if depID == "" || ownerID == "" {
@@ -965,6 +1173,82 @@ func (g *graphBuilder) resolveDependencyOwners(svc serviceInput, symbolsByFile m
 	}
 
 	for _, e := range svc.bundle.Entities {
+		if e.Type != "ExternalCall" {
+			continue
+		}
+		protocol := strings.ToLower(strings.TrimSpace(fmt.Sprint(e.Attributes["protocol"])))
+		if protocol == "" {
+			continue
+		}
+		method := strings.ToUpper(strings.TrimSpace(fmt.Sprint(e.Attributes["method"])))
+		targetRaw := strings.TrimSpace(fmt.Sprint(e.Attributes["target"]))
+		if resolvedAny, ok := e.Attributes["target_resolved"]; ok && resolvedAny != nil {
+			if resolved := strings.TrimSpace(fmt.Sprint(resolvedAny)); resolved != "" && !strings.EqualFold(resolved, "<nil>") {
+				targetRaw = resolved
+			}
+		}
+		target := g.resolveExternalCallTarget(&svc, targetRaw)
+		if target == "" {
+			target = targetRaw
+		}
+		if target == "" || isPlaceholderDependencyTarget(target) {
+			continue
+		}
+		depID := dependencyOperationNodeID(svc.spec.ID, protocol, method, target)
+		depCandidates["protocol:"+protocol] = append(depCandidates["protocol:"+protocol], depID)
+		depCandidates["protocol_method:"+protocol+"|"+method] = append(depCandidates["protocol_method:"+protocol+"|"+method], depID)
+		switch protocol {
+		case "db":
+			kind := dependencyOpKindFromExternal(protocol, method)
+			if kind == "read" {
+				depCandidates["kind:db_read"] = append(depCandidates["kind:db_read"], depID)
+			} else {
+				depCandidates["kind:db_write"] = append(depCandidates["kind:db_write"], depID)
+			}
+		case "queue":
+			kind := dependencyOpKindFromExternal(protocol, method)
+			if kind == "consume" {
+				depCandidates["kind:queue_consume"] = append(depCandidates["kind:queue_consume"], depID)
+			} else {
+				depCandidates["kind:queue_publish"] = append(depCandidates["kind:queue_publish"], depID)
+			}
+		}
+	}
+	for _, n := range g.nodeByID {
+		if n.Type != "dependency_operation" {
+			continue
+		}
+		if n.ServiceID != svc.spec.ID {
+			continue
+		}
+		protocol := strings.ToLower(strings.TrimSpace(fmt.Sprint(n.Attributes["protocol"])))
+		method := strings.ToUpper(strings.TrimSpace(fmt.Sprint(n.Attributes["method"])))
+		target := strings.TrimSpace(fmt.Sprint(n.Attributes["target"]))
+		if protocol == "" || method == "" || target == "" {
+			continue
+		}
+		depID := dependencyOperationNodeID(svc.spec.ID, protocol, method, target)
+		depCandidates["protocol:"+protocol] = append(depCandidates["protocol:"+protocol], depID)
+		depCandidates["protocol_method:"+protocol+"|"+method] = append(depCandidates["protocol_method:"+protocol+"|"+method], depID)
+		switch protocol {
+		case "db":
+			kind := dependencyOpKindFromExternal(protocol, method)
+			if kind == "read" {
+				depCandidates["kind:db_read"] = append(depCandidates["kind:db_read"], depID)
+			} else {
+				depCandidates["kind:db_write"] = append(depCandidates["kind:db_write"], depID)
+			}
+		case "queue":
+			kind := dependencyOpKindFromExternal(protocol, method)
+			if kind == "consume" {
+				depCandidates["kind:queue_consume"] = append(depCandidates["kind:queue_consume"], depID)
+			} else {
+				depCandidates["kind:queue_publish"] = append(depCandidates["kind:queue_publish"], depID)
+			}
+		}
+	}
+
+	for _, e := range svc.bundle.Entities {
 		switch e.Type {
 		case "ExternalCall":
 			protocol := strings.ToLower(strings.TrimSpace(fmt.Sprint(e.Attributes["protocol"])))
@@ -973,11 +1257,16 @@ func (g *graphBuilder) resolveDependencyOwners(svc serviceInput, symbolsByFile m
 			}
 			method := strings.ToUpper(strings.TrimSpace(fmt.Sprint(e.Attributes["method"])))
 			targetRaw := strings.TrimSpace(fmt.Sprint(e.Attributes["target"]))
+			if resolvedAny, ok := e.Attributes["target_resolved"]; ok && resolvedAny != nil {
+				if resolved := strings.TrimSpace(fmt.Sprint(resolvedAny)); resolved != "" && !strings.EqualFold(resolved, "<nil>") {
+					targetRaw = resolved
+				}
+			}
 			target := g.resolveExternalCallTarget(&svc, targetRaw)
 			if target == "" {
 				target = targetRaw
 			}
-			if target == "" {
+			if target == "" || isPlaceholderDependencyTarget(target) {
 				continue
 			}
 			file, line, _ := entitySourceLocation(svc, e)
@@ -985,37 +1274,162 @@ func (g *graphBuilder) resolveDependencyOwners(svc serviceInput, symbolsByFile m
 				continue
 			}
 			owner, ok := nearestCallableAtOrBefore(symbolsByFile[file], line)
+			if !ok {
+				owner, ok = nearestCallableAtOrAfter(symbolsByFile[file], line)
+			}
 			if !ok {
 				continue
 			}
 			depID := dependencyOperationNodeID(svc.spec.ID, protocol, method, target)
-			addOwner(depID, owner.ID, buildEvidenceRefs(svc.analyzer, e.FactIDs, e.EvidenceIDs))
+			addOwner(depID, owner.ID, buildEvidenceRefsFromIndex(svc.bundle.SnapshotID, svc.evidenceByID, e.FactIDs, e.EvidenceIDs))
 		case "CodeCall":
 			filePath := strings.ToLower(strings.TrimSpace(fmt.Sprint(e.Attributes["file"])))
 			callee := strings.TrimSpace(fmt.Sprint(e.Attributes["callee"]))
-			if filePath == "" || !strings.Contains(filePath, "/repository/") || callee == "" || !looksLikeDependencyOperation(callee) {
-				continue
-			}
-			repoName := repositoryNameFromPath(filePath)
-			if repoName == "" {
-				repoName = "repository"
-			}
 			file, line, _ := entitySourceLocation(svc, e)
 			if file == "" || line <= 0 {
 				continue
 			}
+			lineText := sourceLineText(svc, file, line, lineCache)
+			repoName, opName, opResolved := resolveCodeCallDependencyOp(filePath, callee, lineText)
 			owner, ok := nearestCallableAtOrBefore(symbolsByFile[file], line)
+			if !ok {
+				owner, ok = nearestCallableAtOrAfter(symbolsByFile[file], line)
+			}
 			if !ok {
 				continue
 			}
-			depID := "depop:" + svc.spec.ID + ":" + stableID(repoName+"|"+callee)
-			addOwner(depID, owner.ID, buildEvidenceRefs(svc.analyzer, e.FactIDs, e.EvidenceIDs))
+			_ = repoName
+			ev := buildEvidenceRefsFromIndex(svc.bundle.SnapshotID, svc.evidenceByID, e.FactIDs, e.EvidenceIDs)
+			kind := ""
+			protocol := ""
+			method := ""
+			if opResolved {
+				kind = dependencyOperationKind(opName)
+			} else if inferredProtocol, inferredMethod, inferred := inferExternalOperationFromCodeCall(filePath, callee, lineText); inferred {
+				protocol = inferredProtocol
+				method = inferredMethod
+				switch inferredProtocol {
+				case "db":
+					if dependencyOpKindFromExternal(inferredProtocol, inferredMethod) == "read" {
+						kind = "read"
+					} else {
+						kind = "write"
+					}
+				case "queue":
+					kind = dependencyOpKindFromExternal(inferredProtocol, inferredMethod)
+				}
+			}
+			if kind == "" {
+				continue
+			}
+			var candidateIDs []string
+			switch kind {
+			case "read":
+				candidateIDs = append(candidateIDs, depCandidates["kind:db_read"]...)
+			case "write":
+				candidateIDs = append(candidateIDs, depCandidates["kind:db_write"]...)
+			case "consume":
+				candidateIDs = append(candidateIDs, depCandidates["kind:queue_consume"]...)
+			case "publish":
+				candidateIDs = append(candidateIDs, depCandidates["kind:queue_publish"]...)
+			}
+			if protocol != "" {
+				candidateIDs = append(candidateIDs, depCandidates["protocol:"+protocol]...)
+			}
+			if protocol != "" && method != "" {
+				candidateIDs = append(candidateIDs, depCandidates["protocol_method:"+protocol+"|"+method]...)
+			}
+			if receiver := repositoryNameFromReceiver(receiverHintForCallee(lineText, shortSymbolName(callee))); receiver != "" {
+				receiverLower := strings.ToLower(receiver)
+				if strings.Contains(receiverLower, "queue") || strings.Contains(receiverLower, "topic") || strings.Contains(receiverLower, "publisher") || strings.Contains(receiverLower, "consumer") {
+					if kind == "read" {
+						candidateIDs = append(candidateIDs, depCandidates["kind:queue_consume"]...)
+					} else {
+						candidateIDs = append(candidateIDs, depCandidates["kind:queue_publish"]...)
+					}
+				}
+			}
+			candidateIDs = dedupeStrings(candidateIDs)
+			// Ambiguous fan-out creates noisy links and giant evidence payloads.
+			if len(candidateIDs) > 16 {
+				continue
+			}
+			for _, depID := range candidateIDs {
+				addOwner(depID, owner.ID, ev)
+			}
 		}
 	}
 	for depID := range evidence {
 		evidence[depID] = dedupeEvidenceRefs(evidence[depID])
 	}
 	return owners, evidence
+}
+
+func (g *graphBuilder) primaryDatabaseTarget(svc serviceInput) string {
+	best := ""
+	for _, e := range svc.bundle.Entities {
+		if e.Type != "ExternalCall" {
+			continue
+		}
+		protocol := strings.ToLower(strings.TrimSpace(fmt.Sprint(e.Attributes["protocol"])))
+		if protocol != "db" {
+			continue
+		}
+		rawTarget := strings.TrimSpace(fmt.Sprint(e.Attributes["target"]))
+		if resolvedAny, ok := e.Attributes["target_resolved"]; ok && resolvedAny != nil {
+			if resolved := strings.TrimSpace(fmt.Sprint(resolvedAny)); resolved != "" && !strings.EqualFold(resolved, "<nil>") {
+				rawTarget = resolved
+			}
+		}
+		target := g.resolveExternalCallTarget(&svc, rawTarget)
+		if target == "" {
+			target = rawTarget
+		}
+		if target == "" || isPlaceholderDependencyTarget(target) {
+			continue
+		}
+		method := strings.ToUpper(strings.TrimSpace(fmt.Sprint(e.Attributes["method"])))
+		if method == "CONNECT" {
+			return target
+		}
+		if best == "" {
+			best = target
+		}
+	}
+	return best
+}
+
+func inferExternalOperationFromCodeCall(filePath string, callee string, lineText string) (string, string, bool) {
+	filePath = strings.ToLower(strings.TrimSpace(filePath))
+	calleeLower := strings.ToLower(strings.TrimSpace(callee))
+	lineLower := strings.ToLower(strings.TrimSpace(lineText))
+	if calleeLower == "" {
+		return "", "", false
+	}
+	isDataAccessContext := strings.Contains(filePath, "/repository/") ||
+		strings.Contains(filePath, "/database/") ||
+		strings.Contains(filePath, "/boiler/") ||
+		strings.Contains(lineLower, "querycontext") ||
+		strings.Contains(lineLower, "queryrowcontext") ||
+		strings.Contains(lineLower, "execcontext") ||
+		strings.Contains(lineLower, "sql") ||
+		strings.Contains(lineLower, "boil.")
+	if !isDataAccessContext {
+		return "", "", false
+	}
+	readHints := []string{"query", "select", "find", "first", "all", "one", "scan", "bind"}
+	writeHints := []string{"exec", "insert", "update", "delete", "create", "save", "upsert"}
+	for _, h := range readHints {
+		if strings.Contains(calleeLower, h) {
+			return "db", "READ", true
+		}
+	}
+	for _, h := range writeHints {
+		if strings.Contains(calleeLower, h) {
+			return "db", "WRITE", true
+		}
+	}
+	return "", "", false
 }
 
 func traverseReachableSymbols(adj map[string]map[string]struct{}, starts []string, maxDepth int) map[string]int {
@@ -1082,7 +1496,7 @@ func pickPreferredSymbols(candidates []callableSymbol, preferredFile string, rec
 			}
 		}
 		if len(matchedReceiver) > 0 {
-			return dedupeStrings(matchedReceiver)
+			return limitStrings(dedupeStrings(matchedReceiver), 8)
 		}
 	}
 	for _, c := range candidates {
@@ -1097,7 +1511,7 @@ func pickPreferredSymbols(candidates []callableSymbol, preferredFile string, rec
 			continue
 		}
 		out = append(out, c.ID)
-		if len(out) >= 24 {
+		if len(out) >= 8 {
 			break
 		}
 	}
@@ -1105,6 +1519,127 @@ func pickPreferredSymbols(candidates []callableSymbol, preferredFile string, rec
 		return nil
 	}
 	return dedupeStrings(out)
+}
+
+func callPairKey(callerID string, calleeID string) string {
+	return callerID + "->" + calleeID
+}
+
+func filterSymbolsToFiles(ids []string, symbolsByID map[string]callableSymbol, files []string) []string {
+	if len(ids) == 0 || len(files) == 0 {
+		return nil
+	}
+	fileSet := map[string]struct{}{}
+	for _, f := range files {
+		if strings.TrimSpace(f) == "" {
+			continue
+		}
+		fileSet[f] = struct{}{}
+	}
+	if len(fileSet) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		sym, ok := symbolsByID[id]
+		if !ok {
+			continue
+		}
+		if _, ok := fileSet[sym.File]; !ok {
+			continue
+		}
+		out = append(out, id)
+	}
+	return dedupeStrings(out)
+}
+
+func filterSymbolsExcludingFiles(ids []string, symbolsByID map[string]callableSymbol, files []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	fileSet := map[string]struct{}{}
+	for _, f := range files {
+		if strings.TrimSpace(f) == "" {
+			continue
+		}
+		fileSet[f] = struct{}{}
+	}
+	if len(fileSet) == 0 {
+		return dedupeStrings(ids)
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		sym, ok := symbolsByID[id]
+		if !ok {
+			continue
+		}
+		if _, inCaller := fileSet[sym.File]; inCaller {
+			continue
+		}
+		out = append(out, id)
+	}
+	return dedupeStrings(out)
+}
+
+func receiverFromQualifiedName(name string) string {
+	raw := strings.TrimSpace(name)
+	if raw == "" {
+		return ""
+	}
+	if idx := strings.LastIndex(raw, "."); idx > 0 {
+		left := strings.TrimSpace(raw[:idx])
+		if left == "" {
+			return ""
+		}
+		parts := strings.Split(left, ".")
+		return strings.TrimSpace(parts[len(parts)-1])
+	}
+	return ""
+}
+
+func limitStrings(values []string, n int) []string {
+	if n <= 0 || len(values) <= n {
+		return values
+	}
+	return append([]string(nil), values[:n]...)
+}
+
+func buildSymbolEvidenceRef(svc *serviceInput, sym callableSymbol) []graphschema.EvidenceRef {
+	if svc == nil {
+		return nil
+	}
+	return buildEvidenceRefsFromIndex(svc.bundle.SnapshotID, svc.evidenceByID, sym.FactIDs, sym.EvIDs)
+}
+
+func (g *graphBuilder) ensureFunctionNode(svc serviceInput, sym callableSymbol) string {
+	nodeID := "fn:" + svc.spec.ID + ":" + stableID(sym.File+"|"+sym.Name+"|"+fmt.Sprint(sym.Line))
+	if existing, ok := g.nodeByID[nodeID]; ok {
+		attrs := cloneMap(existing.Attributes)
+		if attrs == nil {
+			attrs = map[string]any{}
+		}
+		if _, ok := attrs["symbol_id"]; !ok {
+			attrs["symbol_id"] = sym.ID
+		}
+		existing.Attributes = attrs
+		g.nodeByID[nodeID] = existing
+		return nodeID
+	}
+	g.addNode(graphschema.Node{
+		ID:        nodeID,
+		Type:      "function",
+		Label:     sym.Name,
+		ServiceID: svc.spec.ID,
+		Attributes: map[string]any{
+			"symbol_id":   sym.ID,
+			"symbol_name": sym.Name,
+			"file":        sym.File,
+			"line":        sym.Line,
+		},
+		Confidence: 0.9,
+		Inferred:   false,
+	})
+	return nodeID
 }
 
 func sourceLineText(svc serviceInput, relFile string, line int, cache map[string]string) string {
@@ -1155,6 +1690,138 @@ func receiverHintForCallee(line string, callee string) string {
 	return parts[len(parts)-1]
 }
 
+func isSelfReceiverHint(receiverHint string) bool {
+	r := strings.ToLower(strings.TrimSpace(receiverHint))
+	return r == "" || r == "this" || r == "super"
+}
+
+func findLikelyOverrideCallees(
+	svc serviceInput,
+	symbolsByID map[string]callableSymbol,
+	allCandidates []callableSymbol,
+	callerFiles []string,
+	narrowed []string,
+) []string {
+	if len(allCandidates) == 0 || len(callerFiles) == 0 || len(narrowed) == 0 {
+		return nil
+	}
+	baseClasses := map[string]struct{}{}
+	for _, callerFile := range callerFiles {
+		base := strings.TrimSpace(strings.TrimSuffix(filepath.Base(callerFile), filepath.Ext(callerFile)))
+		if base != "" {
+			baseClasses[base] = struct{}{}
+		}
+	}
+	if len(baseClasses) == 0 {
+		return nil
+	}
+	abstractFound := false
+	for _, id := range narrowed {
+		sym, ok := symbolsByID[id]
+		if !ok {
+			continue
+		}
+		if !fileInList(sym.File, callerFiles) {
+			continue
+		}
+		if isLikelyAbstractMethodDeclaration(svc, sym.File, sym.Line) {
+			abstractFound = true
+			break
+		}
+	}
+	if !abstractFound {
+		return nil
+	}
+	out := make([]string, 0, 4)
+	for _, candidate := range allCandidates {
+		if fileInList(candidate.File, callerFiles) {
+			continue
+		}
+		if fileExtendsAnyClass(svc, candidate.File, baseClasses) {
+			out = append(out, candidate.ID)
+		}
+	}
+	return dedupeStrings(out)
+}
+
+func fileInList(file string, files []string) bool {
+	for _, f := range files {
+		if f == file {
+			return true
+		}
+	}
+	return false
+}
+
+func isLikelyAbstractMethodDeclaration(svc serviceInput, relFile string, line int) bool {
+	text := sourceLineText(svc, relFile, line, map[string]string{})
+	if text == "" {
+		return false
+	}
+	l := strings.ToLower(text)
+	return strings.Contains(l, "abstract") || strings.HasSuffix(strings.TrimSpace(l), ";")
+}
+
+func fileExtendsAnyClass(svc serviceInput, relFile string, classNames map[string]struct{}) bool {
+	if strings.TrimSpace(svc.spec.RepoPath) == "" || strings.TrimSpace(relFile) == "" || len(classNames) == 0 {
+		return false
+	}
+	abs := filepath.Join(svc.spec.RepoPath, filepath.FromSlash(relFile))
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return false
+	}
+	content := string(data)
+	for className := range classNames {
+		pat := "extends " + className
+		if strings.Contains(content, pat) {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveCodeCallDependencyOp(filePath string, callee string, lineText string) (repository string, operation string, ok bool) {
+	op := strings.TrimSpace(callee)
+	if op == "" || !looksLikeDependencyOperation(op) {
+		return "", "", false
+	}
+	filePath = strings.ToLower(strings.TrimSpace(filePath))
+	if strings.Contains(filePath, "/repository/") {
+		repo := repositoryNameFromPath(filePath)
+		if strings.TrimSpace(repo) == "" {
+			repo = "repository"
+		}
+		return repo, op, true
+	}
+	calleeShort := shortSymbolName(op)
+	if calleeShort == "" {
+		calleeShort = op
+	}
+	receiver := receiverHintForCallee(lineText, calleeShort)
+	if repo := repositoryNameFromReceiver(receiver); repo != "" {
+		return repo, op, true
+	}
+	if repo := repositoryNameFromReceiver(receiverFromQualifiedName(op)); repo != "" {
+		return repo, op, true
+	}
+	return "", "", false
+}
+
+func repositoryNameFromReceiver(receiver string) string {
+	norm := normalizeIdentifier(receiver)
+	if norm == "" {
+		return ""
+	}
+	if strings.Contains(norm, "repository") {
+		return norm
+	}
+	if strings.HasSuffix(norm, "repo") {
+		return norm
+	}
+	return ""
+}
+
 func normalizeIdentifier(v string) string {
 	v = strings.ToLower(strings.TrimSpace(v))
 	if v == "" {
@@ -1168,6 +1835,19 @@ func normalizeIdentifier(v string) string {
 		}
 	}
 	return b.String()
+}
+
+func normalizeSymbolLookup(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	v = strings.TrimPrefix(v, "*")
+	v = strings.ReplaceAll(v, " ", "")
+	v = strings.ReplaceAll(v, "\t", "")
+	v = strings.ReplaceAll(v, "(", "")
+	v = strings.ReplaceAll(v, ")", "")
+	return strings.ToLower(v)
 }
 
 func entitySourceLocation(svc serviceInput, e bundleio.Entity) (string, int, int) {
@@ -1646,6 +2326,9 @@ func (g *graphBuilder) resolveManifestQueueAndDBEdges() {
 			if strings.TrimSpace(resolved) != "" && resolved != topic {
 				topic = resolved
 			}
+			if isPlaceholderDependencyTarget(topic) {
+				continue
+			}
 			canonical := canonicalQueueKey(topic)
 			qNodeID := queueNodeID(topic)
 			queueNodes[topic] = qNodeID
@@ -1673,6 +2356,9 @@ func (g *graphBuilder) resolveManifestQueueAndDBEdges() {
 			if strings.TrimSpace(resolved) != "" && resolved != topic {
 				topic = resolved
 			}
+			if isPlaceholderDependencyTarget(topic) {
+				continue
+			}
 			canonical := canonicalQueueKey(topic)
 			qNodeID, ok := queueNodes[topic]
 			if !ok {
@@ -1699,6 +2385,9 @@ func (g *graphBuilder) resolveManifestQueueAndDBEdges() {
 		}
 
 		for _, db := range uniqueStrings(svc.spec.DBReads) {
+			if isPlaceholderDependencyTarget(db) {
+				continue
+			}
 			canonical := canonicalDatabaseKey(db)
 			dbNodeID, ok := dbNodes[db]
 			if !ok {
@@ -1724,6 +2413,9 @@ func (g *graphBuilder) resolveManifestQueueAndDBEdges() {
 			})
 		}
 		for _, db := range uniqueStrings(svc.spec.DBWrites) {
+			if isPlaceholderDependencyTarget(db) {
+				continue
+			}
 			canonical := canonicalDatabaseKey(db)
 			dbNodeID, ok := dbNodes[db]
 			if !ok {
@@ -1762,7 +2454,7 @@ func (g *graphBuilder) resolveRuntimeBuildDeployEdges() {
 		deployNodeByEntity := map[string]string{}
 
 		for _, e := range svc.bundle.Entities {
-			evidence := buildEvidenceRefs(svc.analyzer, e.FactIDs, e.EvidenceIDs)
+			evidence := buildEvidenceRefsFromIndex(svc.bundle.SnapshotID, svc.evidenceByID, e.FactIDs, e.EvidenceIDs)
 			switch e.Type {
 			case "RuntimeUnit":
 				nID := runtimeNodeID(svc.spec.ID, e.ID)
@@ -1946,7 +2638,7 @@ func (g *graphBuilder) resolveConfigAndSensitiveEdges() {
 		configByKeyEnv := map[string]string{}
 
 		for _, e := range svc.bundle.Entities {
-			evidence := buildEvidenceRefs(svc.analyzer, e.FactIDs, e.EvidenceIDs)
+			evidence := buildEvidenceRefsFromIndex(svc.bundle.SnapshotID, svc.evidenceByID, e.FactIDs, e.EvidenceIDs)
 			switch e.Type {
 			case "ConfigKey":
 				key := strings.TrimSpace(fmt.Sprint(e.Attributes["key"]))
@@ -2105,7 +2797,7 @@ func (g *graphBuilder) resolveDependencyOwnershipEdges() {
 		}
 
 		for _, e := range svc.bundle.Entities {
-			evidence := buildEvidenceRefs(svc.analyzer, e.FactIDs, e.EvidenceIDs)
+			evidence := buildEvidenceRefsFromIndex(svc.bundle.SnapshotID, svc.evidenceByID, e.FactIDs, e.EvidenceIDs)
 			switch e.Type {
 			case "Dependency":
 				name := strings.TrimSpace(fmt.Sprint(e.Attributes["name"]))
@@ -2165,7 +2857,7 @@ func (g *graphBuilder) resolveDependencyOwnershipEdges() {
 						Confidence: rule.confidence,
 						Inferred:   false,
 					})
-					ruleEvidence := buildEvidenceRefs(svc.analyzer, rule.factIDs, rule.evidenceIDs)
+					ruleEvidence := buildEvidenceRefsFromIndex(svc.bundle.SnapshotID, svc.evidenceByID, rule.factIDs, rule.evidenceIDs)
 					g.addEdge(graphschema.Edge{
 						ID:           edgeID("dependency_owned_by", depNode, ownerNode, name+"|"+owner),
 						Type:         "dependency_owned_by",
@@ -2268,7 +2960,7 @@ func (g *graphBuilder) resolveConfidenceAndConflictEdges() {
 				Confidence: e.Confidence,
 				Inferred:   false,
 			})
-			evidence := buildEvidenceRefs(svc.analyzer, e.FactIDs, e.EvidenceIDs)
+			evidence := buildEvidenceRefsFromIndex(svc.bundle.SnapshotID, svc.evidenceByID, e.FactIDs, e.EvidenceIDs)
 			g.addEdge(graphschema.Edge{
 				ID:           edgeID("service_has_conflict", serviceNode, nID, e.ID),
 				Type:         "service_has_conflict",
@@ -2314,7 +3006,7 @@ func (g *graphBuilder) resolveVerificationDecisionEdges() {
 				Confidence: e.Confidence,
 				Inferred:   false,
 			})
-			evidence := buildEvidenceRefs(svc.analyzer, e.FactIDs, e.EvidenceIDs)
+			evidence := buildEvidenceRefsFromIndex(svc.bundle.SnapshotID, svc.evidenceByID, e.FactIDs, e.EvidenceIDs)
 			g.addEdge(graphschema.Edge{
 				ID:           edgeID("service_has_verification_decision", serviceNode, nID, e.ID),
 				Type:         "service_has_verification_decision",
@@ -2732,11 +3424,14 @@ func (g *graphBuilder) addEdge(e graphschema.Edge) {
 }
 
 func buildEvidenceRefs(bundle facts.Bundle, factIDs []string, evidenceIDs []string) []graphschema.EvidenceRef {
-	evidenceByID := map[string]facts.Evidence{}
+	evidenceByID := make(map[string]facts.Evidence, len(bundle.Evidence))
 	for _, e := range bundle.Evidence {
 		evidenceByID[e.ID] = e
 	}
+	return buildEvidenceRefsFromIndex("", evidenceByID, factIDs, evidenceIDs)
+}
 
+func buildEvidenceRefsFromIndex(snapshotID string, evidenceByID map[string]facts.Evidence, factIDs []string, evidenceIDs []string) []graphschema.EvidenceRef {
 	factSet := map[string]struct{}{}
 	for _, id := range factIDs {
 		factSet[id] = struct{}{}
@@ -2750,7 +3445,10 @@ func buildEvidenceRefs(bundle facts.Bundle, factIDs []string, evidenceIDs []stri
 	for id := range evidenceSet {
 		ev, ok := evidenceByID[id]
 		if !ok {
-			refs = append(refs, graphschema.EvidenceRef{EvidenceID: id})
+			refs = append(refs, graphschema.EvidenceRef{
+				SnapshotID: snapshotID,
+				EvidenceID: id,
+			})
 			continue
 		}
 		refs = append(refs, graphschema.EvidenceRef{
@@ -3315,7 +4013,14 @@ func dedupeEvidenceRefs(in []graphschema.EvidenceRef) []graphschema.EvidenceRef 
 		seen[key] = struct{}{}
 		out = append(out, ref)
 	}
-	return out
+	return limitEvidenceRefs(out, maxEvidenceRefsPerEdge)
+}
+
+func limitEvidenceRefs(values []graphschema.EvidenceRef, n int) []graphschema.EvidenceRef {
+	if n <= 0 || len(values) <= n {
+		return values
+	}
+	return append([]graphschema.EvidenceRef(nil), values[:n]...)
 }
 
 func graphNodeIDForEntity(serviceID string, entityType string, entityID string) string {
@@ -3364,6 +4069,33 @@ func (g *graphBuilder) resolveExternalCallTarget(svc *serviceInput, rawTarget st
 		return rawTarget
 	}
 	return strings.TrimSpace(resolved)
+}
+
+func isPlaceholderDependencyTarget(target string) bool {
+	v := strings.ToLower(strings.TrimSpace(target))
+	if v == "" {
+		return true
+	}
+	switch v {
+	case "<nil>", "unknown-target", "request-object", "url", "channel", "db", "sqlstring", "r.ctx", "queue:unknown", "sqs:unknown-queue", "sns:unknown-topic", "input", "request", "response", "command", "url.href":
+		return true
+	}
+	if strings.HasPrefix(v, "data:") {
+		return true
+	}
+	if strings.Contains(v, "context.background") || strings.Contains(v, "context.todo") {
+		return true
+	}
+	if strings.HasPrefix(v, "method ") || strings.HasPrefix(v, "unknown ") {
+		return true
+	}
+	if strings.HasSuffix(v, ":") && !strings.Contains(v, "://") {
+		return true
+	}
+	if v == "(" || v == ")" || v == "{" || v == "}" || v == "[" || v == "]" {
+		return true
+	}
+	return false
 }
 
 func preferredConfigResolvedValue(entities []bundleio.Entity, key string) string {

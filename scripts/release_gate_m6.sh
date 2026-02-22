@@ -35,7 +35,7 @@ Options:
 
 Default sources (if none specified):
   Real repos:
-  1) ${ROOT_DIR}/checkout-service
+  1) ${ROOT_DIR}/.codebases/checkout-service
   2) ${ROOT_DIR}/../sample-service
   3) ${ROOT_DIR}/../inventory-service
   Fixture smoke:
@@ -138,7 +138,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ${#SOURCES[@]} -eq 0 ]]; then
-  append_source_if_dir "${ROOT_DIR}/checkout-service"
+  append_source_if_dir "${ROOT_DIR}/.codebases/checkout-service"
   append_source_if_dir "${ROOT_DIR}/../sample-service"
   append_source_if_dir "${ROOT_DIR}/../inventory-service"
   append_source_if_dir "${ROOT_DIR}/corpus/fixtures/18-mixed-monorepo"

@@ -38,6 +38,7 @@ var (
 	javaJdbcWriteCallRe         = regexp.MustCompile(`(?i)\.(update|batchUpdate)\(`)
 	javaJpaReadCallRe           = regexp.MustCompile(`(?i)\.(createQuery|createNamedQuery)\(`)
 	javaJpaWriteCallRe          = regexp.MustCompile(`(?i)\.(persist|merge|remove)\(`)
+	javaRepoInvocationRe        = regexp.MustCompile(`(?i)\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\(`)
 	javaRuntimeExecRe           = regexp.MustCompile(`(?i)Runtime\.getRuntime\(\)\.exec\(`)
 	javaProcessBuilderRe        = regexp.MustCompile(`(?i)new\s+ProcessBuilder\(`)
 	javaCommandArgRe            = regexp.MustCompile(`(?i)(exec|ProcessBuilder)\(\s*"([^"]+)"`)
@@ -462,6 +463,18 @@ func detectJavaQueueAndDBCallsSemantic(c *collector, file sourceFile) bool {
 				"library":      "java-db-semantic",
 				"db_operation": "write",
 			}, file, line, col, javaLineSnippet(file, line), func() { c.report.ExternalCalls++ })
+		}
+		if repoName, opName, ok := javaRepositoryOperation(text); ok {
+			method := javaRepositoryOpMethod(opName)
+			attrs := map[string]any{
+				"protocol":     "db",
+				"method":       method,
+				"target":       "postgres",
+				"library":      "java-repository-semantic",
+				"db_operation": strings.ToLower(method),
+				"repository":   repoName,
+			}
+			c.addFactWithEvidence("ExternalCall", attrs, file, line, col, javaLineSnippet(file, line), func() { c.report.ExternalCalls++ })
 		}
 
 		if javaRuntimeExecRe.MatchString(text) || javaProcessBuilderRe.MatchString(text) {
@@ -1208,4 +1221,42 @@ func javaCommandTarget(text string) string {
 		return strings.TrimSpace(m[2])
 	}
 	return javaFirstQuoted(text)
+}
+
+func javaRepositoryOperation(text string) (string, string, bool) {
+	m := javaRepoInvocationRe.FindStringSubmatch(strings.TrimSpace(text))
+	if len(m) < 3 {
+		return "", "", false
+	}
+	receiver := strings.TrimSpace(m[1])
+	method := strings.TrimSpace(m[2])
+	receiverLower := strings.ToLower(receiver)
+	if !(strings.Contains(receiverLower, "repo") || strings.Contains(receiverLower, "repository") || strings.Contains(receiverLower, "dao")) {
+		return "", "", false
+	}
+	methodLower := strings.ToLower(method)
+	readPrefixes := []string{"find", "get", "exists", "count", "query", "select"}
+	writePrefixes := []string{"save", "delete", "insert", "update", "create", "remove", "upsert"}
+	for _, p := range readPrefixes {
+		if strings.HasPrefix(methodLower, p) {
+			return receiver, method, true
+		}
+	}
+	for _, p := range writePrefixes {
+		if strings.HasPrefix(methodLower, p) {
+			return receiver, method, true
+		}
+	}
+	return "", "", false
+}
+
+func javaRepositoryOpMethod(method string) string {
+	l := strings.ToLower(strings.TrimSpace(method))
+	readPrefixes := []string{"find", "get", "exists", "count", "query", "select"}
+	for _, p := range readPrefixes {
+		if strings.HasPrefix(l, p) {
+			return "READ"
+		}
+	}
+	return "WRITE"
 }

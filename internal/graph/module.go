@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -146,10 +147,24 @@ func Build(ctx context.Context, req BuildRequest) (BuildResult, error) {
 }
 
 func buildFromOptions(ctx context.Context, opts options, printPath bool) (BuildResult, error) {
+	startedAt := time.Now()
+	slog.Info("graph build started",
+		"out", opts.OutDir,
+		"mode", opts.Mode,
+		"sources", strings.TrimSpace(opts.SourcesCSV),
+		"manifest", opts.ManifestPath,
+		"tenant_id", normalizeTenantID(opts.TenantID),
+	)
+
 	services, mode, err := resolveServices(opts)
 	if err != nil {
 		return BuildResult{}, err
 	}
+	slog.Info("graph build services resolved",
+		"mode", mode,
+		"service_count", len(services),
+		"duration_ms", time.Since(startedAt).Milliseconds(),
+	)
 	for i := range services {
 		if strings.TrimSpace(services[i].TenantID) == "" {
 			services[i].TenantID = normalizeTenantID(opts.TenantID)
@@ -158,11 +173,24 @@ func buildFromOptions(ctx context.Context, opts options, printPath bool) (BuildR
 		}
 	}
 
+	graphStartedAt := time.Now()
 	graph, err := buildGraph(services, mode)
 	if err != nil {
 		return BuildResult{}, err
 	}
+	slog.Info("graph build materialized",
+		"graph_id", graph.GraphID,
+		"nodes", len(graph.Nodes),
+		"edges", len(graph.Edges),
+		"duration_ms", time.Since(graphStartedAt).Milliseconds(),
+	)
 	if reused, ok := findReusableGraph(opts.OutDir, graph); ok {
+		slog.Info("graph build reused cached graph",
+			"graph_id", reused.GraphID,
+			"path", reused.Path,
+			"nodes", reused.NodeCount,
+			"edges", reused.EdgeCount,
+		)
 		if printPath {
 			fmt.Println(reused.Path)
 		}
@@ -186,6 +214,7 @@ func buildFromOptions(ctx context.Context, opts options, printPath bool) (BuildR
 	}
 
 	if opts.Persist {
+		persistStartedAt := time.Now()
 		cfg, err := config.LoadFromEnv()
 		if err != nil {
 			return BuildResult{}, fmt.Errorf("load config for graph persistence: %w", err)
@@ -199,7 +228,16 @@ func buildFromOptions(ctx context.Context, opts options, printPath bool) (BuildR
 		if err := gstore.PersistGraph(ctx, graph, graphPath); err != nil {
 			return BuildResult{}, err
 		}
+		slog.Info("graph build persisted", "graph_id", graph.GraphID, "duration_ms", time.Since(persistStartedAt).Milliseconds())
 	}
+
+	slog.Info("graph build completed",
+		"graph_id", graph.GraphID,
+		"path", graphPath,
+		"nodes", len(graph.Nodes),
+		"edges", len(graph.Edges),
+		"duration_ms", time.Since(startedAt).Milliseconds(),
+	)
 
 	if printPath {
 		fmt.Println(graphPath)
@@ -494,6 +532,7 @@ type graphBuilder struct {
 }
 
 func buildGraph(services []serviceSpec, mode string) (graphschema.Graph, error) {
+	startedAt := time.Now()
 	graphTenant := "default"
 	if len(services) > 0 {
 		graphTenant = normalizeTenantID(services[0].TenantID)
@@ -505,7 +544,8 @@ func buildGraph(services []serviceSpec, mode string) (graphschema.Graph, error) 
 	}
 
 	inputs := make([]serviceInput, 0, len(services))
-	for _, spec := range services {
+	for idx, spec := range services {
+		serviceStartedAt := time.Now()
 		b, err := bundleio.Load(spec.BundlePath)
 		if err != nil {
 			return graphschema.Graph{}, err
@@ -543,6 +583,16 @@ func buildGraph(services []serviceSpec, mode string) (graphschema.Graph, error) 
 			endpointNodes: map[string]string{},
 			envTags:       detectServiceEnvironments(spec, b.Entities),
 		})
+		slog.Info("graph build service loaded",
+			"index", idx+1,
+			"service_id", spec.ID,
+			"bundle_path", spec.BundlePath,
+			"analyzer_bundle_path", spec.AnalyzerBundle,
+			"entities", len(b.Entities),
+			"facts", len(analyzer.Facts),
+			"evidence", len(analyzer.Evidence),
+			"duration_ms", time.Since(serviceStartedAt).Milliseconds(),
+		)
 	}
 
 	gb := &graphBuilder{
@@ -554,19 +604,36 @@ func buildGraph(services []serviceSpec, mode string) (graphschema.Graph, error) 
 		byTypeEdge: map[string]int{},
 	}
 
-	gb.addServiceNodes()
-	gb.addEndpointNodes()
-	gb.resolveAPIEdges()
-	gb.resolveCodeQueueAndDBEdges()
-	gb.resolveManifestQueueAndDBEdges()
-	gb.resolveRuntimeBuildDeployEdges()
-	gb.resolveConfigAndSensitiveEdges()
-	gb.resolveDependencyOwnershipEdges()
-	gb.resolveDependencyOperationEdges()
-	gb.resolveExposureDependencyEdges()
-	gb.resolveCrossRepoCanonicalization()
-	gb.resolveConfidenceAndConflictEdges()
-	gb.resolveVerificationDecisionEdges()
+	runPhase := func(name string, fn func()) {
+		phaseStartedAt := time.Now()
+		nodesBefore := len(gb.nodeByID)
+		edgesBefore := len(gb.edgeByID)
+		slog.Info("graph build phase started", "phase", name, "nodes_before", nodesBefore, "edges_before", edgesBefore)
+		fn()
+		slog.Info("graph build phase completed",
+			"phase", name,
+			"nodes_after", len(gb.nodeByID),
+			"edges_after", len(gb.edgeByID),
+			"nodes_added", len(gb.nodeByID)-nodesBefore,
+			"edges_added", len(gb.edgeByID)-edgesBefore,
+			"duration_ms", time.Since(phaseStartedAt).Milliseconds(),
+		)
+	}
+
+	runPhase("add_service_nodes", gb.addServiceNodes)
+	runPhase("add_endpoint_nodes", gb.addEndpointNodes)
+	runPhase("resolve_api_edges", gb.resolveAPIEdges)
+	runPhase("resolve_code_queue_db_edges", gb.resolveCodeQueueAndDBEdges)
+	runPhase("resolve_manifest_queue_db_edges", gb.resolveManifestQueueAndDBEdges)
+	runPhase("resolve_runtime_build_deploy_edges", gb.resolveRuntimeBuildDeployEdges)
+	runPhase("resolve_config_sensitive_edges", gb.resolveConfigAndSensitiveEdges)
+	runPhase("resolve_dependency_ownership_edges", gb.resolveDependencyOwnershipEdges)
+	runPhase("resolve_dependency_operation_edges", gb.resolveDependencyOperationEdges)
+	runPhase("resolve_exposure_dependency_edges", gb.resolveExposureDependencyEdges)
+	runPhase("resolve_logic_path_edges", gb.resolveLogicPathEdges)
+	runPhase("resolve_cross_repo_canonicalization", gb.resolveCrossRepoCanonicalization)
+	runPhase("resolve_confidence_conflict_edges", gb.resolveConfidenceAndConflictEdges)
+	runPhase("resolve_verification_decision_edges", gb.resolveVerificationDecisionEdges)
 
 	nodes := make([]graphschema.Node, 0, len(gb.nodeByID))
 	for _, n := range gb.nodeByID {
@@ -654,6 +721,12 @@ func buildGraph(services []serviceSpec, mode string) (graphschema.Graph, error) 
 	if err := graphschema.ValidateGraph(graph); err != nil {
 		return graphschema.Graph{}, fmt.Errorf("validate graph schema: %w", err)
 	}
+	slog.Info("graph build graph object finalized",
+		"graph_id", graphID,
+		"node_count", len(nodes),
+		"edge_count", len(edges),
+		"duration_ms", time.Since(startedAt).Milliseconds(),
+	)
 	return graph, nil
 }
 

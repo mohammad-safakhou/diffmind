@@ -36,8 +36,8 @@ Options:
   --clean <bool>                  Delete output root before run (default: false).
 
 Examples:
-  $(basename "$0") --source "${ROOT_DIR}/checkout-service" --clean true
-  $(basename "$0") --source "${ROOT_DIR}/checkout-service" --expect-links "${ROOT_DIR}/.diffmind/graph/expected_links.json"
+  $(basename "$0") --source "${ROOT_DIR}/.codebases/checkout-service" --clean true
+  $(basename "$0") --source "${ROOT_DIR}/.codebases/checkout-service" --expect-links "${ROOT_DIR}/.diffmind/graph/expected_links.json"
 USAGE
 }
 

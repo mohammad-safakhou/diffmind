@@ -1,6 +1,6 @@
 BINARY=extractor
 GOCACHE?=$(CURDIR)/.gocache
-SOURCE?=$(CURDIR)/checkout-service
+SOURCE?=$(CURDIR)/.codebases/checkout-service
 OUT?=$(CURDIR)/.diffmind
 REF?=HEAD
 ADDR?=:8080
@@ -61,7 +61,7 @@ graph-ui-build:
 	@echo "Graph UI is embedded static assets under internal/httpapi/ui; no separate frontend build step required."
 
 graph-m8-e2e:
-	./scripts/e2e_m8_validation.sh --source ./checkout-service --clean true
+	./scripts/e2e_m8_validation.sh --source ./.codebases/checkout-service --clean true
 
 setup-core:
 	./scripts/install_tooling.sh core

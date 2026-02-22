@@ -11,6 +11,7 @@ import (
 var (
 	pythonRouteMethodsRe = regexp.MustCompile(`(?i)methods\s*=\s*\[\s*["']([A-Za-z]+)["']`)
 	pythonKeywordArgRe   = regexp.MustCompile(`(?i)\b([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*["']([^"']+)["']`)
+	pythonIdentifierRe   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
 func detectPythonInboundEndpointsSemantic(c *collector, file sourceFile) bool {
@@ -249,6 +250,9 @@ func detectPythonQueueAndDBCallsSemantic(c *collector, file sourceFile) bool {
 				}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
 			case "execute":
 				target := pythonTargetFromArgs(args, content)
+				if !pythonLikelyDBReceiver(objectName) && !pythonLooksLikeSQLTarget(target) {
+					return
+				}
 				method := "READ"
 				op := strings.ToUpper(strings.TrimSpace(target))
 				if strings.HasPrefix(op, "INSERT ") || strings.HasPrefix(op, "UPDATE ") || strings.HasPrefix(op, "DELETE ") {
@@ -266,6 +270,9 @@ func detectPythonQueueAndDBCallsSemantic(c *collector, file sourceFile) bool {
 				}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
 			case "query", "find", "get":
 				target := pythonTargetFromArgs(args, content)
+				if !pythonLikelyDBReceiver(objectName) && !pythonLooksLikeSQLTarget(target) {
+					return
+				}
 				if target == "" {
 					target = "db"
 				}
@@ -278,6 +285,9 @@ func detectPythonQueueAndDBCallsSemantic(c *collector, file sourceFile) bool {
 				}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
 			case "create", "save", "update", "delete", "insert":
 				target := pythonTargetFromArgs(args, content)
+				if !pythonLikelyDBReceiver(objectName) && !pythonLooksLikeSQLTarget(target) {
+					return
+				}
 				if target == "" {
 					target = "db"
 				}
@@ -756,11 +766,66 @@ func pythonTargetFromArgs(args []*sitter.Node, content []byte) string {
 			continue
 		}
 		v := normalizePythonArgument(a, content)
-		if v != "" {
+		if pythonLikelyMeaningfulTarget(v) {
 			return v
 		}
 	}
 	return ""
+}
+
+func pythonLikelyDBReceiver(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if n == "" {
+		return false
+	}
+	hints := []string{
+		"db", "repo", "repository", "dao", "session", "cursor", "conn", "connection",
+		"engine", "collection", "table", "model", "queryset",
+	}
+	for _, h := range hints {
+		if strings.Contains(n, h) {
+			return true
+		}
+	}
+	return false
+}
+
+func pythonLooksLikeSQLTarget(target string) bool {
+	t := strings.ToUpper(strings.TrimSpace(target))
+	if t == "" {
+		return false
+	}
+	return strings.HasPrefix(t, "SELECT ") ||
+		strings.HasPrefix(t, "INSERT ") ||
+		strings.HasPrefix(t, "UPDATE ") ||
+		strings.HasPrefix(t, "DELETE ") ||
+		strings.HasPrefix(t, "WITH ")
+}
+
+func pythonLikelyMeaningfulTarget(v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return false
+	}
+	l := strings.ToLower(v)
+	switch l {
+	case "(", ")", "{", "}", "[", "]", "message", "command", "input", "request", "response", "url":
+		return false
+	}
+	if strings.HasPrefix(v, "{") || strings.HasPrefix(v, "[") || strings.HasPrefix(v, "(") {
+		return false
+	}
+	if strings.HasSuffix(v, ":") && !strings.Contains(v, "://") {
+		return false
+	}
+	if strings.HasPrefix(l, ", body:") || strings.HasPrefix(l, "status_code:") || strings.HasPrefix(l, "host=") || strings.HasPrefix(l, "host_start") || strings.HasPrefix(l, "url:") {
+		return false
+	}
+	if pythonIdentifierRe.MatchString(v) {
+		// Bare identifiers are usually local variable names and not concrete external targets.
+		return false
+	}
+	return true
 }
 
 func pythonLineCol(node *sitter.Node) (int, int) {

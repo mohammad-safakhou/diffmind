@@ -546,6 +546,140 @@ services:
 	}
 }
 
+func TestBuildGraphAddsAdvancedLogicPathEdges(t *testing.T) {
+	tmp := t.TempDir()
+	bundlePath := filepath.Join(tmp, "svc.bundle.json")
+	analyzerPath := filepath.Join(tmp, "svc.analyzer.json")
+
+	writeJSON(t, bundlePath, map[string]any{
+		"snapshot_id": "snap-logic-1",
+		"entities": []map[string]any{
+			{
+				"id":          "ep1",
+				"type":        "Endpoint",
+				"natural_key": "GET|/accounts/{id}",
+				"attributes": map[string]any{
+					"method": "GET",
+					"path":   "/accounts/{id}",
+					"file":   "src/controller/AccountController.java",
+					"line":   10,
+					"col":    1,
+				},
+				"fact_ids":     []string{"f-ep1"},
+				"evidence_ids": []string{"ev-ep1"},
+				"confidence":   0.99,
+			},
+			{
+				"id":          "sym-handler",
+				"type":        "CodeSymbol",
+				"natural_key": "AccountController#getAccount",
+				"attributes": map[string]any{
+					"name":        "AccountController.getAccount",
+					"symbol_kind": "method",
+					"file":        "src/controller/AccountController.java",
+					"line":        12,
+					"col":         3,
+				},
+				"fact_ids":     []string{"f-sym-handler"},
+				"evidence_ids": []string{"ev-sym-handler"},
+				"confidence":   0.95,
+			},
+			{
+				"id":          "sym-service",
+				"type":        "CodeSymbol",
+				"natural_key": "AccountService#getAccountDtoById",
+				"attributes": map[string]any{
+					"name":        "AccountService.getAccountDtoById",
+					"symbol_kind": "method",
+					"file":        "src/service/AccountService.java",
+					"line":        20,
+					"col":         3,
+				},
+				"fact_ids":     []string{"f-sym-service"},
+				"evidence_ids": []string{"ev-sym-service"},
+				"confidence":   0.95,
+			},
+			{
+				"id":          "call-1",
+				"type":        "CodeCall",
+				"natural_key": "handler->service",
+				"attributes": map[string]any{
+					"caller": "AccountController.getAccount",
+					"callee": "getAccountDtoById",
+					"file":   "src/controller/AccountController.java",
+					"line":   13,
+					"col":    8,
+				},
+				"fact_ids":     []string{"f-call-1"},
+				"evidence_ids": []string{"ev-call-1"},
+				"confidence":   0.93,
+			},
+			{
+				"id":          "ext-1",
+				"type":        "ExternalCall",
+				"natural_key": "GET|publisher-api",
+				"attributes": map[string]any{
+					"protocol": "http",
+					"method":   "GET",
+					"target":   "https://publisher-api.internal/publishers/{id}",
+					"file":     "src/service/AccountService.java",
+					"line":     24,
+					"col":      5,
+				},
+				"fact_ids":     []string{"f-ext-1"},
+				"evidence_ids": []string{"ev-ext-1"},
+				"confidence":   0.9,
+			},
+		},
+	})
+	writeJSON(t, analyzerPath, map[string]any{
+		"facts": []map[string]any{},
+		"evidence": []map[string]any{
+			{"id": "ev-ep1", "snapshot_id": "snap-logic-1", "file_path": "src/controller/AccountController.java", "start_line": 10, "start_col": 1, "end_line": 10, "end_col": 40, "snippet_hash": "h1", "created_at_utc": "2026-01-01T00:00:00Z"},
+			{"id": "ev-sym-handler", "snapshot_id": "snap-logic-1", "file_path": "src/controller/AccountController.java", "start_line": 12, "start_col": 3, "end_line": 12, "end_col": 35, "snippet_hash": "h2", "created_at_utc": "2026-01-01T00:00:00Z"},
+			{"id": "ev-sym-service", "snapshot_id": "snap-logic-1", "file_path": "src/service/AccountService.java", "start_line": 20, "start_col": 3, "end_line": 20, "end_col": 45, "snippet_hash": "h3", "created_at_utc": "2026-01-01T00:00:00Z"},
+			{"id": "ev-call-1", "snapshot_id": "snap-logic-1", "file_path": "src/controller/AccountController.java", "start_line": 13, "start_col": 8, "end_line": 13, "end_col": 60, "snippet_hash": "h4", "created_at_utc": "2026-01-01T00:00:00Z"},
+			{"id": "ev-ext-1", "snapshot_id": "snap-logic-1", "file_path": "src/service/AccountService.java", "start_line": 24, "start_col": 5, "end_line": 24, "end_col": 80, "snippet_hash": "h5", "created_at_utc": "2026-01-01T00:00:00Z"},
+		},
+		"generated": "2026-01-01T00:00:00Z",
+	})
+
+	graph, err := buildGraph([]serviceSpec{
+		{
+			ID:             "svc-logic",
+			Name:           "Service Logic",
+			RepoPath:       tmp,
+			BundlePath:     bundlePath,
+			AnalyzerBundle: analyzerPath,
+		},
+	}, "single")
+	if err != nil {
+		t.Fatalf("build graph: %v", err)
+	}
+
+	edgeTypes := map[string]int{}
+	nodeTypes := map[string]int{}
+	for _, n := range graph.Nodes {
+		nodeTypes[n.Type]++
+	}
+	for _, e := range graph.Edges {
+		edgeTypes[e.Type]++
+	}
+
+	if nodeTypes["function"] == 0 {
+		t.Fatalf("expected function nodes in advanced logic layer, got %#v", nodeTypes)
+	}
+	if edgeTypes["exposure_invokes_function"] == 0 {
+		t.Fatalf("expected exposure_invokes_function edge, got %#v", edgeTypes)
+	}
+	if edgeTypes["function_calls_function"] == 0 {
+		t.Fatalf("expected function_calls_function edge, got %#v", edgeTypes)
+	}
+	if edgeTypes["function_calls_dependency"] == 0 {
+		t.Fatalf("expected function_calls_dependency edge, got %#v", edgeTypes)
+	}
+}
+
 func TestBuildGraphAddsConfigAndSensitiveEdges(t *testing.T) {
 	tmp := t.TempDir()
 	outDir := filepath.Join(tmp, "out")

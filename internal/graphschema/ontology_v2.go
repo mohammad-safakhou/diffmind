@@ -127,6 +127,8 @@ func nodeClassForType(typ string) string {
 		return "dependency_external_service"
 	case "dependency_operation":
 		return "dependency_operation"
+	case "function":
+		return "logic_function"
 	case "owner":
 		return "ownership"
 	case "dependency_risk":
@@ -154,6 +156,8 @@ func edgeSectionForType(typ string) string {
 	switch strings.ToLower(strings.TrimSpace(typ)) {
 	case "service_calls_endpoint", "service_exposes_endpoint", "queue_delivers_to_service", "service_exposes_sensitive_surface", "exposure_reaches_dependency":
 		return SectionExposure
+	case "exposure_invokes_function", "function_calls_function", "function_calls_dependency":
+		return SectionLogic
 	case "service_calls_service", "service_depends_on_dependency", "service_reads_db", "service_writes_db", "service_publishes_queue", "dependency_owned_by", "dependency_has_risk", "service_has_dependency_risk", "service_alias_of_canonical_api_host":
 		return SectionDependencies
 	case "service_has_unresolved_api_call":
@@ -171,6 +175,12 @@ func edgeClassForType(typ string) string {
 		return "exposure_service_entry"
 	case "exposure_reaches_dependency":
 		return "exposure_reaches_dependency"
+	case "exposure_invokes_function":
+		return "logic_entry_call"
+	case "function_calls_function":
+		return "logic_call"
+	case "function_calls_dependency":
+		return "logic_dependency_call"
 	case "service_calls_service":
 		return "dependency_service_call"
 	case "service_publishes_queue":

@@ -183,6 +183,9 @@ func loadFiles(root string, inv []snapshot.FileEntry, includeTests bool) ([]sour
 		if entry.FileType == "binary" {
 			continue
 		}
+		if shouldSkipAnalyzerEntry(entry) {
+			continue
+		}
 		if !includeTests && isTestSourcePath(entry.Path) {
 			continue
 		}
@@ -200,6 +203,36 @@ func loadFiles(root string, inv []snapshot.FileEntry, includeTests bool) ([]sour
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
+}
+
+func shouldSkipAnalyzerEntry(entry snapshot.FileEntry) bool {
+	classification := strings.ToLower(strings.TrimSpace(entry.Classification))
+	switch classification {
+	case "vendor", "generated":
+		return true
+	}
+
+	p := strings.ToLower(strings.TrimSpace(filepath.ToSlash(entry.Path)))
+	if p == "" {
+		return false
+	}
+	base := strings.ToLower(strings.TrimSpace(filepath.Base(p)))
+
+	// Sourcemaps and built/minified assets add large amounts of non-business noise.
+	if strings.HasSuffix(p, ".map") || strings.HasSuffix(base, ".min.js") || strings.HasSuffix(base, ".min.css") {
+		return true
+	}
+	if strings.Contains(base, "workbox-") && strings.HasSuffix(base, ".js") {
+		return true
+	}
+	if strings.Contains(p, "/public/") {
+		ext := strings.ToLower(filepath.Ext(base))
+		switch ext {
+		case ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".map":
+			return true
+		}
+	}
+	return false
 }
 
 func isTestSourcePath(path string) bool {

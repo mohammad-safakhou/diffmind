@@ -1,6 +1,7 @@
 package analyzers
 
 import (
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -67,6 +68,7 @@ func detectJSTSInboundEndpointsSemantic(c *collector, file sourceFile) bool {
 	})
 
 	detectJSTSNestInboundEndpoints(c, file, root, content)
+	detectJSTSNextInboundEndpoints(c, file, root, content)
 	return true
 }
 
@@ -555,6 +557,211 @@ func detectJSTSNestInboundEndpoints(c *collector, file sourceFile, root *sitter.
 			}
 		}
 	})
+}
+
+func detectJSTSNextInboundEndpoints(c *collector, file sourceFile, root *sitter.Node, content []byte) {
+	_ = root
+	_ = content
+	rel := strings.ToLower(filepath.ToSlash(strings.TrimSpace(file.Path)))
+	if rel == "" {
+		return
+	}
+	line := 1
+	col := 1
+	snippet := lineSnippet(file, line)
+
+	if path, ok := nextPagesAPIRoutePath(rel); ok {
+		methods := detectJSTSNextRouteMethods(file.Text)
+		if len(methods) == 0 {
+			methods = []string{"ANY"}
+		}
+		for _, method := range methods {
+			c.addFactWithEvidence("Endpoint", map[string]any{
+				"direction": "inbound",
+				"method":    method,
+				"path":      path,
+				"framework": "nextjs-pages-api-semantic",
+			}, file, line, col, snippet, func() { c.report.Endpoints++ })
+		}
+		return
+	}
+
+	if path, ok := nextAppAPIRoutePath(rel); ok {
+		methods := detectJSTSNextRouteMethods(file.Text)
+		if len(methods) == 0 {
+			methods = []string{"ANY"}
+		}
+		for _, method := range methods {
+			c.addFactWithEvidence("Endpoint", map[string]any{
+				"direction": "inbound",
+				"method":    method,
+				"path":      path,
+				"framework": "nextjs-app-api-semantic",
+			}, file, line, col, snippet, func() { c.report.Endpoints++ })
+		}
+		return
+	}
+
+	if path, ok := nextPagesRoutePath(rel); ok {
+		c.addFactWithEvidence("Endpoint", map[string]any{
+			"direction": "inbound",
+			"method":    "PAGE",
+			"path":      path,
+			"framework": "nextjs-page-semantic",
+		}, file, line, col, snippet, func() { c.report.Endpoints++ })
+		return
+	}
+
+	if path, ok := nextAppPageRoutePath(rel); ok {
+		c.addFactWithEvidence("Endpoint", map[string]any{
+			"direction": "inbound",
+			"method":    "PAGE",
+			"path":      path,
+			"framework": "nextjs-app-page-semantic",
+		}, file, line, col, snippet, func() { c.report.Endpoints++ })
+	}
+}
+
+func nextPagesAPIRoutePath(rel string) (string, bool) {
+	const marker = "/pages/api/"
+	rel = "/" + strings.Trim(strings.TrimSpace(rel), "/")
+	idx := strings.Index(rel, marker)
+	if idx < 0 {
+		return "", false
+	}
+	suffix := rel[idx+len(marker):]
+	if suffix == "" {
+		return "", false
+	}
+	suffix = strings.TrimSuffix(suffix, filepath.Ext(suffix))
+	return joinJSTSPaths("/api", normalizeNextRoutePath(suffix)), true
+}
+
+func nextAppAPIRoutePath(rel string) (string, bool) {
+	const marker = "/app/api/"
+	rel = "/" + strings.Trim(strings.TrimSpace(rel), "/")
+	idx := strings.Index(rel, marker)
+	if idx < 0 {
+		return "", false
+	}
+	suffix := rel[idx+len(marker):]
+	if suffix == "" {
+		return "", false
+	}
+	base := strings.TrimSuffix(filepath.Base(suffix), filepath.Ext(suffix))
+	if base != "route" {
+		return "", false
+	}
+	dir := filepath.ToSlash(filepath.Dir(suffix))
+	if dir == "." {
+		dir = ""
+	}
+	return joinJSTSPaths("/api", normalizeNextRoutePath(dir)), true
+}
+
+func nextPagesRoutePath(rel string) (string, bool) {
+	const marker = "/pages/"
+	rel = "/" + strings.Trim(strings.TrimSpace(rel), "/")
+	idx := strings.Index(rel, marker)
+	if idx < 0 {
+		return "", false
+	}
+	suffix := rel[idx+len(marker):]
+	if suffix == "" {
+		return "", false
+	}
+	base := strings.TrimSuffix(filepath.Base(suffix), filepath.Ext(suffix))
+	if strings.HasPrefix(base, "_") || base == "404" {
+		return "", false
+	}
+	if strings.HasPrefix(suffix, "api/") {
+		return "", false
+	}
+	suffix = strings.TrimSuffix(suffix, filepath.Ext(suffix))
+	return normalizeNextRoutePath(suffix), true
+}
+
+func nextAppPageRoutePath(rel string) (string, bool) {
+	const marker = "/app/"
+	rel = "/" + strings.Trim(strings.TrimSpace(rel), "/")
+	idx := strings.Index(rel, marker)
+	if idx < 0 {
+		return "", false
+	}
+	suffix := rel[idx+len(marker):]
+	if suffix == "" {
+		return "", false
+	}
+	base := strings.TrimSuffix(filepath.Base(suffix), filepath.Ext(suffix))
+	if base != "page" {
+		return "", false
+	}
+	dir := filepath.ToSlash(filepath.Dir(suffix))
+	if dir == "." {
+		dir = ""
+	}
+	return normalizeNextRoutePath(dir), true
+}
+
+func normalizeNextRoutePath(v string) string {
+	v = filepath.ToSlash(strings.TrimSpace(v))
+	if v == "" || v == "." || v == "index" {
+		return "/"
+	}
+	parts := strings.Split(strings.Trim(v, "/"), "/")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" || p == "index" {
+			continue
+		}
+		if strings.HasPrefix(p, "[") && strings.HasSuffix(p, "]") && len(p) > 2 {
+			inner := strings.TrimSpace(p[1 : len(p)-1])
+			if strings.HasPrefix(inner, "...") {
+				inner = strings.TrimPrefix(inner, "...")
+				p = "{" + inner + "...}"
+			} else if strings.HasPrefix(inner, "[...") && strings.HasSuffix(inner, "]") && len(inner) > 5 {
+				inner = strings.TrimSuffix(strings.TrimPrefix(inner, "[..."), "]")
+				p = "{" + inner + "...?}"
+			} else {
+				p = "{" + inner + "}"
+			}
+		}
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		return "/"
+	}
+	return "/" + strings.Join(out, "/")
+}
+
+func detectJSTSNextRouteMethods(text string) []string {
+	methodSet := map[string]struct{}{}
+	collect := func(re *regexp.Regexp, src string) {
+		for _, m := range re.FindAllStringSubmatch(src, -1) {
+			if len(m) < 2 {
+				continue
+			}
+			method := strings.ToUpper(strings.TrimSpace(m[1]))
+			switch method {
+			case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "ANY":
+				methodSet[method] = struct{}{}
+			}
+		}
+	}
+	collect(regexp.MustCompile(`(?i)\bexport\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b`), text)
+	collect(regexp.MustCompile(`(?i)\bexport\s+const\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b`), text)
+	collect(regexp.MustCompile(`(?i)\breq\.method\s*===\s*["'](GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)["']`), text)
+	collect(regexp.MustCompile(`(?i)\bcase\s+["'](GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)["']\s*:`), text)
+	if len(methodSet) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(methodSet))
+	for method := range methodSet {
+		out = append(out, method)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func collectJSTSClassDecorators(classNode *sitter.Node, content []byte) []string {

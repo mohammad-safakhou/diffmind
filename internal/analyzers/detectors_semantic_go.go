@@ -29,34 +29,40 @@ func detectGoInboundEndpointsSemantic(c *collector, file sourceFile) bool {
 		method := strings.ToUpper(strings.TrimSpace(sel.Sel.Name))
 		switch method {
 		case "GET", "POST", "PUT", "PATCH", "DELETE":
-			if len(call.Args) == 0 {
+			if len(call.Args) < 2 {
 				return true
 			}
 			path := normalizeGoExprAsPath(call.Args[0], fset)
-			if path == "" {
+			if !looksLikeRoutePath(path) || !looksLikeGoHandlerArg(call.Args[1], fset) {
 				return true
 			}
+			path = normalizeRoutePath(path)
+			handler := strings.TrimSpace(exprString(call.Args[1], fset))
 			line, col, snippet := lineColSnippet(fset, file, call.Pos())
 			c.addFactWithEvidence("Endpoint", map[string]any{
 				"direction": "inbound",
 				"method":    method,
 				"path":      path,
 				"framework": "go-router-semantic",
+				"handler":   handler,
 			}, file, line, col, snippet, func() { c.report.Endpoints++ })
 		case "HANDLE", "HANDLEFUNC":
-			if len(call.Args) == 0 {
+			if len(call.Args) < 2 {
 				return true
 			}
 			path := normalizeGoExprAsPath(call.Args[0], fset)
-			if path == "" {
+			if !looksLikeRoutePath(path) || !looksLikeGoHandlerArg(call.Args[1], fset) {
 				return true
 			}
+			path = normalizeRoutePath(path)
+			handler := strings.TrimSpace(exprString(call.Args[1], fset))
 			line, col, snippet := lineColSnippet(fset, file, call.Pos())
 			c.addFactWithEvidence("Endpoint", map[string]any{
 				"direction": "inbound",
 				"method":    "ANY",
 				"path":      path,
 				"framework": "go-net-http-semantic",
+				"handler":   handler,
 			}, file, line, col, snippet, func() { c.report.Endpoints++ })
 		case "METHODS":
 			if len(call.Args) == 0 {
@@ -74,13 +80,15 @@ func detectGoInboundEndpointsSemantic(c *collector, file sourceFile) bool {
 			if nestedMethod != "HANDLE" && nestedMethod != "HANDLEFUNC" {
 				return true
 			}
-			if len(nested.Args) == 0 {
+			if len(nested.Args) < 2 {
 				return true
 			}
 			path := normalizeGoExprAsPath(nested.Args[0], fset)
-			if path == "" {
+			if !looksLikeRoutePath(path) || !looksLikeGoHandlerArg(nested.Args[1], fset) {
 				return true
 			}
+			path = normalizeRoutePath(path)
+			handler := strings.TrimSpace(exprString(nested.Args[1], fset))
 			methods := goStringArgs(call.Args, fset)
 			if len(methods) == 0 {
 				methods = []string{"ANY"}
@@ -92,6 +100,7 @@ func detectGoInboundEndpointsSemantic(c *collector, file sourceFile) bool {
 					"method":    strings.ToUpper(m),
 					"path":      path,
 					"framework": "gorilla-mux-semantic",
+					"handler":   handler,
 				}, file, line, col, snippet, func() { c.report.Endpoints++ })
 			}
 		}
@@ -106,6 +115,7 @@ func detectGoOutboundCallsSemantic(c *collector, file sourceFile) bool {
 		return false
 	}
 	httpAliases := goImportAliasesForPath(node, "net/http")
+	assignments := goStringLiteralAssignments(node, fset)
 
 	ast.Inspect(node, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
@@ -129,27 +139,37 @@ func detectGoOutboundCallsSemantic(c *collector, file sourceFile) bool {
 					return true
 				}
 				target := normalizeGoExprAsTarget(call.Args[0], fset)
+				targetResolved := normalizeGoExprAsTargetWithAssignments(call.Args[0], fset, assignments)
 				method := strings.ToUpper(name)
 				line, col, snippet := lineColSnippet(fset, file, call.Pos())
-				c.addFactWithEvidence("ExternalCall", map[string]any{
+				attrs := map[string]any{
 					"protocol": "http",
 					"method":   method,
 					"target":   target,
 					"library":  "go-net-http-semantic",
-				}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+				}
+				if targetResolved != "" && targetResolved != target && targetResolved != "unknown-target" {
+					attrs["target_resolved"] = targetResolved
+				}
+				c.addFactWithEvidence("ExternalCall", attrs, file, line, col, snippet, func() { c.report.ExternalCalls++ })
 			case "NewRequest":
 				if len(call.Args) < 2 {
 					return true
 				}
-				method := normalizeGoMethod(call.Args[0], fset, httpAliases)
+				method := normalizeGoMethodWithAssignments(call.Args[0], fset, httpAliases, assignments)
 				target := normalizeGoExprAsTarget(call.Args[1], fset)
+				targetResolved := normalizeGoExprAsTargetWithAssignments(call.Args[1], fset, assignments)
 				line, col, snippet := lineColSnippet(fset, file, call.Pos())
-				c.addFactWithEvidence("ExternalCall", map[string]any{
+				attrs := map[string]any{
 					"protocol": "http",
 					"method":   method,
 					"target":   target,
 					"library":  "go-net-http-semantic",
-				}, file, line, col, snippet, func() { c.report.ExternalCalls++ })
+				}
+				if targetResolved != "" && targetResolved != target && targetResolved != "unknown-target" {
+					attrs["target_resolved"] = targetResolved
+				}
+				c.addFactWithEvidence("ExternalCall", attrs, file, line, col, snippet, func() { c.report.ExternalCalls++ })
 			}
 			return true
 		}
@@ -402,6 +422,15 @@ func normalizeGoExprAsTarget(expr ast.Expr, fset *token.FileSet) string {
 	return v
 }
 
+func normalizeGoExprAsTargetWithAssignments(expr ast.Expr, fset *token.FileSet, assignments map[string]string) string {
+	if ident, ok := expr.(*ast.Ident); ok {
+		if v := strings.TrimSpace(assignments[ident.Name]); v != "" {
+			return v
+		}
+	}
+	return normalizeGoExprAsTarget(expr, fset)
+}
+
 func exprString(expr ast.Expr, fset *token.FileSet) string {
 	if expr == nil {
 		return ""
@@ -411,6 +440,121 @@ func exprString(expr ast.Expr, fset *token.FileSet) string {
 		return ""
 	}
 	return buf.String()
+}
+
+func looksLikeRoutePath(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
+	return strings.HasPrefix(path, "/") || strings.Contains(path, "/")
+}
+
+func normalizeRoutePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return path
+	}
+	if strings.HasPrefix(path, "/") {
+		return path
+	}
+	if strings.Contains(path, "/") {
+		return "/" + path
+	}
+	return path
+}
+
+func looksLikeGoHandlerArg(expr ast.Expr, fset *token.FileSet) bool {
+	if expr == nil {
+		return false
+	}
+	switch v := expr.(type) {
+	case *ast.FuncLit:
+		return true
+	case *ast.Ident:
+		name := strings.TrimSpace(v.Name)
+		return name != "" && name != "ctx" && name != "c"
+	case *ast.SelectorExpr:
+		s := strings.TrimSpace(exprString(v, fset))
+		if s == "" {
+			return false
+		}
+		return !strings.Contains(strings.ToLower(s), ".context")
+	default:
+		return strings.TrimSpace(exprString(expr, fset)) != ""
+	}
+}
+
+func normalizeGoMethodWithAssignments(expr ast.Expr, fset *token.FileSet, httpAliases map[string]bool, assignments map[string]string) string {
+	if ident, ok := expr.(*ast.Ident); ok {
+		if v := strings.ToUpper(strings.TrimSpace(assignments[ident.Name])); v != "" {
+			return v
+		}
+	}
+	return normalizeGoMethod(expr, fset, httpAliases)
+}
+
+func goStringLiteralAssignments(file *ast.File, fset *token.FileSet) map[string]string {
+	out := map[string]string{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch s := n.(type) {
+		case *ast.AssignStmt:
+			for i, lhs := range s.Lhs {
+				ident, ok := lhs.(*ast.Ident)
+				if !ok || ident.Name == "" || i >= len(s.Rhs) {
+					continue
+				}
+				if v := goStringLiteralFromExpr(s.Rhs[i], fset); v != "" {
+					out[ident.Name] = v
+				}
+			}
+		case *ast.ValueSpec:
+			for i, name := range s.Names {
+				if name == nil || name.Name == "" || i >= len(s.Values) {
+					continue
+				}
+				if v := goStringLiteralFromExpr(s.Values[i], fset); v != "" {
+					out[name.Name] = v
+				}
+			}
+		}
+		return true
+	})
+	return out
+}
+
+func goStringLiteralFromExpr(expr ast.Expr, fset *token.FileSet) string {
+	_ = fset
+	if expr == nil {
+		return ""
+	}
+	switch v := expr.(type) {
+	case *ast.BasicLit:
+		if v.Kind != token.STRING {
+			return ""
+		}
+		s, err := strconv.Unquote(v.Value)
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(s)
+	case *ast.BinaryExpr:
+		if v.Op != token.ADD {
+			return ""
+		}
+		left := goStringLiteralFromExpr(v.X, fset)
+		right := goStringLiteralFromExpr(v.Y, fset)
+		if left == "" || right == "" {
+			return ""
+		}
+		return left + right
+	case *ast.CallExpr:
+		if len(v.Args) == 0 {
+			return ""
+		}
+		return goStringLiteralFromExpr(v.Args[0], fset)
+	}
+	return ""
 }
 
 func lineColSnippet(fset *token.FileSet, file sourceFile, pos token.Pos) (int, int, string) {
@@ -465,7 +609,8 @@ func goTopicFromCallArgs(args []ast.Expr, fset *token.FileSet) string {
 	}
 	if len(args) > 0 {
 		v := normalizeGoExprAsTarget(args[0], fset)
-		if strings.Contains(v, ".") || strings.HasPrefix(v, "topic") || strings.HasPrefix(v, "kafka:") {
+		lv := strings.ToLower(strings.TrimSpace(v))
+		if strings.HasPrefix(lv, "topic") || strings.HasPrefix(lv, "kafka:") || strings.Contains(lv, "topic") {
 			return v
 		}
 	}
@@ -480,7 +625,7 @@ func goQueueTargetFromCallArgs(args []ast.Expr, fset *token.FileSet) (string, st
 	target := goTopicFromCallArgs(args, fset)
 	if target == "" {
 		for _, arg := range args {
-			if _, ok := arg.(*ast.Ident); ok {
+			if goIgnoredQueueArg(arg, fset) {
 				continue
 			}
 			candidate := normalizeGoExprAsTarget(arg, fset)
@@ -493,6 +638,24 @@ func goQueueTargetFromCallArgs(args []ast.Expr, fset *token.FileSet) (string, st
 	}
 	kind := inferQueueKindFromTarget(target)
 	return target, kind
+}
+
+func goIgnoredQueueArg(arg ast.Expr, fset *token.FileSet) bool {
+	raw := strings.ToLower(strings.TrimSpace(exprString(arg, fset)))
+	if raw == "" {
+		return true
+	}
+	switch raw {
+	case "ctx", "c", "r.ctx", "context.background()", "context.todo()":
+		return true
+	}
+	if strings.Contains(raw, ".ctx") || strings.Contains(raw, "context.") {
+		return true
+	}
+	if strings.Contains(raw, "message") || strings.Contains(raw, "payload") || strings.Contains(raw, "body") {
+		return true
+	}
+	return false
 }
 
 func goQueueTargetFromStructuredArgs(args []ast.Expr, fset *token.FileSet) (string, string) {
