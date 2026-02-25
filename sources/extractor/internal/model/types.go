@@ -1,0 +1,120 @@
+package model
+
+import "time"
+
+type EntityKind string
+
+const (
+	KindExposure   EntityKind = "exposure"
+	KindDependency EntityKind = "dependency"
+)
+
+type Location struct {
+	File      string `json:"file"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+}
+
+type Evidence struct {
+	Location Location `json:"location"`
+	Snippet  string   `json:"snippet"`
+	Source   string   `json:"source"`
+}
+
+type InputSpec struct {
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Required    bool   `json:"required"`
+	Description string `json:"description,omitempty"`
+}
+
+type Condition struct {
+	Kind        string            `json:"kind"`
+	Expression  string            `json:"expression"`
+	Variables   []string          `json:"variables,omitempty"`
+	Operator    string            `json:"operator,omitempty"`
+	Value       string            `json:"value,omitempty"`
+	Negated     bool              `json:"negated,omitempty"`
+	Explanation string            `json:"explanation"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
+}
+
+type BaseEntity struct {
+	ID           string         `json:"id"`
+	Type         string         `json:"type"`
+	Name         string         `json:"name"`
+	Service      string         `json:"service"`
+	Inputs       []InputSpec    `json:"inputs,omitempty"`
+	Summary      string         `json:"summary"`
+	KeyActions   []string       `json:"key_actions,omitempty"`
+	Locations    []Location     `json:"source_locations"`
+	Evidence     []Evidence     `json:"evidence"`
+	Confidence   float64        `json:"confidence"`
+	Tags         []string       `json:"tags,omitempty"`
+	Details      map[string]any `json:"details,omitempty"`
+	PluginSource string         `json:"plugin_source,omitempty"`
+}
+
+type Exposure struct {
+	BaseEntity
+}
+
+type Dependency struct {
+	BaseEntity
+}
+
+type Connection struct {
+	ID             string           `json:"id"`
+	FromExposureID string           `json:"from_exposure_id"`
+	ToDependencyID string           `json:"to_dependency_id"`
+	Condition      Condition        `json:"condition"`
+	PathSignature  string           `json:"path_signature"`
+	Summary        string           `json:"summary"`
+	Locations      []Location       `json:"source_locations"`
+	Evidence       []Evidence       `json:"evidence"`
+	Confidence     float64          `json:"confidence"`
+	FromType       string           `json:"from_type"`
+	ToType         string           `json:"to_type"`
+	Paths          []ConnectionPath `json:"paths,omitempty"`
+}
+
+type ConnectionPath struct {
+	ID        string               `json:"id"`
+	Summary   string               `json:"summary"`
+	Condition Condition            `json:"condition"`
+	Steps     []ConnectionPathStep `json:"steps"`
+}
+
+type ConnectionPathStep struct {
+	Order     int        `json:"order"`
+	Action    string     `json:"action"`
+	Operation string     `json:"operation"`
+	From      string     `json:"from"`
+	To        string     `json:"to"`
+	Condition Condition  `json:"condition"`
+	Location  Location   `json:"location"`
+	Evidence  []Evidence `json:"evidence,omitempty"`
+}
+
+type UnresolvedItem struct {
+	Kind       EntityKind `json:"kind"`
+	Type       string     `json:"type"`
+	Name       string     `json:"name"`
+	ReasonCode string     `json:"reason_code"`
+	Reason     string     `json:"reason"`
+	Confidence float64    `json:"confidence"`
+	Evidence   []Evidence `json:"evidence,omitempty"`
+}
+
+type RunManifest struct {
+	RunID             string            `json:"run_id"`
+	StartedAt         time.Time         `json:"started_at"`
+	FinishedAt        time.Time         `json:"finished_at"`
+	RepoPath          string            `json:"repo_path"`
+	SchemaVersion     string            `json:"schema_version"`
+	OpenCodeURL       string            `json:"opencode_url,omitempty"`
+	ConfidenceMinimum float64           `json:"confidence_minimum"`
+	Counts            map[string]int    `json:"counts"`
+	Warnings          []string          `json:"warnings,omitempty"`
+	Metadata          map[string]string `json:"metadata,omitempty"`
+}
