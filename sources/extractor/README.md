@@ -70,6 +70,7 @@ go run ./cmd/diffmind run \
   --opencode-password 'your-pass' \
   --provider-id <provider-id> \
   --model-id <model-id> \
+  --model-variant <variant> \
   --workers 16 \
   --max-entities-per-objective 25 \
   --max-catalog-items 200 \
@@ -105,6 +106,7 @@ Controls:
 - `--log-file` => append logs to file
 - `DIFFMIND_LOG_LEVEL=info|debug|trace`
 - `--opencode-timeout-seconds` => per-request timeout to OpenCode (default 90)
+- `--model-variant` => pass model variant to OpenCode (`medium`, `high`, `max`, etc. depending on provider/model support)
 - `--cleanup-opencode-sessions` => optional session deletion; default `false` to avoid OpenCode FK race conditions
 - `--opencode-delete-delay-seconds` => delay before deleting sessions when cleanup is enabled
 
@@ -116,3 +118,28 @@ Artifacts are written to:
 - `.diffmind/runs/<run_id>/dependencies/*.json`
 - `.diffmind/runs/<run_id>/connections/*.json`
 - `.diffmind/runs/<run_id>/unresolved/*.json`
+
+`unresolved` is pipeline-generated and deterministic:
+- agent/runtime failures
+- low-confidence entities/links
+- unknown-entity references in connection mapping
+- detail extraction that could not confirm a discovered candidate
+
+## Dashboard UI
+
+You can run a local UI to inspect run results:
+
+```bash
+go run ./cmd/diffmind ui --out .diffmind/runs --host 127.0.0.1 --port 8080
+```
+
+Then open:
+- `http://127.0.0.1:8080`
+
+The dashboard shows:
+- run selector (latest first)
+- manifest summary cards
+- exposures/dependencies/connections/unresolved grouped by artifact file
+- full JSON for each group
+
+It auto-refreshes every 10 seconds.

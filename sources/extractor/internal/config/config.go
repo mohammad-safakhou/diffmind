@@ -6,12 +6,13 @@ import (
 )
 
 type OpenCode struct {
-	BaseURL    string `json:"base_url"`
-	ProviderID string `json:"provider_id"`
-	ModelID    string `json:"model_id"`
-	TimeoutSec int    `json:"timeout_seconds"`
-	Username   string `json:"username"`
-	Password   string `json:"password"`
+	BaseURL      string `json:"base_url"`
+	ProviderID   string `json:"provider_id"`
+	ModelID      string `json:"model_id"`
+	ModelVariant string `json:"model_variant"`
+	TimeoutSec   int    `json:"timeout_seconds"`
+	Username     string `json:"username"`
+	Password     string `json:"password"`
 }
 
 type Quality struct {

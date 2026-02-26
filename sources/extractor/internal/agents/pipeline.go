@@ -205,6 +205,14 @@ func Run(ctx context.Context, cfg config.Config, repoPath string, oc openCodeAPI
 		}
 		o.unresolved = append(o.unresolved, d.Unresolved...)
 		if d.Item == nil {
+			o.unresolved = append(o.unresolved, model.UnresolvedItem{
+				Kind:       d.Objective.Kind,
+				Type:       d.Objective.Type,
+				Name:       d.Objective.Description,
+				ReasonCode: "detail_not_confirmed",
+				Reason:     "Detail extraction did not return a source-backed entity for a discovered candidate.",
+				Confidence: 0,
+			})
 			continue
 		}
 		base, unresolved := toBase(o.repoPath, d.Objective.Kind, *d.Item, o.cfg.Quality.MinConfidence)
@@ -301,29 +309,12 @@ func (o *orchestrator) runObjectiveExtractionBatch(ctx context.Context, objs []o
 }
 
 func (o *orchestrator) runObjectiveExtractor(ctx context.Context, obj objectives.Objective) ([]llmEntity, []model.UnresolvedItem, error) {
-	prompt := fmt.Sprintf(`AGENT ROLE: objective-extractor
-OBJECTIVE_ID: %s
-OBJECTIVE_KIND: %s
-OBJECTIVE_TYPE: %s
-OBJECTIVE_DESCRIPTION: %s
-
-TASK:
-%s
-
-STRICT OUTPUT REQUIREMENTS:
-1) Return only source-backed entities with exact file+line evidence.
-2) Include detailed inputs and key_actions.
-3) Include details object with deep technical fields (tables, operations, endpoint paths, queue destinations, etc.) when applicable.
-4) Confidence range [0,1].
-5) Do not emit duplicates of the same callsite.
-6) If no entities are found for this objective, return an empty items array.
-`, obj.ID, obj.Kind, obj.Type, obj.Description, obj.DiscoveryPrompt)
+	prompt := buildDiscoveryPrompt(obj)
 
 	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"items":      map[string]any{"type": "array", "items": entitySchema()},
-			"unresolved": unresolvedSchema(),
+			"items": map[string]any{"type": "array", "items": entitySchema()},
 		},
 		"required": []string{"items"},
 	}
@@ -333,9 +324,8 @@ STRICT OUTPUT REQUIREMENTS:
 	}
 	items := parseEntities(payload["items"])
 	items = clampEntities(items, o.cfg.Runtime.MaxEntitiesPerObjective)
-	unresolved := parseUnresolved(payload["unresolved"], obj.Kind)
-	util.Info("agents.discovery", "objective discovery completed", map[string]any{"objective": obj.ID, "items": len(items), "unresolved": len(unresolved)})
-	return items, unresolved, nil
+	util.Info("agents.discovery", "objective discovery completed", map[string]any{"objective": obj.ID, "items": len(items), "unresolved": 0})
+	return items, nil, nil
 }
 
 func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []struct {
@@ -385,41 +375,23 @@ func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []struct {
 }
 
 func (o *orchestrator) runDetailExtractor(ctx context.Context, obj objectives.Objective, seed llmEntity) (*llmEntity, []model.UnresolvedItem, error) {
-	prompt := fmt.Sprintf(`AGENT ROLE: detail-extractor
-OBJECTIVE_ID: %s
-OBJECTIVE_KIND: %s
-OBJECTIVE_TYPE: %s
-
-TASK:
-%s
-
-CANDIDATE:
-%s
-
-STRICT OUTPUT REQUIREMENTS:
-1) Validate candidate against source evidence; reject via unresolved if not valid.
-2) Keep identity tied to exact callsite (avoid broad conceptual grouping).
-3) Populate details object deeply.
-4) Include at least one evidence item with snippet.
-`, obj.ID, obj.Kind, obj.Type, obj.DetailPrompt, mustJSON(seed))
+	prompt := buildDetailPrompt(obj, seed)
 
 	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"item":       entitySchema(),
-			"unresolved": unresolvedSchema(),
+			"item": entitySchema(),
 		},
 	}
 	payload, err := o.promptAgent(ctx, "detail."+obj.ID, prompt, schema)
 	if err != nil {
 		return nil, nil, err
 	}
-	unresolved := parseUnresolved(payload["unresolved"], obj.Kind)
 	items := parseEntities(asList(payload["item"]))
 	if len(items) == 0 {
-		return nil, unresolved, nil
+		return nil, nil, nil
 	}
-	return &items[0], unresolved, nil
+	return &items[0], nil, nil
 }
 
 func (o *orchestrator) runConnectionsBatch(ctx context.Context, onResult func()) ([]model.Connection, []model.UnresolvedItem) {
@@ -476,31 +448,12 @@ func (o *orchestrator) runConnectionsBatch(ctx context.Context, onResult func())
 }
 
 func (o *orchestrator) runConnectionExtractor(ctx context.Context, exposure model.Exposure, dependencies []model.Dependency) ([]llmConnection, []model.UnresolvedItem, error) {
-	prompt := fmt.Sprintf(`AGENT ROLE: connection-extractor
-EXPOSURE_ID: %s
-EXPOSURE_TYPE: %s
-
-TASK:
-Map exposure -> dependency connections for this exposure only.
-Return ordered execution paths and step-level operations.
-
-Output guidance:
-- Include condition expression for each connection.
-- Include paths[] where each path has ordered steps with operation semantics (read/write/call/publish/etc).
-- For DB calls include table/entity name and operation in summary/steps.
-- Emit only source-backed links.
-
-EXPOSURE:
-%s
-
-DEPENDENCY_CATALOG:
-%s`, exposure.ID, exposure.Type, mustJSON(exposure), mustJSON(compactDependencyCatalog(dependencies, o.cfg.Runtime.MaxCatalogItems)))
+	prompt := buildConnectionPrompt(exposure, dependencies, o.cfg.Runtime.MaxCatalogItems)
 
 	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"items":      map[string]any{"type": "array", "items": connectionSchema()},
-			"unresolved": unresolvedSchema(),
+			"items": map[string]any{"type": "array", "items": connectionSchema()},
 		},
 		"required": []string{"items"},
 	}
@@ -514,7 +467,7 @@ DEPENDENCY_CATALOG:
 			items[i].FromExposureID = exposure.ID
 		}
 	}
-	return items, parseUnresolved(payload["unresolved"], model.KindDependency), nil
+	return items, nil, nil
 }
 
 func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, schema map[string]any) (map[string]any, error) {
@@ -611,29 +564,6 @@ func parseConnections(v any) []llmConnection {
 	var out []llmConnection
 	if err := json.Unmarshal(b, &out); err != nil {
 		return nil
-	}
-	return out
-}
-
-func parseUnresolved(v any, kind model.EntityKind) []model.UnresolvedItem {
-	if v == nil {
-		return nil
-	}
-	b, err := json.Marshal(v)
-	if err != nil {
-		return nil
-	}
-	var out []model.UnresolvedItem
-	if err := json.Unmarshal(b, &out); err != nil {
-		return nil
-	}
-	for i := range out {
-		if out[i].Kind == "" {
-			out[i].Kind = kind
-		}
-		if out[i].ReasonCode == "" {
-			out[i].ReasonCode = "unresolved"
-		}
 	}
 	return out
 }
@@ -817,6 +747,125 @@ func defaultSummary(in, fallback string) string {
 	return in
 }
 
+func buildDiscoveryPrompt(obj objectives.Objective) string {
+	return fmt.Sprintf(`AGENT ROLE: objective-extractor
+OBJECTIVE_ID: %s
+OBJECTIVE_KIND: %s
+OBJECTIVE_TYPE: %s
+OBJECTIVE_DESCRIPTION: %s
+
+MISSION:
+%s
+
+ANALYSIS PROTOCOL:
+1) Explore recursively until you can confirm all reachable candidates for this objective type.
+2) Use only source-backed evidence from this repository.
+3) Track each entity at callsite-level granularity, not broad conceptual grouping.
+4) Capture deep implementation facts in details{} (table names, operation semantics, route/path/method, queue/topic names, retry policies, command patterns, etc.).
+
+STRICT ACCURACY RULES:
+- Never invent files, lines, handlers, routes, tables, queues, endpoints, commands, or conditions.
+- If you are uncertain, omit the entity.
+- If nothing is found, return exactly {"items": []}.
+- Confidence MUST be in [0,1] and reflect evidence strength.
+- Do not duplicate the same callsite entity.
+
+OUTPUT CONTRACT:
+- Return only JSON matching schema.
+- Every entity must include source_locations with valid file + line numbers.
+- Include evidence snippets when available.
+`, obj.ID, obj.Kind, obj.Type, obj.Description, obj.DiscoveryPrompt)
+}
+
+func buildDetailPrompt(obj objectives.Objective, seed llmEntity) string {
+	return fmt.Sprintf(`AGENT ROLE: detail-extractor
+OBJECTIVE_ID: %s
+OBJECTIVE_KIND: %s
+OBJECTIVE_TYPE: %s
+
+MISSION:
+%s
+
+CANDIDATE_ENTITY:
+%s
+
+ANALYSIS PROTOCOL:
+1) Validate candidate identity strictly against repository evidence.
+2) Keep exact callsite identity; do not merge unrelated callsites.
+3) Expand details{} deeply with concrete technical fields.
+4) Include ordered flow summary, inputs, key actions, and evidence snippets.
+
+DEPTH CHECKLIST FOR THIS OBJECTIVE TYPE:
+%s
+
+STRICT ACCURACY RULES:
+- Never fill missing facts with guesses.
+- If candidate is not confirmed, return {"item": null}.
+- If candidate is confirmed, include at least one source location and one evidence snippet when available.
+- Confidence MUST be in [0,1].
+
+OUTPUT CONTRACT:
+- Return only JSON matching schema.
+`, obj.ID, obj.Kind, obj.Type, obj.DetailPrompt, mustJSON(seed), detailChecklist(obj.Type))
+}
+
+func buildConnectionPrompt(exposure model.Exposure, dependencies []model.Dependency, maxCatalog int) string {
+	return fmt.Sprintf(`AGENT ROLE: connection-extractor
+EXPOSURE_ID: %s
+EXPOSURE_TYPE: %s
+
+MISSION:
+Map source-backed connections from this single exposure to known dependencies.
+
+ANALYSIS PROTOCOL:
+1) Use exposure evidence + dependency catalog only.
+2) Produce connection links only when code path is evidenced.
+3) For each link provide condition + ordered paths with step-level operations.
+4) Capture branch-specific behavior (guards, feature flags, input checks, error paths) when evidenced.
+
+STRICT ACCURACY RULES:
+- Never invent connection links.
+- If no source-backed connection exists, return {"items": []}.
+- Every step must reflect an evidenced action.
+- For DB-related links include table/entity and read/write semantics in steps/summary.
+
+EXPOSURE:
+%s
+
+DEPENDENCY_CATALOG:
+%s
+`, exposure.ID, exposure.Type, mustJSON(exposure), mustJSON(compactDependencyCatalog(dependencies, maxCatalog)))
+}
+
+func detailChecklist(entityType string) string {
+	switch entityType {
+	case "http_route":
+		return "- route/method, auth checks, validation chain, handler flow order, downstream calls with conditions."
+	case "webhook":
+		return "- callback path/method, signature verification, event type branching, idempotency strategy, downstream actions."
+	case "rpc_endpoint":
+		return "- rpc service/method, request message contract, auth/validation, handler flow order, downstream actions."
+	case "queue_consumer":
+		return "- queue/topic binding, payload contract, retry/dead-letter behavior, handler flow order, downstream actions."
+	case "scheduled_job":
+		return "- schedule trigger, profile/property guards, dataset selection, execution order, downstream actions."
+	case "cli_command":
+		return "- command flags/args, dispatch path, validation, execution order, downstream actions."
+	case "db_operation":
+		return "- datasource/schema/table/entity, operation type (read/write/upsert/delete), transaction context, query method/callsite."
+	case "outbound_http":
+		return "- target service, method/path, request/response contract, retry/timeout behavior, call conditions."
+	case "outbound_rpc":
+		return "- target rpc service/method, request/response contracts, retry/timeout behavior, and call conditions."
+	case "queue_publish":
+		return "- destination topic/queue, payload fields, publish mode (sync/async/batch), publish conditions."
+	case "command_exec":
+		return "- command pattern, arguments, env/context, trigger conditions, error handling."
+	default:
+		return "- concrete callsite identity, ordered flow, deep details, and evidence-backed confidence."
+	}
+}
+
 func entitySchema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -868,23 +917,6 @@ func entitySchema() map[string]any {
 			},
 		},
 		"required": []string{"type", "name", "summary", "confidence", "source_locations"},
-	}
-}
-
-func unresolvedSchema() map[string]any {
-	return map[string]any{
-		"type": "array",
-		"items": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"kind":        map[string]any{"type": "string"},
-				"type":        map[string]any{"type": "string"},
-				"name":        map[string]any{"type": "string"},
-				"reason_code": map[string]any{"type": "string"},
-				"reason":      map[string]any{"type": "string"},
-				"confidence":  map[string]any{"type": "number"},
-			},
-		},
 	}
 }
 

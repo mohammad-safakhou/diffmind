@@ -18,8 +18,8 @@ func Default() []Objective {
 			ID:          "exposure.http_route",
 			Kind:        model.KindExposure,
 			Type:        "http_route",
-			Description: "HTTP REST or RPC routes exposed by the service",
-			DiscoveryPrompt: "Find all externally reachable HTTP routes (GET/POST/PUT/PATCH/DELETE, request mappings, RPC gateway handlers). " +
+			Description: "HTTP REST/API routes exposed by the service (non-webhook)",
+			DiscoveryPrompt: "Find all externally reachable HTTP API routes (GET/POST/PUT/PATCH/DELETE, request mappings, controller endpoints). " +
 				"Include route path, HTTP method, handler symbol, request inputs and validation entry points.",
 			DetailPrompt: "For this route, extract handler flow in order, request input contract, authentication/authorization checks, validation, and all downstream dependency operations. " +
 				"For DB operations include table names and read/write operation type.",
@@ -29,11 +29,21 @@ func Default() []Objective {
 			ID:          "exposure.webhook",
 			Kind:        model.KindExposure,
 			Type:        "webhook",
-			Description: "Webhook callback endpoints",
+			Description: "HTTP webhook callback endpoints (subset of HTTP entrypoints)",
 			DiscoveryPrompt: "Find webhook/callback endpoints (incoming third-party callbacks, signed webhook handlers, event webhook controllers). " +
 				"Include path, method, signature verification inputs, and parsing flow.",
 			DetailPrompt:      "For this webhook, extract signature/auth checks, payload schema, branching rules, idempotency/duplicate handling, and ordered downstream operations.",
 			ConnectionContext: "Map webhook-to-dependency conditional paths with explicit guard expressions.",
+		},
+		{
+			ID:          "exposure.rpc_endpoint",
+			Kind:        model.KindExposure,
+			Type:        "rpc_endpoint",
+			Description: "RPC/gRPC entrypoints exposed by the service",
+			DiscoveryPrompt: "Find externally reachable RPC entrypoints (gRPC service methods, protobuf RPC handlers, thrift endpoints). " +
+				"Include service/method names, request message types, and handler symbols.",
+			DetailPrompt:      "For this RPC endpoint, extract request contract, auth/validation, branching logic, and ordered downstream operations.",
+			ConnectionContext: "Map RPC endpoint paths to dependencies with explicit branch conditions.",
 		},
 		{
 			ID:          "exposure.queue_consumer",
@@ -79,11 +89,21 @@ func Default() []Objective {
 			ID:          "dependency.outbound_http",
 			Kind:        model.KindDependency,
 			Type:        "outbound_http",
-			Description: "Outbound HTTP/RPC calls",
-			DiscoveryPrompt: "Find outbound service calls (Feign/HTTP clients/gRPC clients/external SDK APIs). " +
+			Description: "Outbound HTTP calls",
+			DiscoveryPrompt: "Find outbound HTTP service calls (Feign/REST clients/external HTTP SDK APIs). " +
 				"Extract client class, host/base URL config, method/path, and request inputs.",
 			DetailPrompt:      "For this outbound dependency, extract exact endpoint path/method, request/response shape, timeout/retry behavior, and call conditions.",
 			ConnectionContext: "Connection mapping must include outbound method/path and guard condition.",
+		},
+		{
+			ID:          "dependency.outbound_rpc",
+			Kind:        model.KindDependency,
+			Type:        "outbound_rpc",
+			Description: "Outbound RPC/gRPC calls",
+			DiscoveryPrompt: "Find outbound RPC dependencies (gRPC stubs, protobuf RPC clients, thrift clients). " +
+				"Extract target service, rpc method, request type, and callsite.",
+			DetailPrompt:      "For this outbound RPC dependency, extract rpc service/method, request/response contracts, retry/timeout behavior, and call conditions.",
+			ConnectionContext: "Connection mapping must include rpc target service/method and guard condition.",
 		},
 		{
 			ID:          "dependency.queue_publish",

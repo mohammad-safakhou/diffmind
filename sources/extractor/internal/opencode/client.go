@@ -20,16 +20,18 @@ type Client struct {
 	baseURL    string
 	providerID string
 	modelID    string
+	variant    string
 	username   string
 	password   string
 	httpClient *http.Client
 }
 
-func New(baseURL, providerID, modelID, username, password string, timeout time.Duration) *Client {
+func New(baseURL, providerID, modelID, variant, username, password string, timeout time.Duration) *Client {
 	return &Client{
 		baseURL:    strings.TrimSuffix(baseURL, "/"),
 		providerID: providerID,
 		modelID:    modelID,
+		variant:    variant,
 		username:   username,
 		password:   password,
 		httpClient: &http.Client{Timeout: timeout},
@@ -153,6 +155,9 @@ func (c *Client) PromptStructured(ctx context.Context, sessionID, directory, pro
 	}
 	if c.providerID != "" && c.modelID != "" {
 		body["model"] = map[string]string{"providerID": c.providerID, "modelID": c.modelID}
+	}
+	if strings.TrimSpace(c.variant) != "" {
+		body["variant"] = strings.TrimSpace(c.variant)
 	}
 	buf, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(buf))

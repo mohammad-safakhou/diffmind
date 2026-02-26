@@ -6,16 +6,19 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 
 	"github.com/mohammad-safakhou/diffmind/internal/app"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
+	"github.com/mohammad-safakhou/diffmind/internal/ui"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: diffmind <run|validate|list-runs> ...")
+		fmt.Fprintln(os.Stderr, "usage: diffmind <run|validate|list-runs|ui> ...")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -25,6 +28,8 @@ func main() {
 		validate(os.Args[2:])
 	case "list-runs":
 		listRuns(os.Args[2:])
+	case "ui":
+		serveUI(os.Args[2:])
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command:", os.Args[1])
 		os.Exit(2)
@@ -41,6 +46,7 @@ func run(args []string) {
 	opencodeTimeoutSeconds := fs.Int("opencode-timeout-seconds", 0, "OpenCode request timeout in seconds")
 	providerID := fs.String("provider-id", "", "OpenCode provider ID")
 	modelID := fs.String("model-id", "", "OpenCode model ID")
+	modelVariant := fs.String("model-variant", "", "OpenCode model variant (for example: low, medium, high, max)")
 	outDir := fs.String("out", "", "artifact base directory (default .diffmind/runs)")
 	workers := fs.Int("workers", 0, "parallel worker count")
 	maxEntitiesPerObjective := fs.Int("max-entities-per-objective", 0, "maximum entities discovered per objective per round")
@@ -56,7 +62,7 @@ func run(args []string) {
 	util.Info("cli.run", "run command started", map[string]any{
 		"repo": *repo, "config": *cfgPath, "opencode_url": *opencodeURL, "workers": *workers,
 		"max_entities_per_objective": *maxEntitiesPerObjective,
-		"max_catalog_items":          *maxCatalogItems, "opencode_timeout_seconds": *opencodeTimeoutSeconds,
+		"max_catalog_items":          *maxCatalogItems, "opencode_timeout_seconds": *opencodeTimeoutSeconds, "model_variant": *modelVariant,
 		"cleanup_opencode_sessions": *cleanupOpenCodeSessions, "opencode_delete_delay_seconds": *opencodeDeleteDelaySeconds,
 	})
 
@@ -86,6 +92,9 @@ func run(args []string) {
 	}
 	if *modelID != "" {
 		cfg.OpenCode.ModelID = *modelID
+	}
+	if *modelVariant != "" {
+		cfg.OpenCode.ModelVariant = *modelVariant
 	}
 	if *outDir != "" {
 		cfg.Artifacts.BaseDir = *outDir
@@ -165,6 +174,33 @@ func listRuns(args []string) {
 	for _, r := range runs {
 		fmt.Println(r)
 	}
+}
+
+func serveUI(args []string) {
+	fs := flag.NewFlagSet("ui", flag.ExitOnError)
+	baseDir := fs.String("out", ".diffmind/runs", "artifact base directory")
+	host := fs.String("host", "127.0.0.1", "dashboard host")
+	port := fs.Int("port", 8080, "dashboard port")
+	verbose := fs.Bool("verbose", false, "enable debug logs")
+	trace := fs.Bool("trace", false, "enable trace logs (very noisy)")
+	logFile := fs.String("log-file", "", "optional log file path")
+	fs.Parse(args)
+	configureLogging(*verbose, *trace, *logFile)
+
+	srv := ui.New(*baseDir, *host, *port)
+	url := fmt.Sprintf("http://%s", srv.Addr())
+	util.Info("cli.ui", "starting dashboard", map[string]any{"url": url, "out": *baseDir})
+	fmt.Println("DiffMind dashboard:", url)
+	fmt.Println("Press Ctrl+C to stop.")
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := srv.Start(ctx); err != nil {
+		util.Error("cli.ui", "dashboard stopped with error", map[string]any{"error": err})
+		fmt.Fprintln(os.Stderr, "ui failed:", err)
+		os.Exit(1)
+	}
+	util.Info("cli.ui", "dashboard stopped", nil)
 }
 
 func configureLogging(verbose, trace bool, logFile string) {

@@ -46,6 +46,7 @@ func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 		in.Config.OpenCode.BaseURL,
 		in.Config.OpenCode.ProviderID,
 		in.Config.OpenCode.ModelID,
+		in.Config.OpenCode.ModelVariant,
 		in.Config.OpenCode.Username,
 		in.Config.OpenCode.Password,
 		time.Duration(in.Config.OpenCode.TimeoutSec)*time.Second,

@@ -18,7 +18,7 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func TestPromptStructured(t *testing.T) {
-	c := New("http://opencode.local", "", "", "opencode", "secret", 3*time.Second)
+	c := New("http://opencode.local", "", "", "", "opencode", "secret", 3*time.Second)
 	c.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if got := r.Header.Get("Authorization"); got == "" {
 			t.Fatalf("expected authorization header")
@@ -76,7 +76,7 @@ func TestPromptStructured(t *testing.T) {
 }
 
 func TestPromptStructuredParsesFencedJSONText(t *testing.T) {
-	c := New("http://opencode.local", "", "", "", "", 3*time.Second)
+	c := New("http://opencode.local", "", "", "", "", "", 3*time.Second)
 	c.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		status := 200
 		body := "{}"
@@ -109,7 +109,7 @@ func TestPromptStructuredParsesFencedJSONText(t *testing.T) {
 }
 
 func TestPromptStructuredIncludesServerErrorDetails(t *testing.T) {
-	c := New("http://opencode.local", "", "", "", "", 3*time.Second)
+	c := New("http://opencode.local", "", "", "", "", "", 3*time.Second)
 	c.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		status := 200
 		body := "{}"
@@ -138,5 +138,45 @@ func TestPromptStructuredIncludesServerErrorDetails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "APIError") || !strings.Contains(err.Error(), "Incorrect API key provided") {
 		t.Fatalf("expected detailed structured output error, got: %v", err)
+	}
+}
+
+func TestPromptStructuredIncludesVariant(t *testing.T) {
+	c := New("http://opencode.local", "openai", "gpt-5.3-codex", "high", "", "", 3*time.Second)
+	c.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		status := 200
+		body := "{}"
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/session":
+			body = `{"id":"s1"}`
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/session/s1/message"):
+			raw, _ := io.ReadAll(r.Body)
+			defer r.Body.Close()
+			var payload map[string]any
+			if err := json.Unmarshal(raw, &payload); err != nil {
+				t.Fatalf("failed parsing request body: %v", err)
+			}
+			if payload["variant"] != "high" {
+				t.Fatalf("expected variant=high, got %#v", payload["variant"])
+			}
+			body = `{"info":{"structured":{"ok":true}}}`
+		default:
+			status = 404
+			body = `{"error":"not found"}`
+		}
+		return &http.Response{
+			StatusCode: status,
+			Body:       io.NopCloser(bytes.NewBufferString(body)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+
+	ctx := context.Background()
+	sid, err := c.CreateSession(ctx, "/tmp/repo")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := c.PromptStructured(ctx, sid, "/tmp/repo", "prompt", map[string]any{"type": "object"}); err != nil {
+		t.Fatalf("prompt failed: %v", err)
 	}
 }
