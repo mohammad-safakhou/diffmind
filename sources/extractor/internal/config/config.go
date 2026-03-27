@@ -21,10 +21,10 @@ type Quality struct {
 
 type Runtime struct {
 	Workers                 int  `json:"workers"`
-	MaxEntitiesPerObjective int  `json:"max_entities_per_objective"`
 	MaxCatalogItems         int  `json:"max_catalog_items"`
 	CleanupOpenCodeSessions bool `json:"cleanup_opencode_sessions"`
 	OpenCodeDeleteDelaySec  int  `json:"opencode_delete_delay_seconds"`
+	ReuseOpenCodeSession    bool `json:"reuse_opencode_session"`
 }
 
 type Artifacts struct {
@@ -46,10 +46,10 @@ func Default() Config {
 		},
 		Runtime: Runtime{
 			Workers:                 16,
-			MaxEntitiesPerObjective: 25,
-			MaxCatalogItems:         200,
+			MaxCatalogItems:         80,
 			CleanupOpenCodeSessions: false,
 			OpenCodeDeleteDelaySec:  5,
+			ReuseOpenCodeSession:    false,
 		},
 		Artifacts: Artifacts{BaseDir: ".diffmind/runs"},
 	}

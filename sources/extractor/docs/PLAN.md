@@ -35,8 +35,9 @@ All emitted entries include source locations and bounded evidence snippets.
 A plugin SDK surface is represented in core interfaces and category/tag schema fields so custom extractors can be added without breaking consumer contracts.
 
 ## Performance Model
-- OpenCode session reuse per run to keep context/tool state warm.
-- Bounded prompt passes for discovery and mapping.
+- Fresh OpenCode sessions per prompt by default to avoid context growth costs.
+- Optional per-run session reuse mode for A/B measurement.
+- Bounded prompt payload batches for connection mapping.
 - Deterministic content-hash IDs.
 
 ## Test Strategy
