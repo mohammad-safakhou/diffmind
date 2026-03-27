@@ -72,9 +72,9 @@ go run ./cmd/diffmind run \
   --model-id <model-id> \
   --model-variant <variant> \
   --workers 16 \
-  --max-entities-per-objective 25 \
-  --max-catalog-items 200 \
+  --max-catalog-items 80 \
   --opencode-timeout-seconds 300 \
+  --reuse-opencode-session=false \
   --cleanup-opencode-sessions=false \
   --min-confidence 0.70 \
   --trace \
@@ -107,6 +107,8 @@ Controls:
 - `DIFFMIND_LOG_LEVEL=info|debug|trace`
 - `--opencode-timeout-seconds` => per-request timeout to OpenCode (default 90)
 - `--model-variant` => pass model variant to OpenCode (`medium`, `high`, `max`, etc. depending on provider/model support)
+- `--max-catalog-items` => dependency items sent per connection-mapping prompt batch (default 80)
+- `--reuse-opencode-session` => reuse one OpenCode session across prompts for A/B testing (default false)
 - `--cleanup-opencode-sessions` => optional session deletion; default `false` to avoid OpenCode FK race conditions
 - `--opencode-delete-delay-seconds` => delay before deleting sessions when cleanup is enabled
 

@@ -49,10 +49,10 @@ func run(args []string) {
 	modelVariant := fs.String("model-variant", "", "OpenCode model variant (for example: low, medium, high, max)")
 	outDir := fs.String("out", "", "artifact base directory (default .diffmind/runs)")
 	workers := fs.Int("workers", 0, "parallel worker count")
-	maxEntitiesPerObjective := fs.Int("max-entities-per-objective", 0, "maximum entities discovered per objective per round")
-	maxCatalogItems := fs.Int("max-catalog-items", 0, "maximum catalog items shared between agents")
+	maxCatalogItems := fs.Int("max-catalog-items", 0, "maximum dependency catalog items sent per connection-mapping prompt batch")
 	cleanupOpenCodeSessions := fs.Bool("cleanup-opencode-sessions", false, "delete OpenCode sessions after prompts (can trigger server-side FK races)")
 	opencodeDeleteDelaySeconds := fs.Int("opencode-delete-delay-seconds", 0, "delay before deleting OpenCode sessions when cleanup is enabled")
+	reuseOpenCodeSession := fs.Bool("reuse-opencode-session", false, "reuse a single OpenCode session across prompts in a run")
 	minConfidence := fs.Float64("min-confidence", -1, "confidence threshold in [0,1]")
 	verbose := fs.Bool("verbose", false, "enable debug logs")
 	trace := fs.Bool("trace", false, "enable trace logs (very noisy)")
@@ -61,9 +61,8 @@ func run(args []string) {
 	configureLogging(*verbose, *trace, *logFile)
 	util.Info("cli.run", "run command started", map[string]any{
 		"repo": *repo, "config": *cfgPath, "opencode_url": *opencodeURL, "workers": *workers,
-		"max_entities_per_objective": *maxEntitiesPerObjective,
-		"max_catalog_items":          *maxCatalogItems, "opencode_timeout_seconds": *opencodeTimeoutSeconds, "model_variant": *modelVariant,
-		"cleanup_opencode_sessions": *cleanupOpenCodeSessions, "opencode_delete_delay_seconds": *opencodeDeleteDelaySeconds,
+		"max_catalog_items": *maxCatalogItems, "opencode_timeout_seconds": *opencodeTimeoutSeconds, "model_variant": *modelVariant,
+		"cleanup_opencode_sessions": *cleanupOpenCodeSessions, "opencode_delete_delay_seconds": *opencodeDeleteDelaySeconds, "reuse_opencode_session": *reuseOpenCodeSession,
 	})
 
 	if *repo == "" {
@@ -102,13 +101,11 @@ func run(args []string) {
 	if *workers > 0 {
 		cfg.Runtime.Workers = *workers
 	}
-	if *maxEntitiesPerObjective > 0 {
-		cfg.Runtime.MaxEntitiesPerObjective = *maxEntitiesPerObjective
-	}
 	if *maxCatalogItems > 0 {
 		cfg.Runtime.MaxCatalogItems = *maxCatalogItems
 	}
 	cfg.Runtime.CleanupOpenCodeSessions = *cleanupOpenCodeSessions
+	cfg.Runtime.ReuseOpenCodeSession = *reuseOpenCodeSession
 	if *opencodeDeleteDelaySeconds > 0 {
 		cfg.Runtime.OpenCodeDeleteDelaySec = *opencodeDeleteDelaySeconds
 	}

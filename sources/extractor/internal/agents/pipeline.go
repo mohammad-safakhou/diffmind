@@ -115,6 +115,21 @@ type connectionResult struct {
 	Err        error
 }
 
+type rolePromptMetrics struct {
+	Calls       int
+	PromptBytes int
+	SchemaBytes int
+}
+
+type promptMetrics struct {
+	Role map[string]rolePromptMetrics
+
+	ConnectionBatches      int
+	ConnectionCatalogItems int
+	ExposurePayloadBytes   int
+	CatalogPayloadBytes    int
+}
+
 type orchestrator struct {
 	cfg      config.Config
 	repoPath string
@@ -125,6 +140,12 @@ type orchestrator struct {
 	connections  map[string]model.Connection
 	unresolved   []model.UnresolvedItem
 	warnings     []string
+
+	sessionMu       sync.Mutex
+	sharedSessionID string
+
+	metricsMu sync.Mutex
+	metrics   promptMetrics
 }
 
 func Run(ctx context.Context, cfg config.Config, repoPath string, oc openCodeAPI) (Result, error) {
@@ -134,11 +155,8 @@ func Run(ctx context.Context, cfg config.Config, repoPath string, oc openCodeAPI
 	if cfg.Runtime.Workers <= 0 {
 		cfg.Runtime.Workers = 8
 	}
-	if cfg.Runtime.MaxEntitiesPerObjective <= 0 {
-		cfg.Runtime.MaxEntitiesPerObjective = 25
-	}
 	if cfg.Runtime.MaxCatalogItems <= 0 {
-		cfg.Runtime.MaxCatalogItems = 200
+		cfg.Runtime.MaxCatalogItems = 80
 	}
 
 	o := &orchestrator{
@@ -150,14 +168,18 @@ func Run(ctx context.Context, cfg config.Config, repoPath string, oc openCodeAPI
 		connections:  map[string]model.Connection{},
 		unresolved:   make([]model.UnresolvedItem, 0),
 		warnings:     make([]string, 0),
+		metrics: promptMetrics{
+			Role: map[string]rolePromptMetrics{},
+		},
 	}
+	defer o.closeSharedSession()
 	progress := newProgressReporter()
 	defer progress.Close()
 
 	allObjectives := objectives.Default()
 	util.Info("agents.orchestrator", "deterministic objective pipeline starting", map[string]any{
 		"repo": repoPath, "workers": cfg.Runtime.Workers, "objectives": len(allObjectives),
-		"max_entities_per_objective": cfg.Runtime.MaxEntitiesPerObjective, "max_catalog_items": cfg.Runtime.MaxCatalogItems,
+		"max_catalog_items": cfg.Runtime.MaxCatalogItems, "reuse_opencode_session": cfg.Runtime.ReuseOpenCodeSession,
 	})
 	progress.StartPhase(
 		"discovery",
@@ -268,6 +290,7 @@ func Run(ctx context.Context, cfg config.Config, repoPath string, oc openCodeAPI
 		"exposures": len(out.Exposures), "dependencies": len(out.Dependencies),
 		"connections": len(out.Connections), "unresolved": len(out.Unresolved), "warnings": len(out.Warnings),
 	})
+	o.logPromptMetrics()
 	return out, nil
 }
 
@@ -323,7 +346,6 @@ func (o *orchestrator) runObjectiveExtractor(ctx context.Context, obj objectives
 		return nil, nil, err
 	}
 	items := parseEntities(payload["items"])
-	items = clampEntities(items, o.cfg.Runtime.MaxEntitiesPerObjective)
 	util.Info("agents.discovery", "objective discovery completed", map[string]any{"objective": obj.ID, "items": len(items), "unresolved": 0})
 	return items, nil, nil
 }
@@ -448,8 +470,13 @@ func (o *orchestrator) runConnectionsBatch(ctx context.Context, onResult func())
 }
 
 func (o *orchestrator) runConnectionExtractor(ctx context.Context, exposure model.Exposure, dependencies []model.Dependency) ([]llmConnection, []model.UnresolvedItem, error) {
-	prompt := buildConnectionPrompt(exposure, dependencies, o.cfg.Runtime.MaxCatalogItems)
-
+	batchSize := o.cfg.Runtime.MaxCatalogItems
+	if batchSize <= 0 {
+		batchSize = 80
+	}
+	if len(dependencies) == 0 {
+		return nil, nil, nil
+	}
 	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -457,33 +484,76 @@ func (o *orchestrator) runConnectionExtractor(ctx context.Context, exposure mode
 		},
 		"required": []string{"items"},
 	}
-	payload, err := o.promptAgent(ctx, "connections."+exposure.ID, prompt, schema)
-	if err != nil {
-		return nil, nil, err
-	}
-	items := parseConnections(payload["items"])
-	for i := range items {
-		if strings.TrimSpace(items[i].FromExposureID) == "" {
-			items[i].FromExposureID = exposure.ID
+	out := make([]llmConnection, 0)
+	for batchNo, start := 1, 0; start < len(dependencies); batchNo, start = batchNo+1, start+batchSize {
+		end := start + batchSize
+		if end > len(dependencies) {
+			end = len(dependencies)
 		}
+		prompt, exposureBytes, catalogBytes, catalogItems := buildConnectionPrompt(exposure, dependencies[start:end])
+		o.recordConnectionPayloadMetrics(exposureBytes, catalogBytes, catalogItems)
+
+		role := fmt.Sprintf("connections.%s.batch.%d", exposure.ID, batchNo)
+		payload, err := o.promptAgent(ctx, role, prompt, schema)
+		if err != nil {
+			return nil, nil, err
+		}
+		items := parseConnections(payload["items"])
+		for i := range items {
+			if strings.TrimSpace(items[i].FromExposureID) == "" {
+				items[i].FromExposureID = exposure.ID
+			}
+		}
+		out = append(out, items...)
 	}
-	return items, nil, nil
+	return out, nil, nil
 }
 
 func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, schema map[string]any) (map[string]any, error) {
-	sessionID, err := o.oc.CreateSession(ctx, o.repoPath)
-	if err != nil {
-		return nil, fmt.Errorf("%s create session: %w", role, err)
+	schemaBytes := len(mustJSON(schema))
+	o.recordPromptMetrics(role, len(prompt), schemaBytes)
+
+	var (
+		sessionID string
+		err       error
+	)
+	if o.cfg.Runtime.ReuseOpenCodeSession {
+		sessionID, err = o.getOrCreateSharedSession(ctx, role)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		sessionID, err = o.oc.CreateSession(ctx, o.repoPath)
+		if err != nil {
+			return nil, fmt.Errorf("%s create session: %w", role, err)
+		}
+		util.Debug("agents.agent", "session created", map[string]any{"role": role, "session_id": sessionID})
 	}
-	util.Debug("agents.agent", "session created", map[string]any{"role": role, "session_id": sessionID})
 
 	payload, err := o.oc.PromptStructured(ctx, sessionID, o.repoPath, prompt, schema)
 	if err != nil {
 		return nil, fmt.Errorf("%s prompt: %w", role, err)
 	}
 	util.Trace("agents.agent", "prompt completed", map[string]any{"role": role, "session_id": sessionID})
-	o.maybeScheduleSessionDelete(role, sessionID)
+	if !o.cfg.Runtime.ReuseOpenCodeSession {
+		o.maybeScheduleSessionDelete(role, sessionID)
+	}
 	return payload, nil
+}
+
+func (o *orchestrator) getOrCreateSharedSession(ctx context.Context, role string) (string, error) {
+	o.sessionMu.Lock()
+	defer o.sessionMu.Unlock()
+	if strings.TrimSpace(o.sharedSessionID) != "" {
+		return o.sharedSessionID, nil
+	}
+	sessionID, err := o.oc.CreateSession(ctx, o.repoPath)
+	if err != nil {
+		return "", fmt.Errorf("%s create shared session: %w", role, err)
+	}
+	o.sharedSessionID = sessionID
+	util.Debug("agents.agent", "shared session created", map[string]any{"role": role, "session_id": sessionID})
+	return sessionID, nil
 }
 
 func (o *orchestrator) maybeScheduleSessionDelete(role, sessionID string) {
@@ -502,6 +572,24 @@ func (o *orchestrator) maybeScheduleSessionDelete(role, sessionID string) {
 		}
 		util.Trace("agents.agent", "session deleted", map[string]any{"role": role, "session_id": sessionID, "delete_delay_sec": delay})
 	}()
+}
+
+func (o *orchestrator) closeSharedSession() {
+	if !o.cfg.Runtime.ReuseOpenCodeSession || !o.cfg.Runtime.CleanupOpenCodeSessions {
+		return
+	}
+	o.sessionMu.Lock()
+	sessionID := strings.TrimSpace(o.sharedSessionID)
+	o.sharedSessionID = ""
+	o.sessionMu.Unlock()
+	if sessionID == "" {
+		return
+	}
+	if err := o.oc.DeleteSession(context.Background(), sessionID, o.repoPath); err != nil {
+		util.Warn("agents.agent", "shared session delete failed", map[string]any{"session_id": sessionID, "error": err})
+		return
+	}
+	util.Trace("agents.agent", "shared session deleted", map[string]any{"session_id": sessionID})
 }
 
 func (o *orchestrator) upsertExposure(exp model.Exposure) {
@@ -531,11 +619,62 @@ func (o *orchestrator) upsertConnection(conn model.Connection) {
 	o.connections[conn.ID] = conn
 }
 
-func clampEntities(items []llmEntity, max int) []llmEntity {
-	if max <= 0 || len(items) <= max {
-		return items
+func roleBucket(role string) string {
+	switch {
+	case strings.HasPrefix(role, "discover."):
+		return "discover"
+	case strings.HasPrefix(role, "detail."):
+		return "detail"
+	case strings.HasPrefix(role, "connections."):
+		return "connections"
+	default:
+		return "other"
 	}
-	return items[:max]
+}
+
+func (o *orchestrator) recordPromptMetrics(role string, promptBytes, schemaBytes int) {
+	o.metricsMu.Lock()
+	defer o.metricsMu.Unlock()
+	bucket := roleBucket(role)
+	current := o.metrics.Role[bucket]
+	current.Calls++
+	current.PromptBytes += promptBytes
+	current.SchemaBytes += schemaBytes
+	o.metrics.Role[bucket] = current
+}
+
+func (o *orchestrator) recordConnectionPayloadMetrics(exposureBytes, catalogBytes, catalogItems int) {
+	o.metricsMu.Lock()
+	defer o.metricsMu.Unlock()
+	o.metrics.ConnectionBatches++
+	o.metrics.ConnectionCatalogItems += catalogItems
+	o.metrics.ExposurePayloadBytes += exposureBytes
+	o.metrics.CatalogPayloadBytes += catalogBytes
+}
+
+func (o *orchestrator) logPromptMetrics() {
+	o.metricsMu.Lock()
+	defer o.metricsMu.Unlock()
+
+	roleMetrics := map[string]any{}
+	for role, m := range o.metrics.Role {
+		roleMetrics[role] = map[string]any{
+			"calls":        m.Calls,
+			"prompt_bytes": m.PromptBytes,
+			"schema_bytes": m.SchemaBytes,
+		}
+	}
+	util.Info("agents.metrics", "opencode prompt metrics", map[string]any{
+		"roles":                    roleMetrics,
+		"connection_batches":       o.metrics.ConnectionBatches,
+		"connection_catalog_items": o.metrics.ConnectionCatalogItems,
+		"exposure_payload_bytes":   o.metrics.ExposurePayloadBytes,
+		"catalog_payload_bytes":    o.metrics.CatalogPayloadBytes,
+		"session_strategy": map[bool]string{
+			true:  "shared",
+			false: "per_prompt",
+		}[o.cfg.Runtime.ReuseOpenCodeSession],
+	})
 }
 
 func parseEntities(v any) []llmEntity {
@@ -809,8 +948,10 @@ OUTPUT CONTRACT:
 `, obj.ID, obj.Kind, obj.Type, obj.DetailPrompt, mustJSON(seed), detailChecklist(obj.Type))
 }
 
-func buildConnectionPrompt(exposure model.Exposure, dependencies []model.Dependency, maxCatalog int) string {
-	return fmt.Sprintf(`AGENT ROLE: connection-extractor
+func buildConnectionPrompt(exposure model.Exposure, dependencies []model.Dependency) (string, int, int, int) {
+	exposureJSON := mustJSON(compactExposureContext(exposure))
+	catalogJSON := mustJSON(compactDependencyCatalog(dependencies))
+	prompt := fmt.Sprintf(`AGENT ROLE: connection-extractor
 EXPOSURE_ID: %s
 EXPOSURE_TYPE: %s
 
@@ -834,7 +975,8 @@ EXPOSURE:
 
 DEPENDENCY_CATALOG:
 %s
-`, exposure.ID, exposure.Type, mustJSON(exposure), mustJSON(compactDependencyCatalog(dependencies, maxCatalog)))
+`, exposure.ID, exposure.Type, exposureJSON, catalogJSON)
+	return prompt, len(exposureJSON), len(catalogJSON), len(dependencies)
 }
 
 func detailChecklist(entityType string) string {
@@ -1010,15 +1152,62 @@ func connectionSchema() map[string]any {
 	}
 }
 
-func compactDependencyCatalog(in []model.Dependency, max int) []map[string]any {
+func compactDependencyCatalog(in []model.Dependency) []map[string]any {
 	sort.Slice(in, func(i, j int) bool { return in[i].ID < in[j].ID })
-	if len(in) > max {
-		in = in[:max]
-	}
 	out := make([]map[string]any, 0, len(in))
 	for _, d := range in {
 		loc := pickLocation(d.Locations)
-		out = append(out, map[string]any{"id": d.ID, "type": d.Type, "name": d.Name, "summary": d.Summary, "details": d.Details, "file": loc.File, "start_line": loc.StartLine})
+		out = append(out, map[string]any{
+			"id":         d.ID,
+			"type":       d.Type,
+			"name":       d.Name,
+			"summary":    d.Summary,
+			"hints":      compactDetailsHint(d.Details),
+			"file":       loc.File,
+			"start_line": loc.StartLine,
+		})
+	}
+	return out
+}
+
+func compactExposureContext(e model.Exposure) map[string]any {
+	loc := pickLocation(e.Locations)
+	return map[string]any{
+		"id":         e.ID,
+		"type":       e.Type,
+		"name":       e.Name,
+		"summary":    e.Summary,
+		"hints":      compactDetailsHint(e.Details),
+		"file":       loc.File,
+		"start_line": loc.StartLine,
+	}
+}
+
+func compactDetailsHint(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	keep := map[string]struct{}{
+		"method": {}, "path": {}, "route": {}, "table": {}, "operation": {}, "query": {},
+		"queue": {}, "topic": {}, "destination": {}, "rpc_service": {}, "rpc_method": {}, "command": {},
+	}
+	out := map[string]any{}
+	for k, v := range in {
+		if _, ok := keep[strings.ToLower(strings.TrimSpace(k))]; !ok {
+			continue
+		}
+		switch t := v.(type) {
+		case string:
+			out[k] = strings.TrimSpace(t)
+		case bool, float64, int, int64:
+			out[k] = t
+		}
+		if len(out) >= 6 {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
