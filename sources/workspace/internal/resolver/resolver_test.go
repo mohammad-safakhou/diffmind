@@ -1,0 +1,173 @@
+package resolver
+
+import (
+	"testing"
+
+	"github.com/mohammad-safakhou/diffmind/internal/model"
+	"github.com/mohammad-safakhou/diffmind/internal/registry"
+	"github.com/mohammad-safakhou/diffmind/internal/util"
+)
+
+func setupTestRegistry() *registry.Registry {
+	reg := registry.New()
+
+	// Order service: depends on billing-service.example.global.
+	orderArch := &model.ServiceArchitecture{
+		ServiceName: "order-service",
+		RepoPath:    "/repos/order-service",
+		Exposures: []model.Exposure{
+			{BaseEntity: model.BaseEntity{ID: "exp1", Type: "http_route", Name: "POST /api/orders"}},
+		},
+		Dependencies: []model.Dependency{
+			{BaseEntity: model.BaseEntity{
+				ID:   "dep1",
+				Type: "outbound_http",
+				Name: "BillingClient.charge",
+				Tags: []string{"billing-service"},
+				Evidence: []model.Evidence{
+					{Snippet: "url: https://billing-service.example.global/api/charge"},
+				},
+			}},
+			{BaseEntity: model.BaseEntity{
+				ID:      "dep2",
+				Type:    "db_operation",
+				Name:    "OrderRepository.save",
+				Tags:    []string{"postgresql", "table:orders"},
+				Details: map[string]any{"database": "orders-db"},
+			}},
+		},
+	}
+	reg.AddArchitecture("order-service", orderArch)
+	reg.AddIdentity("order-service", &model.ServiceIdentity{
+		ServiceName: "order-service",
+		Aliases: []model.IdentityAlias{
+			{Kind: "dns", Value: "order-service.example.global"},
+		},
+	})
+
+	// Billing service: exposes POST /api/charge.
+	billingArch := &model.ServiceArchitecture{
+		ServiceName: "billing-service",
+		RepoPath:    "/repos/billing-service",
+		Exposures: []model.Exposure{
+			{BaseEntity: model.BaseEntity{ID: "exp2", Type: "http_route", Name: "POST /api/charge"}},
+		},
+		Dependencies: []model.Dependency{
+			{BaseEntity: model.BaseEntity{
+				ID:   "dep3",
+				Type: "outbound_http",
+				Name: "NotificationClient.send",
+				Tags: []string{"notification-service"},
+				Evidence: []model.Evidence{
+					{Snippet: "url: https://notification-service.example.global"},
+				},
+			}},
+		},
+	}
+	reg.AddArchitecture("billing-service", billingArch)
+	reg.AddIdentity("billing-service", &model.ServiceIdentity{
+		ServiceName: "billing-service",
+		Aliases: []model.IdentityAlias{
+			{Kind: "dns", Value: "billing-service.example.global"},
+			{Kind: "dns", Value: "billing.internal"},
+		},
+	})
+
+	return reg
+}
+
+func TestDeterministicResolution(t *testing.T) {
+	reg := setupTestRegistry()
+	log := util.NewLogger(util.LevelInfo)
+	res := New(nil, reg, log) // no LLM client
+
+	resolution, err := res.Resolve("")
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+
+	// Order service's dependency on billing-service should be resolved.
+	if len(resolution.Matches) == 0 {
+		t.Fatal("expected at least one match")
+	}
+
+	foundBillingMatch := false
+	for _, m := range resolution.Matches {
+		if m.FromService == "order-service" && m.ToService == "billing-service" {
+			foundBillingMatch = true
+			if m.MatchType != "http" {
+				t.Errorf("expected match type 'http', got %s", m.MatchType)
+			}
+			if m.Confidence < 0.5 {
+				t.Errorf("expected confidence >= 0.5, got %f", m.Confidence)
+			}
+		}
+	}
+	if !foundBillingMatch {
+		t.Error("expected order-service → billing-service match")
+	}
+}
+
+func TestUnresolvedDependencies(t *testing.T) {
+	reg := setupTestRegistry()
+	log := util.NewLogger(util.LevelInfo)
+	res := New(nil, reg, log) // no LLM
+
+	resolution, err := res.Resolve("")
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+
+	// notification-service is not in the registry, so billing's dep should be unresolved.
+	foundUnresolved := false
+	for _, u := range resolution.Unresolved {
+		if u.Service == "billing-service" && u.DependencyName == "NotificationClient.send" {
+			foundUnresolved = true
+		}
+	}
+	if !foundUnresolved {
+		t.Error("expected billing-service's notification dependency to be unresolved")
+	}
+}
+
+func TestExtractTarget(t *testing.T) {
+	tests := []struct {
+		name     string
+		dep      model.Dependency
+		expected string
+	}{
+		{
+			name: "from details url",
+			dep: model.Dependency{BaseEntity: model.BaseEntity{
+				Details: map[string]any{"url": "https://billing.internal/charge"},
+			}},
+			expected: "https://billing.internal/charge",
+		},
+		{
+			name: "from tags",
+			dep: model.Dependency{BaseEntity: model.BaseEntity{
+				Tags: []string{"feign", "billing-service"},
+			}},
+			expected: "billing-service",
+		},
+		{
+			name: "from evidence",
+			dep: model.Dependency{BaseEntity: model.BaseEntity{
+				Name: "SomeClient",
+				Evidence: []model.Evidence{
+					{Snippet: "url: https://some-api.example.global/v2"},
+				},
+			}},
+			expected: "https://some-api.example.global/v2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			target := extractTarget(&tt.dep)
+			if target != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, target)
+			}
+		})
+	}
+}

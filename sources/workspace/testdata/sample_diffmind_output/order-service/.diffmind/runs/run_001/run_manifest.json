@@ -1,0 +1,14 @@
+{
+  "run_id": "run_001",
+  "started_at": "2026-03-01T10:00:00Z",
+  "finished_at": "2026-03-01T10:05:00Z",
+  "repo_path": "/repos/order-service",
+  "schema_version": "v1alpha1",
+  "confidence_minimum": 0.70,
+  "counts": {
+    "exposures": 2,
+    "dependencies": 3,
+    "connections": 3,
+    "unresolved": 0
+  }
+}

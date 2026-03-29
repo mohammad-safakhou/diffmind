@@ -1,0 +1,14 @@
+[
+  {
+    "id": "dep_db_orders",
+    "type": "db_operation",
+    "name": "OrderRepository.save",
+    "service": "/repos/order-service",
+    "summary": "Saves order to PostgreSQL",
+    "source_locations": [{"file": "src/main/java/com/example/OrderRepository.java", "start_line": 5, "end_line": 10}],
+    "evidence": [{"location": {"file": "src/main/resources/application.yml", "start_line": 10, "end_line": 10}, "snippet": "url: jdbc:postgresql://orders-db:5432/orders", "source": "opencode"}],
+    "confidence": 0.95,
+    "tags": ["postgresql", "table:orders", "write"],
+    "details": {"database": "orders-db", "table": "orders"}
+  }
+]

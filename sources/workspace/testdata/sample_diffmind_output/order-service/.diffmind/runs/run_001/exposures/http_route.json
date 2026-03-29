@@ -1,0 +1,26 @@
+[
+  {
+    "id": "exp_http_post_orders",
+    "type": "http_route",
+    "name": "POST /api/orders",
+    "service": "/repos/order-service",
+    "summary": "Creates a new order",
+    "key_actions": ["validate input", "save to database", "publish order event", "call billing service"],
+    "source_locations": [{"file": "src/main/java/com/example/OrderController.java", "start_line": 25, "end_line": 50}],
+    "evidence": [{"location": {"file": "src/main/java/com/example/OrderController.java", "start_line": 25, "end_line": 30}, "snippet": "@PostMapping(\"/api/orders\")", "source": "opencode"}],
+    "confidence": 0.95,
+    "tags": ["http", "post", "orders"],
+    "details": {"method": "POST", "path": "/api/orders"}
+  },
+  {
+    "id": "exp_http_get_orders",
+    "type": "http_route",
+    "name": "GET /api/orders",
+    "service": "/repos/order-service",
+    "summary": "Lists orders with pagination",
+    "source_locations": [{"file": "src/main/java/com/example/OrderController.java", "start_line": 55, "end_line": 70}],
+    "evidence": [{"location": {"file": "src/main/java/com/example/OrderController.java", "start_line": 55, "end_line": 60}, "snippet": "@GetMapping(\"/api/orders\")", "source": "opencode"}],
+    "confidence": 0.95,
+    "tags": ["http", "get", "orders"]
+  }
+]

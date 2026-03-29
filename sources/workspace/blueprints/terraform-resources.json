@@ -1,0 +1,26 @@
+{
+  "name": "terraform-resources",
+  "description": "Extract infrastructure resource mappings from Terraform configuration",
+  "version": "v1",
+  "applies_to": {
+    "kind": "infra_repo",
+    "match": {
+      "has_path": "modules"
+    }
+  },
+  "extractions": [
+    {
+      "name": "tf_resource_mapping",
+      "description": "Extract queue, database, and service resource ownership from Terraform modules",
+      "source": {
+        "glob": "modules/**/*.tf"
+      },
+      "strategy": "llm",
+      "prompt_hint": "These are Terraform files defining infrastructure resources. For each resource (SQS queues, RDS databases, Lambda functions, etc.), determine which service owns it by looking at naming conventions, tags, module references, and variable names. Return a mapping of resource identifiers to owning service names.",
+      "extract": [
+        {"maps_to": "queue_ownership"},
+        {"maps_to": "database_connection"}
+      ]
+    }
+  ]
+}

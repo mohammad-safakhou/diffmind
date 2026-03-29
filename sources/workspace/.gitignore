@@ -1,0 +1,21 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test output
+testdata/output/
+
+# DiffMind runtime data
+.diffmind/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

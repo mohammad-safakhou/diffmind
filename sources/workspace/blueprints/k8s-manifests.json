@@ -1,0 +1,27 @@
+{
+  "name": "k8s-manifests-identity",
+  "description": "Extract service identity from Kubernetes manifest files",
+  "version": "v1",
+  "applies_to": {
+    "kind": "service_repo",
+    "match": {
+      "has_path": "k8s"
+    }
+  },
+  "extractions": [
+    {
+      "name": "k8s_service_identity",
+      "description": "Extract service names and ingress hosts from Kubernetes manifests",
+      "source": {
+        "glob": "k8s/**/*.yaml"
+      },
+      "strategy": "llm",
+      "prompt_hint": "These are Kubernetes manifest files. Extract: the service name (from metadata.name in Service resources), DNS aliases (from Ingress host rules), and any port mappings.",
+      "extract": [
+        {"maps_to": "service_name"},
+        {"maps_to": "dns_aliases"},
+        {"maps_to": "http_paths"}
+      ]
+    }
+  ]
+}

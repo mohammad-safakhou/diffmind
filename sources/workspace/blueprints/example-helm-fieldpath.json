@@ -1,0 +1,28 @@
+{
+  "name": "example-helm-fieldpath",
+  "description": "Deterministic field extraction from .example Helm values (no LLM required)",
+  "version": "v1",
+  "applies_to": {
+    "kind": "service_repo",
+    "match": {
+      "has_path": ".example"
+    }
+  },
+  "extractions": [
+    {
+      "name": "identity_fields",
+      "description": "Extract IAM role, DNS aliases, and resource identifiers from Helm values",
+      "source": {
+        "glob": ".example/*/values.yaml"
+      },
+      "strategy": "field_path",
+      "extract": [
+        {"field": "iamRole", "maps_to": "iam_role"},
+        {"field": "ingress.hosts", "maps_to": "dns_aliases"},
+        {"field": "ingress.paths", "maps_to": "http_paths"},
+        {"field": "env.DATABASE_URL", "maps_to": "database_connection"},
+        {"field": "env.SQS_QUEUE_URL", "maps_to": "queue_identifiers"}
+      ]
+    }
+  ]
+}

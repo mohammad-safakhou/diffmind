@@ -1,0 +1,29 @@
+{
+  "name": "helm-values-identity",
+  "description": "Extract service identity from Helm chart values.yaml files (Example-style .example/ directory)",
+  "version": "v1",
+  "applies_to": {
+    "kind": "service_repo",
+    "match": {
+      "has_path": ".example"
+    }
+  },
+  "extractions": [
+    {
+      "name": "helm_service_identity",
+      "description": "Extract service name, DNS, IAM role, and resource identifiers from Helm values",
+      "source": {
+        "glob": ".example/*/values.yaml"
+      },
+      "strategy": "llm",
+      "prompt_hint": "These are Helm chart values files for a Kubernetes-deployed service. Extract: the service name (from iamRole, app name, or metadata), DNS aliases (from ingress.hosts or service names), IAM role (from iamRole or annotations), database connection strings (from env vars like DATABASE_URL or spring.datasource.url), and queue identifiers (from env vars like SQS_QUEUE_URL or queue config).",
+      "extract": [
+        {"maps_to": "service_name"},
+        {"maps_to": "dns_aliases"},
+        {"maps_to": "iam_role"},
+        {"maps_to": "database_connection"},
+        {"maps_to": "queue_identifiers"}
+      ]
+    }
+  ]
+}

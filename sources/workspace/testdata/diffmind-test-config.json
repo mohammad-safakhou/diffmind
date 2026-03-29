@@ -1,0 +1,36 @@
+{
+  "opencode": {
+    "base_url": "",
+    "provider_id": "",
+    "model_id": ""
+  },
+  "diffmind": {
+    "binary_path": "diffmind"
+  },
+  "repos": {
+    "service_repos": [
+      {
+        "name": "order-service",
+        "path": "testdata/sample_service_repos/order-service",
+        "diffmind_artifacts": "testdata/sample_diffmind_output/order-service/.diffmind/runs/run_001"
+      },
+      {
+        "name": "billing-service",
+        "path": "testdata/sample_service_repos/billing-service",
+        "diffmind_artifacts": "testdata/sample_diffmind_output/billing-service/.diffmind/runs/run_001"
+      }
+    ],
+    "infra_repos": [
+      {
+        "name": "terraform-platform",
+        "path": "testdata/sample_infra_repos/terraform-platform"
+      }
+    ]
+  },
+  "blueprints": {
+    "dirs": ["blueprints"]
+  },
+  "artifacts": {
+    "base_dir": "testdata/output"
+  }
+}
