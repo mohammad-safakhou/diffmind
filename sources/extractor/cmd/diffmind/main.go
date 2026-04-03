@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/mohammad-safakhou/diffmind/internal/app"
@@ -18,12 +19,14 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: diffmind <run|validate|list-runs|ui> ...")
+		fmt.Fprintln(os.Stderr, "usage: diffmind <run|batch|validate|list-runs|ui> ...")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
 	case "run":
 		run(os.Args[2:])
+	case "batch":
+		batchRun(os.Args[2:])
 	case "validate":
 		validate(os.Args[2:])
 	case "list-runs":
@@ -127,6 +130,83 @@ func run(args []string) {
 	}
 	util.Info("cli.run", "run command finished", map[string]any{"run_id": out.RunID, "run_dir": out.RunDir})
 	fmt.Print(app.PrintSummary(out))
+}
+
+func batchRun(args []string) {
+	fs := flag.NewFlagSet("batch", flag.ExitOnError)
+	reposFlag := fs.String("repos", "", "comma-separated list of repo paths")
+	opencodeURL := fs.String("opencode-url", "", "OpenCode server base URL")
+	opencodeTimeoutSeconds := fs.Int("opencode-timeout-seconds", 300, "OpenCode request timeout in seconds")
+	providerID := fs.String("provider-id", "", "OpenCode provider ID")
+	modelID := fs.String("model-id", "", "OpenCode model ID")
+	parallel := fs.Int("parallel", 3, "max parallel repo extractions")
+	verbose := fs.Bool("verbose", false, "enable debug logs")
+	trace := fs.Bool("trace", false, "enable trace logs")
+	logFile := fs.String("log-file", "", "optional log file path")
+	fs.Parse(args)
+	configureLogging(*verbose, *trace, *logFile)
+
+	if *reposFlag == "" {
+		fmt.Fprintln(os.Stderr, "--repos is required (comma-separated paths)")
+		os.Exit(2)
+	}
+	repos := strings.Split(*reposFlag, ",")
+	for i := range repos {
+		repos[i] = strings.TrimSpace(repos[i])
+	}
+
+	util.Info("cli.batch", "batch run starting", map[string]any{"repos": len(repos), "parallel": *parallel})
+
+	type batchResult struct {
+		repo string
+		out  app.RunOutput
+		err  error
+	}
+
+	sem := make(chan struct{}, *parallel)
+	results := make(chan batchResult, len(repos))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	for _, repo := range repos {
+		repo := repo
+		go func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			cfg := config.Default()
+			cfg.OpenCode.BaseURL = *opencodeURL
+			cfg.OpenCode.TimeoutSec = *opencodeTimeoutSeconds
+			cfg.OpenCode.ProviderID = *providerID
+			cfg.OpenCode.ModelID = *modelID
+			cfg.Artifacts.BaseDir = filepath.Join(repo, ".diffmind", "runs")
+			if pw := os.Getenv("OPENCODE_SERVER_PASSWORD"); pw != "" {
+				cfg.OpenCode.Password = pw
+			}
+
+			out, err := app.Run(ctx, app.RunInput{RepoPath: repo, Config: cfg})
+			results <- batchResult{repo: repo, out: out, err: err}
+		}()
+	}
+
+	successes := 0
+	failures := 0
+	for i := 0; i < len(repos); i++ {
+		r := <-results
+		base := filepath.Base(r.repo)
+		if r.err != nil {
+			failures++
+			fmt.Fprintf(os.Stderr, "FAIL  %s: %v\n", base, r.err)
+		} else {
+			successes++
+			fmt.Printf("OK    %s -> %s\n", base, r.out.RunDir)
+		}
+	}
+	fmt.Printf("\nBatch complete: %d succeeded, %d failed out of %d repos\n", successes, failures, len(repos))
+	if failures > 0 {
+		os.Exit(1)
+	}
 }
 
 func validate(args []string) {

@@ -40,7 +40,7 @@ type Config struct {
 
 func Default() Config {
 	return Config{
-		OpenCode: OpenCode{TimeoutSec: 90},
+		OpenCode: OpenCode{TimeoutSec: 300},
 		Quality: Quality{
 			MinConfidence: 0.70,
 		},
