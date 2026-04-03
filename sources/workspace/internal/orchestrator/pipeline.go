@@ -140,9 +140,20 @@ func (p *Pipeline) phaseCollection() error {
 			matchedBPs := blueprints.FindMatchingBlueprints(p.bps, repo.Path, "service_repo")
 			if len(matchedBPs) > 0 {
 				engine := blueprints.NewEngine(p.client, p.log)
+				// Create a session for LLM blueprint extraction if needed
+				var bpSessionID string
+				if p.client != nil {
+					session, err := p.client.CreateSession(repo.Path)
+					if err != nil {
+						p.log.Debug("could not create session for blueprint extraction", "service", repo.Name, "error", err.Error())
+					} else {
+						bpSessionID = session.ID
+						defer p.client.DeleteSession(bpSessionID)
+					}
+				}
 				var allResults []blueprints.ExtractionResult
 				for _, bp := range matchedBPs {
-					results := engine.Run(bp, repo.Path, "")
+					results := engine.Run(bp, repo.Path, bpSessionID)
 					allResults = append(allResults, results...)
 				}
 				if len(allResults) > 0 {
@@ -168,8 +179,18 @@ func (p *Pipeline) phaseCollection() error {
 				return
 			}
 			engine := blueprints.NewEngine(p.client, p.log)
+			var infraSessionID string
+			if p.client != nil {
+				session, err := p.client.CreateSession(repo.Path)
+				if err != nil {
+					p.log.Debug("could not create session for infra blueprint", "repo", repo.Name, "error", err.Error())
+				} else {
+					infraSessionID = session.ID
+					defer p.client.DeleteSession(infraSessionID)
+				}
+			}
 			for _, bp := range matchedBPs {
-				results := engine.Run(bp, repo.Path, "")
+				results := engine.Run(bp, repo.Path, infraSessionID)
 				p.log.Info("infra blueprint executed",
 					"repo", repo.Name,
 					"blueprint", bp.Name,

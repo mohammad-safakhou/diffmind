@@ -1,6 +1,6 @@
 {
   "name": "helm-values-identity",
-  "description": "Extract service identity from Helm chart values.yaml files (Example-style .example/ directory)",
+  "description": "LLM-based extraction of service identity from .example production Helm values",
   "version": "v1",
   "applies_to": {
     "kind": "service_repo",
@@ -10,19 +10,18 @@
   },
   "extractions": [
     {
-      "name": "helm_service_identity",
-      "description": "Extract service name, DNS, IAM role, and resource identifiers from Helm values",
+      "name": "production_identity",
+      "description": "Extract service identity from production Helm values using LLM",
       "source": {
-        "glob": ".example/*/values.yaml"
+        "glob": ".example/config/production/values.yaml"
       },
       "strategy": "llm",
-      "prompt_hint": "These are Helm chart values files for a Kubernetes-deployed service. Extract: the service name (from iamRole, app name, or metadata), DNS aliases (from ingress.hosts or service names), IAM role (from iamRole or annotations), database connection strings (from env vars like DATABASE_URL or spring.datasource.url), and queue identifiers (from env vars like SQS_QUEUE_URL or queue config).",
+      "prompt_hint": "From this Helm values YAML, extract service identity as JSON: {\"iam_role\": \"...\", \"dns_aliases\": [\"subdomain.example.global\"], \"queue_identifiers\": [\"queue-name-1\"], \"database_connection\": [\"host:port/dbname\"], \"service_urls\": {\"target-service\": \"http://...\"}}. Look at iamRole field, ingress subdomain, and ALL env vars in configMaps.configmap.env for URLs (*_API, *_URL, *_HOST), SQS queues (*SQS*, *QUEUE*), databases (*DB*, *DATABASE*, *REDIS*, *DYNAMO*). Return ONLY the JSON object.",
       "extract": [
-        {"maps_to": "service_name"},
-        {"maps_to": "dns_aliases"},
         {"maps_to": "iam_role"},
-        {"maps_to": "database_connection"},
-        {"maps_to": "queue_identifiers"}
+        {"maps_to": "dns_aliases"},
+        {"maps_to": "queue_identifiers"},
+        {"maps_to": "database_connection"}
       ]
     }
   ]
