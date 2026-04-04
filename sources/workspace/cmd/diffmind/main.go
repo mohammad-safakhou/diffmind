@@ -4,17 +4,21 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/interview"
 	"github.com/mohammad-safakhou/diffmind/internal/opencode"
 	"github.com/mohammad-safakhou/diffmind/internal/orchestrator"
+	"github.com/mohammad-safakhou/diffmind/internal/ui"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -25,6 +29,7 @@ Usage:
 
 Commands:
   run          Run the full pipeline: collect → resolve → graph
+  ui           Launch interactive graph visualization dashboard
   interview    Run AI-driven DevOps interview to generate blueprints
   collect      Collect DiffMind artifacts from all configured repos
   list         List known services from config
@@ -51,6 +56,9 @@ func main() {
 	fs := flag.NewFlagSet(command, flag.ExitOnError)
 	configPath := fs.String("config", "diffmind.json", "Path to config file")
 	logLevel := fs.String("log-level", "info", "Log level: info, debug, trace")
+	// UI-specific flags (ignored by other commands)
+	fs.String("host", "127.0.0.1", "UI server host")
+	fs.Int("port", 8090, "UI server port")
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing flags: %v\n", err)
 		os.Exit(1)
@@ -78,6 +86,8 @@ func main() {
 	switch command {
 	case "run":
 		cmdRun(cfg, log)
+	case "ui":
+		cmdUI(cfg, fs)
 	case "interview":
 		cmdInterview(cfg, log)
 	case "collect":
@@ -117,6 +127,40 @@ func createClient(cfg *config.Config) *opencode.Client {
 		cfg.OpenCode.Password,
 		time.Duration(cfg.OpenCode.Timeout)*time.Second,
 	)
+}
+
+func cmdUI(cfg *config.Config, fs *flag.FlagSet) {
+	h := "127.0.0.1"
+	p := 8090
+
+	if f := fs.Lookup("host"); f != nil {
+		h = f.Value.String()
+	}
+	if f := fs.Lookup("port"); f != nil {
+		fmt.Sscanf(f.Value.String(), "%d", &p)
+	}
+
+	baseDir := cfg.Artifacts.BaseDir
+	if baseDir == "" {
+		baseDir = ".diffmind/runs"
+	}
+
+	srv := ui.New(baseDir, h, p)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		cancel()
+	}()
+
+	if err := srv.Start(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "UI server error: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func cmdRun(cfg *config.Config, log *util.Logger) {
