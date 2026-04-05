@@ -105,12 +105,21 @@ func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request) {
 // ---- Architecture Graph Builder ----
 
 type ArchGraph struct {
-	RunID         string          `json:"run_id"`
-	Services      []*ServiceNode  `json:"services"`
-	ExternalNodes []*ExternalNode `json:"external_nodes"`
-	QueueNodes    []*QueueNode    `json:"queue_nodes"`
-	DatabaseNodes []*DatabaseNode `json:"database_nodes"`
-	Edges         []*GraphEdge    `json:"edges"`
+	RunID          string           `json:"run_id"`
+	Services       []*ServiceNode   `json:"services"`
+	ExternalNodes  []*ExternalNode  `json:"external_nodes"`
+	QueueNodes     []*QueueNode     `json:"queue_nodes"`
+	DatabaseNodes  []*DatabaseNode  `json:"database_nodes"`
+	SchedulerNodes []*SchedulerNode `json:"scheduler_nodes"`
+	Edges          []*GraphEdge     `json:"edges"`
+}
+
+type SchedulerNode struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Service  string `json:"service"`
+	Schedule string `json:"schedule"`
+	Profile  string `json:"profile,omitempty"`
 }
 
 type ServiceNode struct {
@@ -399,6 +408,44 @@ func (s *Server) buildArchitectureGraph(runID string) (*ArchGraph, error) {
 		g.DatabaseNodes = append(g.DatabaseNodes, d)
 	}
 	sortDatabases(g.DatabaseNodes)
+
+	// Scheduler nodes
+	for _, svc := range g.Services {
+		if !svc.Known {
+			continue
+		}
+		for _, job := range svc.ScheduledJobs {
+			d := job.Details
+			schedule := ""
+			profile := ""
+			if d != nil {
+				if s, ok := d["schedule"]; ok {
+					if str, ok := s.(string); ok {
+						schedule = str
+					}
+				}
+				if s, ok := d["spring_profile"]; ok {
+					if str, ok := s.(string); ok {
+						profile = str
+					}
+				}
+				if s, ok := d["k8s_cronjob_name"]; ok {
+					if str, ok := s.(string); ok && schedule == "" {
+						schedule = str
+					}
+				}
+			}
+			schID := normalizeID("sched_" + svc.Name + "_" + job.Name)
+			g.SchedulerNodes = append(g.SchedulerNodes, &SchedulerNode{
+				ID: schID, Name: job.Name, Service: svc.Name,
+				Schedule: schedule, Profile: profile,
+			})
+			g.Edges = append(g.Edges, &GraphEdge{
+				From: "sched:" + schID, To: svc.Name, Type: "scheduler",
+				Label: schedule,
+			})
+		}
+	}
 
 	sortServices(g.Services)
 

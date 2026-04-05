@@ -69,6 +69,10 @@ svg{width:100%;height:100%}
 .node-db rect{fill:var(--db-bg);stroke:var(--db-border);stroke-width:1;rx:4}
 .node-db.selected rect{stroke:var(--orange);stroke-width:2}
 .node-db .title-text{fill:var(--orange);font-size:9px;font-weight:500}
+.node-scheduler rect{fill:#151118;stroke:#3d2a5a;stroke-width:1;rx:10;stroke-dasharray:3,2}
+.node-scheduler.selected rect{stroke:var(--yellow);stroke-width:2}
+.node-scheduler.hl-neighbor rect{stroke:var(--yellow);stroke-width:2}
+.node-scheduler .title-text{fill:var(--yellow);font-size:8px;font-weight:500}
 .edge{fill:none;stroke-width:1.5;opacity:.55;transition:opacity .2s,stroke-width .2s}
 .edge:hover{opacity:1;stroke-width:2.5}
 .edge.type-http{stroke:var(--blue)}
@@ -76,6 +80,7 @@ svg{width:100%;height:100%}
 .edge.type-queue_consume{stroke:var(--green);stroke-dasharray:5,3}
 .edge.type-database{stroke:var(--orange)}
 .edge.type-cache{stroke:var(--red)}
+.edge.type-scheduler{stroke:var(--yellow);stroke-dasharray:3,2;opacity:.4}
 .edge.hl-active{opacity:1;stroke-width:3}
 .edge.hl-dimmed{opacity:.1;stroke-width:1}
 .edge-label{font-size:8px;fill:var(--dim)}
@@ -114,6 +119,7 @@ marker path{fill:var(--dim)}
     <div class="legend-row"><div class="legend-swatch" style="background:var(--ext-bg);border:1.5px dashed var(--ext-border)"></div> External / Unknown</div>
     <div class="legend-row"><div class="legend-swatch" style="background:var(--queue-bg);border:1px solid var(--queue-border);border-radius:8px"></div> Queue / Topic</div>
     <div class="legend-row"><div class="legend-swatch" style="background:var(--db-bg);border:1px solid var(--db-border)"></div> Database</div>
+    <div class="legend-row"><div class="legend-swatch" style="background:#151118;border:1px dashed #3d2a5a;border-radius:8px"></div> Scheduler</div>
     <div class="legend-row" style="margin-top:3px"><div class="legend-line" style="background:var(--blue)"></div> HTTP call</div>
     <div class="legend-row"><div class="legend-line" style="background:var(--green)"></div> Queue pub/sub</div>
     <div class="legend-row"><div class="legend-line" style="background:var(--orange)"></div> Database</div>
@@ -172,6 +178,7 @@ function renderGraph(){
   const externals=graphData.external_nodes||[];
   const queues=graphData.queue_nodes||[];
   const databases=graphData.database_nodes||[];
+  const schedulers=graphData.scheduler_nodes||[];
   const edges=graphData.edges||[];
 
   // Measure text width using a hidden SVG text element
@@ -239,6 +246,17 @@ function renderGraph(){
     nodeInfo[id]={type:'db',data:d};
   });
 
+  // Add scheduler nodes
+  const schedH=26;
+  schedulers.forEach(s=>{
+    const id='sched:'+s.id;
+    const label=cleanLabel(s.name);
+    const nameW=textWidth(label,9)+padX+14;
+    const w=Math.max(90,nameW);
+    g.setNode(id,{width:w,height:schedH,type:'scheduler',data:s,label});
+    nodeInfo[id]={type:'scheduler',data:s};
+  });
+
   // Remove measurer
   measurer.remove();
 
@@ -264,8 +282,8 @@ function renderGraph(){
 
   // Defs for arrows
   const defs=svg.append('defs');
-  ['http','queue_publish','queue_consume','database','cache'].forEach(type=>{
-    const colors={http:'#3b9eff',queue_publish:'#22c997',queue_consume:'#22c997',database:'#f5943a',cache:'#ef5455'};
+  ['http','queue_publish','queue_consume','database','cache','scheduler'].forEach(type=>{
+    const colors={http:'#3b9eff',queue_publish:'#22c997',queue_consume:'#22c997',database:'#f5943a',cache:'#ef5455',scheduler:'#f0c040'};
     defs.append('marker').attr('id','arr-'+type).attr('viewBox','0 -4 8 8').attr('refX',8).attr('refY',0)
       .attr('markerWidth',6).attr('markerHeight',6).attr('orient','auto')
       .append('path').attr('d','M0,-3L8,0L0,3').attr('fill',colors[type]||'#4e5d75');
@@ -336,6 +354,10 @@ function renderGraph(){
       const dbkind=(n.data&&n.data.kind)||'postgresql';
       drawIcon(ng,ICONS[dbkind]?dbkind:'postgresql',4,8,14);
       ng.append('text').attr('class','title-text').attr('x',22).attr('y',20).text(n.label||cleanLabel(n.data?.name||''));
+    } else if(n.type==='scheduler'){
+      // Clock icon for schedulers
+      ng.append('text').attr('x',6).attr('y',17).attr('fill','var(--yellow)').attr('font-size',11).text('\u23F0');
+      ng.append('text').attr('class','title-text').attr('x',20).attr('y',17).text(n.label||'');
     }
   });
 
@@ -432,6 +454,7 @@ function selectNode(nid,n){
     else if(n.type==='external')showExternalDetail(n.data||{name:nid});
     else if(n.type==='queue')showQueueDetail(n.data);
     else if(n.type==='db')showDBDetail(n.data);
+    else if(n.type==='scheduler')showSchedulerDetail(n.data);
   } else {
     showSidebar(null);
   }
@@ -655,6 +678,35 @@ function showDBDetail(db){
       h+='<div class="sub">Operations: <span class="badge badge-db">'+esc(e.label||'read/write')+'</span></div></div>';
     });
     h+='</div>';
+  }
+  showSidebar(h);
+}
+
+function showSchedulerDetail(s){
+  let h='<div class="sec"><h3>Scheduled Job</h3>';
+  h+=kv('Name',esc(s.name));
+  h+=kv('Service','<span style="color:var(--blue)">'+esc(s.service)+'</span>');
+  if(s.schedule)h+=kv('Schedule','<code style="color:var(--yellow)">'+esc(s.schedule)+'</code>');
+  if(s.profile)h+=kv('Profile',esc(s.profile));
+  h+='</div>';
+
+  // Show data flow from this scheduler
+  const svc=(graphData.services||[]).find(sv=>sv.name===s.service);
+  if(svc){
+    const conns=(svc.connections||[]).filter(c=>c.from_name===s.name);
+    if(conns.length){
+      const byType={};
+      conns.forEach(c=>{(byType[c.to_type]=byType[c.to_type]||[]).push(c)});
+      for(const[type,items]of Object.entries(byType)){
+        const typeLabel={outbound_http:'HTTP Calls',db_operation:'Database Ops',queue_publish:'Queue Publish',cache_operation:'Cache Ops'}[type]||type;
+        h+='<div class="sec"><h3>'+esc(typeLabel)+' ('+items.length+')</h3><div class="detail-list">';
+        items.forEach(c=>{
+          h+='<div class="detail-item"><div class="name">\u2192 '+esc(c.to_name)+'</div>';
+          h+='<div class="sub">'+esc(c.summary)+'</div></div>';
+        });
+        h+='</div></div>';
+      }
+    }
   }
   showSidebar(h);
 }
