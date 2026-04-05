@@ -69,15 +69,24 @@ svg{width:100%;height:100%}
 .node-db rect{fill:var(--db-bg);stroke:var(--db-border);stroke-width:1;rx:4}
 .node-db.selected rect{stroke:var(--orange);stroke-width:2}
 .node-db .title-text{fill:var(--orange);font-size:9px;font-weight:500}
-.edge{fill:none;stroke-width:1.5;opacity:.55}
+.edge{fill:none;stroke-width:1.5;opacity:.55;transition:opacity .2s,stroke-width .2s}
 .edge:hover{opacity:1;stroke-width:2.5}
 .edge.type-http{stroke:var(--blue)}
 .edge.type-queue_publish{stroke:var(--green)}
 .edge.type-queue_consume{stroke:var(--green);stroke-dasharray:5,3}
 .edge.type-database{stroke:var(--orange)}
 .edge.type-cache{stroke:var(--red)}
+.edge.hl-active{opacity:1;stroke-width:3}
+.edge.hl-dimmed{opacity:.1;stroke-width:1}
 .edge-label{font-size:8px;fill:var(--dim)}
 marker path{fill:var(--dim)}
+[class^="node-"]{transition:opacity .2s}
+[class^="node-"].hl-neighbor rect{stroke-width:2.5}
+.node-service.hl-neighbor rect{stroke:var(--blue)}
+.node-external.hl-neighbor rect{stroke:var(--purple)}
+.node-queue.hl-neighbor rect{stroke:var(--green)}
+.node-db.hl-neighbor rect{stroke:var(--orange)}
+[class^="node-"].hl-dimmed{opacity:.15}
 </style>
 </head>
 <body>
@@ -251,6 +260,8 @@ function renderGraph(){
     edgeGroup.append('path')
       .attr('class','edge type-'+(ed.type||''))
       .attr('d',line(points))
+      .attr('data-from',e.v)
+      .attr('data-to',e.w)
       .attr('marker-end','url(#arr-'+(ed.type||'http')+')')
       .style('cursor','pointer')
       .on('click',ev=>{ev.stopPropagation();showEdgeDetail(ed.data)});
@@ -329,9 +340,52 @@ function shortLabel(s,max){
 
 function selectNode(nid,n){
   selectedNode=nid;
-  d3.selectAll('[class^="node-"]').classed('selected',false);
+  // Clear all highlights
+  d3.selectAll('[class^="node-"]').classed('selected',false).classed('hl-neighbor',false).classed('hl-dimmed',false);
+  d3.selectAll('.edge').classed('hl-active',false).classed('hl-dimmed',false);
+
   if(nid){
+    // Find connected edges and neighbor nodes
+    const connEdges=new Set();
+    const neighbors=new Set();
+    neighbors.add(nid);
+
+    d3.selectAll('.edge').each(function(){
+      const el=d3.select(this);
+      const from=el.attr('data-from');
+      const to=el.attr('data-to');
+      if(from===nid||to===nid){
+        connEdges.add(this);
+        neighbors.add(from);
+        neighbors.add(to);
+      }
+    });
+
+    // Highlight the selected node
     d3.selectAll('[data-id="'+nid+'"]').classed('selected',true);
+
+    // Highlight neighbor nodes
+    d3.selectAll('[class^="node-"]').each(function(){
+      const el=d3.select(this);
+      const id=el.attr('data-id');
+      if(id===nid) return; // already selected
+      if(neighbors.has(id)){
+        el.classed('hl-neighbor',true);
+      } else {
+        el.classed('hl-dimmed',true);
+      }
+    });
+
+    // Highlight connected edges, dim the rest
+    d3.selectAll('.edge').each(function(){
+      if(connEdges.has(this)){
+        d3.select(this).classed('hl-active',true);
+      } else {
+        d3.select(this).classed('hl-dimmed',true);
+      }
+    });
+
+    // Show sidebar detail
     if(n.type==='service')showServiceDetail(n.data);
     else if(n.type==='external')showExternalDetail(n.data||{name:nid});
     else if(n.type==='queue')showQueueDetail(n.data);
@@ -365,12 +419,7 @@ function showSidebar(html){
 
 function clickService(name){
   const svc=(graphData.services||[]).find(s=>s.name===name);
-  if(svc){
-    selectNode(name,{type:'service',data:svc});
-    // Also highlight on graph
-    d3.selectAll('[class^="node-"]').classed('selected',false);
-    d3.selectAll('[data-id="'+name+'"]').classed('selected',true);
-  }
+  if(svc) selectNode(name,{type:'service',data:svc});
 }
 
 function showServiceDetail(svc){
