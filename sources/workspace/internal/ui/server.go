@@ -140,6 +140,7 @@ type DatabaseNode struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Kind string `json:"kind"` // "postgresql", "dynamodb", "athena", "redis", "elasticsearch"
+	Host string `json:"host,omitempty"`
 }
 
 type GraphEdge struct {
@@ -220,16 +221,23 @@ func (s *Server) buildArchitectureGraph(runID string) (*ArchGraph, error) {
 		for _, item := range dependencies["db_operation"] {
 			d := getDetails(item)
 			dbType := strings.ToLower(firstNonEmpty(d["database_type"], d["type"], "database"))
-			dbName := firstNonEmpty(d["database_name"], d["table"], d["entity"], getString(item, "name"))
-			op := firstNonEmpty(d["operation"], "read/write")
-			allDBs[name] = append(allDBs[name], dbRef{name: dbName, kind: normalizeDBKind(dbType), operation: op})
+			// Use entity name as display name (most descriptive), fall back to database_name
+			dbName := firstNonEmpty(getString(item, "name"), d["database_name"], d["table"], d["entity"])
+			host := firstNonEmpty(d["host_production"], d["host"])
+			// Extract operations list for edge labels
+			op := extractOperations(item)
+			allDBs[name] = append(allDBs[name], dbRef{name: dbName, kind: normalizeDBKind(dbType), operation: op, host: host, summary: toSummary(item)})
 			svc.Databases = append(svc.Databases, dbName)
 		}
 		for _, item := range dependencies["cache_operation"] {
 			d := getDetails(item)
 			cacheType := strings.ToLower(firstNonEmpty(d["cache_type"], d["database_type"], "redis"))
-			cacheName := firstNonEmpty(d["cache_name"], d["key_pattern"], getString(item, "name"))
-			allCacheOps[name] = append(allCacheOps[name], dbRef{name: cacheName, kind: cacheType, operation: "cache"})
+			cacheName := firstNonEmpty(getString(item, "name"), d["cache_name"], d["key_pattern"])
+			op := extractOperations(item)
+			if op == "read/write" {
+				op = "cache"
+			}
+			allCacheOps[name] = append(allCacheOps[name], dbRef{name: cacheName, kind: cacheType, operation: op, summary: toSummary(item)})
 		}
 
 		g.Services = append(g.Services, svc)
@@ -245,11 +253,12 @@ func (s *Server) buildArchitectureGraph(runID string) (*ArchGraph, error) {
 		for _, db := range dbs {
 			dbID := normalizeID(db.kind + "_" + db.name)
 			if _, ok := dbMap[dbID]; !ok {
-				dbMap[dbID] = &DatabaseNode{ID: dbID, Name: db.name, Kind: db.kind}
+				dbMap[dbID] = &DatabaseNode{ID: dbID, Name: db.name, Kind: db.kind, Host: db.host}
 			}
 			g.Edges = append(g.Edges, &GraphEdge{
 				From: svcName, To: "db:" + dbID, Type: "database",
-				Label: db.operation,
+				Label:   db.operation,
+				Details: []EntitySummary{db.summary},
 			})
 		}
 	}
@@ -357,6 +366,8 @@ type dbRef struct {
 	name      string
 	kind      string
 	operation string
+	host      string
+	summary   EntitySummary
 }
 
 // ---- Data Loading ----
@@ -413,6 +424,38 @@ func readJSONDir(dir string) map[string][]map[string]any {
 }
 
 // ---- Helpers ----
+
+// extractOperations gets a human-readable operation label from a DB entity.
+func extractOperations(item map[string]any) string {
+	d := getMap(item, "details")
+	if d == nil {
+		return "read/write"
+	}
+	// Check for operations array
+	if ops, ok := d["operations"]; ok {
+		switch v := ops.(type) {
+		case []any:
+			parts := make([]string, 0, len(v))
+			for _, o := range v {
+				if s, ok := o.(string); ok {
+					parts = append(parts, strings.ToLower(s))
+				}
+			}
+			if len(parts) > 0 {
+				return strings.Join(parts, ", ")
+			}
+		case string:
+			return v
+		}
+	}
+	// Fall back to single operation field
+	if op, ok := d["operation"]; ok {
+		if s, ok := op.(string); ok && s != "" {
+			return s
+		}
+	}
+	return "read/write"
+}
 
 func toSummary(item map[string]any) EntitySummary {
 	return EntitySummary{

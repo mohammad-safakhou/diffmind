@@ -286,6 +286,12 @@ function renderGraph(){
       .attr('marker-end','url(#arr-'+(ed.type||'http')+')')
       .style('cursor','pointer')
       .on('click',ev=>{ev.stopPropagation();showEdgeDetail(ed.data)});
+    // Edge label at midpoint
+    if(points.length>=2 && ed.type==='database'){
+      const mid=points[Math.floor(points.length/2)];
+      const lbl=(ed.label||'').length>30?(ed.label||'').slice(0,28)+'...':(ed.label||'');
+      if(lbl) edgeGroup.append('text').attr('class','edge-label').attr('x',mid.x).attr('y',mid.y-5).attr('text-anchor','middle').text(lbl);
+    }
   });
 
   // Draw nodes
@@ -305,8 +311,8 @@ function renderGraph(){
 
     if(n.type==='service'){
       // Service icon + name (full, no truncation)
-      ng.append('text').attr('class','icon-text').attr('x',10).attr('y',18).text(getIcon(n.data));
-      ng.append('text').attr('class','title-text').attr('x',26).attr('y',18).text(n.data.name);
+      drawIcon(ng,'service',8,6,12);
+      ng.append('text').attr('class','title-text').attr('x',24).attr('y',17).text(n.data.name);
       // Badges
       if(n.badges&&n.badges.length){
         const badgeG=ng.append('g').attr('transform','translate(10,28)');
@@ -319,13 +325,16 @@ function renderGraph(){
         });
       }
     } else if(n.type==='external'){
-      ng.append('text').attr('class','title-text').attr('x',n.width/2).attr('y',n.height/2+4).attr('text-anchor','middle')
+      drawIcon(ng,'service',n.width/2-6,n.height/2-10,10);
+      ng.append('text').attr('class','title-text').attr('x',n.width/2).attr('y',n.height/2+8).attr('text-anchor','middle')
         .text(cleanLabel((nodeInfo[nid]||{}).data?.name||nid));
     } else if(n.type==='queue'){
-      ng.append('text').attr('x',8).attr('y',12).attr('fill','#22c997').attr('font-size',10).text('\u25B6');
+      const qkind=(n.data&&n.data.kind)||'sqs';
+      drawIcon(ng,ICONS[qkind]?qkind:'sqs',4,8,14);
       ng.append('text').attr('class','title-text').attr('x',22).attr('y',20).text(n.label||cleanLabel(n.data?.name||''));
     } else if(n.type==='db'){
-      ng.append('text').attr('x',6).attr('y',14).attr('fill','#f5943a').attr('font-size',11).text('\u{1F5C4}');
+      const dbkind=(n.data&&n.data.kind)||'postgresql';
+      drawIcon(ng,ICONS[dbkind]?dbkind:'postgresql',4,8,14);
       ng.append('text').attr('class','title-text').attr('x',22).attr('y',20).text(n.label||cleanLabel(n.data?.name||''));
     }
   });
@@ -341,15 +350,29 @@ function renderGraph(){
   svg.call(zoom.transform,d3.zoomIdentity.translate(tx,ty).scale(scale));
 }
 
-function getIcon(svc){
-  const n=svc.name.toLowerCase();
-  if(n.includes('api'))return '\u{1F310}';
-  if(n.includes('observer')||n.includes('monitor'))return '\u{1F441}';
-  if(n.includes('producer')||n.includes('publisher'))return '\u{1F4E4}';
-  if(n.includes('translator')||n.includes('transform'))return '\u{1F504}';
-  if(n.includes('calculator'))return '\u{1F4CA}';
-  if(n.includes('delivery'))return '\u{1F69A}';
-  return '\u{2699}';
+// SVG icon paths for technology types (rendered inline)
+const ICONS={
+  // Service type icons (small, 12x12 viewBox)
+  service:'<path d="M2,3 L10,3 L10,10 L2,10Z M4,1 L8,1 L8,3 L4,3Z M1,5 L2,5 M10,5 L11,5" stroke="currentColor" fill="none" stroke-width="1"/>',
+  // Database icons
+  postgresql:'<ellipse cx="7" cy="3" rx="5" ry="2" fill="none" stroke="#336791" stroke-width="1.2"/><path d="M2,3 L2,9 C2,10.1 4.2,11 7,11 C9.8,11 12,10.1 12,9 L12,3" fill="none" stroke="#336791" stroke-width="1.2"/><path d="M2,6 C2,7.1 4.2,8 7,8 C9.8,8 12,7.1 12,6" fill="none" stroke="#336791" stroke-width="1.2"/>',
+  dynamodb:'<path d="M3,2 L11,2 L13,7 L11,12 L3,12 L1,7Z" fill="none" stroke="#4053D6" stroke-width="1.2"/><path d="M4,5 L10,5 M4,7 L10,7 M4,9 L10,9" stroke="#4053D6" stroke-width="0.8"/>',
+  redis:'<path d="M7,1 L12,4 L7,7 L2,4Z" fill="none" stroke="#DC382D" stroke-width="1.2"/><path d="M2,4 L2,9 L7,12 L12,9 L12,4" fill="none" stroke="#DC382D" stroke-width="1.2"/><path d="M7,7 L7,12" stroke="#DC382D" stroke-width="1"/>',
+  athena:'<path d="M7,1 L12,4 L12,10 L7,13 L2,10 L2,4Z" fill="none" stroke="#8C4FFF" stroke-width="1.2"/><circle cx="7" cy="7" r="2" fill="none" stroke="#8C4FFF" stroke-width="1"/>',
+  elasticsearch:'<circle cx="7" cy="5" r="3" fill="none" stroke="#FEC514" stroke-width="1.2"/><path d="M4,5 L10,5" stroke="#00BFB3" stroke-width="1.5"/><path d="M9,7.5 L12,11" stroke="#FEC514" stroke-width="1.2"/>',
+  mongodb:'<path d="M7,1 C7,1 4,3 4,7 C4,10 6,12 7,13 C8,12 10,10 10,7 C10,3 7,1 7,1Z" fill="none" stroke="#00ED64" stroke-width="1.2"/><path d="M7,5 L7,11" stroke="#00ED64" stroke-width="1"/>',
+  // Queue icons
+  sqs:'<rect x="2" y="3" width="10" height="8" rx="1" fill="none" stroke="#FF9900" stroke-width="1.2"/><path d="M5,6 L9,6 M5,8 L8,8" stroke="#FF9900" stroke-width="0.8"/><path d="M7,1 L7,3 M7,11 L7,13" stroke="#FF9900" stroke-width="1"/>',
+  sns:'<circle cx="7" cy="7" r="4" fill="none" stroke="#FF4F8B" stroke-width="1.2"/><path d="M7,3 L7,2 M3,7 L2,7 M11,7 L12,7 M7,11 L7,12 M4.2,4.2 L3.2,3.2 M9.8,4.2 L10.8,3.2" stroke="#FF4F8B" stroke-width="0.8"/>',
+  kinesis:'<path d="M3,2 L8,7 L3,12 M6,2 L11,7 L6,12" fill="none" stroke="#8C4FFF" stroke-width="1.5"/>',
+  kafka:'<circle cx="7" cy="4" r="1.5" fill="none" stroke="#231F20" stroke-width="1"/><circle cx="4" cy="9" r="1.5" fill="none" stroke="#231F20" stroke-width="1"/><circle cx="10" cy="9" r="1.5" fill="none" stroke="#231F20" stroke-width="1"/><path d="M7,5.5 L4,7.5 M7,5.5 L10,7.5 M4,9 L10,9" stroke="#231F20" stroke-width="0.8"/>',
+};
+
+function drawIcon(parentG, kind, x, y, size){
+  const iconSvg=ICONS[kind]||ICONS.service;
+  const ig=parentG.append('g').attr('transform','translate('+x+','+y+') scale('+(size/14)+')');
+  ig.html(iconSvg);
+  return ig;
 }
 
 function cleanLabel(s){
@@ -561,13 +584,17 @@ function showQueueDetail(q){
 function showDBDetail(db){
   let h='<div class="sec"><h3>Database</h3>';
   h+=kv('Name',esc(db.name));
-  h+=kv('Kind','<span class="badge badge-db">'+esc(db.kind)+'</span>');
+  h+=kv('Type','<span class="badge badge-db">'+esc(db.kind)+'</span>');
+  if(db.host) h+=kv('Host',esc(db.host));
   h+='</div>';
 
   const users=(graphData.edges||[]).filter(e=>e.to==='db:'+db.id);
   if(users.length){
     h+='<div class="sec"><h3>Used By ('+users.length+')</h3>';
-    users.forEach(e=>h+='<div class="detail-item"><div class="name">'+esc(e.from)+' <span class="badge badge-db">'+esc(e.label)+'</span></div></div>');
+    users.forEach(e=>{
+      h+='<div class="detail-item"><div class="name">'+esc(e.from)+'</div>';
+      h+='<div class="sub">Operations: <span class="badge badge-db">'+esc(e.label||'read/write')+'</span></div></div>';
+    });
     h+='</div>';
   }
   showSidebar(h);
