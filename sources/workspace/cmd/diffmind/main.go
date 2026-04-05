@@ -145,7 +145,12 @@ func cmdUI(cfg *config.Config, fs *flag.FlagSet) {
 		baseDir = ".diffmind/runs"
 	}
 
-	srv := ui.New(baseDir, h, p)
+	serviceRepoDirs := make(map[string]string)
+	for _, repo := range cfg.Repos.ServiceRepos {
+		serviceRepoDirs[repo.Name] = repo.Path
+	}
+
+	srv := ui.New(baseDir, serviceRepoDirs, h, p)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
