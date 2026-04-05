@@ -174,11 +174,20 @@ function renderGraph(){
   const databases=graphData.database_nodes||[];
   const edges=graphData.edges||[];
 
-  // Node dimensions
-  const svcW=180,svcH_base=48;
-  const extW=140,extH=36;
-  const queueW=160,queueH=32;
-  const dbW=140,dbH=32;
+  // Measure text width using a hidden SVG text element
+  const measurer=svg.append('text').attr('font-family','Inter,SF Pro Display,system-ui,sans-serif').attr('opacity',0);
+  function textWidth(str,fontSize){
+    measurer.attr('font-size',fontSize+'px').text(str);
+    const w=measurer.node().getComputedTextLength();
+    return w;
+  }
+
+  // Node height constants
+  const svcH_base=48;
+  const extH=36;
+  const queueH=32;
+  const dbH=32;
+  const padX=32; // horizontal padding inside nodes
 
   // Add service nodes
   const nodeInfo={};
@@ -195,31 +204,43 @@ function renderGraph(){
     if(wc)badges.push(wc+'W');
     if(cli)badges.push(cli+'CLI');
     const h=svcH_base+(badges.length>0?8:0);
-    g.setNode(s.name,{width:svcW,height:h,type:'service',data:s,badges});
+    const nameW=textWidth(s.name,11)+padX+18; // +18 for icon space
+    const w=Math.max(140,nameW);
+    g.setNode(s.name,{width:w,height:h,type:'service',data:s,badges});
     nodeInfo[s.name]={type:'service',data:s,badges};
   });
 
   // Add external nodes
   externals.forEach(e=>{
-    g.setNode(e.name,{width:extW,height:extH,type:'external',data:e});
+    const cleanName=cleanLabel(e.name);
+    const nameW=textWidth(cleanName,10)+padX;
+    const w=Math.max(100,nameW);
+    g.setNode(e.name,{width:w,height:extH,type:'external',data:e});
     nodeInfo[e.name]={type:'external',data:e};
   });
 
   // Add queue nodes
   queues.forEach(q=>{
     const id='queue:'+q.id;
-    const label=shortLabel(q.name,22);
-    g.setNode(id,{width:queueW,height:queueH,type:'queue',data:q,label});
+    const cleanName=cleanLabel(q.name);
+    const nameW=textWidth(cleanName,9)+padX+16; // +16 for icon
+    const w=Math.max(100,nameW);
+    g.setNode(id,{width:w,height:queueH,type:'queue',data:q,label:cleanName});
     nodeInfo[id]={type:'queue',data:q};
   });
 
   // Add database nodes
   databases.forEach(d=>{
     const id='db:'+d.id;
-    const label=shortLabel(d.name,20);
-    g.setNode(id,{width:dbW,height:dbH,type:'db',data:d,label});
+    const cleanName=cleanLabel(d.name);
+    const nameW=textWidth(cleanName,9)+padX+18; // +18 for icon
+    const w=Math.max(100,nameW);
+    g.setNode(id,{width:w,height:dbH,type:'db',data:d,label:cleanName});
     nodeInfo[id]={type:'db',data:d};
   });
+
+  // Remove measurer
+  measurer.remove();
 
   // Add edges
   edges.forEach((e,i)=>{
@@ -283,9 +304,9 @@ function renderGraph(){
     ng.append('rect').attr('width',n.width).attr('height',n.height);
 
     if(n.type==='service'){
-      // Service icon + name
+      // Service icon + name (full, no truncation)
       ng.append('text').attr('class','icon-text').attr('x',10).attr('y',18).text(getIcon(n.data));
-      ng.append('text').attr('class','title-text').attr('x',26).attr('y',18).text(shortLabel(n.data.name,18));
+      ng.append('text').attr('class','title-text').attr('x',26).attr('y',18).text(n.data.name);
       // Badges
       if(n.badges&&n.badges.length){
         const badgeG=ng.append('g').attr('transform','translate(10,28)');
@@ -299,13 +320,13 @@ function renderGraph(){
       }
     } else if(n.type==='external'){
       ng.append('text').attr('class','title-text').attr('x',n.width/2).attr('y',n.height/2+4).attr('text-anchor','middle')
-        .text(shortLabel((nodeInfo[nid]||{}).data?.name||nid,18));
+        .text(cleanLabel((nodeInfo[nid]||{}).data?.name||nid));
     } else if(n.type==='queue'){
-      ng.append('text').attr('x',8).attr('y',12).attr('fill','#22c997').attr('font-size',10).text('\u25B6'); // play icon
-      ng.append('text').attr('class','title-text').attr('x',22).attr('y',20).text(n.label||'');
+      ng.append('text').attr('x',8).attr('y',12).attr('fill','#22c997').attr('font-size',10).text('\u25B6');
+      ng.append('text').attr('class','title-text').attr('x',22).attr('y',20).text(n.label||cleanLabel(n.data?.name||''));
     } else if(n.type==='db'){
       ng.append('text').attr('x',6).attr('y',14).attr('fill','#f5943a').attr('font-size',11).text('\u{1F5C4}');
-      ng.append('text').attr('class','title-text').attr('x',22).attr('y',20).text(n.label||'');
+      ng.append('text').attr('class','title-text').attr('x',22).attr('y',20).text(n.label||cleanLabel(n.data?.name||''));
     }
   });
 
@@ -331,11 +352,9 @@ function getIcon(svc){
   return '\u{2699}';
 }
 
-function shortLabel(s,max){
+function cleanLabel(s){
   if(!s)return'';
-  s=s.replace(/\$\{[^}]+\}/g,'').replace(/https?:\/\//,'');
-  if(s.length<=max)return s;
-  return s.slice(0,max-1)+'\u2026';
+  return s.replace(/\$\{[^}]+\}/g,'').replace(/https?:\/\//,'').trim();
 }
 
 function selectNode(nid,n){
