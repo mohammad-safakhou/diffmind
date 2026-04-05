@@ -114,14 +114,24 @@ type ArchGraph struct {
 }
 
 type ServiceNode struct {
-	Name           string          `json:"name"`
-	Known          bool            `json:"known"`
-	HTTPRoutes     []EntitySummary `json:"http_routes"`
-	QueueConsumers []EntitySummary `json:"queue_consumers"`
-	ScheduledJobs  []EntitySummary `json:"scheduled_jobs"`
-	Webhooks       []EntitySummary `json:"webhooks"`
-	CLICommands    []EntitySummary `json:"cli_commands"`
-	Databases      []string        `json:"databases"`
+	Name           string              `json:"name"`
+	Known          bool                `json:"known"`
+	HTTPRoutes     []EntitySummary     `json:"http_routes"`
+	QueueConsumers []EntitySummary     `json:"queue_consumers"`
+	ScheduledJobs  []EntitySummary     `json:"scheduled_jobs"`
+	Webhooks       []EntitySummary     `json:"webhooks"`
+	CLICommands    []EntitySummary     `json:"cli_commands"`
+	Databases      []string            `json:"databases"`
+	Dependencies   []EntitySummary     `json:"dependencies"`
+	Connections    []ConnectionSummary `json:"connections"`
+}
+
+type ConnectionSummary struct {
+	FromName string `json:"from_name"`
+	FromType string `json:"from_type"`
+	ToName   string `json:"to_name"`
+	ToType   string `json:"to_type"`
+	Summary  string `json:"summary"`
 }
 
 type ExternalNode struct {
@@ -173,7 +183,7 @@ func (s *Server) buildArchitectureGraph(runID string) (*ArchGraph, error) {
 	// Phase 1: Load all DiffMind data per service
 	for name, repoPath := range s.serviceRepoDirs {
 		knownServices[name] = true
-		exposures, dependencies := loadDiffMindData(repoPath)
+		exposures, dependencies, connections := loadDiffMindData(repoPath)
 
 		svc := &ServiceNode{
 			Name:  name,
@@ -238,6 +248,52 @@ func (s *Server) buildArchitectureGraph(runID string) (*ArchGraph, error) {
 				op = "cache"
 			}
 			allCacheOps[name] = append(allCacheOps[name], dbRef{name: cacheName, kind: cacheType, operation: op, summary: toSummary(item)})
+		}
+
+		// Collect raw dependencies for sidebar display
+		for _, depType := range []string{"outbound_http", "queue_publish", "db_operation", "cache_operation"} {
+			for _, item := range dependencies[depType] {
+				svc.Dependencies = append(svc.Dependencies, toSummary(item))
+			}
+		}
+
+		// Build connection summaries by matching IDs
+		expByID := map[string]string{}
+		for _, expType := range []string{"http_route", "queue_consumer", "scheduled_job", "webhook", "cli_command"} {
+			for _, item := range exposures[expType] {
+				if id := getString(item, "id"); id != "" {
+					expByID[id] = getString(item, "name")
+				}
+			}
+		}
+		depByID := map[string]string{}
+		for _, depType := range []string{"outbound_http", "queue_publish", "db_operation", "cache_operation"} {
+			for _, item := range dependencies[depType] {
+				if id := getString(item, "id"); id != "" {
+					depByID[id] = getString(item, "name")
+				}
+			}
+		}
+		for _, connItems := range connections {
+			for _, c := range connItems {
+				fromID := getString(c, "from_exposure_id")
+				toID := getString(c, "to_dependency_id")
+				fromName := expByID[fromID]
+				toName := depByID[toID]
+				if fromName == "" {
+					fromName = fromID
+				}
+				if toName == "" {
+					toName = toID
+				}
+				svc.Connections = append(svc.Connections, ConnectionSummary{
+					FromName: fromName,
+					FromType: getString(c, "from_type"),
+					ToName:   toName,
+					ToType:   getString(c, "to_type"),
+					Summary:  getString(c, "summary"),
+				})
+			}
 		}
 
 		g.Services = append(g.Services, svc)
@@ -372,9 +428,10 @@ type dbRef struct {
 
 // ---- Data Loading ----
 
-func loadDiffMindData(repoPath string) (exposures map[string][]map[string]any, dependencies map[string][]map[string]any) {
+func loadDiffMindData(repoPath string) (exposures map[string][]map[string]any, dependencies map[string][]map[string]any, connections map[string][]map[string]any) {
 	exposures = make(map[string][]map[string]any)
 	dependencies = make(map[string][]map[string]any)
+	connections = make(map[string][]map[string]any)
 
 	runsDir := filepath.Join(repoPath, ".diffmind", "runs")
 	entries, err := os.ReadDir(runsDir)
@@ -398,6 +455,7 @@ func loadDiffMindData(repoPath string) (exposures map[string][]map[string]any, d
 	runDir := filepath.Join(runsDir, latest)
 	exposures = readJSONDir(filepath.Join(runDir, "exposures"))
 	dependencies = readJSONDir(filepath.Join(runDir, "dependencies"))
+	connections = readJSONDir(filepath.Join(runDir, "connections"))
 	return
 }
 

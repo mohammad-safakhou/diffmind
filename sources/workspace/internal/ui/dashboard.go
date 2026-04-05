@@ -470,7 +470,7 @@ function showServiceDetail(svc){
   h+=kv('Known','<span style="color:var(--green)">Yes \u2713</span>');
   h+='</div>';
 
-  // HTTP Routes
+  // HTTP Routes - clickable to show connections
   const routes=svc.http_routes||[];
   if(routes.length){
     h+='<div class="sec"><h3>HTTP Endpoints ('+routes.length+')</h3><div class="detail-list">';
@@ -478,63 +478,122 @@ function showServiceDetail(svc){
       const d=r.details||{};
       const method=d.method||'';
       const path=d.path||r.name||'';
-      h+='<div class="detail-item"><div class="name"><span class="badge badge-http">'+esc(method)+'</span> '+esc(path)+'</div>';
+      const ename=r.name||path;
+      h+='<div class="detail-item" style="cursor:pointer" onclick="showExposureFlow(\''+escAttr(svc.name)+'\',\''+escAttr(ename)+'\')">';
+      h+='<div class="name"><span class="badge badge-http">'+esc(method)+'</span> '+esc(path)+' <span style="color:var(--dim);font-size:9px">\u25B6</span></div>';
       if(d.controller)h+='<div class="sub">'+esc(d.controller)+'</div>';
       h+='</div>';
     });
     h+='</div></div>';
   }
 
-  // Queue Consumers
+  // Queue Consumers - clickable
   const cons=svc.queue_consumers||[];
   if(cons.length){
     h+='<div class="sec"><h3>Queue Consumers ('+cons.length+')</h3><div class="detail-list">';
     cons.forEach(c=>{
       const d=c.details||{};
-      h+='<div class="detail-item"><div class="name"><span class="badge badge-sqs">SQS</span> '+esc(d.queue||c.name)+'</div>';
+      h+='<div class="detail-item" style="cursor:pointer" onclick="showExposureFlow(\''+escAttr(svc.name)+'\',\''+escAttr(c.name)+'\')">';
+      h+='<div class="name"><span class="badge badge-sqs">SQS</span> '+esc(d.queue||c.name)+' <span style="color:var(--dim);font-size:9px">\u25B6</span></div>';
       if(d.production_url)h+='<div class="sub">'+esc(d.production_url)+'</div>';
       h+='</div>';
     });
     h+='</div></div>';
   }
 
-  // Scheduled Jobs
+  // Scheduled Jobs - clickable
   const jobs=svc.scheduled_jobs||[];
   if(jobs.length){
     h+='<div class="sec"><h3>Scheduled Jobs ('+jobs.length+')</h3><div class="detail-list">';
     jobs.forEach(j=>{
       const d=j.details||{};
-      h+='<div class="detail-item"><div class="name">'+esc(j.name)+'</div>';
+      h+='<div class="detail-item" style="cursor:pointer" onclick="showExposureFlow(\''+escAttr(svc.name)+'\',\''+escAttr(j.name)+'\')">';
+      h+='<div class="name">'+esc(j.name)+' <span style="color:var(--dim);font-size:9px">\u25B6</span></div>';
       h+='<div class="sub">'+(d.schedule?'cron: '+esc(d.schedule):'')+(d.spring_profile?' | profile: '+esc(d.spring_profile):'')+'</div></div>';
     });
     h+='</div></div>';
   }
 
-  // Connected edges
-  const outHTTP=(graphData.edges||[]).filter(e=>e.from===svc.name&&e.type==='http');
-  const outQueue=(graphData.edges||[]).filter(e=>e.from===svc.name&&e.type==='queue_publish');
-  const inQueue=(graphData.edges||[]).filter(e=>e.to===svc.name&&e.type==='queue_consume');
-  const outDB=(graphData.edges||[]).filter(e=>e.from===svc.name&&(e.type==='database'||e.type==='cache'));
+  // CLI Commands - clickable
+  const clis=svc.cli_commands||[];
+  if(clis.length){
+    h+='<div class="sec"><h3>CLI / Lambda ('+clis.length+')</h3><div class="detail-list">';
+    clis.forEach(c=>{
+      h+='<div class="detail-item" style="cursor:pointer" onclick="showExposureFlow(\''+escAttr(svc.name)+'\',\''+escAttr(c.name)+'\')">';
+      h+='<div class="name">'+esc(c.name)+' <span style="color:var(--dim);font-size:9px">\u25B6</span></div>';
+      if(c.summary)h+='<div class="sub">'+esc(c.summary)+'</div>';
+      h+='</div>';
+    });
+    h+='</div></div>';
+  }
 
+  // Outbound HTTP (dependencies) - clickable
+  const outHTTP=(graphData.edges||[]).filter(e=>e.from===svc.name&&e.type==='http');
   if(outHTTP.length){
     h+='<div class="sec"><h3>Outbound HTTP ('+outHTTP.length+')</h3>';
     outHTTP.forEach(e=>{
       const det=(e.details&&e.details[0])||{};
       const dd=det.details||{};
       h+='<div class="detail-item"><div class="name">\u2192 '+esc(e.to)+'</div>';
-      if(dd.endpoints_called)h+='<div class="sub">'+esc(JSON.stringify(dd.endpoints_called))+'</div>';
+      if(dd.endpoints_called){
+        const eps=Array.isArray(dd.endpoints_called)?dd.endpoints_called:[dd.endpoints_called];
+        eps.forEach(ep=>h+='<div class="sub" style="padding-left:8px">'+esc(String(ep))+'</div>');
+      }
       h+='</div>';
     });
     h+='</div>';
   }
 
+  // Databases
+  const outDB=(graphData.edges||[]).filter(e=>e.from===svc.name&&(e.type==='database'||e.type==='cache'));
   if(outDB.length){
     h+='<div class="sec"><h3>Databases ('+outDB.length+')</h3>';
     outDB.forEach(e=>{
-      h+='<div class="detail-item"><div class="name"><span class="badge badge-db">'+esc(e.label)+'</span> '+esc(e.to.replace('db:',''))+'</div></div>';
+      h+='<div class="detail-item"><div class="name"><span class="badge badge-db">'+esc(e.label)+'</span> '+esc(e.to.replace(/^db:/,''))+'</div></div>';
     });
     h+='</div>';
   }
+
+  showSidebar(h);
+}
+
+// Show data flow from a specific exposure (endpoint/scheduler/consumer)
+function showExposureFlow(svcName,exposureName){
+  const svc=(graphData.services||[]).find(s=>s.name===svcName);
+  if(!svc)return;
+  const conns=(svc.connections||[]).filter(c=>c.from_name===exposureName);
+  
+  let h='<div class="sec"><h3>Data Flow</h3>';
+  h+=kv('Service','<span style="color:var(--blue)">'+esc(svcName)+'</span>');
+  h+=kv('Entry point',esc(exposureName));
+  h+='</div>';
+
+  if(conns.length===0){
+    h+='<div class="sec"><p style="color:var(--dim)">No downstream connections found for this entry point</p></div>';
+  } else {
+    // Group connections by target type
+    const byType={};
+    conns.forEach(c=>{
+      const t=c.to_type||'unknown';
+      (byType[t]=byType[t]||[]).push(c);
+    });
+
+    for(const[type,items]of Object.entries(byType)){
+      const typeBadge={outbound_http:'badge-http',db_operation:'badge-db',queue_publish:'badge-queue',cache_operation:'badge-cache'}[type]||'badge-http';
+      const typeLabel={outbound_http:'HTTP Calls',db_operation:'Database Ops',queue_publish:'Queue Publish',cache_operation:'Cache Ops'}[type]||type;
+      h+='<div class="sec"><h3>'+esc(typeLabel)+' ('+items.length+')</h3><div class="detail-list">';
+      items.forEach(c=>{
+        h+='<div class="detail-item">';
+        h+='<div class="name"><span class="badge '+typeBadge+'">\u2192</span> '+esc(c.to_name)+'</div>';
+        h+='<div class="sub">'+esc(c.summary)+'</div>';
+        h+='</div>';
+      });
+      h+='</div></div>';
+    }
+  }
+
+  // Back button
+  h+='<div style="margin-top:8px"><button onclick="clickService(\''+escAttr(svcName)+'\')" style="background:var(--panel2);color:var(--muted);border:1px solid var(--border2);border-radius:5px;padding:4px 12px;cursor:pointer;font-size:11px">\u2190 Back to '+esc(svcName)+'</button></div>';
 
   showSidebar(h);
 }
@@ -627,6 +686,7 @@ function showEdgeDetail(e){
 
 function kv(k,v){return'<div class="row"><span class="k">'+esc(k)+'</span><span class="v">'+v+'</span></div>'}
 function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=String(s);return d.innerHTML}
+function escAttr(s){return esc(s).replace(/'/g,'\\&#39;').replace(/"/g,'\\&quot;')}
 
 // ---- INIT ----
 (async()=>{await loadRuns();await loadGraph()})();
