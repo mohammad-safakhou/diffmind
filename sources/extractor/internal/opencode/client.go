@@ -129,6 +129,70 @@ func (c *Client) DeleteSession(ctx context.Context, sessionID, directory string)
 	return nil
 }
 
+func (c *Client) PromptText(ctx context.Context, sessionID, directory, prompt string) (string, error) {
+	if !c.Enabled() {
+		return "", fmt.Errorf("opencode disabled")
+	}
+	util.Debug("opencode.client", "prompt text request", map[string]any{
+		"session_id": sessionID,
+		"directory":  directory,
+		"prompt_len": len(prompt),
+	})
+	u := fmt.Sprintf("%s/session/%s/message", c.baseURL, sessionID)
+	if directory != "" {
+		u += "?directory=" + url.QueryEscape(directory)
+	}
+	body := map[string]any{
+		"parts": []map[string]any{{
+			"type": "text",
+			"text": prompt,
+		}},
+	}
+	if c.providerID != "" && c.modelID != "" {
+		body["model"] = map[string]string{"providerID": c.providerID, "modelID": c.modelID}
+	}
+	if strings.TrimSpace(c.variant) != "" {
+		body["variant"] = strings.TrimSpace(c.variant)
+	}
+	buf, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(buf))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.addAuth(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("prompt failed: %s %s", resp.Status, string(b))
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	// Extract text from response parts
+	var out struct {
+		Parts []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"parts"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return string(raw), nil
+	}
+	var texts []string
+	for _, p := range out.Parts {
+		if p.Type == "text" && p.Text != "" {
+			texts = append(texts, p.Text)
+		}
+	}
+	return strings.Join(texts, "\n"), nil
+}
+
 func (c *Client) PromptStructured(ctx context.Context, sessionID, directory, prompt string, schema map[string]any) (map[string]any, error) {
 	if !c.Enabled() {
 		return nil, fmt.Errorf("opencode disabled")
