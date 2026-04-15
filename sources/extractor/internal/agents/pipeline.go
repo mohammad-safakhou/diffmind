@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -17,6 +19,7 @@ type openCodeAPI interface {
 	CreateSession(ctx context.Context, directory string) (string, error)
 	DeleteSession(ctx context.Context, sessionID, directory string) error
 	PromptStructured(ctx context.Context, sessionID, directory, prompt string, schema map[string]any) (map[string]any, error)
+	PromptText(ctx context.Context, sessionID, directory, prompt string) (string, error)
 }
 
 type Result struct {
@@ -85,27 +88,40 @@ func Run(ctx context.Context, cfg config.Config, repoPath string, oc openCodeAPI
 		return Result{}, fmt.Errorf("opencode is required")
 	}
 
-	util.Info("agents.orchestrator", "extraction starting", map[string]any{"repo": repoPath})
+	// Detect monorepo: if repoPath is a subdirectory of a git repo, scope the prompt
+	sessionDir, subDir := detectMonorepo(repoPath)
 
-	sessionID, err := oc.CreateSession(ctx, repoPath)
+	util.Info("agents.orchestrator", "extraction starting", map[string]any{
+		"repo": repoPath, "session_dir": sessionDir, "sub_dir": subDir,
+	})
+
+	sessionID, err := oc.CreateSession(ctx, sessionDir)
 	if err != nil {
 		return Result{}, fmt.Errorf("create session: %w", err)
 	}
 	util.Info("agents.orchestrator", "session created", map[string]any{"session_id": sessionID})
 
 	prompt := buildFullExtractionPrompt()
-	schema := fullExtractionSchema()
+	if subDir != "" {
+		prompt = fmt.Sprintf("IMPORTANT: This is a monorepo. ONLY analyze files under the '%s/' subdirectory. Ignore all other directories at the repo root. All file paths in your response must be relative to the repo root and start with '%s/'.\n\n", subDir, subDir) + prompt
+	}
 
-	util.Info("agents.orchestrator", "sending extraction prompt", map[string]any{"prompt_len": len(prompt)})
+	util.Info("agents.orchestrator", "sending extraction prompt", map[string]any{"prompt_len": len(prompt), "sub_dir": subDir})
 
-	payload, err := oc.PromptStructured(ctx, sessionID, repoPath, prompt, schema)
+	payload, err := oc.PromptText(ctx, sessionID, sessionDir, prompt)
 	if err != nil {
 		return Result{}, fmt.Errorf("extraction prompt: %w", err)
 	}
 
+	// Parse JSON from text response
+	jsonPayload := extractJSONFromText(payload)
+	if jsonPayload == nil {
+		return Result{}, fmt.Errorf("no JSON found in LLM response")
+	}
+
 	util.Info("agents.orchestrator", "extraction response received", nil)
 
-	resp := parseFullResponse(payload)
+	resp := parseFullResponse(jsonPayload)
 	return assembleResult(repoPath, cfg.Quality.MinConfidence, resp)
 }
 
@@ -314,6 +330,123 @@ func tokenOverlap(a, b map[string]struct{}) int {
 	return count
 }
 
+// extractJSONFromText finds the main JSON object in a text response from the LLM.
+// It handles preamble text, markdown code fences, and nested JSON.
+func extractJSONFromText(text string) map[string]any {
+	// Strategy 1: Look for ```json ... ``` blocks
+	if idx := strings.Index(text, "```json"); idx >= 0 {
+		start := idx + 7
+		if end := strings.Index(text[start:], "```"); end >= 0 {
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(strings.TrimSpace(text[start:start+end])), &payload); err == nil {
+				return payload
+			}
+		}
+	}
+
+	// Strategy 2: Look for ``` ... ``` blocks
+	if idx := strings.Index(text, "```"); idx >= 0 {
+		start := idx + 3
+		if nl := strings.Index(text[start:], "\n"); nl >= 0 {
+			start += nl + 1
+		}
+		if end := strings.Index(text[start:], "```"); end >= 0 {
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(strings.TrimSpace(text[start:start+end])), &payload); err == nil {
+				return payload
+			}
+		}
+	}
+
+	// Strategy 3: Find the LARGEST valid JSON object by trying from each { position
+	// The main response JSON is typically the largest one
+	var bestPayload map[string]any
+	bestLen := 0
+
+	for i := 0; i < len(text); i++ {
+		if text[i] != '{' {
+			continue
+		}
+		// Try to find matching closing brace
+		depth := 0
+		inString := false
+		escaped := false
+		for j := i; j < len(text); j++ {
+			ch := text[j]
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' && inString {
+				escaped = true
+				continue
+			}
+			if ch == '"' {
+				inString = !inString
+				continue
+			}
+			if inString {
+				continue
+			}
+			if ch == '{' {
+				depth++
+			} else if ch == '}' {
+				depth--
+				if depth == 0 {
+					candidate := text[i : j+1]
+					if len(candidate) > bestLen {
+						var payload map[string]any
+						if err := json.Unmarshal([]byte(candidate), &payload); err == nil {
+							// Verify it has our expected keys
+							if _, hasExp := payload["exposures"]; hasExp {
+								return payload // Found the main response
+							}
+							if len(candidate) > bestLen {
+								bestPayload = payload
+								bestLen = len(candidate)
+							}
+						}
+					}
+					break
+				}
+			}
+		}
+	}
+
+	return bestPayload
+}
+
+// detectMonorepo checks if repoPath is a subdirectory inside a larger git repo.
+// Returns (sessionDir, subDir) where sessionDir is the git root and subDir is the
+// relative path. If repoPath IS the git root, returns (repoPath, "").
+func detectMonorepo(repoPath string) (string, string) {
+	absPath, err := filepath.Abs(repoPath)
+	if err != nil {
+		return repoPath, ""
+	}
+	// Check if repoPath itself has .git
+	if _, err := os.Stat(filepath.Join(absPath, ".git")); err == nil {
+		return repoPath, ""
+	}
+	// Walk up to find .git
+	dir := absPath
+	for {
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break // reached filesystem root
+		}
+		if _, err := os.Stat(filepath.Join(parent, ".git")); err == nil {
+			// parent is the git root, dir is inside it
+			rel, err := filepath.Rel(parent, absPath)
+			if err == nil {
+				return parent, rel
+			}
+		}
+		dir = parent
+	}
+	return repoPath, ""
+}
+
 // ---- Prompt ----
 
 func buildFullExtractionPrompt() string {
@@ -348,7 +481,26 @@ IMPORTANT RULES:
 - Check .example/config/production/values.yaml for actual service URLs, queue names, DB config.
 - If a category has nothing, return empty array [].
 - Do NOT invent anything not in source code.
-- Confidence in [0,1].`
+- Confidence in [0,1].
+
+OUTPUT FORMAT:
+Return ONLY a single JSON object (no markdown, no explanation before/after) with this structure:
+` + "`" + `json
+{
+  "exposures": [
+    {"id": "exp1", "type": "http_route", "name": "GET /api/v1/foo", "summary": "...", "confidence": 0.95,
+     "details": {"method": "GET", "path": "/api/v1/foo", "controller": "FooController"},
+     "source_locations": [{"file": "src/foo.go", "start_line": 10, "end_line": 15}],
+     "evidence": [{"file": "src/foo.go", "start_line": 10, "snippet": "func GetFoo()..."}]}
+  ],
+  "dependencies": [...],
+  "connections": [
+    {"from_id": "exp1", "to_id": "dep1", "summary": "GetFoo reads from database", "confidence": 0.9,
+     "condition": {"kind": "predicate", "expression": "true", "explanation": "always"}}
+  ]
+}
+` + "`" + `
+Return the JSON object directly. Do NOT wrap in markdown code fences.`
 }
 
 // ---- Schema ----

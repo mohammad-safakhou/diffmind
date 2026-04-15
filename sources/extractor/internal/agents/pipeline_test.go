@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -26,6 +27,15 @@ func (f *fakeOpenCode) CreateSession(ctx context.Context, directory string) (str
 
 func (f *fakeOpenCode) DeleteSession(ctx context.Context, sessionID, directory string) error {
 	return nil
+}
+
+func (f *fakeOpenCode) PromptText(ctx context.Context, sessionID, directory, prompt string) (string, error) {
+	payload, err := f.PromptStructured(ctx, sessionID, directory, prompt, nil)
+	if err != nil {
+		return "", err
+	}
+	b, _ := json.Marshal(payload)
+	return string(b), nil
 }
 
 func (f *fakeOpenCode) PromptStructured(ctx context.Context, sessionID, directory, prompt string, schema map[string]any) (map[string]any, error) {
@@ -110,6 +120,14 @@ func (f *fakeOpenCodeLowConfidence) CreateSession(ctx context.Context, directory
 }
 func (f *fakeOpenCodeLowConfidence) DeleteSession(ctx context.Context, sessionID, directory string) error {
 	return nil
+}
+func (f *fakeOpenCodeLowConfidence) PromptText(ctx context.Context, sessionID, directory, prompt string) (string, error) {
+	payload, err := f.PromptStructured(ctx, sessionID, directory, prompt, nil)
+	if err != nil {
+		return "", err
+	}
+	b, _ := json.Marshal(payload)
+	return string(b), nil
 }
 func (f *fakeOpenCodeLowConfidence) PromptStructured(ctx context.Context, sessionID, directory, prompt string, schema map[string]any) (map[string]any, error) {
 	switch {
@@ -201,6 +219,14 @@ func (f *fakeOpenCodeBatching) CreateSession(ctx context.Context, directory stri
 }
 func (f *fakeOpenCodeBatching) DeleteSession(ctx context.Context, sessionID, directory string) error {
 	return nil
+}
+func (f *fakeOpenCodeBatching) PromptText(ctx context.Context, sessionID, directory, prompt string) (string, error) {
+	payload, err := f.PromptStructured(ctx, sessionID, directory, prompt, nil)
+	if err != nil {
+		return "", err
+	}
+	b, _ := json.Marshal(payload)
+	return string(b), nil
 }
 func (f *fakeOpenCodeBatching) PromptStructured(ctx context.Context, sessionID, directory, prompt string, schema map[string]any) (map[string]any, error) {
 	exposureID := util.StableID("exposure", "http_route", "GET /users/{id}", "api.go", "10:30")
