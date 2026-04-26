@@ -1,0 +1,260 @@
+package agents
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/mohammad-safakhou/diffmind/internal/model"
+	"github.com/mohammad-safakhou/diffmind/internal/util"
+)
+
+// toBase converts an llmEntity into a model.BaseEntity, returning either the
+// populated entity or an UnresolvedItem describing why the candidate was
+// dropped. It is the single gate where confidence + source-location rules are
+// enforced on converted results.
+func toBase(repoPath string, kind model.EntityKind, e llmEntity, minConfidence float64) (model.BaseEntity, *model.UnresolvedItem) {
+	name := strings.TrimSpace(e.Name)
+	typ := strings.TrimSpace(e.Type)
+	if name == "" || typ == "" {
+		return model.BaseEntity{}, &model.UnresolvedItem{
+			Kind: kind, Type: typ, Name: name,
+			ReasonCode: "invalid_entity", Reason: "Missing name/type",
+			Confidence: e.Confidence,
+			Evidence:   toEvidence(e.Evidence),
+		}
+	}
+	typ = strings.ToLower(strings.ReplaceAll(typ, " ", "_"))
+	if e.Confidence < minConfidence {
+		return model.BaseEntity{}, &model.UnresolvedItem{
+			Kind: kind, Type: typ, Name: name,
+			ReasonCode: "low_confidence",
+			Reason:     fmt.Sprintf("Confidence %.2f below threshold %.2f", e.Confidence, minConfidence),
+			Confidence: e.Confidence,
+			Evidence:   toEvidence(e.Evidence),
+		}
+	}
+	locations := toLocations(e.Locations)
+	if len(locations) == 0 {
+		return model.BaseEntity{}, &model.UnresolvedItem{
+			Kind: kind, Type: typ, Name: name,
+			ReasonCode: "no_source_location",
+			Reason:     "No source location provided",
+			Confidence: e.Confidence,
+			Evidence:   toEvidence(e.Evidence),
+		}
+	}
+	evidence := toEvidence(e.Evidence)
+	if len(evidence) == 0 {
+		evidence = append(evidence, model.Evidence{Location: locations[0], Snippet: e.Summary, Source: "opencode"})
+	}
+	inputs := make([]model.InputSpec, 0, len(e.Inputs))
+	for _, in := range e.Inputs {
+		if strings.TrimSpace(in.Name) != "" {
+			inputs = append(inputs, model.InputSpec{
+				Name:        in.Name,
+				Type:        in.Type,
+				Required:    in.Required,
+				Description: in.Description,
+			})
+		}
+	}
+	id := util.StableID(string(kind), typ, name, locations[0].File, fmt.Sprintf("%d:%d", locations[0].StartLine, locations[0].EndLine))
+	return model.BaseEntity{
+		ID:           id,
+		Type:         typ,
+		Name:         name,
+		Service:      repoPath,
+		Inputs:       inputs,
+		Summary:      defaultStr(e.Summary, "Extracted by OpenCode"),
+		KeyActions:   e.Actions,
+		Locations:    locations,
+		Evidence:     evidence,
+		Confidence:   e.Confidence,
+		Tags:         e.Tags,
+		Details:      e.Details,
+		PluginSource: "opencode",
+	}, nil
+}
+
+func toLocations(in []llmLocation) []model.Location {
+	out := make([]model.Location, 0, len(in))
+	for _, v := range in {
+		if strings.TrimSpace(v.File) == "" || v.StartLine <= 0 {
+			continue
+		}
+		end := v.EndLine
+		if end < v.StartLine {
+			end = v.StartLine
+		}
+		out = append(out, model.Location{File: v.File, StartLine: v.StartLine, EndLine: end})
+	}
+	return out
+}
+
+func toEvidence(in []llmEvidence) []model.Evidence {
+	out := make([]model.Evidence, 0, len(in))
+	for _, v := range in {
+		if strings.TrimSpace(v.File) == "" || v.StartLine <= 0 {
+			continue
+		}
+		end := v.EndLine
+		if end < v.StartLine {
+			end = v.StartLine
+		}
+		source := v.Source
+		if strings.TrimSpace(source) == "" {
+			source = "opencode"
+		}
+		out = append(out, model.Evidence{
+			Location: model.Location{File: v.File, StartLine: v.StartLine, EndLine: end},
+			Snippet:  v.Snippet,
+			Source:   source,
+		})
+	}
+	return out
+}
+
+func toConnectionPaths(in []llmPath) []model.ConnectionPath {
+	out := make([]model.ConnectionPath, 0, len(in))
+	for _, p := range in {
+		steps := make([]model.ConnectionPathStep, 0, len(p.Steps))
+		for _, s := range p.Steps {
+			loc := model.Location{File: s.Location.File, StartLine: s.Location.StartLine, EndLine: s.Location.EndLine}
+			if loc.EndLine < loc.StartLine {
+				loc.EndLine = loc.StartLine
+			}
+			steps = append(steps, model.ConnectionPathStep{
+				Order:     s.Order,
+				Action:    s.Action,
+				Operation: s.Operation,
+				From:      s.From,
+				To:        s.To,
+				Condition: fillCondition(s.Condition, s.Action),
+				Location:  loc,
+				Evidence:  toEvidence(s.Evidence),
+			})
+		}
+		out = append(out, model.ConnectionPath{
+			ID:        defaultStr(p.ID, util.StableID("path", p.Summary)),
+			Summary:   defaultStr(p.Summary, "path"),
+			Condition: fillCondition(p.Condition, p.Summary),
+			Steps:     steps,
+		})
+	}
+	return out
+}
+
+func fillCondition(c model.Condition, fallbackExplanation string) model.Condition {
+	if strings.TrimSpace(c.Kind) == "" {
+		c.Kind = "predicate"
+	}
+	if strings.TrimSpace(c.Expression) == "" {
+		c.Expression = "true"
+	}
+	if strings.TrimSpace(c.Explanation) == "" {
+		c.Explanation = defaultStr(fallbackExplanation, "always")
+	}
+	return c
+}
+
+func defaultStr(in, fallback string) string {
+	if strings.TrimSpace(in) == "" {
+		return fallback
+	}
+	return in
+}
+
+func dedupeUnresolved(in []model.UnresolvedItem) []model.UnresolvedItem {
+	seen := map[string]struct{}{}
+	out := make([]model.UnresolvedItem, 0, len(in))
+	for _, u := range in {
+		key := string(u.Kind) + "|" + u.Type + "|" + u.Name + "|" + u.ReasonCode
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, u)
+	}
+	return out
+}
+
+func dedupeStrings(in []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
+func parseEntities(v any) []llmEntity {
+	if v == nil {
+		return nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	var out []llmEntity
+	_ = json.Unmarshal(b, &out)
+	return out
+}
+
+func parseSingleEntity(v any) *llmEntity {
+	if v == nil {
+		return nil
+	}
+	// Tolerate either "item": <obj> or "item": [<obj>, ...].
+	if list, ok := v.([]any); ok {
+		items := parseEntities(list)
+		if len(items) == 0 {
+			return nil
+		}
+		return &items[0]
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	var e llmEntity
+	if err := json.Unmarshal(b, &e); err != nil {
+		return nil
+	}
+	if strings.TrimSpace(e.Name) == "" && strings.TrimSpace(e.Type) == "" {
+		return nil
+	}
+	return &e
+}
+
+func parseConnections(v any) []llmConnection {
+	if v == nil {
+		return nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	var out []llmConnection
+	_ = json.Unmarshal(b, &out)
+	return out
+}
+
+func parseRepoFacts(v map[string]any) *repoFacts {
+	if v == nil {
+		return nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	var rf repoFacts
+	if err := json.Unmarshal(b, &rf); err != nil {
+		return nil
+	}
+	return &rf
+}

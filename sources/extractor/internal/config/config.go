@@ -25,6 +25,7 @@ type Runtime struct {
 	CleanupOpenCodeSessions bool `json:"cleanup_opencode_sessions"`
 	OpenCodeDeleteDelaySec  int  `json:"opencode_delete_delay_seconds"`
 	ReuseOpenCodeSession    bool `json:"reuse_opencode_session"`
+	SkipReexamination       bool `json:"skip_reexamination"`
 }
 
 type Artifacts struct {

@@ -56,6 +56,7 @@ func run(args []string) {
 	cleanupOpenCodeSessions := fs.Bool("cleanup-opencode-sessions", false, "delete OpenCode sessions after prompts (can trigger server-side FK races)")
 	opencodeDeleteDelaySeconds := fs.Int("opencode-delete-delay-seconds", 0, "delay before deleting OpenCode sessions when cleanup is enabled")
 	reuseOpenCodeSession := fs.Bool("reuse-opencode-session", false, "reuse a single OpenCode session across prompts in a run")
+	skipReexamination := fs.Bool("skip-reexamination", false, "skip stage 2 (LLM re-ask for low-signal seeds) for faster, lower-accuracy runs")
 	minConfidence := fs.Float64("min-confidence", -1, "confidence threshold in [0,1]")
 	verbose := fs.Bool("verbose", false, "enable debug logs")
 	trace := fs.Bool("trace", false, "enable trace logs (very noisy)")
@@ -109,6 +110,7 @@ func run(args []string) {
 	}
 	cfg.Runtime.CleanupOpenCodeSessions = *cleanupOpenCodeSessions
 	cfg.Runtime.ReuseOpenCodeSession = *reuseOpenCodeSession
+	cfg.Runtime.SkipReexamination = *skipReexamination
 	if *opencodeDeleteDelaySeconds > 0 {
 		cfg.Runtime.OpenCodeDeleteDelaySec = *opencodeDeleteDelaySeconds
 	}
