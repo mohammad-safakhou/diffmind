@@ -3,7 +3,9 @@ package agents
 import (
 	"context"
 	"sync"
+	"time"
 
+	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
@@ -82,16 +84,42 @@ func (o *orchestrator) runDiscovery(ctx context.Context, objs []objectives.Objec
 }
 
 func (o *orchestrator) runDiscoveryOne(ctx context.Context, obj objectives.Objective, rf *repoFacts) ([]llmEntity, error) {
+	jobID := "discover." + obj.ID
+	started := time.Now()
+	o.emit(events.Event{
+		Kind: events.KindJobStarted, Stage: "discovery", JobID: jobID, Status: events.StatusRunning,
+		Payload: map[string]any{"objective_id": obj.ID, "kind": string(obj.Kind), "type": obj.Type},
+	})
 	prompt := buildDiscoveryPrompt(obj, rf, o.subDir)
 	schema := entityListSchema()
-	payload, err := o.promptAgent(ctx, "discover."+obj.ID, prompt, schema)
+	payload, err := o.promptAgent(ctx, jobID, prompt, schema)
 	if err != nil {
+		o.emit(events.Event{
+			Kind: events.KindJobFailed, Stage: "discovery", JobID: jobID, Status: events.StatusFailed,
+			Message: err.Error(),
+			Payload: map[string]any{"objective_id": obj.ID, "duration_ms": time.Since(started).Milliseconds()},
+		})
 		return nil, err
 	}
 	items := parseEntities(payload["items"])
 	o.pathMapper().applyToEntities(items)
 	util.Info("agents.discovery", "objective discovery completed", map[string]any{
 		"objective": obj.ID, "items": len(items),
+	})
+	previewNames := make([]string, 0, len(items))
+	for _, it := range items {
+		previewNames = append(previewNames, it.Name)
+	}
+	o.emit(events.Event{
+		Kind: events.KindJobCompleted, Stage: "discovery", JobID: jobID, Status: events.StatusSuccess,
+		Payload: map[string]any{
+			"objective_id": obj.ID,
+			"kind":         string(obj.Kind),
+			"type":         obj.Type,
+			"items":        len(items),
+			"item_names":   previewNames,
+			"duration_ms":  time.Since(started).Milliseconds(),
+		},
 	})
 	return items, nil
 }

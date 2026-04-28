@@ -159,19 +159,62 @@ Artifacts are written to:
 
 ## Dashboard UI
 
-You can run a local UI to inspect run results:
+The dashboard is a single-page app that lets you launch runs, watch them
+live, drill into any LLM call, and replay finished runs.
 
 ```bash
-go run ./cmd/diffmind ui --out .diffmind/runs --host 127.0.0.1 --port 8080
+go run ./cmd/diffmind ui \
+  --out .diffmind/runs \
+  --host 127.0.0.1 \
+  --port 8080
 ```
 
-Then open:
-- `http://127.0.0.1:8080`
+Then open `http://127.0.0.1:8080`.
 
-The dashboard shows:
-- run selector (latest first)
-- manifest summary cards
-- exposures/dependencies/connections/unresolved grouped by artifact file
-- full JSON for each group
+What you get:
 
-It auto-refreshes every 10 seconds.
+- **Run form** mirroring every CLI flag (provider, model, workers,
+  thresholds, advanced toggles). Defaults persist in `localStorage`. The
+  form also previews the equivalent CLI command so you can copy/paste into
+  CI later.
+- **Stage pipeline strip** with progress, ETA, and elapsed time per stage.
+- **Live graph (Cytoscape)** showing each stage and every job underneath
+  it; nodes change color in real time as events arrive (pending → running →
+  success / failed / rescued).
+- **Activity timeline** that streams every event with stage chips, errors
+  filter, and free-text search.
+- **Detail drawer** that opens on click. For LLM-driven jobs it shows the
+  prompt and the parsed response (captured to disk under
+  `<runDir>/prompts/`), the full event history, the OpenCode session id,
+  and the duration.
+- **Recent runs sidebar** — pick any past run to replay its complete event
+  timeline (events are persisted to `<runDir>/events.jsonl`).
+- **Cancel** button on the top bar; under the hood it cancels the run
+  context and aborts every live OpenCode session.
+- **Help overlay** — press `?` anywhere outside an input.
+
+### Optional auth
+
+Bind to a non-loopback host? Add a shared secret:
+
+```bash
+go run ./cmd/diffmind ui --port 8080 --ui-token "$(openssl rand -hex 16)"
+# or:
+DIFFMIND_UI_TOKEN=secret go run ./cmd/diffmind ui --port 8080
+```
+
+The token can be presented via `X-DiffMind-Token`, `?token=…` (also
+auto-stripped from the URL bar after first load), or a `diffmind_token`
+cookie. `/healthz` and the static SPA shell remain reachable without a
+token so the browser can land on the dashboard and prompt for it.
+
+### How the live stream works
+
+- Each pipeline stage and job emits structured `events` published through
+  an in-process bus.
+- The bus persists every event to `<runDir>/events.jsonl` for post-mortem
+  replay and serves them over Server-Sent Events at
+  `/api/runs/{id}/events` (with `Last-Event-ID` resume).
+- The SPA opens the SSE stream and a small reducer keeps the graph,
+  timeline, and pipeline strip in sync. There are no polls; updates land
+  in tens of milliseconds.

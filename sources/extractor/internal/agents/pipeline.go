@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mohammad-safakhou/diffmind/internal/config"
+	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	"github.com/mohammad-safakhou/diffmind/internal/opencode"
@@ -39,14 +40,42 @@ type orchestrator struct {
 	oc               openCodeAPI
 	pauser           pauseHandler // optional: only set when oc is *opencode.Client
 	wd               *watchdog    // optional: nil if pauser is nil
+	sink             events.Sink  // never nil (NoopSink fallback)
+	captureDir       string       // optional: dir where prompt/response files are written
 
 	sessionMu       sync.Mutex
 	sharedSessionID string
 }
 
+// emit is the convenience wrapper used by every stage to publish a single
+// event. We always go through this so callers don't have to deal with nil
+// sinks or non-blocking semantics.
+func (o *orchestrator) emit(e events.Event) {
+	if o.sink == nil {
+		return
+	}
+	o.sink.Emit(e)
+}
+
+// RunOptions carries optional dependencies for Run. Sink is the live event
+// stream consumed by the dashboard; CaptureDir is a directory under the run
+// dir where each LLM call's prompt + response is persisted for click-to-view.
+type RunOptions struct {
+	Sink       events.Sink
+	CaptureDir string
+}
+
 // Run is the public entrypoint used by internal/app. It returns an aggregated
-// Result or an error if the pipeline could not even get started.
+// Result or an error if the pipeline could not even get started. This thin
+// wrapper preserves the original signature; new callers should use RunWith.
 func Run(ctx context.Context, cfg config.Config, repoPath string, oc openCodeAPI) (Result, error) {
+	return RunWith(ctx, cfg, repoPath, oc, RunOptions{})
+}
+
+// RunWith is the full entrypoint that accepts a live event sink and an
+// optional capture directory. Callers from the CLI typically pass an empty
+// RunOptions; the dashboard wires in a live Sink and a per-run capture dir.
+func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCodeAPI, opts RunOptions) (Result, error) {
 	if oc == nil || !oc.Enabled() {
 		return Result{}, fmt.Errorf("opencode is required for extraction")
 	}
@@ -55,6 +84,10 @@ func Run(ctx context.Context, cfg config.Config, repoPath string, oc openCodeAPI
 	}
 	if cfg.Runtime.MaxCatalogItems <= 0 {
 		cfg.Runtime.MaxCatalogItems = 80
+	}
+	sink := opts.Sink
+	if sink == nil {
+		sink = events.NoopSink{}
 	}
 
 	sourceSessionDir, subDir := detectMonorepo(repoPath)
@@ -78,6 +111,11 @@ func Run(ctx context.Context, cfg config.Config, repoPath string, oc openCodeAPI
 		subDir:           subDir,
 		snap:             snap,
 		oc:               oc,
+		sink:             sink,
+		captureDir:       opts.CaptureDir,
+	}
+	if o.captureDir != "" {
+		_ = os.MkdirAll(o.captureDir, 0o755)
 	}
 	// Wire the pause handler so the watchdog can auto-reply to
 	// permission/clarification prompts. We accept either:
@@ -93,6 +131,7 @@ func Run(ctx context.Context, cfg config.Config, repoPath string, oc openCodeAPI
 	}
 	if o.pauser != nil {
 		o.wd = newWatchdog(o.pauser, o.sessionDir, 2*time.Second)
+		o.wd.SetSink(sink)
 		o.wd.Start(ctx)
 	}
 	defer func() {
@@ -108,12 +147,26 @@ func Run(ctx context.Context, cfg config.Config, repoPath string, oc openCodeAPI
 	}()
 
 	progress := newProgressReporter()
+	progress.SetSink(sink)
 	defer progress.Close()
 
 	util.Info("agents.orchestrator", "multi-step pipeline starting", map[string]any{
 		"repo": repoPath, "source_session_dir": sourceSessionDir, "snapshot": snap.Path, "sub_dir": subDir,
 		"workers": cfg.Runtime.Workers, "max_catalog_items": cfg.Runtime.MaxCatalogItems,
 		"reuse_session": cfg.Runtime.ReuseOpenCodeSession, "min_confidence": cfg.Quality.MinConfidence,
+	})
+	o.emit(events.Event{
+		Kind:    events.KindRunStarted,
+		Message: "extraction pipeline started",
+		Payload: map[string]any{
+			"repo":               repoPath,
+			"snapshot":           snap.Path,
+			"sub_dir":            subDir,
+			"workers":            cfg.Runtime.Workers,
+			"max_catalog_items":  cfg.Runtime.MaxCatalogItems,
+			"min_confidence":     cfg.Quality.MinConfidence,
+			"skip_reexamination": cfg.Runtime.SkipReexamination,
+		},
 	})
 
 	warnings := make([]string, 0)
@@ -122,18 +175,29 @@ func Run(ctx context.Context, cfg config.Config, repoPath string, oc openCodeAPI
 
 	// --- Stage 0: repo facts ---
 	progress.StartPhase("repo_facts", 1, 0, 10, "Collecting a compact tech-stack snapshot of the repository.")
+	o.emit(events.Event{Kind: events.KindStageStarted, Stage: "repo_facts", Status: events.StatusRunning, Payload: map[string]any{"total": 1, "tip": "Collecting a compact tech-stack snapshot of the repository."}})
 	rf, err := o.runRepoFacts(ctx)
 	if err != nil {
 		warnings = append(warnings, "repo_facts extraction failed: "+err.Error())
 	}
 	progress.Advance()
 	progress.CompletePhase()
+	o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "repo_facts", Status: events.StatusSuccess, Payload: map[string]any{"facts_present": rf != nil}})
 
 	// --- Stage 1: per-objective discovery ---
 	allObjectives := objectives.Default()
 	progress.StartPhase("discovery", len(allObjectives), 10, 35, "Discovering exposures and dependencies per objective in parallel.")
+	o.emit(events.Event{Kind: events.KindStageStarted, Stage: "discovery", Status: events.StatusRunning, Payload: map[string]any{"total": len(allObjectives), "tip": "Discovering exposures and dependencies per objective in parallel."}})
+	for _, obj := range allObjectives {
+		o.emit(events.Event{
+			Kind: events.KindJobPending, Stage: "discovery", JobID: "discover." + obj.ID,
+			Status:  events.StatusPending,
+			Payload: map[string]any{"objective_id": obj.ID, "kind": string(obj.Kind), "type": obj.Type, "description": obj.Description},
+		})
+	}
 	discovery := o.runDiscovery(ctx, allObjectives, rf, progress.Advance)
 	progress.CompletePhase()
+	o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "discovery", Status: events.StatusSuccess})
 
 	// Collect seeds and per-objective warnings.
 	seeds := make([]detailJob, 0)
@@ -167,19 +231,24 @@ func Run(ctx context.Context, cfg config.Config, repoPath string, oc openCodeAPI
 			}
 		}
 		progress.StartPhase("reexamination", suspects, 35, 45, "Re-asking the model to confirm or reject low-signal candidates.")
+		o.emit(events.Event{Kind: events.KindStageStarted, Stage: "reexamination", Status: events.StatusRunning, Payload: map[string]any{"total": suspects, "tip": "Re-asking the model to confirm or reject low-signal candidates."}})
 		cleaned, unresolvedRe := o.runReexamination(ctx, seeds, rf, progress.Advance)
 		progress.CompletePhase()
+		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "reexamination", Status: events.StatusSuccess})
 		reexamined = cleaned
 		unresolved = append(unresolved, unresolvedRe...)
 	} else {
 		reexamined = seeds
 		util.Info("agents.orchestrator", "stage 2 re-examination skipped by config", nil)
+		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "reexamination", Status: events.StatusSkipped, Message: "skipped by config"})
 	}
 
 	// --- Stage 3: detail enrichment ---
 	progress.StartPhase("detail", len(reexamined), 45, 70, "Enriching each verified entity with evidence, IO contract, and details.")
+	o.emit(events.Event{Kind: events.KindStageStarted, Stage: "detail", Status: events.StatusRunning, Payload: map[string]any{"total": len(reexamined), "tip": "Enriching each verified entity with evidence, IO contract, and details."}})
 	details := o.runDetailBatch(ctx, reexamined, rf, progress.Advance)
 	progress.CompletePhase()
+	o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "detail", Status: events.StatusSuccess})
 
 	exposures := make([]model.Exposure, 0)
 	dependencies := make([]model.Dependency, 0)
@@ -216,12 +285,15 @@ func Run(ctx context.Context, cfg config.Config, repoPath string, oc openCodeAPI
 
 	// --- Stage 4: connection mapping ---
 	progress.StartPhase("connections", len(exposures), 70, 90, "Mapping conditional exposure-to-dependency paths per exposure.")
+	o.emit(events.Event{Kind: events.KindStageStarted, Stage: "connections", Status: events.StatusRunning, Payload: map[string]any{"total": len(exposures), "tip": "Mapping conditional exposure-to-dependency paths per exposure."}})
 	conns, connUnresolved := o.runConnectionsBatch(ctx, exposures, dependencies, exposureObjectives, rf, progress.Advance)
 	progress.CompletePhase()
+	o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "connections", Status: events.StatusSuccess, Payload: map[string]any{"connections": len(conns)}})
 	unresolved = append(unresolved, connUnresolved...)
 
 	// --- Stage 5: reconcile/filter ---
 	progress.StartPhase("reconcile", 1, 90, 98, "Reconciling entities and dropping orphan connections.")
+	o.emit(events.Event{Kind: events.KindStageStarted, Stage: "reconcile", Status: events.StatusRunning, Payload: map[string]any{"total": 1, "tip": "Reconciling entities and dropping orphan connections."}})
 	conns, orphanUnresolved := reconcile.FilterConnections(conns, exposures, dependencies)
 	unresolved = append(unresolved, orphanUnresolved...)
 	// Final ordering for determinism.
@@ -230,6 +302,7 @@ func Run(ctx context.Context, cfg config.Config, repoPath string, oc openCodeAPI
 	sort.Slice(conns, func(i, j int) bool { return conns[i].ID < conns[j].ID })
 	progress.Advance()
 	progress.CompletePhase()
+	o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "reconcile", Status: events.StatusSuccess})
 
 	result := Result{
 		Exposures:    exposures,
@@ -245,6 +318,23 @@ func Run(ctx context.Context, cfg config.Config, repoPath string, oc openCodeAPI
 		"unresolved":   len(result.Unresolved),
 		"warnings":     len(result.Warnings),
 		"elapsed_ms":   time.Since(start).Milliseconds(),
+	})
+	finalKind := events.KindRunCompleted
+	finalStatus := events.StatusSuccess
+	if ctx.Err() != nil {
+		finalKind = events.KindRunCancelled
+		finalStatus = events.StatusCancelled
+	}
+	o.emit(events.Event{
+		Kind: finalKind, Status: finalStatus,
+		Payload: map[string]any{
+			"exposures":    len(result.Exposures),
+			"dependencies": len(result.Dependencies),
+			"connections":  len(result.Connections),
+			"unresolved":   len(result.Unresolved),
+			"warnings":     len(result.Warnings),
+			"elapsed_ms":   time.Since(start).Milliseconds(),
+		},
 	})
 	return result, nil
 }
@@ -267,13 +357,29 @@ func (o *orchestrator) pathMapper() *pathMapper {
 // metrics so the run is observable. On prompt failure (timeout, context
 // cancel, or server error) it best-effort aborts the session so the server
 // is not left holding a paused agent.
+//
+// It also emits an llm_call_started/llm_call_completed pair around the
+// PromptStructured call and persists the prompt + response under
+// captureDir/<role>.{prompt,response}.txt so the dashboard can show the
+// full payloads on demand.
 func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, schema map[string]any) (map[string]any, error) {
 	sessionID, cleanupFn, err := o.acquireSession(ctx, role)
 	if err != nil {
 		return nil, err
 	}
+	o.emit(events.Event{
+		Kind: events.KindLLMCallStarted, JobID: role, Status: events.StatusRunning,
+		Payload: map[string]any{
+			"session_id":   sessionID,
+			"prompt_len":   len(prompt),
+			"snapshot_dir": o.sessionDir,
+		},
+	})
+	o.persistPrompt(role, prompt)
 	util.Trace("agents.agent", "prompt start", map[string]any{"role": role, "session_id": sessionID, "prompt_len": len(prompt)})
+	started := time.Now()
 	payload, err := o.oc.PromptStructured(ctx, sessionID, o.sessionDir, prompt, schema)
+	dur := time.Since(started)
 	if err != nil {
 		// Best-effort abort: if the call timed out or was cancelled, the
 		// server-side session may still be running (or paused waiting on a
@@ -283,13 +389,66 @@ func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, sch
 		if cleanupFn != nil {
 			cleanupFn()
 		}
+		o.emit(events.Event{
+			Kind: events.KindLLMCallCompleted, JobID: role, Status: events.StatusFailed,
+			Message: err.Error(),
+			Payload: map[string]any{
+				"session_id":  sessionID,
+				"duration_ms": dur.Milliseconds(),
+			},
+		})
 		return nil, fmt.Errorf("%s prompt: %w", role, err)
 	}
 	if cleanupFn != nil {
 		cleanupFn()
 	}
+	o.persistResponse(role, payload)
+	o.emit(events.Event{
+		Kind: events.KindLLMCallCompleted, JobID: role, Status: events.StatusSuccess,
+		Payload: map[string]any{
+			"session_id":    sessionID,
+			"duration_ms":   dur.Milliseconds(),
+			"prompt_len":    len(prompt),
+			"response_keys": mapKeys(payload),
+		},
+	})
 	util.Trace("agents.agent", "prompt ok", map[string]any{"role": role, "session_id": sessionID})
 	return payload, nil
+}
+
+// persistPrompt writes the prompt text to <captureDir>/<role>.prompt.txt
+// (best-effort). Filenames mirror the role so the dashboard can fetch them
+// later via /api/runs/{id}/job/{jobID}.
+func (o *orchestrator) persistPrompt(role, prompt string) {
+	if o.captureDir == "" || role == "" {
+		return
+	}
+	path := filepath.Join(o.captureDir, safeJobID(role)+".prompt.txt")
+	_ = os.WriteFile(path, []byte(prompt), 0o644)
+}
+
+func (o *orchestrator) persistResponse(role string, payload map[string]any) {
+	if o.captureDir == "" || role == "" || payload == nil {
+		return
+	}
+	path := filepath.Join(o.captureDir, safeJobID(role)+".response.json")
+	b, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(path, b, 0o644)
+}
+
+func mapKeys(m map[string]any) []string {
+	if m == nil {
+		return nil
+	}
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // bestEffortAbort tries to abort a session via the pause handler. We use a
@@ -305,6 +464,10 @@ func (o *orchestrator) bestEffortAbort(role, sessionID string) {
 		util.Debug("agents.agent", "abort session failed", map[string]any{"role": role, "session_id": sessionID, "error": err})
 		return
 	}
+	o.emit(events.Event{
+		Kind: events.KindSessionAborted, JobID: role,
+		Payload: map[string]any{"session_id": sessionID},
+	})
 	util.Trace("agents.agent", "session aborted", map[string]any{"role": role, "session_id": sessionID})
 }
 
@@ -326,6 +489,10 @@ func (o *orchestrator) acquireSession(ctx context.Context, role string) (string,
 		}
 		o.sharedSessionID = sid
 		o.wd.Track(sid)
+		o.emit(events.Event{
+			Kind: events.KindSessionCreated, JobID: role,
+			Payload: map[string]any{"session_id": sid, "shared": true, "directory": o.sessionDir},
+		})
 		util.Debug("agents.agent", "shared session created", map[string]any{"role": role, "session_id": sid})
 		return sid, nil, nil
 	}
@@ -334,6 +501,10 @@ func (o *orchestrator) acquireSession(ctx context.Context, role string) (string,
 		return "", nil, fmt.Errorf("%s create session: %w", role, err)
 	}
 	o.wd.Track(sid)
+	o.emit(events.Event{
+		Kind: events.KindSessionCreated, JobID: role,
+		Payload: map[string]any{"session_id": sid, "shared": false, "directory": o.sessionDir},
+	})
 	cleanup := func() { o.maybeScheduleDelete(role, sid) }
 	return sid, cleanup, nil
 }

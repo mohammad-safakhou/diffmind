@@ -260,16 +260,28 @@ func serveUI(args []string) {
 	baseDir := fs.String("out", ".diffmind/runs", "artifact base directory")
 	host := fs.String("host", "127.0.0.1", "dashboard host")
 	port := fs.Int("port", 8080, "dashboard port")
+	uiToken := fs.String("ui-token", "", "optional shared-secret required by /api/* endpoints (set DIFFMIND_UI_TOKEN to override)")
 	verbose := fs.Bool("verbose", false, "enable debug logs")
 	trace := fs.Bool("trace", false, "enable trace logs (very noisy)")
 	logFile := fs.String("log-file", "", "optional log file path")
 	fs.Parse(args)
 	configureLogging(*verbose, *trace, *logFile)
 
+	token := *uiToken
+	if token == "" {
+		token = os.Getenv("DIFFMIND_UI_TOKEN")
+	}
+
 	srv := ui.New(*baseDir, *host, *port)
+	if token != "" {
+		srv.SetToken(token)
+	}
 	url := fmt.Sprintf("http://%s", srv.Addr())
-	util.Info("cli.ui", "starting dashboard", map[string]any{"url": url, "out": *baseDir})
+	util.Info("cli.ui", "starting dashboard", map[string]any{"url": url, "out": *baseDir, "auth": token != ""})
 	fmt.Println("DiffMind dashboard:", url)
+	if token != "" {
+		fmt.Println("Auth token required for /api/* endpoints (X-DiffMind-Token, ?token=, or diffmind_token cookie).")
+	}
 	fmt.Println("Press Ctrl+C to stop.")
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

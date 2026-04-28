@@ -4,7 +4,9 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -60,13 +62,29 @@ func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []detailJob, rf 
 func (o *orchestrator) runDetailOne(ctx context.Context, j detailJob, rf *repoFacts) (*llmEntity, error) {
 	prompt := buildDetailPrompt(j.Objective, j.Seed, rf, o.subDir)
 	schema := entitySingleSchema()
-	role := "detail." + j.Objective.ID
-	payload, err := o.promptAgent(ctx, role, prompt, schema)
+	jobID := "detail." + j.Objective.ID + "." + safeJobID(j.Seed.Name)
+	started := time.Now()
+	o.emit(events.Event{
+		Kind: events.KindJobStarted, Stage: "detail", JobID: jobID, Status: events.StatusRunning,
+		ParentID: "discover." + j.Objective.ID,
+		Payload:  map[string]any{"objective_id": j.Objective.ID, "name": j.Seed.Name, "type": j.Seed.Type},
+	})
+	payload, err := o.promptAgent(ctx, jobID, prompt, schema)
 	if err != nil {
+		o.emit(events.Event{
+			Kind: events.KindJobFailed, Stage: "detail", JobID: jobID, Status: events.StatusFailed,
+			Message: err.Error(),
+			Payload: map[string]any{"objective_id": j.Objective.ID, "name": j.Seed.Name, "duration_ms": time.Since(started).Milliseconds()},
+		})
 		return nil, err
 	}
 	item := parseSingleEntity(payload["item"])
 	if item == nil {
+		o.emit(events.Event{
+			Kind: events.KindJobCompleted, Stage: "detail", JobID: jobID, Status: events.StatusSkipped,
+			Message: "detail extractor returned nil",
+			Payload: map[string]any{"objective_id": j.Objective.ID, "name": j.Seed.Name, "duration_ms": time.Since(started).Milliseconds()},
+		})
 		return nil, nil
 	}
 	o.pathMapper().applyToEntity(item)
@@ -78,7 +96,16 @@ func (o *orchestrator) runDetailOne(ctx context.Context, j detailJob, rf *repoFa
 	if strings.TrimSpace(item.Name) == "" {
 		item.Name = j.Seed.Name
 	}
-	return new(mergeEnrichment(j.Seed, *item)), nil
+	merged := mergeEnrichment(j.Seed, *item)
+	o.emit(events.Event{
+		Kind: events.KindJobCompleted, Stage: "detail", JobID: jobID, Status: events.StatusSuccess,
+		Payload: map[string]any{
+			"objective_id": j.Objective.ID, "name": merged.Name, "type": merged.Type,
+			"confidence":  merged.Confidence,
+			"duration_ms": time.Since(started).Milliseconds(),
+		},
+	})
+	return &merged, nil
 }
 
 // mergeEnrichment overlays the detail response on top of the seed. Enriched
