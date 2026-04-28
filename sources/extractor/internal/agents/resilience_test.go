@@ -108,7 +108,7 @@ func TestRunSurvivesRepoFactsFailure(t *testing.T) {
 	cfg.Runtime.Workers = 4
 	cfg.Quality.MinConfidence = 0.7
 	f := &fakeFlaky{failRepoFacts: true}
-	res, err := Run(context.Background(), cfg, "/repo", f)
+	res, err := Run(context.Background(), cfg, t.TempDir(), f)
 	if err != nil {
 		t.Fatalf("pipeline should not fail on repo facts error: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestRunSurvivesObjectiveFailure(t *testing.T) {
 	cfg.Runtime.Workers = 4
 	cfg.Quality.MinConfidence = 0.7
 	f := &fakeFlaky{failObjectiveID: "exposure.webhook"}
-	res, err := Run(context.Background(), cfg, "/repo", f)
+	res, err := Run(context.Background(), cfg, t.TempDir(), f)
 	if err != nil {
 		t.Fatalf("pipeline should not fail on single objective error: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestRunSurvivesConnectionFailure(t *testing.T) {
 	cfg.Quality.MinConfidence = 0.7
 	exposureID := util.StableID("exposure", "http_route", "GET /users/{id}", "api.go", "10:30")
 	f := &fakeFlaky{failConnectionID: exposureID}
-	res, err := Run(context.Background(), cfg, "/repo", f)
+	res, err := Run(context.Background(), cfg, t.TempDir(), f)
 	if err != nil {
 		t.Fatalf("pipeline should not fail on single connection error: %v", err)
 	}

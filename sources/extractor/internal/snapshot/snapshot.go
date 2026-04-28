@@ -1,0 +1,338 @@
+// Package snapshot creates an isolated working copy of a repository for the
+// extraction pipeline. OpenCode sessions can edit, create, and delete files
+// inside the directory they are bound to. To keep the user's repository safe
+// and avoid races between concurrent agents, the orchestrator never points
+// OpenCode at the user's repo directly; it points at a snapshot produced by
+// this package.
+//
+// Strategy:
+//   - Copy the source tree into a fresh temp directory. The snapshot is a
+//     real, independent copy: any edits, deletes, creates, or chmods that
+//     OpenCode performs inside the snapshot are confined to the temp dir.
+//     The user's repository is never touched.
+//   - Skip noisy or large directories that are never useful for extraction
+//     (.git, node_modules, build artifacts, IDE folders, .diffmind runs).
+//   - Symlinks are recreated as symlinks. Special files (sockets, devices)
+//     are skipped.
+//   - Removal is best-effort but verified: Close() walks the snapshot and
+//     deletes it even if individual files were chmod'd to read-only by an
+//     agent.
+//
+// We deliberately do NOT do per-worker snapshots. The contract is: the
+// snapshot is per-run, disposable, and may end up with concurrent edits
+// inside it that we don't care about. We only consume the structured JSON
+// responses from OpenCode; the snapshot's final state is irrelevant.
+package snapshot
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/mohammad-safakhou/diffmind/internal/util"
+)
+
+// Snapshot represents a hardlinked mirror of a source repository under a
+// random temp directory. The Path field is the absolute path to the snapshot
+// root and is what callers should pass to OpenCode as the session directory.
+type Snapshot struct {
+	// SourcePath is the original (user-supplied) repository path.
+	SourcePath string
+	// Path is the absolute path to the snapshot root inside the temp dir.
+	Path string
+}
+
+// defaultSkipDirs lists directory names that we never mirror. They are
+// either huge, never useful for source-level extraction, or known to be
+// modified by tooling.
+var defaultSkipDirs = map[string]struct{}{
+	".git":          {},
+	"node_modules":  {},
+	".idea":         {},
+	".vscode":       {},
+	".gradle":       {},
+	".mvn":          {},
+	"target":        {},
+	"build":         {},
+	"dist":          {},
+	"out":           {},
+	".next":         {},
+	".nuxt":         {},
+	".cache":        {},
+	".pytest_cache": {},
+	"__pycache__":   {},
+	".venv":         {},
+	"venv":          {},
+	".tox":          {},
+	".terraform":    {},
+	".diffmind":     {},
+	".example-cache": {},
+	".DS_Store":     {},
+}
+
+// Create materializes an independent copy of source under a fresh temp dir
+// rooted at parent. Returns a Snapshot whose Path can be handed to OpenCode.
+//
+// Failure modes (all fatal — the orchestrator must fail fast if it cannot
+// guarantee isolation):
+//   - source does not exist or is not a directory
+//   - cannot create the temp dir or any sub-path
+//   - copying a regular file fails
+func Create(source, parent string) (*Snapshot, error) {
+	abs, err := filepath.Abs(source)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot: resolve source: %w", err)
+	}
+	st, err := os.Stat(abs)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot: stat source: %w", err)
+	}
+	if !st.IsDir() {
+		return nil, fmt.Errorf("snapshot: source %q is not a directory", abs)
+	}
+
+	if parent == "" {
+		parent = os.TempDir()
+	}
+	parentAbs, err := filepath.Abs(parent)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot: resolve parent: %w", err)
+	}
+	if err := os.MkdirAll(parentAbs, 0o755); err != nil {
+		return nil, fmt.Errorf("snapshot: create parent dir: %w", err)
+	}
+	suffix, err := randomSuffix()
+	if err != nil {
+		return nil, fmt.Errorf("snapshot: random suffix: %w", err)
+	}
+	// dest must be absolute: the OpenCode server resolves the `directory`
+	// query parameter relative to its own CWD, which we do not control. An
+	// absolute path makes the destination unambiguous regardless of where
+	// the server was started.
+	dest := filepath.Join(parentAbs, "diffmind-snap-"+suffix)
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		return nil, fmt.Errorf("snapshot: create dest: %w", err)
+	}
+
+	util.Info("snapshot", "creating repo snapshot", map[string]any{
+		"source": abs, "dest": dest,
+	})
+
+	if err := mirrorTree(abs, dest); err != nil {
+		// Best-effort cleanup so we never leak a partial snapshot.
+		_ = forceRemove(dest)
+		return nil, fmt.Errorf("snapshot: mirror tree: %w", err)
+	}
+
+	util.Info("snapshot", "snapshot ready", map[string]any{
+		"source": abs, "dest": dest,
+	})
+	return &Snapshot{SourcePath: abs, Path: dest}, nil
+}
+
+// Close removes the snapshot from disk. It is safe to call multiple times
+// and safe to call on a nil receiver.
+func (s *Snapshot) Close() error {
+	if s == nil || s.Path == "" {
+		return nil
+	}
+	if err := forceRemove(s.Path); err != nil {
+		util.Warn("snapshot", "snapshot cleanup failed", map[string]any{
+			"path": s.Path, "error": err,
+		})
+		return err
+	}
+	util.Info("snapshot", "snapshot removed", map[string]any{"path": s.Path})
+	return nil
+}
+
+// MapToSource translates a path that lives inside the snapshot back to the
+// equivalent path inside the original source tree. It returns the input
+// unchanged when the path is not under the snapshot root, when the receiver
+// is nil, or when the input is empty. This lets agents return paths in their
+// own world (the snapshot) while artifacts persist user-facing paths.
+func (s *Snapshot) MapToSource(p string) string {
+	if s == nil || strings.TrimSpace(p) == "" {
+		return p
+	}
+	clean := filepath.Clean(p)
+	abs := clean
+	if !filepath.IsAbs(abs) {
+		// Treat relative paths as already-source-relative; nothing to do.
+		return p
+	}
+	rel, err := filepath.Rel(s.Path, abs)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return p
+	}
+	return filepath.Join(s.SourcePath, rel)
+}
+
+// MapRelativeToSource is like MapToSource but works on already-relative paths
+// the LLM may emit. If the path begins with the snapshot's basename (which
+// happens when an agent dumps a path relative to its CWD's parent), strip it.
+func (s *Snapshot) MapRelativeToSource(p string) string {
+	if s == nil {
+		return p
+	}
+	trimmed := strings.TrimSpace(p)
+	if trimmed == "" {
+		return p
+	}
+	// Absolute path under the snapshot root?
+	if filepath.IsAbs(trimmed) {
+		return s.MapToSource(trimmed)
+	}
+	// Sometimes models echo the full path; normalize to forward slashes for
+	// the comparison and strip a leading snapshot-name prefix.
+	clean := filepath.ToSlash(filepath.Clean(trimmed))
+	snapBase := filepath.Base(s.Path)
+	if strings.HasPrefix(clean, snapBase+"/") {
+		clean = strings.TrimPrefix(clean, snapBase+"/")
+	}
+	return clean
+}
+
+// ----------------------------------------------------------------------------
+// Internal helpers
+// ----------------------------------------------------------------------------
+
+func randomSuffix() (string, error) {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// mirrorTree walks src and recreates its structure at dst. Regular files are
+// copied byte-for-byte, directories are mkdir'd with their original perms
+// (capped to 0700+ user-read), symlinks are recreated, anything else is
+// skipped.
+func mirrorTree(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, relErr := filepath.Rel(src, path)
+		if relErr != nil {
+			return relErr
+		}
+		if rel == "." {
+			return nil
+		}
+		// Directory skip rules: applied on directory names anywhere in the tree.
+		if d.IsDir() {
+			if _, skip := defaultSkipDirs[d.Name()]; skip {
+				util.Trace("snapshot", "skipping dir", map[string]any{"path": rel})
+				return fs.SkipDir
+			}
+		}
+		target := filepath.Join(dst, rel)
+
+		if d.IsDir() {
+			info, infoErr := d.Info()
+			if infoErr != nil {
+				return infoErr
+			}
+			perm := info.Mode().Perm() | 0o700 // ensure we can traverse it
+			return os.MkdirAll(target, perm)
+		}
+
+		info, infoErr := d.Info()
+		if infoErr != nil {
+			return infoErr
+		}
+		mode := info.Mode()
+		switch {
+		case mode&os.ModeSymlink != 0:
+			linkTarget, readErr := os.Readlink(path)
+			if readErr != nil {
+				return readErr
+			}
+			// Replace any existing entry; ignore if target already absent.
+			_ = os.Remove(target)
+			return os.Symlink(linkTarget, target)
+		case mode.IsRegular():
+			return copyRegular(path, target, mode.Perm())
+		default:
+			// Sockets, devices, named pipes: skip silently.
+			util.Trace("snapshot", "skipping non-regular file", map[string]any{"path": rel, "mode": mode.String()})
+			return nil
+		}
+	})
+}
+
+// copyRegular performs an independent byte-for-byte copy of src to dst,
+// preserving the source's permission bits but always allowing the user write
+// access so subsequent agent operations and Close() cleanup can succeed.
+// Independent copies are required: hardlinks would let an agent's O_TRUNC
+// write through to the user's repo via the shared inode.
+func copyRegular(src, dst string, perm fs.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", src, err)
+	}
+	defer in.Close()
+	// Always include user-write so agents can edit inside the snapshot and
+	// so Close() can remove the tree without a chmod recovery pass.
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm|0o600)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", dst, err)
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		_ = os.Remove(dst)
+		return fmt.Errorf("copy %s -> %s: %w", src, dst, err)
+	}
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", dst, err)
+	}
+	return nil
+}
+
+// forceRemove tears down a directory tree, retrying with chmod when an entry
+// has been made read-only by an agent inside the snapshot. We do not want
+// the user's run to leak a stale snapshot just because an LLM tried to be
+// clever.
+func forceRemove(path string) error {
+	if path == "" {
+		return nil
+	}
+	if err := os.RemoveAll(path); err == nil {
+		return nil
+	} else if !errors.Is(err, fs.ErrPermission) {
+		// Try chmod-then-remove as a recovery.
+		if chErr := chmodWalk(path); chErr != nil {
+			return fmt.Errorf("snapshot: chmod walk failed: %w (original: %v)", chErr, err)
+		}
+		if err2 := os.RemoveAll(path); err2 != nil {
+			return err2
+		}
+		return nil
+	} else {
+		if chErr := chmodWalk(path); chErr != nil {
+			return fmt.Errorf("snapshot: chmod walk failed: %w (original: %v)", chErr, err)
+		}
+		return os.RemoveAll(path)
+	}
+}
+
+func chmodWalk(root string) error {
+	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // best-effort
+		}
+		_ = os.Chmod(p, 0o700)
+		return nil
+	})
+}

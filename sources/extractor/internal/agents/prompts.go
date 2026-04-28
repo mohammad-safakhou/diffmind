@@ -8,11 +8,27 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 )
 
+// readOnlyPreamble is prepended to every stage prompt. It tells the agent
+// that the working directory is a disposable, isolated copy and that it
+// MUST NOT modify it. We cannot enforce this from the client side, but
+// OpenCode follows clear instructions and this dramatically reduces
+// accidental edits between concurrent workers.
+const readOnlyPreamble = `OPERATIONAL RULES (apply to the entire response):
+- The working directory is an isolated, read-only analysis snapshot. Do NOT
+  edit, create, rename, chmod, delete, or move any file. Do NOT run shell
+  commands that mutate state (no installs, no formatters, no codegen).
+- Your job is to READ source code and return a structured JSON answer.
+- All file paths in your answer MUST be paths relative to the working
+  directory (no leading slash, no temp-dir prefix). Use forward slashes.
+
+`
+
 // ---- Stage 0 ----
 
 func buildRepoFactsPrompt(subDir string) string {
 	var sb strings.Builder
 	sb.WriteString("AGENT ROLE: repo-facts\n")
+	sb.WriteString(readOnlyPreamble)
 	sb.WriteString("TASK: Produce a compact, evidence-backed snapshot of this repository so that\n")
 	sb.WriteString("downstream extraction agents do not have to re-discover the tech stack.\n\n")
 	if subDir != "" {
@@ -65,6 +81,7 @@ func monorepoScopeLine(subDir string) string {
 func buildDiscoveryPrompt(obj objectives.Objective, rf *repoFacts, subDir string) string {
 	var sb strings.Builder
 	sb.WriteString("AGENT ROLE: objective-extractor\n")
+	sb.WriteString(readOnlyPreamble)
 	sb.WriteString("OBJECTIVE_ID: ")
 	sb.WriteString(obj.ID)
 	sb.WriteString("\n")
@@ -99,6 +116,7 @@ func buildReexaminePrompt(obj objectives.Objective, seed llmEntity, triggerReaso
 	seedJSON, _ := json.MarshalIndent(seed, "", "  ")
 	var sb strings.Builder
 	sb.WriteString("AGENT ROLE: reexaminer\n")
+	sb.WriteString(readOnlyPreamble)
 	sb.WriteString("OBJECTIVE_ID: ")
 	sb.WriteString(obj.ID)
 	sb.WriteString("\n")
@@ -139,6 +157,7 @@ func buildDetailPrompt(obj objectives.Objective, seed llmEntity, rf *repoFacts, 
 	seedJSON, _ := json.MarshalIndent(seed, "", "  ")
 	var sb strings.Builder
 	sb.WriteString("AGENT ROLE: detail-extractor\n")
+	sb.WriteString(readOnlyPreamble)
 	sb.WriteString("OBJECTIVE_ID: ")
 	sb.WriteString(obj.ID)
 	sb.WriteString("\n")
@@ -192,6 +211,7 @@ func buildConnectionPrompt(
 	catJSON, _ := json.MarshalIndent(catalog, "", "  ")
 	var sb strings.Builder
 	sb.WriteString("AGENT ROLE: connection-extractor\n")
+	sb.WriteString(readOnlyPreamble)
 	sb.WriteString("OBJECTIVE_ID: ")
 	sb.WriteString(obj.ID)
 	sb.WriteString("\n")

@@ -14,19 +14,31 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
+	"github.com/mohammad-safakhou/diffmind/internal/opencode"
 	"github.com/mohammad-safakhou/diffmind/internal/reconcile"
+	"github.com/mohammad-safakhou/diffmind/internal/snapshot"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
 // orchestrator wires the six pipeline stages together and owns the shared
 // OpenCode session (when enabled). It keeps the "thin orchestrator" contract
 // from the plan: no business logic, only stage sequencing and lifecycle.
+//
+// repoPath is the user-supplied path; it is the value reported in artifacts.
+// sourceSessionDir is the resolved git root or repoPath, against which the
+// snapshot is taken. sessionDir is what we hand to OpenCode and is ALWAYS
+// the snapshot path (not the user's filesystem). snap is non-nil while the
+// pipeline is running and is removed by Close().
 type orchestrator struct {
-	cfg        config.Config
-	repoPath   string
-	sessionDir string
-	subDir     string
-	oc         openCodeAPI
+	cfg              config.Config
+	repoPath         string
+	sourceSessionDir string
+	sessionDir       string
+	subDir           string
+	snap             *snapshot.Snapshot
+	oc               openCodeAPI
+	pauser           pauseHandler // optional: only set when oc is *opencode.Client
+	wd               *watchdog    // optional: nil if pauser is nil
 
 	sessionMu       sync.Mutex
 	sharedSessionID string
@@ -45,21 +57,61 @@ func Run(ctx context.Context, cfg config.Config, repoPath string, oc openCodeAPI
 		cfg.Runtime.MaxCatalogItems = 80
 	}
 
-	sessionDir, subDir := detectMonorepo(repoPath)
-	o := &orchestrator{
-		cfg:        cfg,
-		repoPath:   repoPath,
-		sessionDir: sessionDir,
-		subDir:     subDir,
-		oc:         oc,
+	sourceSessionDir, subDir := detectMonorepo(repoPath)
+
+	// Materialize an isolated snapshot of the source tree. OpenCode sessions
+	// can edit/create/delete files inside the directory they are bound to;
+	// pointing them at the user's repo would risk concurrent writes between
+	// our parallel workers and could mutate the user's files. The snapshot
+	// is a real, independent copy under a random temp dir; we always remove
+	// it on the way out, even on error.
+	snap, err := snapshot.Create(sourceSessionDir, "")
+	if err != nil {
+		return Result{}, fmt.Errorf("snapshot: %w", err)
 	}
+
+	o := &orchestrator{
+		cfg:              cfg,
+		repoPath:         repoPath,
+		sourceSessionDir: sourceSessionDir,
+		sessionDir:       snap.Path,
+		subDir:           subDir,
+		snap:             snap,
+		oc:               oc,
+	}
+	// Wire the pause handler so the watchdog can auto-reply to
+	// permission/clarification prompts. We accept either:
+	//   1. the real opencode client, via the pauseBridge adapter, OR
+	//   2. any fake that already implements pauseHandler (used in tests).
+	// Test fakes that implement only openCodeAPI don't get a watchdog, which
+	// is fine — they cannot pause.
+	switch v := oc.(type) {
+	case *opencode.Client:
+		o.pauser = newPauseBridge(v)
+	case pauseHandler:
+		o.pauser = v
+	}
+	if o.pauser != nil {
+		o.wd = newWatchdog(o.pauser, o.sessionDir, 2*time.Second)
+		o.wd.Start(ctx)
+	}
+	defer func() {
+		if o.wd != nil {
+			o.wd.Stop()
+		}
+	}()
 	defer o.closeSharedSession()
+	defer func() {
+		if err := snap.Close(); err != nil {
+			util.Warn("agents.orchestrator", "snapshot close failed", map[string]any{"error": err})
+		}
+	}()
 
 	progress := newProgressReporter()
 	defer progress.Close()
 
 	util.Info("agents.orchestrator", "multi-step pipeline starting", map[string]any{
-		"repo": repoPath, "session_dir": sessionDir, "sub_dir": subDir,
+		"repo": repoPath, "source_session_dir": sourceSessionDir, "snapshot": snap.Path, "sub_dir": subDir,
 		"workers": cfg.Runtime.Workers, "max_catalog_items": cfg.Runtime.MaxCatalogItems,
 		"reuse_session": cfg.Runtime.ReuseOpenCodeSession, "min_confidence": cfg.Quality.MinConfidence,
 	})
@@ -201,9 +253,20 @@ func Run(ctx context.Context, cfg config.Config, repoPath string, oc openCodeAPI
 // Session + prompting helpers.
 // ----------------------------------------------------------------------------
 
+// pathMapper returns the (cached) helper that rewrites snapshot-relative
+// paths back to source-relative paths in agent responses.
+func (o *orchestrator) pathMapper() *pathMapper {
+	if o.snap == nil {
+		return nil
+	}
+	return newPathMapper(o.snap.Path, o.snap.SourcePath)
+}
+
 // promptAgent is the single point where every stage talks to the OpenCode
 // server. It owns session lifecycle (shared vs per-call) and logs role+size
-// metrics so the run is observable.
+// metrics so the run is observable. On prompt failure (timeout, context
+// cancel, or server error) it best-effort aborts the session so the server
+// is not left holding a paused agent.
 func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, schema map[string]any) (map[string]any, error) {
 	sessionID, cleanupFn, err := o.acquireSession(ctx, role)
 	if err != nil {
@@ -211,19 +274,45 @@ func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, sch
 	}
 	util.Trace("agents.agent", "prompt start", map[string]any{"role": role, "session_id": sessionID, "prompt_len": len(prompt)})
 	payload, err := o.oc.PromptStructured(ctx, sessionID, o.sessionDir, prompt, schema)
+	if err != nil {
+		// Best-effort abort: if the call timed out or was cancelled, the
+		// server-side session may still be running (or paused waiting on a
+		// permission request). Aborting frees server resources and lets
+		// the watchdog reclaim the session.
+		o.bestEffortAbort(role, sessionID)
+		if cleanupFn != nil {
+			cleanupFn()
+		}
+		return nil, fmt.Errorf("%s prompt: %w", role, err)
+	}
 	if cleanupFn != nil {
 		cleanupFn()
-	}
-	if err != nil {
-		return nil, fmt.Errorf("%s prompt: %w", role, err)
 	}
 	util.Trace("agents.agent", "prompt ok", map[string]any{"role": role, "session_id": sessionID})
 	return payload, nil
 }
 
+// bestEffortAbort tries to abort a session via the pause handler. We use a
+// fresh, short-lived context so a cancelled parent context doesn't prevent
+// us from cleaning up.
+func (o *orchestrator) bestEffortAbort(role, sessionID string) {
+	if o.pauser == nil || sessionID == "" {
+		return
+	}
+	abortCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := o.pauser.AbortSession(abortCtx, sessionID, o.sessionDir); err != nil {
+		util.Debug("agents.agent", "abort session failed", map[string]any{"role": role, "session_id": sessionID, "error": err})
+		return
+	}
+	util.Trace("agents.agent", "session aborted", map[string]any{"role": role, "session_id": sessionID})
+}
+
 // acquireSession returns a session id and an optional cleanup function.
 // Cleanup is a no-op for shared sessions; per-call sessions are deleted by a
 // deferred goroutine (with configurable delay) when cleanup is enabled.
+// New session ids are registered with the watchdog so it can auto-reply to
+// any permission / clarification prompt the agent might emit.
 func (o *orchestrator) acquireSession(ctx context.Context, role string) (string, func(), error) {
 	if o.cfg.Runtime.ReuseOpenCodeSession {
 		o.sessionMu.Lock()
@@ -236,6 +325,7 @@ func (o *orchestrator) acquireSession(ctx context.Context, role string) (string,
 			return "", nil, fmt.Errorf("%s create shared session: %w", role, err)
 		}
 		o.sharedSessionID = sid
+		o.wd.Track(sid)
 		util.Debug("agents.agent", "shared session created", map[string]any{"role": role, "session_id": sid})
 		return sid, nil, nil
 	}
@@ -243,6 +333,7 @@ func (o *orchestrator) acquireSession(ctx context.Context, role string) (string,
 	if err != nil {
 		return "", nil, fmt.Errorf("%s create session: %w", role, err)
 	}
+	o.wd.Track(sid)
 	cleanup := func() { o.maybeScheduleDelete(role, sid) }
 	return sid, cleanup, nil
 }
@@ -261,6 +352,7 @@ func (o *orchestrator) maybeScheduleDelete(role, sessionID string) {
 			util.Warn("agents.agent", "session delete failed", map[string]any{"role": role, "session_id": sessionID, "error": err})
 			return
 		}
+		o.wd.Untrack(sessionID)
 		util.Trace("agents.agent", "session deleted", map[string]any{"role": role, "session_id": sessionID})
 	}()
 }
@@ -279,6 +371,7 @@ func (o *orchestrator) closeSharedSession() {
 	if err := o.oc.DeleteSession(context.Background(), sid, o.sessionDir); err != nil {
 		util.Warn("agents.agent", "shared session delete failed", map[string]any{"session_id": sid, "error": err})
 	}
+	o.wd.Untrack(sid)
 }
 
 // ----------------------------------------------------------------------------

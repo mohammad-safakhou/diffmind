@@ -126,6 +126,7 @@ func (o *orchestrator) runConnectionsForExposure(
 			return nil, err
 		}
 		items := parseConnections(payload["items"])
+		o.pathMapper().applyToConnections(items)
 		// Enforce closed-set invariants locally regardless of the model's output.
 		allowedIDs := make(map[string]struct{}, len(batch))
 		for _, c := range batch {
