@@ -231,6 +231,7 @@ func (o *orchestrator) runReexamineOne(ctx context.Context, t reexamineTrigger, 
 		return nil, err
 	}
 	items := parseEntities(payload["items"])
+	o.pathMapper().applyToEntities(items)
 	if len(items) == 0 {
 		return nil, nil
 	}

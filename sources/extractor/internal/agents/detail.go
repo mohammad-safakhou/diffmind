@@ -69,6 +69,7 @@ func (o *orchestrator) runDetailOne(ctx context.Context, j detailJob, rf *repoFa
 	if item == nil {
 		return nil, nil
 	}
+	o.pathMapper().applyToEntity(item)
 	// Guard against the LLM silently rewriting the entity into something of a
 	// different type. If the type diverges, keep the seed's type authoritative.
 	if strings.TrimSpace(item.Type) == "" {
@@ -77,8 +78,7 @@ func (o *orchestrator) runDetailOne(ctx context.Context, j detailJob, rf *repoFa
 	if strings.TrimSpace(item.Name) == "" {
 		item.Name = j.Seed.Name
 	}
-	merged := mergeEnrichment(j.Seed, *item)
-	return &merged, nil
+	return new(mergeEnrichment(j.Seed, *item)), nil
 }
 
 // mergeEnrichment overlays the detail response on top of the seed. Enriched

@@ -18,6 +18,36 @@ type openCodeAPI interface {
 	PromptText(ctx context.Context, sessionID, directory, prompt string) (string, error)
 }
 
+// pauseHandler is an optional capability used by the orchestrator's watchdog
+// to keep agents from blocking on permission/clarification prompts. We
+// declare it as a separate interface so the test fakes that don't need it
+// can stay slim; the orchestrator only invokes it when the underlying client
+// implements it.
+type pauseHandler interface {
+	AbortSession(ctx context.Context, sessionID, directory string) error
+	ListPermissions(ctx context.Context, directory string) ([]PendingPermission, error)
+	RespondPermission(ctx context.Context, sessionID, permissionID, directory, response string) error
+	ListQuestions(ctx context.Context, directory string) ([]PendingQuestion, error)
+	RejectQuestion(ctx context.Context, requestID, directory string) error
+}
+
+// PendingPermission and PendingQuestion mirror the opencode client types so
+// the orchestrator can treat the watchdog interface in isolation. We keep
+// them as plain structs (not aliases) to avoid forcing every test fake to
+// import the opencode package.
+type PendingPermission struct {
+	ID        string
+	SessionID string
+	Title     string
+	Type      string
+}
+
+type PendingQuestion struct {
+	ID        string
+	SessionID string
+	Question  string
+}
+
 // Result is the final output of the agents pipeline.
 type Result struct {
 	Exposures    []model.Exposure

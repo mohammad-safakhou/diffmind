@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -26,13 +28,18 @@ func TestEndToEndPipelineAgainstSampleRepo(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(stubOpencodeHandler))
 	defer srv.Close()
 
-	repoPath, err := filepath.Abs(filepath.Join("..", "..", "testdata", "sample_repo"))
+	// Copy the sample repo into a temp dir so we can safely assert the
+	// orchestrator did not mutate it. We never run extraction directly
+	// against the checked-in fixture.
+	srcRepo, err := filepath.Abs(filepath.Join("..", "..", "testdata", "sample_repo"))
 	if err != nil {
 		t.Fatalf("resolve repo path: %v", err)
 	}
-	if _, err := os.Stat(repoPath); err != nil {
-		t.Fatalf("missing sample repo %s: %v", repoPath, err)
+	if _, err := os.Stat(srcRepo); err != nil {
+		t.Fatalf("missing sample repo %s: %v", srcRepo, err)
 	}
+	repoPath := copyTreeForTest(t, srcRepo)
+	beforeHashes := hashTreeApp(t, repoPath)
 
 	out := t.TempDir()
 	cfg := config.Default()
@@ -132,6 +139,79 @@ func TestEndToEndPipelineAgainstSampleRepo(t *testing.T) {
 	if totalConns != manifest.Counts["connections"] {
 		t.Fatalf("manifest says %d connections but disk has %d", manifest.Counts["connections"], totalConns)
 	}
+
+	// Critical safety invariant: the user's repo must be byte-for-byte
+	// identical after the run. The orchestrator must have routed every
+	// OpenCode session through a snapshot.
+	afterHashes := hashTreeApp(t, repoPath)
+	if len(beforeHashes) != len(afterHashes) {
+		t.Fatalf("file count changed: before=%d after=%d", len(beforeHashes), len(afterHashes))
+	}
+	for name, h := range beforeHashes {
+		if afterHashes[name] != h {
+			t.Fatalf("file %s was mutated during the run", name)
+		}
+	}
+}
+
+// hashTreeApp is the local copy of the snapshot-isolation test helper.
+// Returns a stable map of relative path -> sha256 hex.
+func hashTreeApp(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, p)
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(b)
+		out[rel] = hex.EncodeToString(sum[:])
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// copyTreeForTest mirrors a fixture into a t.TempDir() so the test can
+// assert that Run() did not modify it. It is a small, dependency-free copy
+// helper used only by tests.
+func copyTreeForTest(t *testing.T, src string) string {
+	t.Helper()
+	dst := t.TempDir()
+	err := filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(src, p)
+		if rel == "." {
+			return nil
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(target, b, 0o644)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dst
 }
 
 // readJSON reads a JSON file and fatals the test on any I/O or decode error.

@@ -102,6 +102,202 @@ func (c *Client) CreateSession(ctx context.Context, directory string) (string, e
 	return payload.ID, nil
 }
 
+// AbortSession asks the server to stop any in-flight prompt on the given
+// session. We use this on context cancellation/timeout to keep the server
+// from holding a paused agent (typically waiting on a permission prompt
+// that no human will ever answer in our headless setup).
+func (c *Client) AbortSession(ctx context.Context, sessionID, directory string) error {
+	if !c.Enabled() || sessionID == "" {
+		return nil
+	}
+	u := fmt.Sprintf("%s/session/%s/abort", c.baseURL, sessionID)
+	if directory != "" {
+		u += "?directory=" + url.QueryEscape(directory)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.addAuth(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("abort session failed: %s %s", resp.Status, string(b))
+	}
+	util.Trace("opencode.client", "abort session ok", map[string]any{"session_id": sessionID})
+	return nil
+}
+
+// PendingPermission describes a permission request the server is waiting on.
+// The orchestrator's watchdog uses this to auto-reply so prompts cannot
+// deadlock waiting for human input that will never come.
+type PendingPermission struct {
+	ID        string `json:"id"`
+	SessionID string `json:"sessionID"`
+	Title     string `json:"title"`
+	Type      string `json:"type"`
+}
+
+// ListPermissions returns outstanding permission requests across the server.
+// DiffMind scopes the result to its own session ids in the orchestrator.
+func (c *Client) ListPermissions(ctx context.Context, directory string) ([]PendingPermission, error) {
+	if !c.Enabled() {
+		return nil, nil
+	}
+	u := c.baseURL + "/permission"
+	if directory != "" {
+		u += "?directory=" + url.QueryEscape(directory)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.addAuth(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("list permissions failed: %s %s", resp.Status, string(b))
+	}
+	// The server returns either an array or an object with an items array
+	// depending on version; tolerate both shapes.
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	var arr []PendingPermission
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		return arr, nil
+	}
+	var wrap struct {
+		Items []PendingPermission `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &wrap); err == nil {
+		return wrap.Items, nil
+	}
+	return nil, nil
+}
+
+// RespondPermission replies to a pending permission. response should be one
+// of "allow", "deny" (server-supported additions like "allow_once",
+// "allow_always" are accepted as opaque strings).
+func (c *Client) RespondPermission(ctx context.Context, sessionID, permissionID, directory, response string) error {
+	if !c.Enabled() || sessionID == "" || permissionID == "" {
+		return nil
+	}
+	u := fmt.Sprintf("%s/session/%s/permissions/%s", c.baseURL, sessionID, permissionID)
+	if directory != "" {
+		u += "?directory=" + url.QueryEscape(directory)
+	}
+	body, _ := json.Marshal(map[string]string{"response": response})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.addAuth(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("respond permission failed: %s %s", resp.Status, string(b))
+	}
+	return nil
+}
+
+// PendingQuestion describes a clarification request the agent has emitted.
+type PendingQuestion struct {
+	ID        string `json:"id"`
+	SessionID string `json:"sessionID"`
+	Question  string `json:"question"`
+}
+
+// ListQuestions returns outstanding clarification questions.
+func (c *Client) ListQuestions(ctx context.Context, directory string) ([]PendingQuestion, error) {
+	if !c.Enabled() {
+		return nil, nil
+	}
+	u := c.baseURL + "/question"
+	if directory != "" {
+		u += "?directory=" + url.QueryEscape(directory)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.addAuth(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("list questions failed: %s %s", resp.Status, string(b))
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	var arr []PendingQuestion
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		return arr, nil
+	}
+	var wrap struct {
+		Items []PendingQuestion `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &wrap); err == nil {
+		return wrap.Items, nil
+	}
+	return nil, nil
+}
+
+// RejectQuestion tells the server we are not going to answer the question.
+// The agent receives the rejection and continues (typically with reduced
+// information).
+func (c *Client) RejectQuestion(ctx context.Context, requestID, directory string) error {
+	if !c.Enabled() || requestID == "" {
+		return nil
+	}
+	u := fmt.Sprintf("%s/question/%s/reject", c.baseURL, requestID)
+	if directory != "" {
+		u += "?directory=" + url.QueryEscape(directory)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.addAuth(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("reject question failed: %s %s", resp.Status, string(b))
+	}
+	return nil
+}
+
 func (c *Client) DeleteSession(ctx context.Context, sessionID, directory string) error {
 	if !c.Enabled() || sessionID == "" {
 		return nil

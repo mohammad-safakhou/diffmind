@@ -89,6 +89,7 @@ func (o *orchestrator) runDiscoveryOne(ctx context.Context, obj objectives.Objec
 		return nil, err
 	}
 	items := parseEntities(payload["items"])
+	o.pathMapper().applyToEntities(items)
 	util.Info("agents.discovery", "objective discovery completed", map[string]any{
 		"objective": obj.ID, "items": len(items),
 	})

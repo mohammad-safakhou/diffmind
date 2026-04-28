@@ -20,22 +20,34 @@ type promptRecorder struct {
 	mu          sync.Mutex
 	createCalls int
 	roles       map[string]int
+	directories []string
 }
 
 func newRecorder() *promptRecorder {
 	return &promptRecorder{roles: map[string]int{}}
 }
 
-func (r *promptRecorder) observeSession() {
+func (r *promptRecorder) observeSession(directory string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.createCalls++
+	if directory != "" {
+		r.directories = append(r.directories, directory)
+	}
 }
 
 func (r *promptRecorder) observeRole(role string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.roles[role]++
+}
+
+func (r *promptRecorder) seenDirectories() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, len(r.directories))
+	copy(out, r.directories)
+	return out
 }
 
 // discoverRole infers a coarse role from the agent prompt so that tests can
@@ -68,7 +80,7 @@ func newFakeOpenCode() *fakeOpenCode { return &fakeOpenCode{rec: newRecorder()} 
 
 func (f *fakeOpenCode) Enabled() bool { return true }
 func (f *fakeOpenCode) CreateSession(ctx context.Context, directory string) (string, error) {
-	f.rec.observeSession()
+	f.rec.observeSession(directory)
 	return "s", nil
 }
 func (f *fakeOpenCode) DeleteSession(ctx context.Context, sessionID, directory string) error {
@@ -202,7 +214,7 @@ func TestRunBuildsExposuresDependenciesAndConnections(t *testing.T) {
 	cfg.Quality.MinConfidence = 0.7
 	fake := newFakeOpenCode()
 
-	result, err := Run(context.Background(), cfg, "/repo", fake)
+	result, err := Run(context.Background(), cfg, t.TempDir(), fake)
 	if err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -268,7 +280,7 @@ type fakeLowConfidence struct {
 
 func (f *fakeLowConfidence) Enabled() bool { return true }
 func (f *fakeLowConfidence) CreateSession(ctx context.Context, directory string) (string, error) {
-	f.rec.observeSession()
+	f.rec.observeSession(directory)
 	return "s", nil
 }
 func (f *fakeLowConfidence) DeleteSession(ctx context.Context, sessionID, directory string) error {
@@ -337,7 +349,7 @@ func TestRunReexaminationRescuesLowConfidenceSeed(t *testing.T) {
 	cfg.Quality.MinConfidence = 0.7
 	fake := &fakeLowConfidence{rec: newRecorder(), reject: false}
 
-	result, err := Run(context.Background(), cfg, "/repo", fake)
+	result, err := Run(context.Background(), cfg, t.TempDir(), fake)
 	if err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -362,7 +374,7 @@ func TestRunReexaminationRejectsSuspectSeed(t *testing.T) {
 	cfg.Quality.MinConfidence = 0.7
 	fake := &fakeLowConfidence{rec: newRecorder(), reject: true}
 
-	result, err := Run(context.Background(), cfg, "/repo", fake)
+	result, err := Run(context.Background(), cfg, t.TempDir(), fake)
 	if err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -391,7 +403,7 @@ func TestRunSkipReexaminationProducesLowConfidenceUnresolved(t *testing.T) {
 	cfg.Runtime.SkipReexamination = true
 	fake := &fakeLowConfidence{rec: newRecorder(), reject: true, detailKeepsLow: true}
 
-	result, err := Run(context.Background(), cfg, "/repo", fake)
+	result, err := Run(context.Background(), cfg, t.TempDir(), fake)
 	if err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -427,7 +439,7 @@ type fakeBatching struct {
 
 func (f *fakeBatching) Enabled() bool { return true }
 func (f *fakeBatching) CreateSession(ctx context.Context, directory string) (string, error) {
-	f.rec.observeSession()
+	f.rec.observeSession(directory)
 	return "s", nil
 }
 func (f *fakeBatching) DeleteSession(ctx context.Context, sessionID, directory string) error {
@@ -530,7 +542,7 @@ func TestRunConnectionBatchingPreservesAllDependencies(t *testing.T) {
 	cfg.Quality.MinConfidence = 0.7
 	fake := &fakeBatching{rec: newRecorder()}
 
-	result, err := Run(context.Background(), cfg, "/repo", fake)
+	result, err := Run(context.Background(), cfg, t.TempDir(), fake)
 	if err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -558,7 +570,7 @@ func TestRunWithSharedSessionCreatesSingleSession(t *testing.T) {
 	cfg.Runtime.ReuseOpenCodeSession = true
 	fake := newFakeOpenCode()
 
-	if _, err := Run(context.Background(), cfg, "/repo", fake); err != nil {
+	if _, err := Run(context.Background(), cfg, t.TempDir(), fake); err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
 	fake.rec.mu.Lock()
@@ -579,7 +591,7 @@ type fakeOrphanConnection struct {
 
 func (f *fakeOrphanConnection) Enabled() bool { return true }
 func (f *fakeOrphanConnection) CreateSession(ctx context.Context, directory string) (string, error) {
-	f.rec.observeSession()
+	f.rec.observeSession(directory)
 	return "s", nil
 }
 func (f *fakeOrphanConnection) DeleteSession(ctx context.Context, sessionID, directory string) error {
@@ -660,7 +672,7 @@ func TestRunDropsConnectionsWithOrphanDependencyIDs(t *testing.T) {
 	cfg.Quality.MinConfidence = 0.7
 	fake := &fakeOrphanConnection{rec: newRecorder()}
 
-	result, err := Run(context.Background(), cfg, "/repo", fake)
+	result, err := Run(context.Background(), cfg, t.TempDir(), fake)
 	if err != nil {
 		t.Fatalf("run failed: %v", err)
 	}

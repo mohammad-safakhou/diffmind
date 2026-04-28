@@ -36,6 +36,7 @@ Notes:
 - `serve` command is implemented in OpenCode at `packages/opencode/src/cli/cmd/serve.ts`.
 - If `OPENCODE_SERVER_PASSWORD` is not set, server runs unsecured.
 - If username is not set, OpenCode defaults to `opencode`.
+- **The directory the server is launched from is irrelevant.** DiffMind targets a specific working directory per session via the API; you can start the server from any path (e.g. `/opt/diffmind` in Docker, the user's home dir on a VPS, etc.).
 
 If you do not want auth right now, run without `OPENCODE_SERVER_PASSWORD` and omit auth flags in DiffMind.
 
@@ -47,6 +48,35 @@ Use OpenCode auth commands (interactive) before running DiffMind, for example:
 opencode auth login
 opencode auth list
 ```
+
+### 3) Headless operation: permissions and pauses
+
+OpenCode is normally interactive: it can ask the user to allow tool calls and to clarify ambiguous prompts. Neither is appropriate for DiffMind's headless server-driven workflow, where 16 parallel sessions process the same repository and nobody is at a TUI.
+
+DiffMind defends against this on three layers:
+
+1. **Read-only prompts.** Every prompt explicitly instructs the agent not to edit, create, delete, or run shell commands. Combined with the per-run isolated repo snapshot, the user's repository is never the working directory of any OpenCode session.
+2. **Per-run repo snapshot.** Every DiffMind run materializes an independent copy of the target repo under a random temp directory and points OpenCode at that copy. The original repo is never touched even if an agent attempts a write.
+3. **Watchdog auto-replies.** A background goroutine polls `GET /permission` and `GET /question` and:
+   - **denies** any permission request that originated from a DiffMind session,
+   - **rejects** any clarification question from a DiffMind session,
+   - **aborts** the underlying session via `POST /session/{id}/abort` whenever a prompt times out or fails.
+
+   The watchdog only acts on session ids it created itself, so other clients sharing the same OpenCode server are not affected.
+
+Recommended OpenCode server config for a DiffMind-only deployment (`~/.config/opencode/opencode.json`):
+
+```json
+{
+  "permission": {
+    "edit": "deny",
+    "bash": "deny",
+    "webfetch": "allow"
+  }
+}
+```
+
+This makes the server reject mutating tools without ever raising a prompt; the watchdog is a belt-and-braces safety net, not the primary defense.
 
 ## DiffMind Setup
 
