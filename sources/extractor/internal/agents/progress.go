@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -19,12 +20,21 @@ type progressReporter struct {
 	endPercent   int
 	lastPercent  int
 	tickerStop   chan struct{}
+	sink         events.Sink
 }
 
 func newProgressReporter() *progressReporter {
 	p := &progressReporter{lastPercent: -1, tickerStop: make(chan struct{})}
 	go p.tick()
 	return p
+}
+
+// SetSink wires a live event sink so each progress tick is also published as
+// a stage_progress event to the dashboard.
+func (p *progressReporter) SetSink(s events.Sink) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.sink = s
 }
 
 func (p *progressReporter) tick() {
@@ -128,8 +138,22 @@ func (p *progressReporter) report(force bool) {
 	})
 
 	p.mu.Lock()
+	sink := p.sink
 	p.lastPercent = percent
 	p.mu.Unlock()
+
+	if sink != nil {
+		sink.Emit(events.Event{
+			Kind:    events.KindStageProgress,
+			Stage:   phase,
+			Message: tip,
+			Payload: map[string]any{
+				"percent": percent,
+				"done":    done,
+				"total":   total,
+			},
+		})
+	}
 }
 
 func renderProgressBar(percent, width int) string {

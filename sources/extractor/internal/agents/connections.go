@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
@@ -111,6 +113,18 @@ func (o *orchestrator) runConnectionsForExposure(
 		batchCount = 1
 	}
 
+	exposureJobID := "connections." + exposure.ID
+	expStarted := time.Now()
+	o.emit(events.Event{
+		Kind: events.KindJobStarted, Stage: "connections", JobID: exposureJobID, Status: events.StatusRunning,
+		Payload: map[string]any{
+			"exposure_id":   exposure.ID,
+			"exposure_name": exposure.Name,
+			"exposure_type": exposure.Type,
+			"batches":       batchCount,
+		},
+	})
+
 	schema := connectionListSchema()
 	out := make([]llmConnection, 0)
 	for batchNo, start := 1, 0; start < len(catalog); batchNo, start = batchNo+1, start+batchSize {
@@ -120,9 +134,26 @@ func (o *orchestrator) runConnectionsForExposure(
 		}
 		batch := catalog[start:end]
 		prompt := buildConnectionPrompt(obj, expItem, batch, batchNo, batchCount, rf, o.subDir)
-		role := fmt.Sprintf("connections.%s.batch.%d", exposure.ID, batchNo)
-		payload, err := o.promptAgent(ctx, role, prompt, schema)
+		batchJobID := fmt.Sprintf("%s.batch.%d", exposureJobID, batchNo)
+		batchStarted := time.Now()
+		o.emit(events.Event{
+			Kind: events.KindJobStarted, Stage: "connections", JobID: batchJobID, ParentID: exposureJobID,
+			Status:  events.StatusRunning,
+			Payload: map[string]any{"batch": batchNo, "batches": batchCount, "batch_size": len(batch)},
+		})
+		payload, err := o.promptAgent(ctx, batchJobID, prompt, schema)
 		if err != nil {
+			o.emit(events.Event{
+				Kind: events.KindJobFailed, Stage: "connections", JobID: batchJobID, ParentID: exposureJobID,
+				Status:  events.StatusFailed,
+				Message: err.Error(),
+				Payload: map[string]any{"batch": batchNo, "duration_ms": time.Since(batchStarted).Milliseconds()},
+			})
+			o.emit(events.Event{
+				Kind: events.KindJobFailed, Stage: "connections", JobID: exposureJobID, Status: events.StatusFailed,
+				Message: err.Error(),
+				Payload: map[string]any{"exposure_id": exposure.ID, "duration_ms": time.Since(expStarted).Milliseconds()},
+			})
 			return nil, err
 		}
 		items := parseConnections(payload["items"])
@@ -137,6 +168,7 @@ func (o *orchestrator) runConnectionsForExposure(
 				items[i].FromExposureID = exposure.ID
 			}
 		}
+		matched := 0
 		for _, it := range items {
 			// Reject items that reference a dependency outside the batch; the
 			// assembler will also catch orphans but dropping early saves
@@ -145,8 +177,22 @@ func (o *orchestrator) runConnectionsForExposure(
 				continue
 			}
 			out = append(out, it)
+			matched++
 		}
+		o.emit(events.Event{
+			Kind: events.KindJobCompleted, Stage: "connections", JobID: batchJobID, ParentID: exposureJobID,
+			Status:  events.StatusSuccess,
+			Payload: map[string]any{"batch": batchNo, "matched": matched, "duration_ms": time.Since(batchStarted).Milliseconds()},
+		})
 	}
+	o.emit(events.Event{
+		Kind: events.KindJobCompleted, Stage: "connections", JobID: exposureJobID, Status: events.StatusSuccess,
+		Payload: map[string]any{
+			"exposure_id": exposure.ID,
+			"connections": len(out),
+			"duration_ms": time.Since(expStarted).Milliseconds(),
+		},
+	})
 	return out, nil
 }
 

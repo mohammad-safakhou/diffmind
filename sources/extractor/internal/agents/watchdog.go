@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -26,6 +27,7 @@ type watchdog struct {
 	api           pauseHandler
 	directory     string
 	pollInterval  time.Duration
+	sink          events.Sink
 	mu            sync.Mutex
 	ownedSessions map[string]struct{}
 	stopCh        chan struct{}
@@ -44,6 +46,29 @@ func newWatchdog(api pauseHandler, directory string, poll time.Duration) *watchd
 		ownedSessions: map[string]struct{}{},
 		stopCh:        make(chan struct{}),
 		doneCh:        make(chan struct{}),
+	}
+}
+
+// SetSink wires a live event sink so watchdog actions are observable from
+// the dashboard.
+func (w *watchdog) SetSink(s events.Sink) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	w.sink = s
+	w.mu.Unlock()
+}
+
+func (w *watchdog) emit(e events.Event) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	s := w.sink
+	w.mu.Unlock()
+	if s != nil {
+		s.Emit(e)
 	}
 }
 
@@ -130,6 +155,18 @@ func (w *watchdog) tick(ctx context.Context) {
 			util.Warn("agents.watchdog", "auto-denying unexpected permission prompt", map[string]any{
 				"session_id": p.SessionID, "permission_id": p.ID, "title": p.Title, "type": p.Type,
 			})
+			w.emit(events.Event{
+				Kind:   events.KindWatchdogAction,
+				JobID:  "watchdog.permission",
+				Status: "deny",
+				Payload: map[string]any{
+					"action":        "auto_deny_permission",
+					"session_id":    p.SessionID,
+					"permission_id": p.ID,
+					"title":         p.Title,
+					"type":          p.Type,
+				},
+			})
 			if err := w.api.RespondPermission(pollCtx, p.SessionID, p.ID, w.directory, "deny"); err != nil {
 				util.Debug("agents.watchdog", "respond permission failed", map[string]any{"error": err})
 			}
@@ -145,6 +182,16 @@ func (w *watchdog) tick(ctx context.Context) {
 			}
 			util.Warn("agents.watchdog", "auto-rejecting clarification question", map[string]any{
 				"session_id": q.SessionID, "question_id": q.ID, "question": q.Question,
+			})
+			w.emit(events.Event{
+				Kind:   events.KindWatchdogAction,
+				JobID:  "watchdog.question",
+				Status: "reject",
+				Payload: map[string]any{
+					"action":     "auto_reject_question",
+					"session_id": q.SessionID,
+					"question":   q.Question,
+				},
 			})
 			if err := w.api.RejectQuestion(pollCtx, q.ID, w.directory); err != nil {
 				util.Debug("agents.watchdog", "reject question failed", map[string]any{"error": err})

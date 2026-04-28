@@ -4,7 +4,9 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
@@ -225,13 +227,33 @@ func (o *orchestrator) runReexamination(
 func (o *orchestrator) runReexamineOne(ctx context.Context, t reexamineTrigger, rf *repoFacts) (*llmEntity, error) {
 	prompt := buildReexaminePrompt(t.Obj, t.Seed, t.ReasonID+": "+t.Reason, rf, o.subDir)
 	schema := entityListSchema()
-	role := "reexamine." + t.Obj.ID
-	payload, err := o.promptAgent(ctx, role, prompt, schema)
+	jobID := "reexamine." + t.Obj.ID + "." + safeJobID(t.Seed.Name)
+	started := time.Now()
+	o.emit(events.Event{
+		Kind: events.KindJobStarted, Stage: "reexamination", JobID: jobID, Status: events.StatusRunning,
+		Payload: map[string]any{"objective_id": t.Obj.ID, "name": t.Seed.Name, "trigger": t.ReasonID},
+	})
+	payload, err := o.promptAgent(ctx, jobID, prompt, schema)
 	if err != nil {
+		o.emit(events.Event{
+			Kind: events.KindJobFailed, Stage: "reexamination", JobID: jobID, Status: events.StatusFailed,
+			Message: err.Error(),
+			Payload: map[string]any{"objective_id": t.Obj.ID, "name": t.Seed.Name, "duration_ms": time.Since(started).Milliseconds()},
+		})
 		return nil, err
 	}
 	items := parseEntities(payload["items"])
 	o.pathMapper().applyToEntities(items)
+	resolution := "rejected"
+	if len(items) > 0 {
+		resolution = "rescued"
+	}
+	o.emit(events.Event{
+		Kind: events.KindJobCompleted, Stage: "reexamination", JobID: jobID, Status: events.StatusSuccess,
+		Payload: map[string]any{
+			"objective_id": t.Obj.ID, "name": t.Seed.Name, "resolution": resolution, "duration_ms": time.Since(started).Milliseconds(),
+		},
+	})
 	if len(items) == 0 {
 		return nil, nil
 	}

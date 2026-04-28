@@ -165,6 +165,35 @@ func defaultStr(in, fallback string) string {
 	return in
 }
 
+// safeJobID converts an arbitrary entity name into a slug suitable for use
+// inside an event JobID. We keep alnum, dashes, dots, slashes, and colons;
+// everything else collapses to a dash. The truncation keeps log lines and
+// graph node ids reasonably short.
+func safeJobID(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "_"
+	}
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '-' || r == '_' || r == '.' || r == '/' || r == ':':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	out := b.String()
+	if len(out) > 96 {
+		out = out[:96]
+	}
+	return out
+}
+
 func dedupeUnresolved(in []model.UnresolvedItem) []model.UnresolvedItem {
 	seen := map[string]struct{}{}
 	out := make([]model.UnresolvedItem, 0, len(in))

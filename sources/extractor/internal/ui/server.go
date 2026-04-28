@@ -1,3 +1,6 @@
+// Package ui hosts the dashboard's HTTP API and the embedded web app. It
+// exposes endpoints for launching/observing/cancelling runs and serves the
+// single-page UI built under internal/ui/web.
 package ui
 
 import (
@@ -11,16 +14,36 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
+	"github.com/mohammad-safakhou/diffmind/internal/runner"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
+// Server hosts the dashboard. It owns:
+//   - a single events.Bus shared by every run,
+//   - a runner.Runner enforcing one-active-run-at-a-time,
+//   - the HTTP API,
+//   - the embedded SPA bundle.
+//
+// The legacy artifact-browser endpoints (/api/runs, /api/run/{id}) are
+// preserved so older surfaces keep working.
 type Server struct {
 	baseDir string
 	host    string
 	port    int
+	bus     *events.Bus
+	runner  *runner.Runner
+	token   string // optional auth; empty = open
 }
 
+// SetToken protects every endpoint with the given shared secret. Clients
+// must present it via the X-DiffMind-Token header, a `token` query param,
+// or a `diffmind_token` cookie. Empty disables auth (the default).
+func (s *Server) SetToken(token string) { s.token = strings.TrimSpace(token) }
+
+// RunData is the legacy artifact-browser payload, kept for backwards
+// compatibility with older clients.
 type RunData struct {
 	RunID        string                      `json:"run_id"`
 	Manifest     model.RunManifest           `json:"manifest"`
@@ -31,6 +54,8 @@ type RunData struct {
 	Counts       map[string]map[string]int   `json:"counts"`
 }
 
+// New constructs a Server. The bus + runner are created internally; callers
+// don't need to wire them.
 func New(baseDir, host string, port int) *Server {
 	if strings.TrimSpace(baseDir) == "" {
 		baseDir = ".diffmind/runs"
@@ -41,35 +66,41 @@ func New(baseDir, host string, port int) *Server {
 	if port <= 0 {
 		port = 8080
 	}
-	return &Server{baseDir: baseDir, host: host, port: port}
+	bus := events.NewBus(20000)
+	r := runner.New(baseDir, bus)
+	return &Server{baseDir: baseDir, host: host, port: port, bus: bus, runner: r}
 }
 
-func (s *Server) Addr() string {
-	return fmt.Sprintf("%s:%d", s.host, s.port)
-}
+// Addr returns "host:port".
+func (s *Server) Addr() string { return fmt.Sprintf("%s:%d", s.host, s.port) }
 
+// Runner exposes the singleton run controller (used in tests).
+func (s *Server) Runner() *runner.Runner { return s.runner }
+
+// Bus exposes the events bus (used in tests).
+func (s *Server) Bus() *events.Bus { return s.bus }
+
+// Start runs the HTTP server until ctx is cancelled.
 func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.handleIndex)
-	mux.HandleFunc("/api/runs", s.handleRuns)
-	mux.HandleFunc("/api/run/", s.handleRun)
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	})
+	s.routes(mux)
 
-	srv := &http.Server{Addr: s.Addr(), Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	var handler http.Handler = mux
+	if s.token != "" {
+		handler = s.tokenMiddleware(mux)
+		util.Info("ui", "ui token auth enabled", nil)
+	}
+
+	srv := &http.Server{Addr: s.Addr(), Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	errCh := make(chan error, 1)
 	go func() {
 		util.Info("ui", "dashboard listening", map[string]any{"addr": s.Addr(), "base_dir": s.baseDir})
-		err := srv.ListenAndServe()
-		if err != nil && err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 			return
 		}
 		errCh <- nil
 	}()
-
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -81,20 +112,215 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 }
 
-func (s *Server) handleIndex(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(indexHTML))
+// tokenMiddleware enforces the optional shared-secret guard. Two carve-outs:
+//   - /healthz remains unauthenticated so liveness checks still work,
+//   - GET / (the SPA shell) is also unauthenticated so users can land on
+//     a login screen / paste their token via the query param. The SPA then
+//     stores it client-side and includes it in subsequent requests.
+//
+// Static assets (the bundle JS/CSS) are likewise allowed since they are
+// not sensitive on their own.
+func (s *Server) tokenMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.requiresAuth(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !s.tokenMatches(r) {
+			w.Header().Set("WWW-Authenticate", "Bearer realm=diffmind")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
-func (s *Server) handleRuns(w http.ResponseWriter, _ *http.Request) {
-	runs, err := s.listRuns()
+func (s *Server) requiresAuth(r *http.Request) bool {
+	if s.token == "" {
+		return false
+	}
+	p := r.URL.Path
+	if p == "/healthz" {
+		return false
+	}
+	// Allow the SPA shell + static assets so the user can land in a browser
+	// and paste their token. The /api/* surface is what we actually protect.
+	if !strings.HasPrefix(p, "/api/") {
+		return false
+	}
+	return true
+}
+
+func (s *Server) tokenMatches(r *http.Request) bool {
+	got := r.Header.Get("X-DiffMind-Token")
+	if got == "" {
+		got = r.URL.Query().Get("token")
+	}
+	if got == "" {
+		if c, err := r.Cookie("diffmind_token"); err == nil {
+			got = c.Value
+		}
+	}
+	if got == "" {
+		auth := r.Header.Get("Authorization")
+		if strings.HasPrefix(auth, "Bearer ") {
+			got = strings.TrimPrefix(auth, "Bearer ")
+		}
+	}
+	return got != "" && got == s.token
+}
+
+// routes registers every HTTP endpoint on the supplied mux. Pulled out so
+// tests can build httptest.Servers cheaply.
+func (s *Server) routes(mux *http.ServeMux) {
+	// Static SPA.
+	mux.HandleFunc("/", s.handleStatic)
+
+	// Health check.
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+
+	// Live run lifecycle.
+	mux.HandleFunc("/api/runs", s.handleRunsCollection)   // GET (list) | POST (create)
+	mux.HandleFunc("/api/runs/active", s.handleActiveRun) // GET status of singleton
+	mux.HandleFunc("/api/runs/", s.handleRunsItem)        // /{id}/(events|state|cancel|job/...)
+
+	// Legacy artifact browser.
+	mux.HandleFunc("/api/run/", s.handleRun)
+}
+
+// handleRunsCollection dispatches between list (GET) and create (POST). For
+// GET it returns runs from disk plus an `active` state; for POST it kicks
+// off a new run.
+func (s *Server) handleRunsCollection(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleRunsList(w, r)
+	case http.MethodPost:
+		s.handleRunCreate(w, r)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleRunsList responds with runs persisted to disk plus the active run
+// state from the singleton Runner. The runs array includes a small summary
+// per run (counts, started_at, repo) so the sidebar can render labels
+// without forcing a second round-trip per row.
+func (s *Server) handleRunsList(w http.ResponseWriter, _ *http.Request) {
+	ids, err := s.listRuns()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, map[string]any{"runs": runs})
+	summaries := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		summaries = append(summaries, s.summarizeRun(id))
+	}
+	writeJSON(w, map[string]any{
+		"runs":     summaries,
+		"run_ids":  ids, // kept for backwards compatibility with the legacy UI
+		"active":   s.runner.State(),
+		"base_dir": s.baseDir,
+	})
 }
 
+// summarizeRun reads the manifest (if present) and returns the small subset
+// of fields the sidebar needs. Any failure produces a "skeleton" record
+// that still names the run, so the UI can show it as "manifest missing".
+func (s *Server) summarizeRun(id string) map[string]any {
+	out := map[string]any{
+		"run_id":     id,
+		"has_events": s.hasEventsLog(id),
+	}
+	manifestPath := filepath.Join(s.baseDir, id, "run_manifest.json")
+	b, err := os.ReadFile(manifestPath)
+	if err != nil {
+		out["status"] = "unknown"
+		return out
+	}
+	var manifest model.RunManifest
+	if err := json.Unmarshal(b, &manifest); err != nil {
+		out["status"] = "unknown"
+		return out
+	}
+	out["repo_path"] = manifest.RepoPath
+	out["started_at"] = manifest.StartedAt
+	out["finished_at"] = manifest.FinishedAt
+	out["counts"] = manifest.Counts
+	if !manifest.FinishedAt.IsZero() && !manifest.StartedAt.IsZero() {
+		out["duration_ms"] = manifest.FinishedAt.Sub(manifest.StartedAt).Milliseconds()
+	}
+	out["status"] = "completed"
+	return out
+}
+
+func (s *Server) hasEventsLog(id string) bool {
+	_, err := os.Stat(filepath.Join(s.baseDir, id, "events.jsonl"))
+	return err == nil
+}
+
+// handleActiveRun returns the singleton runner state.
+func (s *Server) handleActiveRun(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, s.runner.State())
+}
+
+// handleRunsItem dispatches /api/runs/{id}/* paths.
+func (s *Server) handleRunsItem(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/api/runs/")
+	parts := strings.SplitN(rest, "/", 3)
+	if len(parts) < 1 || parts[0] == "" {
+		http.NotFound(w, r)
+		return
+	}
+	runID := parts[0]
+	if runID == "active" {
+		s.handleActiveRun(w, r)
+		return
+	}
+	tail := ""
+	if len(parts) >= 2 {
+		tail = parts[1]
+	}
+	switch tail {
+	case "":
+		// /api/runs/{id} → cancel on DELETE
+		if r.Method == http.MethodDelete {
+			s.handleRunCancel(w, r, runID)
+			return
+		}
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	case "events":
+		s.handleRunEvents(w, r, runID)
+	case "state":
+		s.handleRunState(w, r, runID)
+	case "artifacts":
+		// Convenience alias for /api/run/{id} so the SPA only has to know
+		// one URL prefix.
+		data, err := s.loadRun(runID)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if os.IsNotExist(err) {
+				status = http.StatusNotFound
+			}
+			writeErr(w, status, err)
+			return
+		}
+		writeJSON(w, data)
+	case "job":
+		jobID := ""
+		if len(parts) == 3 {
+			jobID = parts[2]
+		}
+		s.handleRunJob(w, r, runID, jobID)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// handleRun is the legacy artifact view (kept for backwards compatibility).
 func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	runID := strings.TrimPrefix(r.URL.Path, "/api/run/")
 	runID = strings.TrimSpace(runID)
@@ -116,6 +342,17 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, data)
+}
+
+// handleRuns is the legacy listing endpoint, used by the existing JSON-only
+// dashboard tests.
+func (s *Server) handleRuns(w http.ResponseWriter, _ *http.Request) {
+	runs, err := s.listRuns()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, map[string]any{"runs": runs})
 }
 
 func (s *Server) listRuns() ([]string, error) {
@@ -241,117 +478,3 @@ func writeJSON(w http.ResponseWriter, v any) {
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(v)
 }
-
-const indexHTML = `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>DiffMind Dashboard</title>
-  <style>
-    :root { --bg:#0f172a; --panel:#111827; --panel2:#1f2937; --text:#e5e7eb; --muted:#9ca3af; --accent:#22c55e; }
-    * { box-sizing: border-box; }
-    body { margin:0; font-family: "IBM Plex Sans", "Segoe UI", sans-serif; background: linear-gradient(135deg,#0b1220,#121a2d); color: var(--text); }
-    header { padding: 16px 20px; border-bottom: 1px solid #233046; background: rgba(15,23,42,.8); position: sticky; top:0; backdrop-filter: blur(8px); }
-    .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
-    .container { padding: 16px 20px; display:grid; gap:14px; }
-    .card { background: var(--panel); border: 1px solid #273449; border-radius: 12px; padding: 14px; }
-    .summary { display:grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap:10px; }
-    .metric { background: var(--panel2); border-radius:10px; padding:10px; }
-    .label { color: var(--muted); font-size: 12px; }
-    .value { font-size: 24px; font-weight: 700; margin-top: 4px; }
-    select, button { background:#0b1322; color:var(--text); border:1px solid #334155; border-radius:8px; padding:8px 10px; }
-    button { cursor:pointer; }
-    .section-title { margin:0 0 8px 0; font-size: 14px; color:#cbd5e1; letter-spacing:.03em; text-transform:uppercase; }
-    details { border:1px solid #324156; border-radius:8px; padding:8px 10px; margin-bottom:8px; }
-    summary { cursor:pointer; font-weight:600; }
-    pre { white-space: pre-wrap; word-break: break-word; background:#0b1322; padding:10px; border-radius:8px; border:1px solid #2a3a50; overflow:auto; }
-    .muted { color: var(--muted); }
-  </style>
-</head>
-<body>
-<header>
-  <div class="row">
-    <strong>DiffMind Dashboard</strong>
-    <span class="muted">Run:</span>
-    <select id="runSelect"></select>
-    <button onclick="loadRun()">Refresh</button>
-    <span id="status" class="muted"></span>
-  </div>
-</header>
-<div class="container">
-  <div class="card" id="manifestCard"></div>
-  <div class="card" id="exposuresCard"></div>
-  <div class="card" id="depsCard"></div>
-  <div class="card" id="connsCard"></div>
-  <div class="card" id="unresolvedCard"></div>
-</div>
-<script>
-const fmt = (obj) => JSON.stringify(obj, null, 2);
-
-async function fetchJSON(url) {
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(await r.text());
-  return await r.json();
-}
-
-function renderGroup(title, data, counts) {
-  const keys = Object.keys(data || {}).sort();
-  let html = '<h3 class="section-title">' + title + '</h3>';
-  if (!keys.length) return html + '<div class="muted">No data</div>';
-  for (const k of keys) {
-    const items = data[k] || [];
-    const c = counts && counts[k] !== undefined ? counts[k] : items.length;
-    html += '<details><summary>' + k + ' (' + c + ')</summary><pre>' + fmt(items) + '</pre></details>';
-  }
-  return html;
-}
-
-async function loadRuns() {
-  const runs = await fetchJSON('/api/runs');
-  const sel = document.getElementById('runSelect');
-  sel.innerHTML = '';
-  for (const r of (runs.runs || [])) {
-    const opt = document.createElement('option');
-    opt.value = r;
-    opt.textContent = r;
-    sel.appendChild(opt);
-  }
-}
-
-async function loadRun() {
-  const status = document.getElementById('status');
-  status.textContent = 'Loading...';
-  try {
-    const runID = document.getElementById('runSelect').value || 'latest';
-    const data = await fetchJSON('/api/run/' + encodeURIComponent(runID));
-    document.getElementById('manifestCard').innerHTML =
-      '<h3 class=\"section-title\">Run Manifest</h3>' +
-      '<div class=\"summary\">' +
-        '<div class=\"metric\"><div class=\"label\">Run ID</div><div class=\"value\" style=\"font-size:16px\">' + data.run_id + '</div></div>' +
-        '<div class=\"metric\"><div class=\"label\">Exposures</div><div class=\"value\">' + (data.manifest.counts.exposures || 0) + '</div></div>' +
-        '<div class=\"metric\"><div class=\"label\">Dependencies</div><div class=\"value\">' + (data.manifest.counts.dependencies || 0) + '</div></div>' +
-        '<div class=\"metric\"><div class=\"label\">Connections</div><div class=\"value\">' + (data.manifest.counts.connections || 0) + '</div></div>' +
-        '<div class=\"metric\"><div class=\"label\">Unresolved</div><div class=\"value\">' + (data.manifest.counts.unresolved || 0) + '</div></div>' +
-      '</div>' +
-      '<pre>' + fmt(data.manifest) + '</pre>';
-
-    document.getElementById('exposuresCard').innerHTML = renderGroup('Exposures', data.exposures, data.counts.exposures);
-    document.getElementById('depsCard').innerHTML = renderGroup('Dependencies', data.dependencies, data.counts.dependencies);
-    document.getElementById('connsCard').innerHTML = renderGroup('Connections', data.connections, data.counts.connections);
-    document.getElementById('unresolvedCard').innerHTML = renderGroup('Unresolved', data.unresolved, data.counts.unresolved);
-    status.textContent = 'Loaded';
-  } catch (e) {
-    status.textContent = 'Error';
-    document.getElementById('manifestCard').innerHTML = '<pre>' + String(e) + '</pre>';
-  }
-}
-
-(async function init() {
-  await loadRuns();
-  await loadRun();
-  setInterval(loadRun, 10000);
-})();
-</script>
-</body>
-</html>`

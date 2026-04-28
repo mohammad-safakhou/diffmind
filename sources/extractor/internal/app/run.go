@@ -10,6 +10,7 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/agents"
 	"github.com/mohammad-safakhou/diffmind/internal/artifacts"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
+	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/opencode"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
@@ -17,6 +18,13 @@ import (
 type RunInput struct {
 	RepoPath string
 	Config   config.Config
+	// Sink is the optional live event sink consumed by the dashboard. nil
+	// means "no live streaming"; the run still produces artifacts as usual.
+	Sink events.Sink
+	// RunID lets the caller pre-allocate a stable id (e.g. so the UI can
+	// open the SSE stream before Run actually starts). Empty falls back to
+	// a timestamp-based id.
+	RunID string
 }
 
 type RunOutput struct {
@@ -65,7 +73,15 @@ func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 		return RunOutput{}, fmt.Errorf("opencode-url is required; static/regex extraction path has been removed")
 	}
 
-	result, err := agents.Run(ctx, in.Config, repo, oc)
+	runID := strings.TrimSpace(in.RunID)
+	if runID == "" {
+		runID = started.Format("20060102T150405Z")
+	}
+	captureDir := filepath.Join(in.Config.Artifacts.BaseDir, runID, "prompts")
+	result, err := agents.RunWith(ctx, in.Config, repo, oc, agents.RunOptions{
+		Sink:       in.Sink,
+		CaptureDir: captureDir,
+	})
 	if err != nil {
 		util.Error("app.run", "agent pipeline failed", map[string]any{"error": err})
 		return RunOutput{}, err
@@ -79,7 +95,6 @@ func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 	logProgress("pipeline", 90, "Extraction pipeline completed. Preparing artifacts.")
 	warnings = append(warnings, result.Warnings...)
 
-	runID := started.Format("20060102T150405Z")
 	runDir, err := artifacts.Write(artifacts.WriteInput{
 		RunID:         runID,
 		BaseDir:       in.Config.Artifacts.BaseDir,
