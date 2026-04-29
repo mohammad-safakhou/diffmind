@@ -38,10 +38,11 @@ type orchestrator struct {
 	subDir           string
 	snap             *snapshot.Snapshot
 	oc               openCodeAPI
-	pauser           pauseHandler // optional: only set when oc is *opencode.Client
-	wd               *watchdog    // optional: nil if pauser is nil
-	sink             events.Sink  // never nil (NoopSink fallback)
-	captureDir       string       // optional: dir where prompt/response files are written
+	verbose          verbosePrompter // optional: only set when oc is *opencode.Client
+	pauser           pauseHandler    // optional: only set when oc is *opencode.Client
+	wd               *watchdog       // optional: nil if pauser is nil
+	sink             events.Sink     // never nil (NoopSink fallback)
+	captureDir       string          // optional: dir where prompt/response files are written
 
 	sessionMu       sync.Mutex
 	sharedSessionID string
@@ -126,8 +127,15 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	switch v := oc.(type) {
 	case *opencode.Client:
 		o.pauser = newPauseBridge(v)
+		o.verbose = newVerboseBridge(v)
 	case pauseHandler:
 		o.pauser = v
+	}
+	// Also accept fakes that implement verbosePrompter directly.
+	if o.verbose == nil {
+		if vp, ok := oc.(verbosePrompter); ok {
+			o.verbose = vp
+		}
 	}
 	if o.pauser != nil {
 		o.wd = newWatchdog(o.pauser, o.sessionDir, 2*time.Second)
@@ -403,8 +411,10 @@ func (o *orchestrator) pathMapper() *pathMapper {
 //
 // It also emits an llm_call_started/llm_call_completed pair around the
 // PromptStructured call and persists the prompt + response under
-// captureDir/<role>.{prompt,response}.txt so the dashboard can show the
-// full payloads on demand.
+// captureDir/<role>.{prompt,response}.{txt,json,raw} so the dashboard can
+// show the full payloads on demand. When the structured slot is missing
+// from the OpenCode response (some providers don't honor json_schema) we
+// fall back to a plain-text prompt and JSON-scrape the reply.
 func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, schema map[string]any) (map[string]any, error) {
 	sessionID, cleanupFn, err := o.acquireSession(ctx, role)
 	if err != nil {
@@ -421,9 +431,53 @@ func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, sch
 	o.persistPrompt(role, prompt)
 	util.Trace("agents.agent", "prompt start", map[string]any{"role": role, "session_id": sessionID, "prompt_len": len(prompt)})
 	started := time.Now()
-	payload, err := o.oc.PromptStructured(ctx, sessionID, o.sessionDir, prompt, schema)
-	dur := time.Since(started)
+
+	var payload map[string]any
+	var rawBody []byte
+	var textBody string
+	if o.verbose != nil {
+		payload, rawBody, textBody, err = o.verbose.PromptStructuredVerboseRaw(ctx, sessionID, o.sessionDir, prompt, schema)
+	} else {
+		payload, err = o.oc.PromptStructured(ctx, sessionID, o.sessionDir, prompt, schema)
+	}
+
+	// Always persist whatever we got — successful payload, raw bytes, or
+	// the parsed-text remnants. This is gold for diagnosing why a run
+	// produced nothing.
+	o.persistResponseBundle(role, payload, rawBody, textBody)
+
 	if err != nil {
+		// Free-text fallback: many providers either don't honor the
+		// json_schema slot or strip it before returning. If the structured
+		// slot was empty (the canonical "no structured payload" error) we
+		// re-issue the same logical request as plain text with a strict
+		// "respond ONLY with valid JSON" footer, then scrape the JSON out.
+		if isNoStructuredPayload(err) {
+			fallback, fbErr := o.fallbackPromptText(ctx, role, sessionID, prompt, schema)
+			if fbErr == nil && fallback != nil {
+				dur := time.Since(started)
+				o.persistResponseBundle(role, fallback, rawBody, textBody)
+				o.emit(events.Event{
+					Kind: events.KindLLMCallCompleted, JobID: role, Status: events.StatusSuccess,
+					Message: "structured slot empty; recovered via free-text fallback",
+					Payload: map[string]any{
+						"session_id":    sessionID,
+						"duration_ms":   dur.Milliseconds(),
+						"prompt_len":    len(prompt),
+						"response_keys": mapKeys(fallback),
+						"fallback":      "text",
+					},
+				})
+				if cleanupFn != nil {
+					cleanupFn()
+				}
+				return fallback, nil
+			}
+			if fbErr != nil {
+				err = fmt.Errorf("%w; text fallback also failed: %v", err, fbErr)
+			}
+		}
+
 		// Best-effort abort: if the call timed out or was cancelled, the
 		// server-side session may still be running (or paused waiting on a
 		// permission request). Aborting frees server resources and lets
@@ -436,8 +490,10 @@ func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, sch
 			Kind: events.KindLLMCallCompleted, JobID: role, Status: events.StatusFailed,
 			Message: err.Error(),
 			Payload: map[string]any{
-				"session_id":  sessionID,
-				"duration_ms": dur.Milliseconds(),
+				"session_id":   sessionID,
+				"duration_ms":  time.Since(started).Milliseconds(),
+				"raw_preview":  previewBytes(rawBody, 360),
+				"text_preview": previewString(textBody, 360),
 			},
 		})
 		return nil, fmt.Errorf("%s prompt: %w", role, err)
@@ -445,18 +501,157 @@ func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, sch
 	if cleanupFn != nil {
 		cleanupFn()
 	}
-	o.persistResponse(role, payload)
 	o.emit(events.Event{
 		Kind: events.KindLLMCallCompleted, JobID: role, Status: events.StatusSuccess,
 		Payload: map[string]any{
 			"session_id":    sessionID,
-			"duration_ms":   dur.Milliseconds(),
+			"duration_ms":   time.Since(started).Milliseconds(),
 			"prompt_len":    len(prompt),
 			"response_keys": mapKeys(payload),
 		},
 	})
 	util.Trace("agents.agent", "prompt ok", map[string]any{"role": role, "session_id": sessionID})
 	return payload, nil
+}
+
+// fallbackPromptText re-asks the same prompt without json_schema constraints
+// and parses JSON out of the free-text reply. The model is given an
+// explicit suffix demanding pure JSON. Returns (parsed, nil) on success.
+func (o *orchestrator) fallbackPromptText(ctx context.Context, role, sessionID, prompt string, schema map[string]any) (map[string]any, error) {
+	textPrompt := prompt + "\n\nIMPORTANT FORMAT REQUIREMENT:\n" +
+		"Reply with a SINGLE JSON object that matches the structure described above.\n" +
+		"Do NOT include any explanatory prose before or after the JSON.\n" +
+		"Do NOT wrap the JSON in markdown code fences.\n" +
+		"If you have nothing to report, reply with: {\"items\": []}\n"
+
+	text, err := o.oc.PromptText(ctx, sessionID, o.sessionDir, textPrompt)
+	if err != nil {
+		return nil, err
+	}
+	parsed := scrapeJSONObject(text)
+	if parsed == nil {
+		return nil, fmt.Errorf("free-text reply did not contain a JSON object (preview=%s)", previewString(text, 240))
+	}
+	_ = schema // schema is unused in fallback parsing; kept for parity.
+	return parsed, nil
+}
+
+// scrapeJSONObject pulls the first JSON object out of arbitrary text.
+// Tries a direct unmarshal, fenced ```json blocks, then a brace-balanced
+// scan. Returns nil if no object can be recovered.
+func scrapeJSONObject(text string) map[string]any {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return nil
+	}
+	if m, ok := tryJSONObject(t); ok {
+		return m
+	}
+	for _, block := range extractFencedBlocks(t) {
+		if m, ok := tryJSONObject(block); ok {
+			return m
+		}
+	}
+	if candidate, ok := scanBalancedObject(t); ok {
+		if m, ok := tryJSONObject(candidate); ok {
+			return m
+		}
+	}
+	return nil
+}
+
+func tryJSONObject(s string) (map[string]any, bool) {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(s), &m); err == nil {
+		return m, true
+	}
+	return nil, false
+}
+
+func extractFencedBlocks(s string) []string {
+	out := []string{}
+	for _, sep := range []string{"```json", "```"} {
+		i := 0
+		for {
+			start := strings.Index(s[i:], sep)
+			if start < 0 {
+				break
+			}
+			start += i + len(sep)
+			// Skip optional newline immediately after the fence.
+			if start < len(s) && s[start] == '\n' {
+				start++
+			}
+			end := strings.Index(s[start:], "```")
+			if end < 0 {
+				break
+			}
+			out = append(out, strings.TrimSpace(s[start:start+end]))
+			i = start + end + 3
+		}
+		if len(out) > 0 {
+			break
+		}
+	}
+	return out
+}
+
+func scanBalancedObject(s string) (string, bool) {
+	start := strings.Index(s, "{")
+	if start < 0 {
+		return "", false
+	}
+	depth := 0
+	inString := false
+	esc := false
+	for i := start; i < len(s); i++ {
+		ch := s[i]
+		if inString {
+			if esc {
+				esc = false
+				continue
+			}
+			if ch == '\\' {
+				esc = true
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+		if ch == '"' {
+			inString = true
+			continue
+		}
+		if ch == '{' {
+			depth++
+		} else if ch == '}' {
+			depth--
+			if depth == 0 {
+				return s[start : i+1], true
+			}
+		}
+	}
+	return "", false
+}
+
+func isNoStructuredPayload(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "no structured payload")
+}
+
+func previewBytes(b []byte, n int) string { return previewString(string(b), n) }
+func previewString(s string, n int) string {
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	s = strings.ReplaceAll(s, "\t", "\\t")
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "\u2026"
 }
 
 // persistPrompt writes the prompt text to <captureDir>/<role>.prompt.txt
@@ -471,15 +666,36 @@ func (o *orchestrator) persistPrompt(role, prompt string) {
 }
 
 func (o *orchestrator) persistResponse(role string, payload map[string]any) {
-	if o.captureDir == "" || role == "" || payload == nil {
+	o.persistResponseBundle(role, payload, nil, "")
+}
+
+// persistResponseBundle writes any combination of (parsed payload, raw HTTP
+// body, free-text reply) we managed to capture for a single LLM call.
+// Each artifact lands in <captureDir>/<role>.<suffix>:
+//   - .response.json — the parsed structured payload (success path)
+//   - .response.raw  — the entire HTTP body, used for debugging when
+//     structured parsing fails
+//   - .response.text — the concatenated text parts, useful when the
+//     provider returned prose instead of JSON
+//
+// All writes are best-effort; capture is a debugging aid and must never
+// take down a run.
+func (o *orchestrator) persistResponseBundle(role string, payload map[string]any, raw []byte, text string) {
+	if o.captureDir == "" || role == "" {
 		return
 	}
-	path := filepath.Join(o.captureDir, safeJobID(role)+".response.json")
-	b, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return
+	base := filepath.Join(o.captureDir, safeJobID(role))
+	if payload != nil {
+		if b, err := json.MarshalIndent(payload, "", "  "); err == nil {
+			_ = os.WriteFile(base+".response.json", b, 0o644)
+		}
 	}
-	_ = os.WriteFile(path, b, 0o644)
+	if len(raw) > 0 {
+		_ = os.WriteFile(base+".response.raw", raw, 0o644)
+	}
+	if strings.TrimSpace(text) != "" {
+		_ = os.WriteFile(base+".response.text", []byte(text), 0o644)
+	}
 }
 
 func mapKeys(m map[string]any) []string {

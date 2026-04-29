@@ -31,6 +31,16 @@ type pauseHandler interface {
 	RejectQuestion(ctx context.Context, requestID, directory string) error
 }
 
+// verbosePrompter is the optional richer surface implemented by the real
+// opencode client. It returns the raw response body (and any free-text
+// parts) so the orchestrator can persist it for diagnostics and use it as
+// the input for a free-text JSON fallback when structured parsing fails.
+// Test fakes that don't implement this stay on the legacy PromptStructured
+// path with no fallback.
+type verbosePrompter interface {
+	PromptStructuredVerboseRaw(ctx context.Context, sessionID, directory, prompt string, schema map[string]any) (parsed map[string]any, raw []byte, text string, err error)
+}
+
 // PendingPermission and PendingQuestion mirror the opencode client types so
 // the orchestrator can treat the watchdog interface in isolation. We keep
 // them as plain structs (not aliases) to avoid forcing every test fake to
