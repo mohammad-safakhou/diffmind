@@ -390,8 +390,30 @@ func (c *Client) PromptText(ctx context.Context, sessionID, directory, prompt st
 }
 
 func (c *Client) PromptStructured(ctx context.Context, sessionID, directory, prompt string, schema map[string]any) (map[string]any, error) {
+	res, err := c.PromptStructuredVerbose(ctx, sessionID, directory, prompt, schema)
+	if err != nil {
+		return nil, err
+	}
+	return res.Payload, nil
+}
+
+// StructuredResult carries everything PromptStructuredVerbose observed,
+// whether or not the structured payload could be parsed. The orchestrator
+// uses this to (a) persist the raw body even on parse failure and (b)
+// decide whether a free-text fallback is worth attempting.
+type StructuredResult struct {
+	Payload  map[string]any // nil when parsing failed
+	RawBody  []byte         // full HTTP body, or empty on transport error
+	TextBody string         // concatenation of any parts[].text fields
+	Status   int
+}
+
+// PromptStructuredVerbose is like PromptStructured but exposes the raw
+// response body and any free-text part it observed. Callers needing the
+// transparent diagnostic + fallback path should prefer this.
+func (c *Client) PromptStructuredVerbose(ctx context.Context, sessionID, directory, prompt string, schema map[string]any) (StructuredResult, error) {
 	if !c.Enabled() {
-		return nil, fmt.Errorf("opencode disabled")
+		return StructuredResult{}, fmt.Errorf("opencode disabled")
 	}
 	util.Debug("opencode.client", "prompt structured request", map[string]any{
 		"session_id": sessionID,
@@ -422,36 +444,61 @@ func (c *Client) PromptStructured(ctx context.Context, sessionID, directory, pro
 	buf, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(buf))
 	if err != nil {
-		return nil, err
+		return StructuredResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	c.addAuth(req)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return StructuredResult{}, err
 	}
 	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	res := StructuredResult{RawBody: raw, Status: resp.StatusCode}
 	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("prompt failed: %s %s", resp.Status, string(b))
+		return res, fmt.Errorf("prompt failed: %s %s", resp.Status, string(raw))
 	}
 	util.Debug("opencode.client", "prompt structured response", map[string]any{"session_id": sessionID, "status": resp.StatusCode})
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	payload, details := parseStructuredResponse(raw)
+	payload, details, text := parseStructuredResponseVerbose(raw)
+	res.Payload = payload
+	res.TextBody = text
 	if payload != nil {
 		util.Trace("opencode.client", "parsed structured payload", map[string]any{"session_id": sessionID})
-		return payload, nil
+		return res, nil
 	}
+	preview := previewBody(raw, 320)
 	if details != "" {
-		return nil, fmt.Errorf("no structured payload in response (%s)", details)
+		return res, fmt.Errorf("no structured payload in response (%s) raw=%s", details, preview)
 	}
-	return nil, fmt.Errorf("no structured payload in response")
+	return res, fmt.Errorf("no structured payload in response; raw=%s", preview)
+}
+
+// previewBody returns a quoted, length-capped string representation of raw
+// suitable for embedding in error messages. Newlines are escaped so the
+// preview stays on a single line.
+func previewBody(raw []byte, maxLen int) string {
+	if len(raw) == 0 {
+		return "<empty>"
+	}
+	s := string(raw)
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	s = strings.ReplaceAll(s, "\t", "\\t")
+	if len(s) > maxLen {
+		s = s[:maxLen] + "\u2026"
+	}
+	return s
 }
 
 func parseStructuredResponse(raw []byte) (map[string]any, string) {
+	m, detail, _ := parseStructuredResponseVerbose(raw)
+	return m, detail
+}
+
+// parseStructuredResponseVerbose extends parseStructuredResponse with the
+// concatenated text parts the response contained. Callers use that text
+// for free-text JSON-extraction fallback when the structured slot is
+// empty.
+func parseStructuredResponseVerbose(raw []byte) (map[string]any, string, string) {
 	var out struct {
 		Info struct {
 			Structured any `json:"structured"`
@@ -467,11 +514,18 @@ func parseStructuredResponse(raw []byte) (map[string]any, string) {
 		} `json:"parts"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, ""
+		return nil, "", ""
 	}
+	var texts []string
+	for _, p := range out.Parts {
+		if p.Type == "text" && strings.TrimSpace(p.Text) != "" {
+			texts = append(texts, p.Text)
+		}
+	}
+	textBody := strings.Join(texts, "\n")
 	if out.Info.Structured != nil {
 		if m, ok := toMap(out.Info.Structured); ok {
-			return m, ""
+			return m, "", textBody
 		}
 	}
 	for _, p := range out.Parts {
@@ -479,7 +533,7 @@ func parseStructuredResponse(raw []byte) (map[string]any, string) {
 			continue
 		}
 		if m, ok := parseAnyJSONMap(p.Text); ok {
-			return m, ""
+			return m, "", textBody
 		}
 	}
 	if strings.TrimSpace(out.Info.Error.Name) != "" || strings.TrimSpace(out.Info.Error.Message) != "" || len(out.Info.Error.Data) > 0 {
@@ -491,9 +545,9 @@ func parseStructuredResponse(raw []byte) (map[string]any, string) {
 				detail = detail + " (" + strings.TrimSpace(msg) + ")"
 			}
 		}
-		return nil, detail
+		return nil, detail, textBody
 	}
-	return nil, ""
+	return nil, "", textBody
 }
 
 func toMap(v any) (map[string]any, bool) {
