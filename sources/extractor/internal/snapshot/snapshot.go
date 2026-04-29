@@ -50,31 +50,80 @@ type Snapshot struct {
 
 // defaultSkipDirs lists directory names that we never mirror. They are
 // either huge, never useful for source-level extraction, or known to be
-// modified by tooling.
+// modified by tooling. Keep this list aggressive: a smaller snapshot
+// means a faster run and less load on whatever process reads it
+// afterwards (OpenCode, ripgrep, LSPs spawned by tools, etc.).
 var defaultSkipDirs = map[string]struct{}{
-	".git":          {},
-	"node_modules":  {},
-	".idea":         {},
-	".vscode":       {},
-	".gradle":       {},
-	".mvn":          {},
-	"target":        {},
-	"build":         {},
-	"dist":          {},
-	"out":           {},
-	".next":         {},
-	".nuxt":         {},
-	".cache":        {},
+	// VCS / IDE
+	".git":     {},
+	".hg":      {},
+	".svn":     {},
+	".idea":    {},
+	".vscode":  {},
+	".vs":      {},
+	".fleet":   {},
+	".history": {},
+
+	// Java / JVM
+	".gradle":    {},
+	".mvn":       {},
+	"target":     {},
+	"build":      {},
+	".classpath": {},
+	".settings":  {},
+
+	// Node.js / Web
+	"node_modules":     {},
+	"bower_components": {},
+	".pnpm-store":      {},
+	".yarn":            {},
+	"dist":             {},
+	"out":              {},
+	"public/build":     {},
+	".next":            {},
+	".nuxt":            {},
+	".svelte-kit":      {},
+	".astro":           {},
+	".turbo":           {},
+	".vercel":          {},
+	".netlify":         {},
+	"coverage":         {},
+
+	// Python
 	".pytest_cache": {},
 	"__pycache__":   {},
 	".venv":         {},
 	"venv":          {},
+	"env":           {},
 	".tox":          {},
+	".mypy_cache":   {},
+	".ruff_cache":   {},
+	".pytype":       {},
+	"htmlcov":       {},
+
+	// Go
+	".gocache": {},
+
+	// Rust
+	"target.rust": {}, // unusual but harmless
+
+	// Infra / cache
 	".terraform":    {},
+	".serverless":   {},
+	".aws-sam":      {},
+	".cache":        {},
 	".diffmind":     {},
 	".example-cache": {},
-	".DS_Store":     {},
+
+	// macOS / misc
+	".DS_Store": {},
 }
+
+// defaultMaxFileBytes caps how large a file we will copy into the snapshot.
+// Files above this size are skipped to keep the snapshot small. 4 MiB is
+// generous for source files; binary / artifact files larger than this are
+// almost never relevant to extraction.
+const defaultMaxFileBytes int64 = 4 << 20
 
 // Create materializes an independent copy of source under a fresh temp dir
 // rooted at parent. Returns a Snapshot whose Path can be handed to OpenCode.
@@ -211,12 +260,52 @@ func randomSuffix() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// skippedExtensions are file extensions that are almost never useful for
+// extraction and tend to be large. Keep them out of the snapshot to make
+// runs lighter on every downstream tool.
+var skippedExtensions = map[string]struct{}{
+	// Compiled / packaged
+	".class": {}, ".jar": {}, ".war": {}, ".ear": {},
+	".pyc": {}, ".pyo": {}, ".whl": {},
+	".o": {}, ".a": {}, ".so": {}, ".dylib": {}, ".dll": {}, ".exe": {},
+	".wasm": {},
+	// Lockfiles / bundles (huge, no info we don't already get from manifests)
+	".lock": {}, ".tsbuildinfo": {},
+	".map": {}, // sourcemaps
+	// Media
+	".png": {}, ".jpg": {}, ".jpeg": {}, ".gif": {}, ".webp": {}, ".bmp": {},
+	".ico": {}, ".svg": {}, ".tiff": {}, ".heic": {},
+	".mp3": {}, ".wav": {}, ".ogg": {}, ".flac": {}, ".m4a": {},
+	".mp4": {}, ".mov": {}, ".avi": {}, ".webm": {}, ".mkv": {},
+	".pdf": {}, ".doc": {}, ".docx": {}, ".xls": {}, ".xlsx": {}, ".ppt": {}, ".pptx": {},
+	// Archives
+	".zip": {}, ".tar": {}, ".tgz": {}, ".gz": {}, ".bz2": {}, ".xz": {},
+	".rar": {}, ".7z": {},
+	// Fonts
+	".ttf": {}, ".otf": {}, ".woff": {}, ".woff2": {}, ".eot": {},
+}
+
+// stats tracks how the snapshot was constructed so we can log it once at
+// the end and the user can see what got skipped.
+type mirrorStats struct {
+	dirsCreated       int
+	filesCopied       int
+	bytesCopied       int64
+	skippedExt        int
+	skippedSize       int
+	skippedDir        int
+	skippedNonRegular int
+}
+
 // mirrorTree walks src and recreates its structure at dst. Regular files are
 // copied byte-for-byte, directories are mkdir'd with their original perms
 // (capped to 0700+ user-read), symlinks are recreated, anything else is
-// skipped.
+// skipped. We also drop files whose extension is in skippedExtensions and
+// files larger than defaultMaxFileBytes — these are noise for source-level
+// extraction and just bloat the snapshot.
 func mirrorTree(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+	stats := &mirrorStats{}
+	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -230,6 +319,7 @@ func mirrorTree(src, dst string) error {
 		// Directory skip rules: applied on directory names anywhere in the tree.
 		if d.IsDir() {
 			if _, skip := defaultSkipDirs[d.Name()]; skip {
+				stats.skippedDir++
 				util.Trace("snapshot", "skipping dir", map[string]any{"path": rel})
 				return fs.SkipDir
 			}
@@ -242,7 +332,11 @@ func mirrorTree(src, dst string) error {
 				return infoErr
 			}
 			perm := info.Mode().Perm() | 0o700 // ensure we can traverse it
-			return os.MkdirAll(target, perm)
+			if err := os.MkdirAll(target, perm); err != nil {
+				return err
+			}
+			stats.dirsCreated++
+			return nil
 		}
 
 		info, infoErr := d.Info()
@@ -260,13 +354,43 @@ func mirrorTree(src, dst string) error {
 			_ = os.Remove(target)
 			return os.Symlink(linkTarget, target)
 		case mode.IsRegular():
-			return copyRegular(path, target, mode.Perm())
+			ext := strings.ToLower(filepath.Ext(d.Name()))
+			if _, skip := skippedExtensions[ext]; skip {
+				stats.skippedExt++
+				return nil
+			}
+			if info.Size() > defaultMaxFileBytes {
+				stats.skippedSize++
+				util.Trace("snapshot", "skipping large file", map[string]any{"path": rel, "bytes": info.Size()})
+				return nil
+			}
+			if err := copyRegular(path, target, mode.Perm()); err != nil {
+				return err
+			}
+			stats.filesCopied++
+			stats.bytesCopied += info.Size()
+			return nil
 		default:
-			// Sockets, devices, named pipes: skip silently.
+			stats.skippedNonRegular++
 			util.Trace("snapshot", "skipping non-regular file", map[string]any{"path": rel, "mode": mode.String()})
 			return nil
 		}
 	})
+	if err == nil {
+		util.Info("snapshot", "snapshot stats", map[string]any{
+			"src":                src,
+			"dst":                dst,
+			"dirs":               stats.dirsCreated,
+			"files":              stats.filesCopied,
+			"bytes":              stats.bytesCopied,
+			"skipped_dirs":       stats.skippedDir,
+			"skipped_extensions": stats.skippedExt,
+			"skipped_oversize":   stats.skippedSize,
+			"skipped_nonregular": stats.skippedNonRegular,
+			"max_file_bytes":     defaultMaxFileBytes,
+		})
+	}
+	return err
 }
 
 // copyRegular performs an independent byte-for-byte copy of src to dst,

@@ -69,11 +69,16 @@ export function applyEvent(e) {
     case 'run_failed':
     case 'run_cancelled':
       if (runMeta.value) {
+        const status = e.kind === 'run_completed' ? 'completed' : (e.kind === 'run_failed' ? 'failed' : 'cancelled')
         runMeta.value = {
           ...runMeta.value,
           finishedAt: e.ts,
-          status: e.kind === 'run_completed' ? 'completed' : (e.kind === 'run_failed' ? 'failed' : 'cancelled'),
+          status,
           summary: e.payload || {},
+          // Hoist the most actionable bits to the top so banners / TopBar
+          // don't have to dig into payload every render.
+          empty: !!e.payload?.empty,
+          error: e.message || e.payload?.sample_error || runMeta.value.error,
         }
       }
       // Mark any stages still showing running as either completed or

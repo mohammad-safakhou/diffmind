@@ -80,7 +80,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		return Result{}, fmt.Errorf("opencode is required for extraction")
 	}
 	if cfg.Runtime.Workers <= 0 {
-		cfg.Runtime.Workers = 16
+		cfg.Runtime.Workers = 6
 	}
 	if cfg.Runtime.MaxCatalogItems <= 0 {
 		cfg.Runtime.MaxCatalogItems = 80
@@ -202,8 +202,14 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	// Collect seeds and per-objective warnings.
 	seeds := make([]detailJob, 0)
 	exposureObjectives := map[string]objectives.Objective{}
+	discoveryFailures := 0
+	var firstDiscoveryErr error
 	for _, d := range discovery {
 		if d.Err != nil {
+			discoveryFailures++
+			if firstDiscoveryErr == nil {
+				firstDiscoveryErr = d.Err
+			}
 			warnings = append(warnings, "discovery failed for "+d.Objective.ID+": "+d.Err.Error())
 			unresolved = append(unresolved, model.UnresolvedItem{
 				Kind: d.Objective.Kind, Type: d.Objective.Type, Name: d.Objective.Description,
@@ -218,7 +224,38 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 			seeds = append(seeds, detailJob{Objective: d.Objective, Seed: it})
 		}
 	}
-	util.Info("agents.orchestrator", "discovery completed", map[string]any{"seeds": len(seeds)})
+	util.Info("agents.orchestrator", "discovery completed", map[string]any{
+		"seeds":    len(seeds),
+		"failures": discoveryFailures,
+		"total":    len(discovery),
+	})
+	// If every discovery objective failed there is no point continuing —
+	// every later stage would just emit "completed" with no input. We
+	// short-circuit to a hard failure so the dashboard shows a real error
+	// banner instead of a deceptive "completed in 200ms with 0 entities".
+	if len(discovery) > 0 && discoveryFailures == len(discovery) {
+		errMsg := "every discovery objective failed; check OpenCode provider, model, and auth"
+		if firstDiscoveryErr != nil {
+			errMsg += " (sample error: " + firstDiscoveryErr.Error() + ")"
+		}
+		o.emit(events.Event{
+			Kind:    events.KindRunFailed,
+			Status:  events.StatusFailed,
+			Message: errMsg,
+			Payload: map[string]any{
+				"discovery_failures": discoveryFailures,
+				"discovery_total":    len(discovery),
+				"sample_error":       errString(firstDiscoveryErr),
+			},
+		})
+		return Result{
+			Exposures:    nil,
+			Dependencies: nil,
+			Connections:  nil,
+			Unresolved:   reconcile.DedupeUnresolved(unresolved),
+			Warnings:     reconcile.DedupeWarnings(warnings),
+		}, fmt.Errorf("%s", errMsg)
+	}
 
 	// --- Stage 2: confidence-gated re-examination ---
 	var reexamined []detailJob
@@ -325,6 +362,11 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		finalKind = events.KindRunCancelled
 		finalStatus = events.StatusCancelled
 	}
+	// "Empty" runs (no entities at all) are technically successful but
+	// almost always indicate a misconfiguration: wrong provider, empty
+	// repo, or a model that produced nothing usable. Mark the payload
+	// with empty=true so the dashboard can surface a yellow banner.
+	empty := len(result.Exposures) == 0 && len(result.Dependencies) == 0 && len(result.Connections) == 0
 	o.emit(events.Event{
 		Kind: finalKind, Status: finalStatus,
 		Payload: map[string]any{
@@ -334,6 +376,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 			"unresolved":   len(result.Unresolved),
 			"warnings":     len(result.Warnings),
 			"elapsed_ms":   time.Since(start).Milliseconds(),
+			"empty":        empty,
 		},
 	})
 	return result, nil

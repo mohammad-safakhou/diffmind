@@ -203,6 +203,32 @@ a:hover { text-decoration: underline; }
 .banner.error { color: var(--error); border-color: var(--error); background: rgba(239, 68, 68, 0.08); }
 .banner.info  { color: var(--text-muted); }
 
+.banner-strip {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 13px;
+}
+.banner-strip.error {
+  background: rgba(239, 68, 68, 0.10);
+  color: var(--error);
+  border-bottom-color: var(--error);
+}
+.banner-strip.warn {
+  background: rgba(245, 158, 11, 0.10);
+  color: var(--warn);
+  border-bottom-color: var(--warn);
+}
+.banner-strip strong { color: inherit; }
+.banner-strip span { color: var(--text); }
+.banner-hints {
+  margin: 4px 0 0 18px; padding: 0; font-size: 12px; color: var(--text-muted);
+}
+.banner-hints li { margin: 2px 0; }
+.banner-hints code {
+  background: var(--bg-2); padding: 1px 5px; border-radius: 3px; font-size: 11px;
+}
+
 /* Graph */
 
 .graph-host {
