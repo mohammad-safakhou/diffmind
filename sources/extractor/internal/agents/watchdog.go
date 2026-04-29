@@ -48,6 +48,25 @@ func (w *watchdog) markAnswered(permID string) {
 	w.mu.Unlock()
 }
 
+func (w *watchdog) hasAnswered(permID string) bool {
+	if w == nil || permID == "" {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_, ok := w.answered[permID]
+	return ok
+}
+
+func (w *watchdog) unmarkAnswered(permID string) {
+	if w == nil || permID == "" {
+		return
+	}
+	w.mu.Lock()
+	delete(w.answered, permID)
+	w.mu.Unlock()
+}
+
 func newWatchdog(api pauseHandler, directory string, poll time.Duration) *watchdog {
 	if poll <= 0 {
 		poll = 2 * time.Second
@@ -161,26 +180,30 @@ func (w *watchdog) tick(ctx context.Context) {
 	pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	w.mu.Lock()
-	answered := w.answered
-	w.mu.Unlock()
-
 	if perms, err := w.api.ListPermissions(pollCtx, w.directory); err == nil {
 		for _, p := range perms {
 			if !w.owns(p.SessionID) {
 				continue
 			}
-			// Skip permissions we already answered. OpenCode keeps them in
-			// the GET /permission listing for a few seconds after we
-			// reply, so we'd otherwise emit the same auto-deny / auto-allow
-			// every poll — confusing and noisy.
-			if _, seen := answered[p.ID]; seen {
+			// Skip permissions we already answered. OpenCode keeps them
+			// in GET /permission for several seconds (and sometimes
+			// forever, when our deny doesn't actually resolve the
+			// permission server-side) — without this dedup we'd emit one
+			// auto-allow / auto-deny event per tick. The check uses
+			// hasAnswered() under the lock to avoid any chance of stale
+			// reads.
+			if w.hasAnswered(p.ID) {
 				continue
 			}
 			decision := decidePermission(p, w.directory)
 			if decision.Response == "" {
 				continue
 			}
+			// Reserve the id BEFORE the network call so a slow round-trip
+			// can't cause a second tick to enter this block. If the call
+			// fails we roll back.
+			w.markAnswered(p.ID)
+
 			level := "auto-allowing"
 			if decision.Response == "deny" {
 				level = "auto-denying"
@@ -209,9 +232,9 @@ func (w *watchdog) tick(ctx context.Context) {
 			})
 			if err := w.api.RespondPermission(pollCtx, p.SessionID, p.ID, w.directory, decision.Response); err != nil {
 				util.Debug("agents.watchdog", "respond permission failed", map[string]any{"error": err})
+				w.unmarkAnswered(p.ID)
 				continue
 			}
-			w.markAnswered(p.ID)
 		}
 	} else {
 		util.Trace("agents.watchdog", "list permissions failed", map[string]any{"error": err})
