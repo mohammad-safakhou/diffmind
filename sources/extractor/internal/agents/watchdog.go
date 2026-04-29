@@ -30,9 +30,22 @@ type watchdog struct {
 	sink          events.Sink
 	mu            sync.Mutex
 	ownedSessions map[string]struct{}
+	answered      map[string]struct{} // permissions we have already responded to
 	stopCh        chan struct{}
 	doneCh        chan struct{}
 	stopOnce      sync.Once
+}
+
+func (w *watchdog) markAnswered(permID string) {
+	if w == nil || permID == "" {
+		return
+	}
+	w.mu.Lock()
+	if w.answered == nil {
+		w.answered = map[string]struct{}{}
+	}
+	w.answered[permID] = struct{}{}
+	w.mu.Unlock()
 }
 
 func newWatchdog(api pauseHandler, directory string, poll time.Duration) *watchdog {
@@ -44,6 +57,7 @@ func newWatchdog(api pauseHandler, directory string, poll time.Duration) *watchd
 		directory:     directory,
 		pollInterval:  poll,
 		ownedSessions: map[string]struct{}{},
+		answered:      map[string]struct{}{},
 		stopCh:        make(chan struct{}),
 		doneCh:        make(chan struct{}),
 	}
@@ -147,29 +161,57 @@ func (w *watchdog) tick(ctx context.Context) {
 	pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
+	w.mu.Lock()
+	answered := w.answered
+	w.mu.Unlock()
+
 	if perms, err := w.api.ListPermissions(pollCtx, w.directory); err == nil {
 		for _, p := range perms {
 			if !w.owns(p.SessionID) {
 				continue
 			}
-			util.Warn("agents.watchdog", "auto-denying unexpected permission prompt", map[string]any{
-				"session_id": p.SessionID, "permission_id": p.ID, "title": p.Title, "type": p.Type,
+			// Skip permissions we already answered. OpenCode keeps them in
+			// the GET /permission listing for a few seconds after we
+			// reply, so we'd otherwise emit the same auto-deny / auto-allow
+			// every poll — confusing and noisy.
+			if _, seen := answered[p.ID]; seen {
+				continue
+			}
+			decision := decidePermission(p, w.directory)
+			if decision.Response == "" {
+				continue
+			}
+			level := "auto-allowing"
+			if decision.Response == "deny" {
+				level = "auto-denying"
+			}
+			util.Warn("agents.watchdog", level+" permission", map[string]any{
+				"session_id":    p.SessionID,
+				"permission_id": p.ID,
+				"kind":          p.Permission,
+				"type":          p.Type,
+				"patterns":      p.Patterns,
+				"reason":        decision.Reason,
 			})
 			w.emit(events.Event{
 				Kind:   events.KindWatchdogAction,
 				JobID:  "watchdog.permission",
-				Status: "deny",
+				Status: decision.Response,
 				Payload: map[string]any{
-					"action":        "auto_deny_permission",
+					"action":        "auto_" + decision.Response + "_permission",
 					"session_id":    p.SessionID,
 					"permission_id": p.ID,
-					"title":         p.Title,
+					"kind":          p.Permission,
 					"type":          p.Type,
+					"patterns":      p.Patterns,
+					"reason":        decision.Reason,
 				},
 			})
-			if err := w.api.RespondPermission(pollCtx, p.SessionID, p.ID, w.directory, "deny"); err != nil {
+			if err := w.api.RespondPermission(pollCtx, p.SessionID, p.ID, w.directory, decision.Response); err != nil {
 				util.Debug("agents.watchdog", "respond permission failed", map[string]any{"error": err})
+				continue
 			}
+			w.markAnswered(p.ID)
 		}
 	} else {
 		util.Trace("agents.watchdog", "list permissions failed", map[string]any{"error": err})

@@ -136,11 +136,20 @@ func (c *Client) AbortSession(ctx context.Context, sessionID, directory string) 
 // PendingPermission describes a permission request the server is waiting on.
 // The orchestrator's watchdog uses this to auto-reply so prompts cannot
 // deadlock waiting for human input that will never come.
+//
+// OpenCode's actual record carries a "patterns" array (file globs the agent
+// wants access to) for path-scoped permissions like external_directory,
+// edit, read; we surface it so the watchdog can decide allow vs deny based
+// on what is actually being asked. Title and Type are sometimes empty
+// (e.g. external_directory checks emit no title), which is why patterns is
+// the more reliable diagnostic.
 type PendingPermission struct {
-	ID        string `json:"id"`
-	SessionID string `json:"sessionID"`
-	Title     string `json:"title"`
-	Type      string `json:"type"`
+	ID         string   `json:"id"`
+	SessionID  string   `json:"sessionID"`
+	Title      string   `json:"title"`
+	Type       string   `json:"type"`
+	Permission string   `json:"permission"`
+	Patterns   []string `json:"patterns"`
 }
 
 // ListPermissions returns outstanding permission requests across the server.

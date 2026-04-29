@@ -142,6 +142,47 @@ Controls:
 - `--cleanup-opencode-sessions` => optional session deletion; default `false` to avoid OpenCode FK race conditions
 - `--opencode-delete-delay-seconds` => delay before deleting sessions when cleanup is enabled
 
+### Inspecting OpenCode itself
+
+When something looks wrong (e.g. every objective failing in milliseconds),
+the OpenCode server's own logs are the source of truth. Start the server
+with debug logging:
+
+```bash
+OPENCODE_LOG_LEVEL=DEBUG \
+OPENCODE_SERVER_PASSWORD='your-pass' \
+opencode serve --hostname 127.0.0.1 --port 4096
+```
+
+Per-session logs land here:
+
+- macOS: `~/.local/share/opencode/log/<timestamp>.log`
+- Linux: same path (XDG_DATA_HOME)
+
+Useful greps:
+
+```bash
+# Find provider-side errors (rate limit, auth, model not found, ...)
+grep -oE 'responseBody[^,]+' ~/.local/share/opencode/log/<file>.log | sort -u
+
+# See every permission ask the agent emitted (and what tool / path)
+grep "asking" ~/.local/share/opencode/log/<file>.log | grep -v "service=server" | head
+
+# See what tools each session loaded
+grep "service=tool.registry" ~/.local/share/opencode/log/<file>.log | head
+```
+
+DiffMind's own watchdog auto-replies to permission asks so the run never
+deadlocks:
+- `read`, `glob`, `grep`, `task`, `webfetch` are auto-allowed.
+- `external_directory` is auto-allowed if the asked pattern references our
+  snapshot directory (the LLM occasionally hallucinates the macOS user-
+  folder hash and OpenCode flags those paths as "external" — the basename
+  match papers over that).
+- `edit`, `write`, `bash`, `shell`, `patch` are auto-denied (read-only run).
+- Each decision is logged at WARN with `kind`, `patterns`, and `reason` so
+  you can see exactly what was allowed or denied.
+
 ## Output
 
 Artifacts are written to:

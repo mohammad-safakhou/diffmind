@@ -16,6 +16,8 @@ type fakePauseAPI struct {
 	rejectedQuestions []string
 	abortedSessions   []string
 	respondedDeny     int
+	respondedAllow    int
+	responses         map[string]string // permID -> last response
 }
 
 func (f *fakePauseAPI) AbortSession(ctx context.Context, sessionID, directory string) error {
@@ -37,8 +39,15 @@ func (f *fakePauseAPI) RespondPermission(ctx context.Context, sessionID, permiss
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.respondedPerms = append(f.respondedPerms, permissionID)
-	if response == "deny" {
+	if f.responses == nil {
+		f.responses = map[string]string{}
+	}
+	f.responses[permissionID] = response
+	switch response {
+	case "deny":
 		f.respondedDeny++
+	case "allow":
+		f.respondedAllow++
 	}
 	// remove from pending so the watchdog doesn't keep replying.
 	out := f.pendingPerms[:0]
