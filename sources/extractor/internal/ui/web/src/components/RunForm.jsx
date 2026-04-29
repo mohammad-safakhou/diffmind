@@ -17,7 +17,7 @@ const DEFAULTS = {
     timeout_seconds: 300,
   },
   runtime: {
-    workers: 16,
+    workers: 6,
     max_catalog_items: 80,
     reuse_opencode_session: false,
     cleanup_opencode_sessions: false,
@@ -70,12 +70,36 @@ export function RunForm({ onLaunched }) {
 
   const submit = async () => {
     setError('')
+    // Pre-flight validation. We surface clear messages instead of letting
+    // the server reject the request.
+    if (!form.repo_path?.trim()) {
+      setError('Repository path is required.')
+      return
+    }
+    if (!/^[\\/~]/.test(form.repo_path.trim())) {
+      // basic sanity: most absolute paths start with / or ~
+      setError('Repository path should be an absolute path.')
+      return
+    }
+    if (!form.opencode.base_url?.trim()) {
+      setError('OpenCode URL is required.')
+      return
+    }
+    if (!form.opencode.provider_id?.trim() || !form.opencode.model_id?.trim()) {
+      setError('Provider id and model id are required (run `opencode auth login` first).')
+      return
+    }
     setBusy(true)
     try {
       const res = await startRun(form)
       if (onLaunched) onLaunched(res.run_id)
     } catch (e) {
-      setError(e.message || String(e))
+      const msg = e.message || String(e)
+      // Server returned a 4xx with a hint; show it verbatim. Common cases:
+      //   - opencode-url missing
+      //   - repo_path inaccessible
+      //   - "another run is already in progress"
+      setError(msg)
     } finally {
       setBusy(false)
     }

@@ -66,7 +66,10 @@ func (f *fakeAbortable) snap() (creates, aborts []string, prompts int) {
 }
 
 // On prompt failure the orchestrator must call AbortSession for every session
-// it created. This exercises the bestEffortAbort path.
+// it created. This exercises the bestEffortAbort path. We also expect the
+// orchestrator to short-circuit when every discovery objective fails (the
+// run is reported as failed instead of silently completing with zero
+// entities).
 func TestPromptFailureTriggersAbort(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.Workers = 4
@@ -74,8 +77,8 @@ func TestPromptFailureTriggersAbort(t *testing.T) {
 	f := &fakeAbortable{}
 
 	res, err := Run(context.Background(), cfg, t.TempDir(), f)
-	if err != nil {
-		t.Fatalf("Run should not error fatally on prompt failures: %v", err)
+	if err == nil {
+		t.Fatalf("expected Run to fail fast when every discovery objective fails")
 	}
 	creates, aborts, prompts := f.snap()
 	if prompts == 0 {

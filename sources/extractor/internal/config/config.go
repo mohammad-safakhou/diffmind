@@ -46,7 +46,15 @@ func Default() Config {
 			MinConfidence: 0.70,
 		},
 		Runtime: Runtime{
-			Workers:                 16,
+			// 6 workers is the right default for a single-user dashboard:
+			// - It's enough to fan out the 13 discovery objectives in 2-3
+			//   waves rather than serially.
+			// - It keeps the OpenCode server's CPU manageable. With 16
+			//   workers we saw heavy resource use because each session
+			//   spawns ripgrep / LSP / file globbers in parallel.
+			// - Provider rate limits are also less likely to trip.
+			// Power users can still bump it via --workers / the form.
+			Workers:                 6,
 			MaxCatalogItems:         80,
 			CleanupOpenCodeSessions: false,
 			OpenCodeDeleteDelaySec:  5,

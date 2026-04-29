@@ -10,6 +10,13 @@ export function TopBar({ onHelp }) {
     try { await cancelRun(meta.id) } catch (e) { console.error(e) }
   }
 
+  // The status-pill title shows the error message on hover when failed,
+  // and the empty hint when the run produced 0 entities. This makes the
+  // pill itself a self-explanatory status indicator.
+  let pillTitle = status
+  if (meta?.status === 'failed' && meta?.error) pillTitle = 'failed: ' + meta.error
+  else if (meta?.status === 'completed' && meta?.empty) pillTitle = 'completed but produced no entities'
+
   return (
     <header class="topbar">
       <div class="logo">
@@ -22,7 +29,9 @@ export function TopBar({ onHelp }) {
             run {meta.id}
           </span>
         )}
-        <span class={'status-pill ' + status}>{status}</span>
+        <span class={'status-pill ' + status} title={pillTitle}>
+          {status}{meta?.status === 'completed' && meta?.empty ? ' (empty)' : ''}
+        </span>
         {status === 'running' && (
           <button class="btn danger" onClick={onCancel}>Cancel</button>
         )}

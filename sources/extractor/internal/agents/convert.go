@@ -165,6 +165,15 @@ func defaultStr(in, fallback string) string {
 	return in
 }
 
+// errString returns err.Error() or "" when err is nil. Used in event
+// payloads where we want a stable string field even on nil error.
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
 // safeJobID converts an arbitrary entity name into a slug suitable for use
 // inside an event JobID. We keep alnum, dashes, dots, slashes, and colons;
 // everything else collapses to a dash. The truncation keeps log lines and
