@@ -45,11 +45,18 @@ type verbosePrompter interface {
 // the orchestrator can treat the watchdog interface in isolation. We keep
 // them as plain structs (not aliases) to avoid forcing every test fake to
 // import the opencode package.
+//
+// Permission is the OpenCode "permission kind" string ("read", "edit",
+// "bash", "external_directory", ...). Patterns is the list of paths/globs
+// the agent wants access to. Either or both may be empty depending on the
+// permission kind and the OpenCode version.
 type PendingPermission struct {
-	ID        string
-	SessionID string
-	Title     string
-	Type      string
+	ID         string
+	SessionID  string
+	Title      string
+	Type       string
+	Permission string
+	Patterns   []string
 }
 
 type PendingQuestion struct {

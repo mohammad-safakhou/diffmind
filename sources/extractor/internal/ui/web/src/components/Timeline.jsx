@@ -23,7 +23,7 @@ export function Timeline() {
   }, [events, stageFilter, errorsOnly, search])
 
   return (
-    <div class="timeline" style="height: 360px; border-top: 1px solid var(--border);">
+    <div class="timeline">
       <div class="timeline-header">
         <h2>Activity</h2>
         <div class="timeline-filters">

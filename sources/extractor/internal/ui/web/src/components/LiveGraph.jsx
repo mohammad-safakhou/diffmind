@@ -40,7 +40,10 @@ export function LiveGraph() {
       syncGraph(cy, st, j)
     })
 
-    const ro = new ResizeObserver(() => cy.resize())
+    const ro = new ResizeObserver(() => {
+      cy.resize()
+      layoutFor(cy)
+    })
     if (ref.current) ro.observe(ref.current)
 
     return () => {
@@ -51,16 +54,22 @@ export function LiveGraph() {
   }, [])
 
   return (
-    <div style="position: absolute; inset: 0; display: flex; flex-direction: column;">
-      <div style="flex: 1 1 auto; position: relative; min-height: 0;">
-        <div ref={ref} id="cy" />
-        <div class="graph-overlay">
+    <div class="graph-panel">
+      <div class="graph-panel-header">
+        <div>
+          <h2>Run Graph</h2>
+          <span>Drag to pan, scroll to zoom, click nodes for details.</span>
+        </div>
+        <div class="graph-legend">
           <span><span class="swatch" style="background: var(--pending)" /> pending</span>
           <span><span class="swatch" style="background: var(--running)" /> running</span>
           <span><span class="swatch" style="background: var(--success)" /> success</span>
           <span><span class="swatch" style="background: var(--rescued)" /> rescued</span>
           <span><span class="swatch" style="background: var(--error)" /> failed</span>
         </div>
+      </div>
+      <div class="graph-canvas">
+        <div ref={ref} id="cy" />
       </div>
     </div>
   )
@@ -69,11 +78,11 @@ export function LiveGraph() {
 const STAGES = ['repo_facts', 'discovery', 'reexamination', 'detail', 'connections', 'reconcile']
 
 function seedStages(cy) {
-  const xStep = 240
+  const stageX = stagePositions(cy)
   STAGES.forEach((name, i) => {
     cy.add({
       data: { id: 'stage:' + name, label: name, kind: 'stage', stage: name, status: 'pending' },
-      position: { x: 80 + i * xStep, y: 80 },
+      position: { x: stageX[name], y: 70 },
       classes: 'stage status-pending',
     })
     if (i > 0) {
@@ -91,7 +100,7 @@ function syncGraph(cy, stagesMap, jobsMap) {
     for (const [id, st] of stagesMap) {
       const node = cy.getElementById('stage:' + id)
       if (node && node.length) {
-        node.removeClass('status-pending status-running status-success status-failed status-cancelled status-skipped')
+        node.removeClass('status-pending status-running status-success status-failed status-cancelled status-rescued status-skipped')
         node.addClass('status-' + (st.status || 'pending'))
         node.data('progress', st.percent || 0)
         node.data('total', st.total || 0)
@@ -108,8 +117,7 @@ function syncGraph(cy, stagesMap, jobsMap) {
       stageBuckets.get(stage).push(job)
     }
 
-    const stageX = {}
-    STAGES.forEach((name, i) => { stageX[name] = 80 + i * 240 })
+    const stageX = stagePositions(cy)
 
     for (const [stage, list] of stageBuckets) {
       list.forEach((job, idx) => {
@@ -128,7 +136,7 @@ function syncGraph(cy, stagesMap, jobsMap) {
               jobID: job.id,
               status,
             },
-            position: { x: stageX[stage] || 80, y: 180 + idx * 36 },
+            position: { x: stageX[stage] || 80, y: 160 + idx * 36 },
             classes: 'job status-' + status,
           })
           // Edge from stage parent to job (or from parent job if known).
@@ -141,7 +149,7 @@ function syncGraph(cy, stagesMap, jobsMap) {
           }
         } else {
           node.data('label', label)
-          node.removeClass('status-pending status-running status-success status-failed status-cancelled status-skipped')
+          node.removeClass('status-pending status-running status-success status-failed status-cancelled status-rescued status-skipped')
           node.addClass('status-' + status)
         }
       })
@@ -180,10 +188,9 @@ function layoutFor(cy) {
     fit: false,
   }).run()
 
-  // Compute simple column-by-stage layout: stages on top row at x = 80 + i*240,
-  // jobs in their stage column stacked below, alphabetical for stability.
-  const STAGE_X = {}
-  STAGES.forEach((name, i) => { STAGE_X[name] = 80 + i * 240 })
+  // Compute a stable column-by-stage layout. Columns spread out on wide
+  // screens but keep a minimum gap so stage and job labels do not collide.
+  const STAGE_X = stagePositions(cy)
 
   const grouped = new Map()
   cy.nodes('[kind = "job"]').forEach((n) => {
@@ -194,15 +201,23 @@ function layoutFor(cy) {
   for (const [stage, nodes] of grouped) {
     nodes.sort((a, b) => a.data('label').localeCompare(b.data('label')))
     nodes.forEach((n, idx) => {
-      n.position({ x: STAGE_X[stage] ?? 80, y: 180 + idx * 36 })
+      n.position({ x: STAGE_X[stage] ?? 80, y: 160 + idx * 36 })
     })
   }
 
   // Stages always at the same y.
   STAGES.forEach((name, i) => {
     const node = cy.getElementById('stage:' + name)
-    if (node.length) node.position({ x: STAGE_X[name], y: 80 })
+    if (node.length) node.position({ x: STAGE_X[name], y: 70 })
   })
+}
+
+function stagePositions(cy) {
+  const width = Math.max(cy.width() || 0, 0)
+  const xStep = width > 0 ? Math.max(220, (width - 180) / Math.max(1, STAGES.length - 1)) : 220
+  const out = {}
+  STAGES.forEach((name, i) => { out[name] = 90 + i * xStep })
+  return out
 }
 
 const STYLE = [
@@ -219,7 +234,7 @@ const STYLE = [
       'text-halign': 'center',
       'font-size': 12,
       'font-weight': 600,
-      'width': 180,
+      'width': 160,
       'height': 50,
     },
   },
@@ -234,6 +249,10 @@ const STYLE = [
   {
     selector: 'node[kind = "stage"].status-failed',
     style: { 'border-color': '#ef4444', 'background-color': '#3a1418' },
+  },
+  {
+    selector: 'node[kind = "stage"].status-cancelled',
+    style: { 'border-color': '#f59e0b', 'background-color': '#33220d' },
   },
   {
     selector: 'node[kind = "stage"].status-skipped',
@@ -251,7 +270,7 @@ const STYLE = [
       'text-valign': 'center',
       'text-halign': 'center',
       'font-size': 10,
-      'width': 140,
+      'width': 132,
       'height': 26,
     },
   },
@@ -266,6 +285,14 @@ const STYLE = [
   {
     selector: 'node[kind = "job"].status-failed',
     style: { 'border-color': '#ef4444', 'background-color': '#321015' },
+  },
+  {
+    selector: 'node[kind = "job"].status-cancelled',
+    style: { 'border-color': '#f59e0b', 'background-color': '#33220d' },
+  },
+  {
+    selector: 'node[kind = "job"].status-rescued',
+    style: { 'border-color': '#f59e0b', 'background-color': '#33220d' },
   },
   {
     selector: 'node[kind = "job"].status-skipped',

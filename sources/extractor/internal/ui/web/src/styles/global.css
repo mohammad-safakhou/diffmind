@@ -43,9 +43,10 @@ a:hover { text-decoration: underline; }
 /* Layout */
 
 .app {
-  display: grid;
-  grid-template-rows: auto auto 1fr;
+  display: flex;
+  flex-direction: column;
   height: 100%;
+  min-height: 0;
 }
 
 .topbar {
@@ -136,8 +137,9 @@ a:hover { text-decoration: underline; }
 
 .workspace {
   display: grid;
-  grid-template-columns: 360px 1fr 380px;
-  height: 100%;
+  grid-template-columns: 340px minmax(520px, 1fr) 340px;
+  flex: 1 1 auto;
+  height: auto;
   min-height: 0;
 }
 .workspace > section {
@@ -146,6 +148,16 @@ a:hover { text-decoration: underline; }
   overflow: auto;
 }
 .workspace > section:last-child { border-right: none; }
+
+.center-pane {
+  display: grid;
+  grid-template-rows: minmax(300px, 1fr) minmax(260px, 38vh);
+  overflow: hidden !important;
+}
+
+.details-pane {
+  background: rgba(8, 12, 23, 0.45);
+}
 
 @media (max-width: 1100px) {
   .workspace { grid-template-columns: 1fr; }
@@ -232,35 +244,72 @@ a:hover { text-decoration: underline; }
 /* Graph */
 
 .graph-host {
-  position: relative; height: 100%; min-height: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(14, 20, 36, 0.72), rgba(10, 15, 28, 0.92));
+}
+.graph-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+.graph-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(35, 49, 88, 0.72);
+  background: rgba(10, 15, 28, 0.72);
+}
+.graph-panel-header h2 {
+  margin: 0;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+.graph-panel-header span {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.graph-canvas {
+  position: relative;
+  min-height: 0;
 }
 #cy {
   position: absolute; inset: 0;
 }
-.graph-overlay {
-  position: absolute; left: 12px; bottom: 12px;
-  background: rgba(10, 15, 28, 0.85);
+.graph-legend {
+  margin-left: auto;
+  background: rgba(10, 15, 28, 0.72);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 8px 10px;
+  padding: 6px 9px;
   font-size: 11px;
   color: var(--text-muted);
-  display: flex; gap: 14px; align-items: center;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
 }
-.graph-overlay .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+.graph-legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
 
 /* Timeline */
 
 .timeline {
   display: flex; flex-direction: column;
   height: 100%; min-height: 0;
+  background: rgba(10, 15, 28, 0.78);
 }
 .timeline-header {
   padding: 10px 14px; border-bottom: 1px solid var(--border);
-  display: flex; gap: 8px; align-items: center;
+  display: flex; gap: 10px; align-items: center;
+  flex-wrap: wrap;
 }
 .timeline-header h2 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
-.timeline-filters { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+.timeline-filters { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .chip {
   border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px;
   font-size: 11px; cursor: pointer; color: var(--text-muted); background: transparent;
@@ -276,9 +325,9 @@ a:hover { text-decoration: underline; }
 }
 .timeline-list li {
   display: grid;
-  grid-template-columns: 70px 18px 1fr;
+  grid-template-columns: 82px 18px minmax(0, 1fr);
   gap: 8px;
-  padding: 4px 12px; border-bottom: 1px solid rgba(35, 49, 88, 0.4);
+  padding: 6px 12px; border-bottom: 1px solid rgba(35, 49, 88, 0.4);
   cursor: pointer;
 }
 .timeline-list li:hover { background: rgba(79, 140, 255, 0.06); }
@@ -287,6 +336,18 @@ a:hover { text-decoration: underline; }
 .timeline-list li.cancelled { color: var(--warn); }
 .timeline-list .ts { color: var(--text-dim); }
 .timeline-list .icon { text-align: center; }
+.timeline-list li > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .center-pane { grid-template-rows: 320px 320px; }
+  .graph-panel-header { align-items: flex-start; flex-direction: column; }
+  .graph-legend { margin-left: 0; }
+  .timeline-filters { margin-left: 0; justify-content: flex-start; }
+}
 
 /* Drawer */
 

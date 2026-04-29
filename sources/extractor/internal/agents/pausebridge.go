@@ -38,7 +38,12 @@ func (p *pauseBridge) ListPermissions(ctx context.Context, directory string) ([]
 	out := make([]PendingPermission, 0, len(in))
 	for _, v := range in {
 		out = append(out, PendingPermission{
-			ID: v.ID, SessionID: v.SessionID, Title: v.Title, Type: v.Type,
+			ID:         v.ID,
+			SessionID:  v.SessionID,
+			Title:      v.Title,
+			Type:       v.Type,
+			Permission: v.Permission,
+			Patterns:   append([]string(nil), v.Patterns...),
 		})
 	}
 	return out, nil

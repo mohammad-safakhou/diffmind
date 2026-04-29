@@ -107,11 +107,13 @@ export function App() {
           <RunsSidebar onPick={onReplay} />
           <RunForm onLaunched={onLaunched} />
         </section>
-        <section class="graph-host">
-          <LiveGraph />
+        <section class="center-pane">
+          <div class="graph-host">
+            <LiveGraph />
+          </div>
           <Timeline />
         </section>
-        <section><DetailDrawer /></section>
+        <section class="details-pane"><DetailDrawer /></section>
       </div>
       {help && <HelpOverlay onClose={() => setHelp(false)} />}
     </div>
