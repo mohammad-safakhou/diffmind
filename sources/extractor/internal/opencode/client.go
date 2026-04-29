@@ -198,13 +198,62 @@ func (c *Client) ListPermissions(ctx context.Context, directory string) ([]Pendi
 	return nil, nil
 }
 
-// RespondPermission replies to a pending permission. response should be one
-// of "allow", "deny" (server-supported additions like "allow_once",
-// "allow_always" are accepted as opaque strings).
-func (c *Client) RespondPermission(ctx context.Context, sessionID, permissionID, directory, response string) error {
-	if !c.Enabled() || sessionID == "" || permissionID == "" {
+// RespondPermission replies to a pending permission via OpenCode's new
+// `/permission/{requestID}/reply` endpoint. The legacy
+// `/session/{id}/permissions/{permID}` endpoint is deprecated upstream and
+// in practice silently no-ops `"deny"` responses on recent OpenCode
+// builds, leaving the agent stuck and the GET /permission listing full of
+// the same record on every poll.
+//
+// reply must be one of:
+//   - "once"   — allow this single request only
+//   - "always" — allow forever (use with care)
+//   - "reject" — deny this request (the agent receives a denial result)
+//
+// We accept the legacy "allow" / "deny" strings for backwards compat with
+// older callers and silently translate them.
+func (c *Client) RespondPermission(ctx context.Context, sessionID, permissionID, directory, reply string) error {
+	if !c.Enabled() || permissionID == "" {
 		return nil
 	}
+	switch reply {
+	case "allow":
+		reply = "once"
+	case "deny":
+		reply = "reject"
+	}
+	u := fmt.Sprintf("%s/permission/%s/reply", c.baseURL, permissionID)
+	if directory != "" {
+		u += "?directory=" + url.QueryEscape(directory)
+	}
+	body, _ := json.Marshal(map[string]string{"reply": reply})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.addAuth(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		// Fall back to the legacy session-scoped endpoint if the new one
+		// isn't available (older OpenCode releases). The legacy endpoint
+		// accepts the same enum and a different body shape.
+		if resp.StatusCode == http.StatusNotFound && sessionID != "" {
+			return c.respondPermissionLegacy(ctx, sessionID, permissionID, directory, reply)
+		}
+		return fmt.Errorf("respond permission failed: %s %s", resp.Status, string(b))
+	}
+	return nil
+}
+
+// respondPermissionLegacy hits the deprecated session-scoped endpoint. We
+// only call it from RespondPermission's 404 fallback path.
+func (c *Client) respondPermissionLegacy(ctx context.Context, sessionID, permissionID, directory, response string) error {
 	u := fmt.Sprintf("%s/session/%s/permissions/%s", c.baseURL, sessionID, permissionID)
 	if directory != "" {
 		u += "?directory=" + url.QueryEscape(directory)
@@ -223,7 +272,7 @@ func (c *Client) RespondPermission(ctx context.Context, sessionID, permissionID,
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("respond permission failed: %s %s", resp.Status, string(b))
+		return fmt.Errorf("respond permission (legacy) failed: %s %s", resp.Status, string(b))
 	}
 	return nil
 }
