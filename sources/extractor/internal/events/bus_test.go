@@ -154,6 +154,54 @@ func TestBusRingBufferDropsOldestWhenFull(t *testing.T) {
 	}
 }
 
+func TestBusFinishRunAlwaysSignalsSubscriberEvenIfBuffered(t *testing.T) {
+	// Regression for the "UI shows running after cancel" bug: FinishRun
+	// must guarantee subscribers see _eof and then have their channel
+	// closed, even when the channel has events queued that the consumer
+	// hasn't drained yet.
+	b := NewBus(100)
+	sink, err := b.StartRun("r1", "")
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	ch, _, err := b.Subscribe("r1", 0, 4) // tiny buffer
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	// Fill the buffer way beyond capacity; many events will land in
+	// history-replay before live, then live emit drops.
+	for i := 0; i < 50; i++ {
+		sink.Emit(Event{Kind: KindLog})
+	}
+	b.FinishRun("r1")
+
+	// Drain everything, expecting _eof at the end and the channel closed.
+	timeout := time.After(2 * time.Second)
+	gotEOF := false
+	closed := false
+loop:
+	for {
+		select {
+		case e, ok := <-ch:
+			if !ok {
+				closed = true
+				break loop
+			}
+			if e.Kind == "_eof" {
+				gotEOF = true
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for eof+close")
+		}
+	}
+	if !gotEOF {
+		t.Fatalf("expected to receive _eof event")
+	}
+	if !closed {
+		t.Fatalf("expected channel to be closed after eof")
+	}
+}
+
 func TestBusConcurrentEmitsAreSafe(t *testing.T) {
 	b := NewBus(10000)
 	sink, _ := b.StartRun("r1", "")

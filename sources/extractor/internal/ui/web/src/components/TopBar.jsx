@@ -7,7 +7,19 @@ export function TopBar({ onHelp }) {
   const status = meta?.status || 'idle'
   const onCancel = async () => {
     if (!meta?.id) return
-    try { await cancelRun(meta.id) } catch (e) { console.error(e) }
+    // Optimistically flip the status pill to "cancelling" so the user gets
+    // immediate feedback. The real terminal status (cancelled/failed)
+    // arrives via SSE when the orchestrator finishes unwinding, which can
+    // take several seconds while in-flight LLM calls drain.
+    runMeta.value = { ...meta, status: 'cancelling' }
+    try {
+      await cancelRun(meta.id)
+    } catch (e) {
+      console.error(e)
+      // Roll back the optimistic update on POST failure so the UI doesn't
+      // lie about the run state.
+      runMeta.value = { ...runMeta.value, status: meta.status }
+    }
   }
 
   // The status-pill title shows the error message on hover when failed,
