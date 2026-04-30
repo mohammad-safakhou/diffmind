@@ -46,6 +46,18 @@ export function App() {
         if (active && active.run_id && active.status !== 'idle') {
           const state = await getRunState(active.run_id)
           resetStore()
+          // Seed runMeta from the runner state BEFORE applying events,
+          // so the topbar shows the right status even if the events
+          // ring buffer has evicted run_started, or if no run_started/
+          // run_completed event exists yet (race during cold load).
+          runMeta.value = {
+            id: active.run_id,
+            startedAt: active.started_at,
+            finishedAt: active.finished_at,
+            status: active.status,
+            repo: active.repo_path,
+            error: active.error,
+          }
           for (const e of state.events || []) applyEvent(e)
           attach(active.run_id)
         }

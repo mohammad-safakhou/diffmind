@@ -268,10 +268,14 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	// --- Stage 2: confidence-gated re-examination ---
 	var reexamined []detailJob
 	if !o.cfg.Runtime.SkipReexamination {
-		// Estimate suspects for progress reporting.
+		// Estimate suspects for progress reporting. We pass copies of the
+		// seeds because shouldReexamine mutates Details to back-fill
+		// derived fields; the actual mutation happens inside
+		// runReexamination on the real seeds.
 		suspects := 0
-		for _, s := range seeds {
-			if _, _, needs := shouldReexamine(s.Objective, s.Seed, o.cfg.Quality.MinConfidence); needs {
+		for i := range seeds {
+			seedCopy := seeds[i].Seed
+			if _, _, needs := shouldReexamine(seeds[i].Objective, &seedCopy, o.cfg.Quality.MinConfidence); needs {
 				suspects++
 			}
 		}

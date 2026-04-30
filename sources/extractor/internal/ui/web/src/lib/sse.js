@@ -11,7 +11,12 @@ export function openEventStream(url, { onEvent, onEOF, onError } = {}) {
 
   const open = () => {
     if (stopped) return
-    const u = lastID ? `${url}?from=${encodeURIComponent(lastID + 1)}` : url
+    // If the caller's URL already includes a query string (e.g. ?token=…
+    // when --ui-token is set on the server) we have to merge ?from=…
+    // with an `&` rather than appending another `?`. Browsers are lenient
+    // and would still send the request, but the server only honours the
+    // first `?` so the resume point is silently dropped.
+    const u = lastID ? appendQuery(url, 'from', String(lastID + 1)) : url
     es = new EventSource(u)
     // Generic listener: any non-default event kind.
     es.addEventListener('message', (ev) => handle(ev))
@@ -52,6 +57,14 @@ export function openEventStream(url, { onEvent, onEOF, onError } = {}) {
     stopped = true
     if (es) try { es.close() } catch {}
   }
+}
+
+// appendQuery returns url with the given key=value pair added to its
+// query string, picking the right separator based on whether the URL
+// already has a query.
+function appendQuery(url, key, value) {
+  const sep = url.includes('?') ? '&' : '?'
+  return url + sep + key + '=' + encodeURIComponent(value)
 }
 
 const KNOWN_KINDS = [

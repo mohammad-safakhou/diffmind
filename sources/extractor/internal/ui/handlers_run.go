@@ -191,6 +191,11 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID s
 			return
 		case e, ok := <-ch:
 			if !ok {
+				// Bus closed the subscription; signal EOF so the SPA
+				// can flip the run status from "running" to its real
+				// terminal state.
+				_, _ = fmt.Fprintf(w, "event: eof\ndata: {}\n\n")
+				flusher.Flush()
 				return
 			}
 			if e.Kind == "_eof" {

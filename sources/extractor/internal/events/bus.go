@@ -57,9 +57,14 @@ type runState struct {
 }
 
 // subscription represents one in-flight subscriber.
+//
+// finished is set once FinishRun has handed the subscription off to a
+// closer goroutine; Emit() must skip finished subs to avoid writing to a
+// channel the closer is about to close.
 type subscription struct {
-	ch     chan Event
-	cancel func()
+	ch       chan Event
+	cancel   func()
+	finished bool
 }
 
 // StartRun registers a new run with the bus. If persistDir is non-empty an
@@ -99,6 +104,13 @@ func (b *Bus) StartRun(runID, persistDir string) (Sink, error) {
 // FinishRun marks a run as finished. Subscribers are NOT closed immediately
 // so they can drain the ring buffer; instead the bus stops accepting new
 // emits and lets in-flight reads complete naturally.
+//
+// Each subscriber receives a synthetic "_eof" event followed by its
+// channel being closed. We deliver the eof from a per-subscriber goroutine
+// so a slow consumer can never deadlock the orchestrator: the goroutine
+// blocks on the send (with a 30s safety timeout) and then closes the
+// channel, guaranteeing every SSE client eventually sees the end-of-stream
+// signal even if it briefly fell behind.
 func (b *Bus) FinishRun(runID string) {
 	b.mu.RLock()
 	rs := b.runs[runID]
@@ -117,15 +129,38 @@ func (b *Bus) FinishRun(runID string) {
 	for s := range rs.subs {
 		subs = append(subs, s)
 	}
-	rs.mu.Unlock()
-	// Close subscribers gently after a small drain delay so the SSE handler
-	// has a chance to flush the last events before EOF.
+	// Mark every subscriber as "finished" so Emit cannot send to them
+	// after we hand off ownership to the per-sub closer goroutine.
 	for _, s := range subs {
-		select {
-		case s.ch <- Event{Kind: "_eof", RunID: runID}:
-		default:
-		}
+		s.finished = true
 	}
+	// Detach subs from the runState now so duplicate FinishRun calls,
+	// or new subscribers attaching while we drain, don't double-close.
+	rs.subs = map[*subscription]struct{}{}
+	rs.mu.Unlock()
+
+	for _, s := range subs {
+		go finishSubscriber(s, runID)
+	}
+}
+
+// finishSubscriber delivers _eof to a subscriber and closes the channel.
+// Blocks (with a hard timeout) so backed-up consumers don't lose the
+// end-of-stream signal — losing it makes the dashboard show "running"
+// forever after a real cancel/completion.
+func finishSubscriber(s *subscription, runID string) {
+	defer func() {
+		// Recover in case the channel has been closed by a concurrent
+		// unsubscribe; closing twice would otherwise panic.
+		_ = recover()
+	}()
+	timeout := time.NewTimer(30 * time.Second)
+	defer timeout.Stop()
+	select {
+	case s.ch <- Event{Kind: "_eof", RunID: runID}:
+	case <-timeout.C:
+	}
+	close(s.ch)
 }
 
 // Subscribe returns a channel that receives every event for runID with seq
@@ -273,24 +308,30 @@ func (s *runSink) Emit(e Event) {
 	s.rs.mu.Unlock()
 
 	for _, sub := range subs {
-		select {
-		case sub.ch <- e:
-		default:
-			// Subscriber too slow; tell it explicitly by injecting a drop
-			// notice the next time we have a free slot. We don't loop
-			// trying — we keep the orchestrator hot.
-			go func(sub *subscription, runID string) {
-				notice := Event{
-					RunID:   runID,
-					Kind:    KindSubscriberDrop,
-					TS:      time.Now().UTC(),
-					Message: "subscriber buffer full; some events were dropped",
-				}
-				select {
-				case sub.ch <- notice:
-				default:
-				}
-			}(sub, s.rs.runID)
-		}
+		// Recover from a "send on closed channel" panic if FinishRun /
+		// the subscriber's cancel raced ahead between capturing subs and
+		// this send. We guard each send individually so one closed
+		// subscriber doesn't break the fan-out for the others.
+		safeSend(sub, e, s.rs.runID)
+	}
+}
+
+// safeSend tries a non-blocking send to the subscriber's channel. On a
+// "send on closed channel" panic (the subscriber unsubscribed or the run
+// finished after we captured the subs slice) we silently swallow it.
+//
+// We deliberately do NOT spawn a follow-up goroutine to inject a
+// "subscriber_dropped" notice when the buffer is full: the subscriber is
+// already behind, sending more would race the channel-close in
+// finishSubscriber. The dashboard can detect drops by tracking the
+// monotonic Seq and noticing a gap.
+func safeSend(sub *subscription, e Event, runID string) {
+	defer func() {
+		_ = recover()
+	}()
+	select {
+	case sub.ch <- e:
+	default:
+		// Drop silently; consumer is too slow.
 	}
 }
