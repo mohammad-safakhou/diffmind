@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -347,17 +348,22 @@ func hasDetailKey(details map[string]any, key string) bool {
 
 // runReexamination executes Stage 2 in parallel. It takes the raw discovery
 // seeds, splits them into "clean" and "needs re-ask" groups, fires a targeted
-// LLM re-ask for each suspect seed, and returns (cleanSeeds, unresolved).
-// Clean seeds from discovery pass through unchanged; confirmed seeds from
-// re-ask replace the suspect originals; rejected seeds become Unresolved.
+// LLM re-ask for each suspect seed. Clean seeds from discovery pass
+// through unchanged; confirmed seeds from re-ask replace the suspect
+// originals; rejected seeds become Unresolved.
+//
+// Returns (cleanSeeds, unresolved, firstErr, firstFailedTrigger). On
+// failure the orchestrator halts the run; the trigger gives it the
+// objective + seed name needed for the failure report.
 func (o *orchestrator) runReexamination(
 	ctx context.Context,
 	seeds []detailJob,
 	rf *repoFacts,
 	onResult func(),
-) ([]detailJob, []model.UnresolvedItem) {
+) ([]detailJob, []model.UnresolvedItem, error, reexamineTrigger) {
+	var noTrigger reexamineTrigger
 	if len(seeds) == 0 {
-		return nil, nil
+		return nil, nil, nil, noTrigger
 	}
 
 	cleanJobs := make([]detailJob, 0, len(seeds))
@@ -381,7 +387,7 @@ func (o *orchestrator) runReexamination(
 
 	if len(suspect) == 0 {
 		util.Info("agents.reexamine", "no suspects to re-examine", map[string]any{"total": len(seeds)})
-		return cleanJobs, nil
+		return cleanJobs, nil, nil, noTrigger
 	}
 
 	util.Info("agents.reexamine", "re-examination starting", map[string]any{
@@ -401,6 +407,9 @@ func (o *orchestrator) runReexamination(
 		Item    *llmEntity
 		Err     error
 	}
+	stageCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	jobs := make(chan reexamineTrigger)
 	results := make(chan resultEnv)
 	var wg sync.WaitGroup
@@ -409,8 +418,15 @@ func (o *orchestrator) runReexamination(
 		go func(workerID int) {
 			defer wg.Done()
 			for t := range jobs {
-				item, err := o.runReexamineOne(ctx, t, rf)
+				if stageCtx.Err() != nil {
+					results <- resultEnv{Trigger: t, Err: stageCtx.Err()}
+					continue
+				}
+				item, err := o.runReexamineOne(stageCtx, t, rf)
 				results <- resultEnv{Trigger: t, Item: item, Err: err}
+				if err != nil {
+					cancel()
+				}
 			}
 		}(i + 1)
 	}
@@ -424,6 +440,8 @@ func (o *orchestrator) runReexamination(
 	}()
 
 	unresolved := make([]model.UnresolvedItem, 0)
+	var firstErr error
+	var firstTrigger reexamineTrigger
 	for r := range results {
 		if onResult != nil {
 			onResult()
@@ -437,6 +455,10 @@ func (o *orchestrator) runReexamination(
 				Reason:     r.Err.Error(),
 				Confidence: r.Trigger.Seed.Confidence,
 			})
+			if firstErr == nil && !errors.Is(r.Err, context.Canceled) && !errors.Is(r.Err, context.DeadlineExceeded) {
+				firstErr = r.Err
+				firstTrigger = r.Trigger
+			}
 			continue
 		}
 		if r.Item == nil {
@@ -462,7 +484,7 @@ func (o *orchestrator) runReexamination(
 	util.Info("agents.reexamine", "re-examination completed", map[string]any{
 		"clean_after": len(cleanJobs), "unresolved": len(unresolved),
 	})
-	return cleanJobs, unresolved
+	return cleanJobs, unresolved, firstErr, firstTrigger
 }
 
 func (o *orchestrator) runReexamineOne(ctx context.Context, t reexamineTrigger, rf *repoFacts) (*llmEntity, error) {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
@@ -26,6 +27,24 @@ func ValidateRun(baseDir, runID string) error {
 	if m.RunID == "" || m.SchemaVersion == "" || m.RepoPath == "" {
 		util.Error("app.validate", "manifest invalid", map[string]any{"run_id": runID})
 		return fmt.Errorf("invalid manifest fields")
+	}
+	if len(m.StageFailures) > 0 {
+		// Surface degraded stages so the operator sees them at a
+		// glance without having to grep the manifest. Sorted for
+		// stable output across runs.
+		stages := make([]string, 0, len(m.StageFailures))
+		for k := range m.StageFailures {
+			stages = append(stages, k)
+		}
+		sort.Strings(stages)
+		summary := make(map[string]any, len(stages))
+		for _, k := range stages {
+			summary[k] = m.StageFailures[k]
+		}
+		util.Warn("app.validate", "run completed with stage failures", map[string]any{
+			"run_id":         runID,
+			"stage_failures": summary,
+		})
 	}
 	util.Info("app.validate", "run is valid", map[string]any{"run_id": runID, "schema": m.SchemaVersion})
 	return nil

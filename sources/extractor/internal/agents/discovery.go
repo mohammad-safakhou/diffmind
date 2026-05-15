@@ -37,6 +37,13 @@ func (o *orchestrator) runRepoFacts(ctx context.Context) (*repoFacts, error) {
 // runDiscovery executes Stage 1: one LLM call per objective in parallel.
 // Workers are bounded by cfg.Runtime.Workers and each call uses the
 // objective-specific discovery prompt plus the cached repo_facts context.
+//
+// Fail-fast semantics: the first objective that fails cancels a child
+// context which causes every still-pending worker to exit on its next
+// ctx-check. Already-running peers are not interrupted server-side, but
+// their result (success or failure) is still collected so the failure
+// report includes everything that actually happened. Workers that never
+// got picked simply never start.
 func (o *orchestrator) runDiscovery(ctx context.Context, objs []objectives.Objective, rf *repoFacts, onResult func()) []discoveryResult {
 	if len(objs) == 0 {
 		return nil
@@ -48,6 +55,10 @@ func (o *orchestrator) runDiscovery(ctx context.Context, objs []objectives.Objec
 	if workers > len(objs) {
 		workers = len(objs)
 	}
+
+	stageCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	jobs := make(chan objectives.Objective)
 	results := make(chan discoveryResult)
 	var wg sync.WaitGroup
@@ -57,9 +68,23 @@ func (o *orchestrator) runDiscovery(ctx context.Context, objs []objectives.Objec
 		go func(workerID int) {
 			defer wg.Done()
 			for obj := range jobs {
+				if stageCtx.Err() != nil {
+					// Another worker already failed; surface the
+					// cancellation as the result so progress still
+					// advances and the orchestrator sees a complete
+					// result-set.
+					results <- discoveryResult{Objective: obj, Err: stageCtx.Err()}
+					continue
+				}
 				util.Debug("agents.discovery", "worker picked objective", map[string]any{"worker": workerID, "objective": obj.ID})
-				items, err := o.runDiscoveryOne(ctx, obj, rf)
+				items, err := o.runDiscoveryOne(stageCtx, obj, rf)
 				results <- discoveryResult{Objective: obj, Items: items, Err: err}
+				if err != nil {
+					// First failure trips the kill-switch. Subsequent
+					// workers will short-circuit via the ctx.Err()
+					// check above.
+					cancel()
+				}
 			}
 		}(i + 1)
 	}

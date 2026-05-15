@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,6 +44,7 @@ type orchestrator struct {
 	wd               *watchdog       // optional: nil if pauser is nil
 	sink             events.Sink     // never nil (NoopSink fallback)
 	captureDir       string          // optional: dir where prompt/response files are written
+	runDir           string          // optional: artifact root for state + failure report
 
 	sessionMu       sync.Mutex
 	sharedSessionID string
@@ -60,10 +62,24 @@ func (o *orchestrator) emit(e events.Event) {
 
 // RunOptions carries optional dependencies for Run. Sink is the live event
 // stream consumed by the dashboard; CaptureDir is a directory under the run
-// dir where each LLM call's prompt + response is persisted for click-to-view.
+// dir where each LLM call's prompt + response is persisted for
+// click-to-view; RunDir, when set, is the run's artifact directory and
+// enables on-disk state persistence + failure report writes for retry.
+//
+// Resume lets a retry command resume a previously-failed run by
+// fast-forwarding past the stages that already completed successfully
+// and re-using the snapshot directory the failed run left behind.
+// SnapshotPath, when non-empty, instructs the orchestrator to skip
+// snapshot creation and use the supplied directory as the session
+// directory directly. ResumeFromDir, when non-empty, is the path to
+// the previous run's state directory (typically <runDir>/state); the
+// orchestrator loads what it can from there and skips matching stages.
 type RunOptions struct {
-	Sink       events.Sink
-	CaptureDir string
+	Sink          events.Sink
+	CaptureDir    string
+	RunDir        string
+	ResumeFromDir string
+	SnapshotPath  string
 }
 
 // Run is the public entrypoint used by internal/app. It returns an aggregated
@@ -93,15 +109,24 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 
 	sourceSessionDir, subDir := detectMonorepo(repoPath)
 
-	// Materialize an isolated snapshot of the source tree. OpenCode sessions
-	// can edit/create/delete files inside the directory they are bound to;
-	// pointing them at the user's repo would risk concurrent writes between
-	// our parallel workers and could mutate the user's files. The snapshot
-	// is a real, independent copy under a random temp dir; we always remove
-	// it on the way out, even on error.
-	snap, err := snapshot.Create(sourceSessionDir, "")
-	if err != nil {
-		return Result{}, fmt.Errorf("snapshot: %w", err)
+	// Materialize an isolated snapshot of the source tree, OR re-attach
+	// to the snapshot left behind by a previously-failed run when the
+	// caller is invoking us via `diffmind retry`. Re-attaching skips
+	// the (potentially large) byte-for-byte copy and guarantees the
+	// retry sees the exact same working tree the failing run saw.
+	var snap *snapshot.Snapshot
+	if strings.TrimSpace(opts.SnapshotPath) != "" {
+		s, err := snapshot.Reattach(sourceSessionDir, opts.SnapshotPath)
+		if err != nil {
+			return Result{}, fmt.Errorf("reattach snapshot %q: %w", opts.SnapshotPath, err)
+		}
+		snap = s
+	} else {
+		s, err := snapshot.Create(sourceSessionDir, "")
+		if err != nil {
+			return Result{}, fmt.Errorf("snapshot: %w", err)
+		}
+		snap = s
 	}
 
 	o := &orchestrator{
@@ -114,6 +139,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		oc:               oc,
 		sink:             sink,
 		captureDir:       opts.CaptureDir,
+		runDir:           opts.RunDir,
 	}
 	if o.captureDir != "" {
 		_ = os.MkdirAll(o.captureDir, 0o755)
@@ -179,99 +205,168 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 
 	warnings := make([]string, 0)
 	unresolved := make([]model.UnresolvedItem, 0)
+	state := IntermediateState{ExposureObjs: map[string]string{}}
 	start := time.Now()
 
-	// --- Stage 0: repo facts ---
-	progress.StartPhase("repo_facts", 1, 0, 10, "Collecting a compact tech-stack snapshot of the repository.")
-	o.emit(events.Event{Kind: events.KindStageStarted, Stage: "repo_facts", Status: events.StatusRunning, Payload: map[string]any{"total": 1, "tip": "Collecting a compact tech-stack snapshot of the repository."}})
-	rf, err := o.runRepoFacts(ctx)
-	if err != nil {
-		warnings = append(warnings, "repo_facts extraction failed: "+err.Error())
-	}
-	progress.Advance()
-	progress.CompletePhase()
-	o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "repo_facts", Status: events.StatusSuccess, Payload: map[string]any{"facts_present": rf != nil}})
+	// Load any previously-saved stage state for resume.
+	resumeRf, resumeSeeds, resumeExpObjs, resumeReexam, resumeExposures, resumeDeps := o.loadResumeState(opts.ResumeFromDir)
 
-	// --- Stage 1: per-objective discovery ---
-	allObjectives := objectives.Default()
-	progress.StartPhase("discovery", len(allObjectives), 10, 35, "Discovering exposures and dependencies per objective in parallel.")
-	o.emit(events.Event{Kind: events.KindStageStarted, Stage: "discovery", Status: events.StatusRunning, Payload: map[string]any{"total": len(allObjectives), "tip": "Discovering exposures and dependencies per objective in parallel."}})
-	for _, obj := range allObjectives {
-		o.emit(events.Event{
-			Kind: events.KindJobPending, Stage: "discovery", JobID: "discover." + obj.ID,
-			Status:  events.StatusPending,
-			Payload: map[string]any{"objective_id": obj.ID, "kind": string(obj.Kind), "type": obj.Type, "description": obj.Description},
-		})
-	}
-	discovery := o.runDiscovery(ctx, allObjectives, rf, progress.Advance)
-	progress.CompletePhase()
-	o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "discovery", Status: events.StatusSuccess})
-
-	// Collect seeds and per-objective warnings.
-	seeds := make([]detailJob, 0)
-	exposureObjectives := map[string]objectives.Objective{}
-	discoveryFailures := 0
-	var firstDiscoveryErr error
-	for _, d := range discovery {
-		if d.Err != nil {
-			discoveryFailures++
-			if firstDiscoveryErr == nil {
-				firstDiscoveryErr = d.Err
-			}
-			warnings = append(warnings, "discovery failed for "+d.Objective.ID+": "+d.Err.Error())
-			unresolved = append(unresolved, model.UnresolvedItem{
-				Kind: d.Objective.Kind, Type: d.Objective.Type, Name: d.Objective.Description,
-				ReasonCode: "agent_failure", Reason: d.Err.Error(),
-			})
-			continue
-		}
-		if d.Objective.Kind == model.KindExposure {
-			exposureObjectives[d.Objective.Type] = d.Objective
-		}
-		for _, it := range d.Items {
-			seeds = append(seeds, detailJob{Objective: d.Objective, Seed: it})
-		}
-	}
-	util.Info("agents.orchestrator", "discovery completed", map[string]any{
-		"seeds":    len(seeds),
-		"failures": discoveryFailures,
-		"total":    len(discovery),
-	})
-	// If every discovery objective failed there is no point continuing —
-	// every later stage would just emit "completed" with no input. We
-	// short-circuit to a hard failure so the dashboard shows a real error
-	// banner instead of a deceptive "completed in 200ms with 0 entities".
-	if len(discovery) > 0 && discoveryFailures == len(discovery) {
-		errMsg := "every discovery objective failed; check OpenCode provider, model, and auth"
-		if firstDiscoveryErr != nil {
-			errMsg += " (sample error: " + firstDiscoveryErr.Error() + ")"
+	// haltFailure builds the partial result we hand back to internal/app
+	// when a stage fails. It always preserves the snapshot path and the
+	// state captured up to (but not including) the failing stage so the
+	// retry command has a consistent base to resume from.
+	haltFailure := func(stage, jobID, objectiveID, entityName string, err error, extra map[string]any) (Result, error) {
+		f := &Failure{
+			Stage:        stage,
+			JobID:        jobID,
+			ObjectiveID:  objectiveID,
+			EntityName:   entityName,
+			Error:        err.Error(),
+			ErrorClass:   classifyError(err),
+			HTTPStatus:   extractHTTPStatus(err.Error()),
+			OccurredAt:   time.Now().UTC(),
+			Extra:        extra,
+			PromptPath:   o.captureFilePath(jobID, "prompt", "txt"),
+			ResponsePath: o.captureFilePath(jobID, "response", "json"),
+			SnapshotPath: o.snap.Path,
 		}
 		o.emit(events.Event{
-			Kind:    events.KindRunFailed,
-			Status:  events.StatusFailed,
-			Message: errMsg,
+			Kind: events.KindRunFailed, Status: events.StatusFailed, Stage: stage, JobID: jobID,
+			Message: err.Error(),
 			Payload: map[string]any{
-				"discovery_failures": discoveryFailures,
-				"discovery_total":    len(discovery),
-				"sample_error":       errString(firstDiscoveryErr),
+				"stage":         stage,
+				"job_id":        jobID,
+				"objective_id":  objectiveID,
+				"entity_name":   entityName,
+				"error_class":   f.ErrorClass,
+				"http_status":   f.HTTPStatus,
+				"prompt_path":   f.PromptPath,
+				"response_path": f.ResponsePath,
+				"elapsed_ms":    time.Since(start).Milliseconds(),
 			},
 		})
+		// The snapshot must be retained for retry: instruct the deferred
+		// closer to keep the directory.
+		o.snap.Retain()
+		// Persist failure-report + intermediate state to disk so the
+		// operator (and `diffmind retry`) have everything they need.
+		o.writeFailureReport(f)
+		o.persistStageState("failure_state.json", state)
 		return Result{
 			Exposures:    nil,
 			Dependencies: nil,
 			Connections:  nil,
 			Unresolved:   reconcile.DedupeUnresolved(unresolved),
 			Warnings:     reconcile.DedupeWarnings(warnings),
-		}, fmt.Errorf("%s", errMsg)
+			Failure:      f,
+			SnapshotPath: o.snap.Path,
+			Intermediate: state,
+		}, fmt.Errorf("%s stage failed at %s: %w", stage, jobID, err)
 	}
+
+	// --- Stage 0: repo facts ---
+	var rf *repoFacts
+	if resumeRf != nil {
+		util.Info("agents.orchestrator", "resume: skipping repo_facts (loaded from state)", nil)
+		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "repo_facts", Status: events.StatusSkipped, Message: "resumed from state"})
+		rf = resumeRf
+	} else {
+		progress.StartPhase("repo_facts", 1, 0, 10, "Collecting a compact tech-stack snapshot of the repository.")
+		o.emit(events.Event{Kind: events.KindStageStarted, Stage: "repo_facts", Status: events.StatusRunning, Payload: map[string]any{"total": 1, "tip": "Collecting a compact tech-stack snapshot of the repository."}})
+		got, err := o.runRepoFacts(ctx)
+		progress.Advance()
+		progress.CompletePhase()
+		if err != nil {
+			return haltFailure("repo_facts", "repo_facts", "", "", err, nil)
+		}
+		rf = got
+		o.persistStageState("repo_facts.json", rf)
+		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "repo_facts", Status: events.StatusSuccess, Payload: map[string]any{"facts_present": rf != nil}})
+	}
+	state.RepoFacts = rf
+
+	// --- Stage 1: per-objective discovery ---
+	seeds := make([]detailJob, 0)
+	exposureObjectives := map[string]objectives.Objective{}
+	if resumeSeeds != nil {
+		util.Info("agents.orchestrator", "resume: skipping discovery (loaded from state)", map[string]any{
+			"seeds": len(resumeSeeds),
+		})
+		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "discovery", Status: events.StatusSkipped, Message: "resumed from state"})
+		seeds = resumeSeeds
+		// Rebuild the type -> Objective map from the resumed seeds.
+		for _, s := range seeds {
+			if s.Objective.Kind == model.KindExposure {
+				exposureObjectives[s.Objective.Type] = s.Objective
+				state.ExposureObjs[s.Objective.Type] = s.Objective.ID
+			}
+		}
+		// Honour any stored exposure_objectives map (the seed list may
+		// not cover every type if discovery returned 0 items).
+		for k, v := range resumeExpObjs {
+			state.ExposureObjs[k] = v
+		}
+	} else {
+		allObjectives := objectives.Default()
+		progress.StartPhase("discovery", len(allObjectives), 10, 35, "Discovering exposures and dependencies per objective in parallel.")
+		o.emit(events.Event{Kind: events.KindStageStarted, Stage: "discovery", Status: events.StatusRunning, Payload: map[string]any{"total": len(allObjectives), "tip": "Discovering exposures and dependencies per objective in parallel."}})
+		for _, obj := range allObjectives {
+			o.emit(events.Event{
+				Kind: events.KindJobPending, Stage: "discovery", JobID: "discover." + obj.ID,
+				Status:  events.StatusPending,
+				Payload: map[string]any{"objective_id": obj.ID, "kind": string(obj.Kind), "type": obj.Type, "description": obj.Description},
+			})
+		}
+		discovery := o.runDiscovery(ctx, allObjectives, rf, progress.Advance)
+		progress.CompletePhase()
+
+		var firstDiscoveryErr error
+		var firstDiscoveryObj objectives.Objective
+		for _, d := range discovery {
+			if d.Err == nil {
+				continue
+			}
+			if errors.Is(d.Err, context.Canceled) || errors.Is(d.Err, context.DeadlineExceeded) {
+				continue
+			}
+			if firstDiscoveryErr == nil {
+				firstDiscoveryErr = d.Err
+				firstDiscoveryObj = d.Objective
+			}
+		}
+		if firstDiscoveryErr != nil {
+			o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "discovery", Status: events.StatusFailed})
+			return haltFailure("discovery", "discover."+firstDiscoveryObj.ID, firstDiscoveryObj.ID, firstDiscoveryObj.Description, firstDiscoveryErr, nil)
+		}
+		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "discovery", Status: events.StatusSuccess})
+
+		for _, d := range discovery {
+			if d.Objective.Kind == model.KindExposure {
+				exposureObjectives[d.Objective.Type] = d.Objective
+				state.ExposureObjs[d.Objective.Type] = d.Objective.ID
+			}
+			for _, it := range d.Items {
+				seeds = append(seeds, detailJob{Objective: d.Objective, Seed: it})
+			}
+		}
+		state.DiscoverySeeds = append([]detailJob(nil), seeds...)
+		o.persistStageState("discovery.json", state.DiscoverySeeds)
+		o.persistStageState("exposure_objectives.json", state.ExposureObjs)
+		util.Info("agents.orchestrator", "discovery completed", map[string]any{
+			"seeds": len(seeds), "total": len(discovery),
+		})
+	}
+	state.DiscoverySeeds = append([]detailJob(nil), seeds...)
 
 	// --- Stage 2: confidence-gated re-examination ---
 	var reexamined []detailJob
-	if !o.cfg.Runtime.SkipReexamination {
-		// Estimate suspects for progress reporting. We pass copies of the
-		// seeds because shouldReexamine mutates Details to back-fill
-		// derived fields; the actual mutation happens inside
-		// runReexamination on the real seeds.
+	if resumeReexam != nil {
+		util.Info("agents.orchestrator", "resume: skipping reexamination (loaded from state)", map[string]any{
+			"clean": len(resumeReexam),
+		})
+		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "reexamination", Status: events.StatusSkipped, Message: "resumed from state"})
+		reexamined = resumeReexam
+	} else if !o.cfg.Runtime.SkipReexamination {
 		suspects := 0
 		for i := range seeds {
 			seedCopy := seeds[i].Seed
@@ -281,8 +376,14 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		}
 		progress.StartPhase("reexamination", suspects, 35, 45, "Re-asking the model to confirm or reject low-signal candidates.")
 		o.emit(events.Event{Kind: events.KindStageStarted, Stage: "reexamination", Status: events.StatusRunning, Payload: map[string]any{"total": suspects, "tip": "Re-asking the model to confirm or reject low-signal candidates."}})
-		cleaned, unresolvedRe := o.runReexamination(ctx, seeds, rf, progress.Advance)
+		cleaned, unresolvedRe, reexamErr, reexamFailedSeed := o.runReexamination(ctx, seeds, rf, progress.Advance)
 		progress.CompletePhase()
+		if reexamErr != nil {
+			o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "reexamination", Status: events.StatusFailed})
+			return haltFailure("reexamination",
+				"reexamine."+reexamFailedSeed.Obj.ID+"."+safeJobID(reexamFailedSeed.Seed.Name),
+				reexamFailedSeed.Obj.ID, reexamFailedSeed.Seed.Name, reexamErr, nil)
+		}
 		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "reexamination", Status: events.StatusSuccess})
 		reexamined = cleaned
 		unresolved = append(unresolved, unresolvedRe...)
@@ -291,54 +392,96 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		util.Info("agents.orchestrator", "stage 2 re-examination skipped by config", nil)
 		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "reexamination", Status: events.StatusSkipped, Message: "skipped by config"})
 	}
+	state.ReexamSeeds = append([]detailJob(nil), reexamined...)
+	o.persistStageState("reexamination.json", state.ReexamSeeds)
 
 	// --- Stage 3: detail enrichment ---
-	progress.StartPhase("detail", len(reexamined), 45, 70, "Enriching each verified entity with evidence, IO contract, and details.")
-	o.emit(events.Event{Kind: events.KindStageStarted, Stage: "detail", Status: events.StatusRunning, Payload: map[string]any{"total": len(reexamined), "tip": "Enriching each verified entity with evidence, IO contract, and details."}})
-	details := o.runDetailBatch(ctx, reexamined, rf, progress.Advance)
-	progress.CompletePhase()
-	o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "detail", Status: events.StatusSuccess})
-
 	exposures := make([]model.Exposure, 0)
 	dependencies := make([]model.Dependency, 0)
-	for _, d := range details {
-		if d.Err != nil {
-			warnings = append(warnings, "detail enrichment failed for "+d.Objective.ID+": "+d.Err.Error())
-			unresolved = append(unresolved, model.UnresolvedItem{
-				Kind: d.Objective.Kind, Type: d.Objective.Type, Name: d.Objective.Description,
-				ReasonCode: "agent_failure", Reason: d.Err.Error(),
-			})
-			continue
-		}
-		if d.Item == nil {
-			continue
-		}
-		base, ur := toBase(o.repoPath, d.Objective.Kind, *d.Item, o.cfg.Quality.MinConfidence)
-		if ur != nil {
-			unresolved = append(unresolved, *ur)
-			continue
-		}
-		if d.Objective.Kind == model.KindExposure {
-			exposures = append(exposures, model.Exposure{BaseEntity: base})
-		} else {
-			dependencies = append(dependencies, model.Dependency{BaseEntity: base})
-		}
-	}
-	util.Info("agents.orchestrator", "detail completed", map[string]any{
-		"exposures": len(exposures), "dependencies": len(dependencies),
-	})
+	if resumeExposures != nil || resumeDeps != nil {
+		util.Info("agents.orchestrator", "resume: skipping detail (loaded from state)", map[string]any{
+			"exposures": len(resumeExposures), "dependencies": len(resumeDeps),
+		})
+		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "detail", Status: events.StatusSkipped, Message: "resumed from state"})
+		exposures = resumeExposures
+		dependencies = resumeDeps
+	} else {
+		progress.StartPhase("detail", len(reexamined), 45, 70, "Enriching each verified entity with evidence, IO contract, and details.")
+		o.emit(events.Event{Kind: events.KindStageStarted, Stage: "detail", Status: events.StatusRunning, Payload: map[string]any{"total": len(reexamined), "tip": "Enriching each verified entity with evidence, IO contract, and details."}})
+		details := o.runDetailBatch(ctx, reexamined, rf, progress.Advance)
+		progress.CompletePhase()
 
-	// Reconcile entities BEFORE connection mapping so the catalog is dedup'd.
-	exposures = reconcile.DedupeExposures(exposures)
-	dependencies = reconcile.DedupeDependencies(dependencies)
+		var firstDetailErr error
+		var firstDetailJob detailJob
+		for i, d := range details {
+			if d.Err == nil {
+				continue
+			}
+			if errors.Is(d.Err, context.Canceled) || errors.Is(d.Err, context.DeadlineExceeded) {
+				continue
+			}
+			if firstDetailErr == nil {
+				firstDetailErr = d.Err
+				if i < len(reexamined) {
+					firstDetailJob = reexamined[i]
+				} else {
+					firstDetailJob = detailJob{Objective: d.Objective}
+				}
+			}
+		}
+		if firstDetailErr != nil {
+			o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "detail", Status: events.StatusFailed})
+			return haltFailure("detail",
+				"detail."+firstDetailJob.Objective.ID+"."+safeJobID(firstDetailJob.Seed.Name),
+				firstDetailJob.Objective.ID, firstDetailJob.Seed.Name, firstDetailErr, nil)
+		}
+		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "detail", Status: events.StatusSuccess})
+
+		for _, d := range details {
+			if d.Item == nil {
+				continue
+			}
+			base, ur := toBase(o.repoPath, d.Objective.Kind, *d.Item, o.cfg.Quality.MinConfidence)
+			if ur != nil {
+				unresolved = append(unresolved, *ur)
+				continue
+			}
+			if d.Objective.Kind == model.KindExposure {
+				exposures = append(exposures, model.Exposure{BaseEntity: base})
+			} else {
+				dependencies = append(dependencies, model.Dependency{BaseEntity: base})
+			}
+		}
+		util.Info("agents.orchestrator", "detail completed", map[string]any{
+			"exposures": len(exposures), "dependencies": len(dependencies),
+		})
+
+		// Reconcile entities BEFORE connection mapping so the catalog is dedup'd.
+		exposures = reconcile.DedupeExposures(exposures)
+		dependencies = reconcile.DedupeDependencies(dependencies)
+		state.DetailExposures = append([]model.Exposure(nil), exposures...)
+		state.DetailDependency = append([]model.Dependency(nil), dependencies...)
+		o.persistStageState("detail_exposures.json", state.DetailExposures)
+		o.persistStageState("detail_dependencies.json", state.DetailDependency)
+	}
+	state.DetailExposures = append([]model.Exposure(nil), exposures...)
+	state.DetailDependency = append([]model.Dependency(nil), dependencies...)
 
 	// --- Stage 4: connection mapping ---
 	progress.StartPhase("connections", len(exposures), 70, 90, "Mapping conditional exposure-to-dependency paths per exposure.")
 	o.emit(events.Event{Kind: events.KindStageStarted, Stage: "connections", Status: events.StatusRunning, Payload: map[string]any{"total": len(exposures), "tip": "Mapping conditional exposure-to-dependency paths per exposure."}})
-	conns, connUnresolved := o.runConnectionsBatch(ctx, exposures, dependencies, exposureObjectives, rf, progress.Advance)
+	conns, connUnresolved, connErr, connFailedExposure := o.runConnectionsBatch(ctx, exposures, dependencies, exposureObjectives, rf, progress.Advance)
 	progress.CompletePhase()
+	if connErr != nil {
+		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "connections", Status: events.StatusFailed})
+		return haltFailure("connections",
+			"connections."+connFailedExposure,
+			"", connFailedExposure, connErr, nil)
+	}
 	o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "connections", Status: events.StatusSuccess, Payload: map[string]any{"connections": len(conns)}})
 	unresolved = append(unresolved, connUnresolved...)
+	state.Connections = append([]model.Connection(nil), conns...)
+	o.persistStageState("connections.json", state.Connections)
 
 	// --- Stage 5: reconcile/filter ---
 	progress.StartPhase("reconcile", 1, 90, 98, "Reconciling entities and dropping orphan connections.")
@@ -413,12 +556,19 @@ func (o *orchestrator) pathMapper() *pathMapper {
 // cancel, or server error) it best-effort aborts the session so the server
 // is not left holding a paused agent.
 //
-// It also emits an llm_call_started/llm_call_completed pair around the
-// PromptStructured call and persists the prompt + response under
-// captureDir/<role>.{prompt,response}.{txt,json,raw} so the dashboard can
-// show the full payloads on demand. When the structured slot is missing
-// from the OpenCode response (some providers don't honor json_schema) we
-// fall back to a plain-text prompt and JSON-scrape the reply.
+// There is intentionally no retry: an LLM call is expensive enough that
+// silently re-issuing it on a transient blip burns money and can mask the
+// real failure. A failure here propagates up to the orchestrator which
+// halts the whole run; the operator inspects the failure report and runs
+// `diffmind retry <run-id>` once they have fixed (or accepted) the cause.
+//
+// The function emits an llm_call_started/llm_call_completed pair around
+// the PromptStructured call and persists the prompt + response under
+// captureDir/<role>.{prompt,response}.{txt,json,raw} so the dashboard
+// can show the full payloads on demand. When the structured slot is
+// missing from the OpenCode response (some providers don't honor
+// json_schema) we fall back to a plain-text prompt and JSON-scrape the
+// reply.
 func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, schema map[string]any) (map[string]any, error) {
 	sessionID, cleanupFn, err := o.acquireSession(ctx, role)
 	if err != nil {
@@ -667,6 +817,18 @@ func (o *orchestrator) persistPrompt(role, prompt string) {
 	}
 	path := filepath.Join(o.captureDir, safeJobID(role)+".prompt.txt")
 	_ = os.WriteFile(path, []byte(prompt), 0o644)
+}
+
+// captureFilePath returns the absolute path where a prompt/response
+// artifact for the given jobID would be persisted, regardless of
+// whether the file currently exists. The failure report records this
+// path so the operator can find the exact bytes the LLM saw and
+// returned even before the file lands on disk.
+func (o *orchestrator) captureFilePath(jobID, kind, ext string) string {
+	if o.captureDir == "" || jobID == "" {
+		return ""
+	}
+	return filepath.Join(o.captureDir, safeJobID(jobID)+"."+kind+"."+ext)
 }
 
 func (o *orchestrator) persistResponse(role string, payload map[string]any) {
