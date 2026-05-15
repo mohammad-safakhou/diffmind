@@ -46,6 +46,22 @@ type Snapshot struct {
 	SourcePath string
 	// Path is the absolute path to the snapshot root inside the temp dir.
 	Path string
+
+	// retained, when true, makes Close() a no-op so the directory stays
+	// on disk after the run finishes. Used by failure-report flows so a
+	// later `diffmind retry` can re-attach to the exact same working
+	// tree the original run saw.
+	retained bool
+}
+
+// Retain marks the snapshot to be kept on disk past Close(). The
+// caller is then responsible for removing it later (typically via
+// the retry command after the run is fixed and re-run).
+func (s *Snapshot) Retain() {
+	if s == nil {
+		return
+	}
+	s.retained = true
 }
 
 // defaultSkipDirs lists directory names that we never mirror. They are
@@ -185,10 +201,38 @@ func Create(source, parent string) (*Snapshot, error) {
 	return &Snapshot{SourcePath: abs, Path: dest}, nil
 }
 
+// Reattach binds an existing snapshot directory back to a Snapshot
+// value. It validates that the directory exists and is a directory
+// (anything else is treated as user error). Reattach does NOT touch
+// the contents of the directory; it simply lets a retry consumer
+// re-use a snapshot that was retained by a previous failed run.
+func Reattach(source, snapshotPath string) (*Snapshot, error) {
+	abs, err := filepath.Abs(source)
+	if err != nil {
+		return nil, fmt.Errorf("resolve source: %w", err)
+	}
+	info, err := os.Stat(snapshotPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat snapshot: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("snapshot path %q is not a directory", snapshotPath)
+	}
+	util.Info("snapshot", "reattached existing snapshot", map[string]any{
+		"path": snapshotPath, "source": abs,
+	})
+	return &Snapshot{SourcePath: abs, Path: snapshotPath}, nil
+}
+
 // Close removes the snapshot from disk. It is safe to call multiple times
-// and safe to call on a nil receiver.
+// and safe to call on a nil receiver. When the snapshot has been marked
+// for retention via Retain() the call is a no-op.
 func (s *Snapshot) Close() error {
 	if s == nil || s.Path == "" {
+		return nil
+	}
+	if s.retained {
+		util.Info("snapshot", "snapshot retained for retry", map[string]any{"path": s.Path})
 		return nil
 	}
 	if err := forceRemove(s.Path); err != nil {

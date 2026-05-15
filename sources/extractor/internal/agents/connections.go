@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -18,6 +19,11 @@ import (
 // Exposures are processed in parallel, batches for a given exposure are
 // processed serially so we can cheaply enforce the closed-set constraint on
 // to_dependency_id.
+//
+// On failure the function returns the FIRST real (non-cancelled) error
+// observed and the exposure ID it happened on so the orchestrator can
+// build a precise failure report. Already-completed exposures' results
+// are still returned for inspection.
 func (o *orchestrator) runConnectionsBatch(
 	ctx context.Context,
 	exposures []model.Exposure,
@@ -25,9 +31,9 @@ func (o *orchestrator) runConnectionsBatch(
 	exposureObjectives map[string]objectives.Objective,
 	rf *repoFacts,
 	onResult func(),
-) ([]model.Connection, []model.UnresolvedItem) {
+) ([]model.Connection, []model.UnresolvedItem, error, string) {
 	if len(exposures) == 0 || len(dependencies) == 0 {
-		return nil, nil
+		return nil, nil, nil, ""
 	}
 
 	catalog := buildDependencyCatalog(dependencies)
@@ -48,6 +54,9 @@ func (o *orchestrator) runConnectionsBatch(
 		workers = len(exposures)
 	}
 
+	stageCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	jobCh := make(chan model.Exposure)
 	resCh := make(chan connectionResult)
 	var wg sync.WaitGroup
@@ -56,10 +65,18 @@ func (o *orchestrator) runConnectionsBatch(
 		go func(workerID int) {
 			defer wg.Done()
 			for exp := range jobCh {
+				if stageCtx.Err() != nil {
+					resCh <- connectionResult{ExposureID: exp.ID, Err: stageCtx.Err()}
+					continue
+				}
 				util.Trace("agents.connections", "worker mapping exposure", map[string]any{"worker": workerID, "exposure": exp.ID})
 				obj := exposureObjectives[exp.Type]
-				items, err := o.runConnectionsForExposure(ctx, exp, obj, catalog, rf)
+				items, err := o.runConnectionsForExposure(stageCtx, exp, obj, catalog, rf)
 				resCh <- connectionResult{ExposureID: exp.ID, Items: items, Err: err}
+				if err != nil {
+					// Fail-fast: cancel still-pending exposures.
+					cancel()
+				}
 			}
 		}(i + 1)
 	}
@@ -74,6 +91,8 @@ func (o *orchestrator) runConnectionsBatch(
 
 	rawLinks := make([]llmConnection, 0)
 	unresolved := make([]model.UnresolvedItem, 0)
+	var firstErr error
+	var firstExposureID string
 	for r := range resCh {
 		if onResult != nil {
 			onResult()
@@ -81,8 +100,14 @@ func (o *orchestrator) runConnectionsBatch(
 		if r.Err != nil {
 			unresolved = append(unresolved, model.UnresolvedItem{
 				Kind: model.KindDependency, Type: "connection", Name: r.ExposureID,
-				ReasonCode: "agent_failure", Reason: r.Err.Error(),
+				ReasonCode: "connections_failure", Reason: r.Err.Error(),
 			})
+			// Skip cancellation echoes from peers; capture only the
+			// first true failure as the cause.
+			if firstErr == nil && !errors.Is(r.Err, context.Canceled) && !errors.Is(r.Err, context.DeadlineExceeded) {
+				firstErr = r.Err
+				firstExposureID = r.ExposureID
+			}
 			continue
 		}
 		rawLinks = append(rawLinks, r.Items...)
@@ -93,7 +118,7 @@ func (o *orchestrator) runConnectionsBatch(
 	util.Info("agents.connections", "connection extraction completed", map[string]any{
 		"connections": len(conns), "llm_links": len(rawLinks), "unresolved": len(unresolved),
 	})
-	return conns, unresolved
+	return conns, unresolved, firstErr, firstExposureID
 }
 
 func (o *orchestrator) runConnectionsForExposure(
@@ -143,6 +168,10 @@ func (o *orchestrator) runConnectionsForExposure(
 		})
 		payload, err := o.promptAgent(ctx, batchJobID, prompt, schema)
 		if err != nil {
+			// Fail-fast: a single batch failing means we either had a
+			// transient blip (retry the whole run) or a real model /
+			// schema problem (operator must inspect). Either way,
+			// surface the failure now and let the orchestrator halt.
 			o.emit(events.Event{
 				Kind: events.KindJobFailed, Stage: "connections", JobID: batchJobID, ParentID: exposureJobID,
 				Status:  events.StatusFailed,

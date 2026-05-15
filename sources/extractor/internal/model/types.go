@@ -117,4 +117,12 @@ type RunManifest struct {
 	Counts            map[string]int    `json:"counts"`
 	Warnings          []string          `json:"warnings,omitempty"`
 	Metadata          map[string]string `json:"metadata,omitempty"`
+
+	// StageFailures aggregates per-stage failure counts derived from
+	// the unresolved diagnostics. It lets the dashboard and the
+	// `validate` command surface partial-success runs without having
+	// to grep the warnings array. Keys are stage names as seen in the
+	// pipeline ("discovery", "reexamination", "detail", "connections")
+	// and values are the count of items that failed in that stage.
+	StageFailures map[string]int `json:"stage_failures,omitempty"`
 }

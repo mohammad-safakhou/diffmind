@@ -62,7 +62,8 @@ func Write(in WriteInput) (string, error) {
 			"connections":  len(in.Connections),
 			"unresolved":   len(in.Unresolved),
 		},
-		Warnings: in.Warnings,
+		Warnings:      in.Warnings,
+		StageFailures: stageFailures(in.Unresolved),
 	}
 	if err := writeJSON(filepath.Join(runDir, "run_manifest.json"), manifest); err != nil {
 		return "", err
@@ -180,6 +181,49 @@ func unresolvedByType(in []model.UnresolvedItem) map[string][]model.UnresolvedIt
 	for _, v := range in {
 		key := string(v.Kind) + "_" + v.Type
 		out[key] = append(out[key], v)
+	}
+	return out
+}
+
+// stageFailures groups unresolved diagnostics by the pipeline stage
+// where they originated, using the ReasonCode as a coarse tag. The
+// resulting map is what the dashboard's "stage health" badge reads to
+// decide whether to flag a stage as "degraded".
+//
+// Reason codes that don't correspond to a stage (e.g.
+// "missing_required_details" written by the assembler before any LLM
+// call) are filed under "validation".
+func stageFailures(in []model.UnresolvedItem) map[string]int {
+	if len(in) == 0 {
+		return nil
+	}
+	stageOf := map[string]string{
+		// Hard agent failures (the LLM call itself errored after
+		// retries) are filed under the stage that ran them.
+		"discovery_failure":         "discovery",
+		"detail_failure":            "detail",
+		"connections_failure":       "connections",
+		"reexamine_failure":         "reexamination",
+		"rejected_on_reexamination": "reexamination",
+
+		// Quality / validation diagnostics from the assembler.
+		"missing_required_details": "validation",
+		"low_confidence":           "validation",
+		"no_source_location":       "validation",
+		"invalid_entity":           "validation",
+		"orphan_connection":        "reconcile",
+		"unmatched_reference":      "connections",
+	}
+	out := map[string]int{}
+	for _, u := range in {
+		stage, ok := stageOf[u.ReasonCode]
+		if !ok {
+			stage = "other"
+		}
+		out[stage]++
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

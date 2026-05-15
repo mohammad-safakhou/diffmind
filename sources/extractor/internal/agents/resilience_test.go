@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -102,80 +103,80 @@ func (f *fakeFlaky) PromptStructured(ctx context.Context, sessionID, directory, 
 	}
 }
 
-// Stage 0 failure is non-fatal: the pipeline continues with nil repo facts.
-func TestRunSurvivesRepoFactsFailure(t *testing.T) {
+// Fail-fast policy: a Stage 0 (repo_facts) failure halts the run with a
+// hard error. The Result still contains a populated Failure and a
+// retained snapshot path so the operator can inspect the captured prompt
+// and response and call `diffmind retry` once the underlying problem is
+// fixed.
+func TestRunHaltsOnRepoFactsFailure(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.Workers = 4
 	cfg.Quality.MinConfidence = 0.7
 	f := &fakeFlaky{failRepoFacts: true}
 	res, err := Run(context.Background(), cfg, t.TempDir(), f)
-	if err != nil {
-		t.Fatalf("pipeline should not fail on repo facts error: %v", err)
+	if err == nil {
+		t.Fatalf("repo_facts failure must surface as a hard error under fail-fast policy")
 	}
-	if len(res.Exposures) == 0 || len(res.Dependencies) == 0 {
-		t.Fatalf("expected extraction to continue despite repo facts failure")
+	if res.Failure == nil {
+		t.Fatalf("Result.Failure must be populated; got %+v", res)
 	}
-	found := false
-	for _, w := range res.Warnings {
-		if strings.Contains(w, "repo_facts extraction failed") {
-			found = true
-			break
-		}
+	if res.Failure.Stage != "repo_facts" {
+		t.Errorf("Failure.Stage = %q, want repo_facts", res.Failure.Stage)
 	}
-	if !found {
-		t.Fatalf("expected repo_facts warning, got %+v", res.Warnings)
+	if res.SnapshotPath == "" {
+		t.Errorf("Failure must retain SnapshotPath so retry can re-attach")
 	}
+	// Make sure the snapshot dir actually still exists on disk.
+	if _, statErr := os.Stat(res.SnapshotPath); statErr != nil {
+		t.Errorf("snapshot dir was removed even though run failed: %v", statErr)
+	}
+	// Cleanup so we don't litter /var/folders.
+	_ = os.RemoveAll(res.SnapshotPath)
 }
 
-// Stage 1 per-objective failure surfaces as a warning + unresolved, but does
-// not stop the rest of the pipeline.
-func TestRunSurvivesObjectiveFailure(t *testing.T) {
+// Fail-fast policy: a Stage 1 (discovery) failure on any single
+// objective halts the entire run. No partial entities are returned.
+func TestRunHaltsOnDiscoveryFailure(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.Workers = 4
 	cfg.Quality.MinConfidence = 0.7
 	f := &fakeFlaky{failObjectiveID: "exposure.webhook"}
 	res, err := Run(context.Background(), cfg, t.TempDir(), f)
-	if err != nil {
-		t.Fatalf("pipeline should not fail on single objective error: %v", err)
+	if err == nil {
+		t.Fatalf("discovery failure must surface as a hard error under fail-fast policy")
 	}
-	if len(res.Exposures) == 0 || len(res.Dependencies) == 0 {
-		t.Fatalf("expected http_route exposure and db dep to still come through")
+	if res.Failure == nil || res.Failure.Stage != "discovery" {
+		t.Fatalf("Failure.Stage must be 'discovery'; got %+v", res.Failure)
 	}
-	found := false
-	for _, u := range res.Unresolved {
-		if u.ReasonCode == "agent_failure" && u.Type == "webhook" {
-			found = true
-			break
-		}
+	if res.Failure.ObjectiveID != "exposure.webhook" {
+		t.Errorf("Failure.ObjectiveID = %q, want exposure.webhook", res.Failure.ObjectiveID)
 	}
-	if !found {
-		t.Fatalf("expected agent_failure unresolved for webhook, got %+v", res.Unresolved)
+	// Even though some other objectives may have completed in parallel,
+	// fail-fast does NOT return partial entities.
+	if len(res.Exposures) != 0 || len(res.Dependencies) != 0 {
+		t.Errorf("fail-fast must return zero entities; got %d/%d", len(res.Exposures), len(res.Dependencies))
 	}
+	_ = os.RemoveAll(res.SnapshotPath)
 }
 
-// Stage 4 per-exposure failure surfaces as an unresolved item; the rest of
-// the run still completes and writes the entities that did succeed.
-func TestRunSurvivesConnectionFailure(t *testing.T) {
+// Fail-fast policy: a Stage 4 (connections) failure halts the run. The
+// Failure carries the exposure name so the operator can locate the
+// relevant prompt/response files.
+func TestRunHaltsOnConnectionFailure(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.Workers = 4
 	cfg.Quality.MinConfidence = 0.7
 	exposureID := util.StableID("exposure", "http_route", "GET /users/{id}", "api.go", "10:30")
 	f := &fakeFlaky{failConnectionID: exposureID}
 	res, err := Run(context.Background(), cfg, t.TempDir(), f)
-	if err != nil {
-		t.Fatalf("pipeline should not fail on single connection error: %v", err)
+	if err == nil {
+		t.Fatalf("connection failure must surface as a hard error under fail-fast policy")
 	}
-	if len(res.Connections) != 0 {
-		t.Fatalf("expected 0 connections (the only exposure's mapping failed), got %d", len(res.Connections))
+	if res.Failure == nil || res.Failure.Stage != "connections" {
+		t.Fatalf("Failure.Stage must be 'connections'; got %+v", res.Failure)
 	}
-	found := false
-	for _, u := range res.Unresolved {
-		if u.ReasonCode == "agent_failure" && u.Type == "connection" {
-			found = true
-			break
-		}
+	if !strings.Contains(res.Failure.EntityName, exposureID) {
+		t.Errorf("Failure.EntityName should reference the failing exposure %q; got %q", exposureID, res.Failure.EntityName)
 	}
-	if !found {
-		t.Fatalf("expected connection agent_failure unresolved, got %+v", res.Unresolved)
-	}
+	_ = os.RemoveAll(res.SnapshotPath)
 }

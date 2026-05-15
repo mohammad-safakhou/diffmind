@@ -19,12 +19,14 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: diffmind <run|batch|validate|list-runs|ui> ...")
+		fmt.Fprintln(os.Stderr, "usage: diffmind <run|retry|batch|validate|list-runs|ui> ...")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
 	case "run":
 		run(os.Args[2:])
+	case "retry":
+		retry(os.Args[2:])
 	case "batch":
 		batchRun(os.Args[2:])
 	case "validate":
@@ -128,9 +130,86 @@ func run(args []string) {
 	if err != nil {
 		util.Error("cli.run", "run command failed", map[string]any{"error": err})
 		fmt.Fprintln(os.Stderr, "run failed:", err)
+		if out.Failure != nil && out.RunDir != "" {
+			fmt.Fprintf(os.Stderr, "failure report: %s\n", filepath.Join(out.RunDir, "run_failure.md"))
+			fmt.Fprintf(os.Stderr, "after fixing the cause, retry with: diffmind retry --run %s\n", out.RunID)
+		}
 		os.Exit(1)
 	}
 	util.Info("cli.run", "run command finished", map[string]any{"run_id": out.RunID, "run_dir": out.RunDir})
+	fmt.Print(app.PrintSummary(out))
+}
+
+func retry(args []string) {
+	fs := flag.NewFlagSet("retry", flag.ExitOnError)
+	cfgPath := fs.String("config", "", "path to diffmind json config")
+	opencodeURL := fs.String("opencode-url", "", "OpenCode server base URL (overrides config)")
+	opencodeUsername := fs.String("opencode-username", "", "OpenCode basic auth username")
+	opencodePassword := fs.String("opencode-password", "", "OpenCode basic auth password")
+	opencodeTimeoutSeconds := fs.Int("opencode-timeout-seconds", 0, "OpenCode request timeout in seconds")
+	providerID := fs.String("provider-id", "", "OpenCode provider ID (overrides config)")
+	modelID := fs.String("model-id", "", "OpenCode model ID (overrides config)")
+	modelVariant := fs.String("model-variant", "", "OpenCode model variant")
+	outDir := fs.String("out", "", "artifact base directory (default .diffmind/runs)")
+	runID := fs.String("run", "", "run id to resume")
+	verbose := fs.Bool("verbose", false, "enable debug logs")
+	trace := fs.Bool("trace", false, "enable trace logs (very noisy)")
+	logFile := fs.String("log-file", "", "optional log file path")
+	fs.Parse(args)
+	configureLogging(*verbose, *trace, *logFile)
+
+	if *runID == "" {
+		fmt.Fprintln(os.Stderr, "--run is required")
+		os.Exit(2)
+	}
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "config load failed:", err)
+		os.Exit(1)
+	}
+	if *opencodeURL != "" {
+		cfg.OpenCode.BaseURL = *opencodeURL
+	}
+	if *opencodeUsername != "" {
+		cfg.OpenCode.Username = *opencodeUsername
+	}
+	if *opencodePassword != "" {
+		cfg.OpenCode.Password = *opencodePassword
+	}
+	if *opencodeTimeoutSeconds > 0 {
+		cfg.OpenCode.TimeoutSec = *opencodeTimeoutSeconds
+	}
+	if *providerID != "" {
+		cfg.OpenCode.ProviderID = *providerID
+	}
+	if *modelID != "" {
+		cfg.OpenCode.ModelID = *modelID
+	}
+	if *modelVariant != "" {
+		cfg.OpenCode.ModelVariant = *modelVariant
+	}
+	if *outDir != "" {
+		cfg.Artifacts.BaseDir = *outDir
+	}
+	if cfg.OpenCode.Password == "" {
+		cfg.OpenCode.Password = os.Getenv("OPENCODE_SERVER_PASSWORD")
+	}
+	if cfg.OpenCode.Username == "" {
+		cfg.OpenCode.Username = os.Getenv("OPENCODE_SERVER_USERNAME")
+	}
+
+	out, err := app.RetryRun(context.Background(), app.RetryInput{
+		BaseDir: cfg.Artifacts.BaseDir, RunID: *runID, Config: cfg,
+	})
+	if err != nil {
+		util.Error("cli.retry", "retry command failed", map[string]any{"error": err})
+		fmt.Fprintln(os.Stderr, "retry failed:", err)
+		if out.Failure != nil && out.RunDir != "" {
+			fmt.Fprintf(os.Stderr, "failure report: %s\n", filepath.Join(out.RunDir, "run_failure.md"))
+		}
+		os.Exit(1)
+	}
+	util.Info("cli.retry", "retry command finished", map[string]any{"run_id": out.RunID, "run_dir": out.RunDir})
 	fmt.Print(app.PrintSummary(out))
 }
 

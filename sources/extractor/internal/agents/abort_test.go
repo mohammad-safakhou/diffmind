@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 
@@ -90,8 +91,8 @@ func TestPromptFailureTriggersAbort(t *testing.T) {
 	if len(aborts) == 0 {
 		t.Fatalf("expected AbortSession to be called at least once on prompt failure")
 	}
-	if len(res.Warnings) == 0 {
-		t.Fatalf("expected per-stage warnings to be recorded; got %+v", res.Warnings)
+	if res.Failure == nil {
+		t.Fatalf("expected Result.Failure to be populated under fail-fast policy; got %+v", res)
 	}
 	// Aborts should be a subset of created sessions.
 	createSet := map[string]struct{}{}
@@ -102,5 +103,9 @@ func TestPromptFailureTriggersAbort(t *testing.T) {
 		if _, ok := createSet[a]; !ok {
 			t.Fatalf("aborted unknown session %q (creates=%v)", a, creates)
 		}
+	}
+	// Cleanup the retained snapshot.
+	if res.SnapshotPath != "" {
+		_ = os.RemoveAll(res.SnapshotPath)
 	}
 }

@@ -11,9 +11,15 @@ import (
 )
 
 // runDetailBatch executes Stage 3 in parallel. For every verified seed we
-// send a focused detail-enrichment prompt and merge the result back onto the
-// seed. If the agent returns item=null we keep the seed as-is (Stage 2
-// already confirmed it); we do not drop it silently.
+// send a focused detail-enrichment prompt and merge the result back onto
+// the seed. If the agent returns item=null we keep the seed as-is (Stage
+// 2 already confirmed it); we do not drop it silently.
+//
+// Fail-fast semantics mirror runDiscovery: the first detail failure
+// cancels a child context which causes still-pending workers to exit
+// immediately. Already-running peers complete and their results are
+// included in the returned slice so the failure report can show the
+// full picture.
 func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []detailJob, rf *repoFacts, onResult func()) []detailResult {
 	if len(jobs) == 0 {
 		return nil
@@ -25,6 +31,10 @@ func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []detailJob, rf 
 	if workers > len(jobs) {
 		workers = len(jobs)
 	}
+
+	stageCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	jobCh := make(chan detailJob)
 	resCh := make(chan detailResult)
 	var wg sync.WaitGroup
@@ -33,11 +43,18 @@ func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []detailJob, rf 
 		go func(workerID int) {
 			defer wg.Done()
 			for j := range jobCh {
+				if stageCtx.Err() != nil {
+					resCh <- detailResult{Objective: j.Objective, Err: stageCtx.Err()}
+					continue
+				}
 				util.Trace("agents.detail", "worker picked entity", map[string]any{
 					"worker": workerID, "objective": j.Objective.ID, "name": j.Seed.Name,
 				})
-				item, err := o.runDetailOne(ctx, j, rf)
+				item, err := o.runDetailOne(stageCtx, j, rf)
 				resCh <- detailResult{Objective: j.Objective, Item: item, Err: err}
+				if err != nil {
+					cancel()
+				}
 			}
 		}(i + 1)
 	}

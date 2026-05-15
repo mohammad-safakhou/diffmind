@@ -31,6 +31,10 @@ type RunOutput struct {
 	RunID   string
 	RunDir  string
 	Warning []string
+	// Failure, when non-nil, captures why the pipeline halted. It is
+	// only set when Run returns an error and the orchestrator made it
+	// far enough to identify a single root cause.
+	Failure *agents.Failure
 }
 
 func Run(ctx context.Context, in RunInput) (RunOutput, error) {
@@ -82,14 +86,27 @@ func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 	if runID == "" {
 		runID = started.Format("20060102T150405Z")
 	}
-	captureDir := filepath.Join(in.Config.Artifacts.BaseDir, runID, "prompts")
+	runDir := filepath.Join(in.Config.Artifacts.BaseDir, runID)
+	captureDir := filepath.Join(runDir, "prompts")
 	result, err := agents.RunWith(ctx, in.Config, repo, oc, agents.RunOptions{
 		Sink:       in.Sink,
 		CaptureDir: captureDir,
+		RunDir:     runDir,
 	})
 	if err != nil {
-		util.Error("app.run", "agent pipeline failed", map[string]any{"error": err})
-		return RunOutput{}, err
+		// On a hard pipeline failure the orchestrator already wrote the
+		// failure report and persisted intermediate state to runDir
+		// (and retained the snapshot). Surface a clear log line that
+		// points the operator at the report so they know where to look.
+		failureReport := filepath.Join(runDir, "run_failure.md")
+		util.Error("app.run", "agent pipeline failed; see failure report", map[string]any{
+			"error":         err,
+			"run_id":        runID,
+			"run_dir":       runDir,
+			"failure_md":    failureReport,
+			"snapshot_path": result.SnapshotPath,
+		})
+		return RunOutput{RunID: runID, RunDir: runDir, Warning: result.Warnings, Failure: result.Failure}, err
 	}
 	util.Info("app.run", "agent pipeline completed", map[string]any{
 		"exposures":    len(result.Exposures),
@@ -100,7 +117,7 @@ func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 	logProgress("pipeline", 90, "Extraction pipeline completed. Preparing artifacts.")
 	warnings = append(warnings, result.Warnings...)
 
-	runDir, err := artifacts.Write(artifacts.WriteInput{
+	writtenRunDir, err := artifacts.Write(artifacts.WriteInput{
 		RunID:         runID,
 		BaseDir:       in.Config.Artifacts.BaseDir,
 		RepoPath:      repo,
@@ -121,11 +138,11 @@ func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 	logProgress("artifacts", 100, "Artifacts written successfully.")
 	util.Info("app.run", "run completed", map[string]any{
 		"run_id":      runID,
-		"run_dir":     runDir,
+		"run_dir":     writtenRunDir,
 		"duration_ms": time.Since(started).Milliseconds(),
 		"warnings":    len(warnings),
 	})
-	return RunOutput{RunID: runID, RunDir: runDir, Warning: warnings}, nil
+	return RunOutput{RunID: runID, RunDir: writtenRunDir, Warning: warnings}, nil
 }
 
 func logProgress(phase string, percent int, tip string) {
