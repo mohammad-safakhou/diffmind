@@ -122,6 +122,19 @@ a:hover { text-decoration: underline; }
 .pipeline-stage.failed .progress > span { background: var(--error); }
 .pipeline-stage.cancelled .progress > span { background: var(--warn); }
 .pipeline-stage.pending .progress > span { background: var(--pending); width: 0% !important; }
+.pipeline-stage .stage-tip {
+  font-size: 11px; color: var(--text-dim);
+  height: 14px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+/* Per-stage token counter. Sits below the tip; renders as "12.3k · $0.0214"
+   when the stage has token data, or empty during the in-flight phase. */
+.pipeline-stage .stage-tokens {
+  font-size: 10px; color: var(--text-muted);
+  height: 12px; overflow: hidden;
+  font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0;
+}
 .pipeline-stage.running::after {
   content: '';
   position: absolute; top: 8px; right: 12px; width: 8px; height: 8px;
@@ -240,6 +253,23 @@ a:hover { text-decoration: underline; }
 .banner-hints code {
   background: var(--bg-2); padding: 1px 5px; border-radius: 3px; font-size: 11px;
 }
+/* Retry button + collapsible credentials panel in the failed-run banner. */
+.banner-actions {
+  display: flex; gap: 8px; margin-top: 6px;
+}
+.banner-creds {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px; margin-top: 6px;
+}
+.banner-creds .field { display: flex; flex-direction: column; gap: 3px; }
+.banner-creds label { font-size: 11px; color: var(--text-muted); }
+.banner-creds input {
+  background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: 4px; padding: 5px 7px; color: var(--text); font-size: 12px;
+}
+.banner-creds-error {
+  margin-top: 4px; color: var(--error); font-size: 12px;
+}
 
 /* Graph */
 
@@ -302,7 +332,21 @@ a:hover { text-decoration: underline; }
   display: flex; flex-direction: column;
   height: 100%; min-height: 0;
   background: rgba(10, 15, 28, 0.78);
+  position: relative;
 }
+/* Floating "Jump to latest" pill — only visible when the user has
+   scrolled up from the bottom. We render it always but the dimming
+   trick (opacity) keeps it from being intrusive when not needed. */
+.timeline-jump {
+  position: absolute; right: 16px; bottom: 12px;
+  background: var(--accent); color: white;
+  border: none; border-radius: 14px;
+  padding: 5px 12px; font-size: 11px; font-weight: 600;
+  cursor: pointer; opacity: 0.85;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  transition: opacity 120ms ease;
+}
+.timeline-jump:hover { opacity: 1; }
 .timeline-header {
   padding: 10px 14px; border-bottom: 1px solid var(--border);
   display: flex; gap: 10px; align-items: center;

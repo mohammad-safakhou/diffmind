@@ -3,7 +3,6 @@ package agents
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -41,10 +40,17 @@ type orchestrator struct {
 	oc               openCodeAPI
 	verbose          verbosePrompter // optional: only set when oc is *opencode.Client
 	pauser           pauseHandler    // optional: only set when oc is *opencode.Client
+	tokens           tokenReader     // optional: only set when oc is *opencode.Client
 	wd               *watchdog       // optional: nil if pauser is nil
 	sink             events.Sink     // never nil (NoopSink fallback)
 	captureDir       string          // optional: dir where prompt/response files are written
 	runDir           string          // optional: artifact root for state + failure report
+
+	// tokenAgg accumulates per-stage and per-run token totals from
+	// every promptAgent call's final /session/{id} read. Updated
+	// from the orchestrator's main goroutine after each prompt
+	// completes; no synchronisation needed.
+	tokenAgg tokenTotals
 
 	sessionMu       sync.Mutex
 	sharedSessionID string
@@ -60,11 +66,69 @@ func (o *orchestrator) emit(e events.Event) {
 	o.sink.Emit(e)
 }
 
+// emitStageCompleted emits a stage_completed event, merging the
+// stage's cumulative token totals into the payload. The token map
+// is consistent in shape regardless of whether the underlying client
+// implemented token reads — when tokens are unavailable we just skip
+// the field so the SPA renders "—" gracefully.
+func (o *orchestrator) emitStageCompleted(stage, status string, extra map[string]any) {
+	payload := map[string]any{}
+	for k, v := range extra {
+		payload[k] = v
+	}
+	if tb := o.snapshotStage(stage); tb != nil {
+		payload["tokens"] = tokenBucketPayload(tb)
+	}
+	o.emit(events.Event{
+		Kind: events.KindStageCompleted, Stage: stage, Status: status,
+		Payload: payload,
+	})
+}
+
+// tokenBucketPayload renders a tokenBucket as a SPA-friendly map.
+// Centralised so every consumer (stage_completed, llm_call_completed,
+// etc.) emits the same shape.
+func tokenBucketPayload(b *tokenBucket) map[string]any {
+	if b == nil {
+		return nil
+	}
+	return map[string]any{
+		"calls":       b.Calls,
+		"input":       b.Input,
+		"output":      b.Output,
+		"reasoning":   b.Reasoning,
+		"cache_read":  b.CacheRead,
+		"cache_write": b.CacheWrite,
+		"total":       b.Total(),
+		"cost":        b.Cost,
+	}
+}
+
+// modelBucketPayload renders a model.TokenBucket (the variant
+// returned by snapshotAll) using the same shape as
+// tokenBucketPayload above. We have two structs because the agents
+// package uses tokenBucket as an internal mutable accumulator while
+// model.TokenBucket is the public wire format.
+func modelBucketPayload(b model.TokenBucket) map[string]any {
+	return map[string]any{
+		"calls":       b.Calls,
+		"input":       b.Input,
+		"output":      b.Output,
+		"reasoning":   b.Reasoning,
+		"cache_read":  b.CacheRead,
+		"cache_write": b.CacheWrite,
+		"total":       b.Total,
+		"cost":        b.Cost,
+	}
+}
+
 // RunOptions carries optional dependencies for Run. Sink is the live event
 // stream consumed by the dashboard; CaptureDir is a directory under the run
 // dir where each LLM call's prompt + response is persisted for
 // click-to-view; RunDir, when set, is the run's artifact directory and
-// enables on-disk state persistence + failure report writes for retry.
+// enables on-disk state persistence + failure report writes for retry;
+// RunID, when set, is used as the leaf name of the snapshot directory
+// so the path is stable and human-readable (see snapshot.Create).
 //
 // Resume lets a retry command resume a previously-failed run by
 // fast-forwarding past the stages that already completed successfully
@@ -78,6 +142,7 @@ type RunOptions struct {
 	Sink          events.Sink
 	CaptureDir    string
 	RunDir        string
+	RunID         string
 	ResumeFromDir string
 	SnapshotPath  string
 }
@@ -102,6 +167,19 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	if cfg.Runtime.MaxCatalogItems <= 0 {
 		cfg.Runtime.MaxCatalogItems = 80
 	}
+	// Defensive sanitization: enforce the invariant that the raw
+	// transport timeout is always bigger than the watchdog's hard
+	// ceiling. Without this guard, a stale or hand-rolled config can
+	// set OpenCode.TimeoutSec=300 and silently neuter the entire
+	// watchdog by firing the http.Client.Timeout first — exactly the
+	// failure mode of runs 20260518T113418Z and 20260518T115925Z.
+	if fixes := cfg.Sanitize(); len(fixes) > 0 {
+		for _, f := range fixes {
+			util.Warn("agents.orchestrator", "config sanitized", map[string]any{
+				"field": f.Field, "was": f.Was, "adjusted": f.Adjusted, "reason": f.Reason,
+			})
+		}
+	}
 	sink := opts.Sink
 	if sink == nil {
 		sink = events.NoopSink{}
@@ -114,6 +192,10 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	// caller is invoking us via `diffmind retry`. Re-attaching skips
 	// the (potentially large) byte-for-byte copy and guarantees the
 	// retry sees the exact same working tree the failing run saw.
+	//
+	// New runs use a stable parent (~/.diffmind/snapshots) and the run
+	// ID as the leaf name, so the snapshot path is short, predictable,
+	// and lacks any random tokens that LLM tool calls can hallucinate.
 	var snap *snapshot.Snapshot
 	if strings.TrimSpace(opts.SnapshotPath) != "" {
 		s, err := snapshot.Reattach(sourceSessionDir, opts.SnapshotPath)
@@ -122,7 +204,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		}
 		snap = s
 	} else {
-		s, err := snapshot.Create(sourceSessionDir, "")
+		s, err := snapshot.Create(sourceSessionDir, snapshot.DefaultParent(), opts.RunID)
 		if err != nil {
 			return Result{}, fmt.Errorf("snapshot: %w", err)
 		}
@@ -154,6 +236,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	case *opencode.Client:
 		o.pauser = newPauseBridge(v)
 		o.verbose = newVerboseBridge(v)
+		o.tokens = &tokenBridge{c: v}
 	case pauseHandler:
 		o.pauser = v
 	}
@@ -161,6 +244,14 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	if o.verbose == nil {
 		if vp, ok := oc.(verbosePrompter); ok {
 			o.verbose = vp
+		}
+	}
+	// Same pattern for tokenReader: fakes that want to expose token
+	// totals can do so explicitly without pulling in the full
+	// opencode.Client surface.
+	if o.tokens == nil {
+		if tr, ok := oc.(tokenReader); ok {
+			o.tokens = tr
 		}
 	}
 	if o.pauser != nil {
@@ -188,6 +279,12 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		"repo": repoPath, "source_session_dir": sourceSessionDir, "snapshot": snap.Path, "sub_dir": subDir,
 		"workers": cfg.Runtime.Workers, "max_catalog_items": cfg.Runtime.MaxCatalogItems,
 		"reuse_session": cfg.Runtime.ReuseOpenCodeSession, "min_confidence": cfg.Quality.MinConfidence,
+		// Log the EFFECTIVE timeouts. Future debugging starts here:
+		// if any of these is too small, the watchdog can't do its job.
+		"opencode_transport_timeout_sec": cfg.OpenCode.TimeoutSec,
+		"idle_timeout_sec":               cfg.Runtime.IdleTimeoutSec,
+		"max_call_sec":                   cfg.Runtime.MaxCallSeconds,
+		"liveness_poll_sec":              cfg.Runtime.LivenessPollSec,
 	})
 	o.emit(events.Event{
 		Kind:    events.KindRunStarted,
@@ -200,6 +297,15 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 			"max_catalog_items":  cfg.Runtime.MaxCatalogItems,
 			"min_confidence":     cfg.Quality.MinConfidence,
 			"skip_reexamination": cfg.Runtime.SkipReexamination,
+			// Effective timeout settings; shown in the run_started event
+			// so the dashboard's timeline shows the resolved values.
+			// If you ever see a run fail with timeout=300 again you can
+			// confirm it instantly from this event without diffing
+			// configs.
+			"opencode_transport_timeout_sec": cfg.OpenCode.TimeoutSec,
+			"idle_timeout_sec":               cfg.Runtime.IdleTimeoutSec,
+			"max_call_sec":                   cfg.Runtime.MaxCallSeconds,
+			"liveness_poll_sec":              cfg.Runtime.LivenessPollSec,
 		},
 	})
 
@@ -216,34 +322,68 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	// state captured up to (but not including) the failing stage so the
 	// retry command has a consistent base to resume from.
 	haltFailure := func(stage, jobID, objectiveID, entityName string, err error, extra map[string]any) (Result, error) {
+		errClass := classifyError(err)
+		// Only attach a numeric HTTP status when the error is actually
+		// HTTP-shaped (4xx/5xx/rate-limit). For schema/network/timeout
+		// failures the error message frequently includes 3-digit
+		// numbers in other contexts (token counts, byte sizes, etc.)
+		// that the regex would otherwise pick up as a phantom status.
+		var httpStatus int
+		if shouldReportHTTPStatus(errClass) {
+			httpStatus = extractHTTPStatus(err.Error())
+		}
+		cancelled := ctx.Err() != nil
 		f := &Failure{
 			Stage:        stage,
 			JobID:        jobID,
 			ObjectiveID:  objectiveID,
 			EntityName:   entityName,
 			Error:        err.Error(),
-			ErrorClass:   classifyError(err),
-			HTTPStatus:   extractHTTPStatus(err.Error()),
+			ErrorClass:   errClass,
+			HTTPStatus:   httpStatus,
 			OccurredAt:   time.Now().UTC(),
 			Extra:        extra,
 			PromptPath:   o.captureFilePath(jobID, "prompt", "txt"),
 			ResponsePath: o.captureFilePath(jobID, "response", "json"),
 			SnapshotPath: o.snap.Path,
+			Cancelled:    cancelled,
+		}
+		// If the parent context is dead the halt was triggered by the
+		// user pressing Cancel, NOT by an underlying failure. Emit
+		// KindRunCancelled so the dashboard's status pill flips to
+		// "cancelled" and the failure report semantics match (the
+		// failure report is still written so retry knows what was
+		// in flight when the user pulled the plug, but the run-level
+		// event communicates intent: this was user-initiated).
+		terminalKind := events.KindRunFailed
+		terminalStatus := events.StatusFailed
+		if cancelled {
+			terminalKind = events.KindRunCancelled
+			terminalStatus = events.StatusCancelled
+		}
+		haltPayload := map[string]any{
+			"stage":         stage,
+			"job_id":        jobID,
+			"objective_id":  objectiveID,
+			"entity_name":   entityName,
+			"error_class":   f.ErrorClass,
+			"http_status":   f.HTTPStatus,
+			"prompt_path":   f.PromptPath,
+			"response_path": f.ResponsePath,
+			"elapsed_ms":    time.Since(start).Milliseconds(),
+			"cancelled":     cancelled,
+		}
+		if all := o.snapshotAll(); all != nil {
+			tokensOut := map[string]any{}
+			for s, tb := range all {
+				tokensOut[s] = modelBucketPayload(tb)
+			}
+			haltPayload["tokens"] = tokensOut
 		}
 		o.emit(events.Event{
-			Kind: events.KindRunFailed, Status: events.StatusFailed, Stage: stage, JobID: jobID,
+			Kind: terminalKind, Status: terminalStatus, Stage: stage, JobID: jobID,
 			Message: err.Error(),
-			Payload: map[string]any{
-				"stage":         stage,
-				"job_id":        jobID,
-				"objective_id":  objectiveID,
-				"entity_name":   entityName,
-				"error_class":   f.ErrorClass,
-				"http_status":   f.HTTPStatus,
-				"prompt_path":   f.PromptPath,
-				"response_path": f.ResponsePath,
-				"elapsed_ms":    time.Since(start).Milliseconds(),
-			},
+			Payload: haltPayload,
 		})
 		// The snapshot must be retained for retry: instruct the deferred
 		// closer to keep the directory.
@@ -281,7 +421,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		}
 		rf = got
 		o.persistStageState("repo_facts.json", rf)
-		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "repo_facts", Status: events.StatusSuccess, Payload: map[string]any{"facts_present": rf != nil}})
+		o.emitStageCompleted("repo_facts", events.StatusSuccess, map[string]any{"facts_present": rf != nil})
 	}
 	state.RepoFacts = rf
 
@@ -326,7 +466,16 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 			if d.Err == nil {
 				continue
 			}
-			if errors.Is(d.Err, context.Canceled) || errors.Is(d.Err, context.DeadlineExceeded) {
+			// Workers that exited because a sibling already tripped
+			// fail-fast explicitly flag PeerCancelled. Anything else
+			// — including a per-call http.Client timeout that wraps
+			// context.DeadlineExceeded — is a real root-cause error
+			// and must surface. The previous heuristic
+			// (errors.Is(ctx.Canceled/DeadlineExceeded)) silently
+			// swallowed 300s HTTP timeouts; see
+			// .diffmind/runs/20260515T123031Z for the cautionary
+			// tale.
+			if d.PeerCancelled {
 				continue
 			}
 			if firstDiscoveryErr == nil {
@@ -338,7 +487,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 			o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "discovery", Status: events.StatusFailed})
 			return haltFailure("discovery", "discover."+firstDiscoveryObj.ID, firstDiscoveryObj.ID, firstDiscoveryObj.Description, firstDiscoveryErr, nil)
 		}
-		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "discovery", Status: events.StatusSuccess})
+		o.emitStageCompleted("discovery", events.StatusSuccess, nil)
 
 		for _, d := range discovery {
 			if d.Objective.Kind == model.KindExposure {
@@ -384,7 +533,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 				"reexamine."+reexamFailedSeed.Obj.ID+"."+safeJobID(reexamFailedSeed.Seed.Name),
 				reexamFailedSeed.Obj.ID, reexamFailedSeed.Seed.Name, reexamErr, nil)
 		}
-		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "reexamination", Status: events.StatusSuccess})
+		o.emitStageCompleted("reexamination", events.StatusSuccess, nil)
 		reexamined = cleaned
 		unresolved = append(unresolved, unresolvedRe...)
 	} else {
@@ -411,31 +560,35 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		details := o.runDetailBatch(ctx, reexamined, rf, progress.Advance)
 		progress.CompletePhase()
 
+		// Results arrive in completion order (workers run in parallel),
+		// so we cannot index back into `reexamined` to recover the seed
+		// — that would attribute the failure to the wrong job. Each
+		// detailResult now carries SeedName explicitly so we can
+		// reconstruct the failing job_id correctly.
 		var firstDetailErr error
-		var firstDetailJob detailJob
-		for i, d := range details {
+		var firstDetailObjID, firstDetailSeed string
+		for _, d := range details {
 			if d.Err == nil {
 				continue
 			}
-			if errors.Is(d.Err, context.Canceled) || errors.Is(d.Err, context.DeadlineExceeded) {
+			// Skip peer-cancelled siblings (see discovery for
+			// rationale). Per-call HTTP timeouts must surface.
+			if d.PeerCancelled {
 				continue
 			}
 			if firstDetailErr == nil {
 				firstDetailErr = d.Err
-				if i < len(reexamined) {
-					firstDetailJob = reexamined[i]
-				} else {
-					firstDetailJob = detailJob{Objective: d.Objective}
-				}
+				firstDetailObjID = d.Objective.ID
+				firstDetailSeed = d.SeedName
 			}
 		}
 		if firstDetailErr != nil {
 			o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "detail", Status: events.StatusFailed})
 			return haltFailure("detail",
-				"detail."+firstDetailJob.Objective.ID+"."+safeJobID(firstDetailJob.Seed.Name),
-				firstDetailJob.Objective.ID, firstDetailJob.Seed.Name, firstDetailErr, nil)
+				"detail."+firstDetailObjID+"."+safeJobID(firstDetailSeed),
+				firstDetailObjID, firstDetailSeed, firstDetailErr, nil)
 		}
-		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "detail", Status: events.StatusSuccess})
+		o.emitStageCompleted("detail", events.StatusSuccess, nil)
 
 		for _, d := range details {
 			if d.Item == nil {
@@ -478,7 +631,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 			"connections."+connFailedExposure,
 			"", connFailedExposure, connErr, nil)
 	}
-	o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "connections", Status: events.StatusSuccess, Payload: map[string]any{"connections": len(conns)}})
+	o.emitStageCompleted("connections", events.StatusSuccess, map[string]any{"connections": len(conns)})
 	unresolved = append(unresolved, connUnresolved...)
 	state.Connections = append([]model.Connection(nil), conns...)
 	o.persistStageState("connections.json", state.Connections)
@@ -494,7 +647,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	sort.Slice(conns, func(i, j int) bool { return conns[i].ID < conns[j].ID })
 	progress.Advance()
 	progress.CompletePhase()
-	o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "reconcile", Status: events.StatusSuccess})
+	o.emitStageCompleted("reconcile", events.StatusSuccess, nil)
 
 	result := Result{
 		Exposures:    exposures,
@@ -522,17 +675,31 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	// repo, or a model that produced nothing usable. Mark the payload
 	// with empty=true so the dashboard can surface a yellow banner.
 	empty := len(result.Exposures) == 0 && len(result.Dependencies) == 0 && len(result.Connections) == 0
+	terminalPayload := map[string]any{
+		"exposures":    len(result.Exposures),
+		"dependencies": len(result.Dependencies),
+		"connections":  len(result.Connections),
+		"unresolved":   len(result.Unresolved),
+		"warnings":     len(result.Warnings),
+		"elapsed_ms":   time.Since(start).Milliseconds(),
+		"empty":        empty,
+	}
+	// Attach token totals (run-wide and per-stage) to the terminal
+	// event so the SPA can render a final cost summary without
+	// having to walk every llm_call_completed event in its buffer.
+	if all := o.snapshotAll(); all != nil {
+		// snapshotAll returns model.TokenBucket directly, with the
+		// "total" key already substituted in for the empty key.
+		tokensOut := map[string]any{}
+		for stage, tb := range all {
+			tokensOut[stage] = modelBucketPayload(tb)
+		}
+		terminalPayload["tokens"] = tokensOut
+		result.Tokens = all
+	}
 	o.emit(events.Event{
 		Kind: finalKind, Status: finalStatus,
-		Payload: map[string]any{
-			"exposures":    len(result.Exposures),
-			"dependencies": len(result.Dependencies),
-			"connections":  len(result.Connections),
-			"unresolved":   len(result.Unresolved),
-			"warnings":     len(result.Warnings),
-			"elapsed_ms":   time.Since(start).Milliseconds(),
-			"empty":        empty,
-		},
+		Payload: terminalPayload,
 	})
 	return result, nil
 }
@@ -586,6 +753,38 @@ func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, sch
 	util.Trace("agents.agent", "prompt start", map[string]any{"role": role, "session_id": sessionID, "prompt_len": len(prompt)})
 	started := time.Now()
 
+	// Liveness watchdog: poll OpenCode while the prompt POST is in
+	// flight. If the agent stops making progress for too long (and is
+	// not waiting on a tool or permission), the watchdog aborts the
+	// session, which causes the in-flight POST to return with a
+	// cancellation error that we then re-label as ErrStuck.
+	//
+	// We only wire the watchdog when we have the real *opencode.Client
+	// underneath (signalled by o.verbose being non-nil; same gate as
+	// the pause-bridge). Test fakes never trigger liveness because
+	// their PromptStructured returns synchronously.
+	watchCtx, stopWatch := context.WithCancel(ctx)
+	watchDone := make(chan *livenessReport, 1)
+	if o.verbose != nil {
+		if client, ok := o.oc.(livenessClient); ok {
+			if ab, ok := o.oc.(livenessAborter); ok {
+				probe := &openCodeLivenessProbe{oc: client, sessionID: sessionID, directory: o.sessionDir}
+				abort := &openCodeAborter{oc: ab, sessionID: sessionID, directory: o.sessionDir}
+				cfg := livenessConfig{
+					IdleTimeout:  time.Duration(o.cfg.Runtime.IdleTimeoutSec) * time.Second,
+					MaxCall:      time.Duration(o.cfg.Runtime.MaxCallSeconds) * time.Second,
+					PollInterval: time.Duration(o.cfg.Runtime.LivenessPollSec) * time.Second,
+				}
+				go func() { watchDone <- runLiveness(watchCtx, cfg, probe, abort, role, o.sink) }()
+			}
+		}
+	}
+	// Ensure we always close the channel so a non-watchdogged call
+	// can still drain on `<-watchDone` below.
+	if o.verbose == nil {
+		watchDone <- nil
+	}
+
 	var payload map[string]any
 	var rawBody []byte
 	var textBody string
@@ -593,6 +792,25 @@ func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, sch
 		payload, rawBody, textBody, err = o.verbose.PromptStructuredVerboseRaw(ctx, sessionID, o.sessionDir, prompt, schema)
 	} else {
 		payload, err = o.oc.PromptStructured(ctx, sessionID, o.sessionDir, prompt, schema)
+	}
+
+	// Stop the watchdog and collect its verdict synchronously.
+	stopWatch()
+	report := <-watchDone
+
+	// If the watchdog declared the call stuck, re-label the error so
+	// the failure report shows class=stuck instead of cancelled/timeout.
+	if report != nil && report.Aborted {
+		stuckCause := report.Reason
+		util.Warn("agents.agent", "prompt declared stuck by liveness watchdog", map[string]any{
+			"role":         role,
+			"session_id":   sessionID,
+			"prompt_len":   len(prompt),
+			"reason":       stuckCause,
+			"last_tool":    report.LastTool,
+			"original_err": errString(err),
+		})
+		err = newStuckError(stuckCause)
 	}
 
 	// Always persist whatever we got — successful payload, raw bytes, or
@@ -652,17 +870,38 @@ func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, sch
 		})
 		return nil, fmt.Errorf("%s prompt: %w", role, err)
 	}
+	// Read final token totals BEFORE cleanupFn() — cleanupFn may
+	// delete the session server-side, at which point /session/{id}
+	// would 404. The read is bounded to 3s so a slow OpenCode can't
+	// add meaningful latency here.
+	tokens := o.recordPromptTokens(ctx, sessionID, role)
 	if cleanupFn != nil {
 		cleanupFn()
 	}
+	payloadOut := map[string]any{
+		"session_id":    sessionID,
+		"duration_ms":   time.Since(started).Milliseconds(),
+		"prompt_len":    len(prompt),
+		"response_keys": mapKeys(payload),
+	}
+	if tokens != nil {
+		// Attach the per-call tokens to the completion event so the
+		// dashboard can render per-job cost. Use a sub-map rather
+		// than flattening so adding new counters later doesn't
+		// touch every consumer.
+		payloadOut["tokens"] = map[string]any{
+			"input":       tokens.Input,
+			"output":      tokens.Output,
+			"reasoning":   tokens.Reasoning,
+			"cache_read":  tokens.CacheRead,
+			"cache_write": tokens.CacheWrite,
+			"total":       tokens.Total(),
+			"cost":        tokens.Cost,
+		}
+	}
 	o.emit(events.Event{
 		Kind: events.KindLLMCallCompleted, JobID: role, Status: events.StatusSuccess,
-		Payload: map[string]any{
-			"session_id":    sessionID,
-			"duration_ms":   time.Since(started).Milliseconds(),
-			"prompt_len":    len(prompt),
-			"response_keys": mapKeys(payload),
-		},
+		Payload: payloadOut,
 	})
 	util.Trace("agents.agent", "prompt ok", map[string]any{"role": role, "session_id": sessionID})
 	return payload, nil

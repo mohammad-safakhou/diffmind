@@ -4,7 +4,12 @@ import (
 	"embed"
 	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
+
+	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
 // Embedded build of the dashboard SPA. The frontend lives under web/ and is
@@ -14,9 +19,49 @@ import (
 //go:embed web/dist
 var distFS embed.FS
 
-// distRoot returns the embedded fs scoped to the dist/ subtree so paths
-// resolve to "/index.html" rather than "/web/dist/index.html".
+// distOverride is the absolute path to an on-disk dist/ directory that
+// takes priority over the embedded bundle when set. Used in dev: the
+// CLI's `ui` subcommand discovers `internal/ui/web/dist/` relative to
+// the project root and points us at it, so SPA changes are picked up
+// on browser reload without restarting the Go process.
+//
+// nil pointer = use embedded bundle. Atomic because the CLI sets it
+// once at startup before any request can land.
+var distOverride atomic.Pointer[string]
+
+// SetDistOverride points the static handler at a directory on disk
+// instead of the embedded bundle. Passing "" clears the override.
+// Safe to call from any goroutine.
+func SetDistOverride(path string) {
+	clean := strings.TrimSpace(path)
+	if clean == "" {
+		distOverride.Store(nil)
+		return
+	}
+	abs, err := filepath.Abs(clean)
+	if err != nil {
+		util.Warn("ui.static", "failed to absolutise dist override", map[string]any{"path": clean, "error": err})
+		return
+	}
+	if info, err := os.Stat(abs); err != nil || !info.IsDir() {
+		util.Warn("ui.static", "dist override is not a directory; ignoring", map[string]any{"path": abs, "error": err})
+		distOverride.Store(nil)
+		return
+	}
+	distOverride.Store(&abs)
+	util.Info("ui.static", "serving dashboard from on-disk dist", map[string]any{"path": abs})
+}
+
+// distRoot returns the fs to serve the dashboard from. When an
+// on-disk dist override is set we use that (dev mode); otherwise we
+// fall back to the embedded bundle (production binaries).
+//
+// We re-resolve on every request so SPA rebuilds during dev are
+// picked up on the next HTTP hit without needing to restart Go.
 func distRoot() fs.FS {
+	if p := distOverride.Load(); p != nil {
+		return os.DirFS(*p)
+	}
 	root, err := fs.Sub(distFS, "web/dist")
 	if err != nil {
 		// embed at compile time guarantees this can't fail.

@@ -50,20 +50,44 @@ export function applyEvent(e) {
   }
 
   switch (e.kind) {
-    case 'run_started':
+    case 'run_started': {
+      // CRITICAL: run_started is the FIRST event in events.jsonl, so
+      // it is also the first event we see when REPLAYING a finished
+      // run via SSE. If we naively wrote `status: 'running'` here we
+      // would clobber the terminal status the sidebar's onReplay()
+      // already set ("failed" / "cancelled" / "completed"), and the
+      // user would see a "running" pill until the run_failed event
+      // at the very END of replay flipped it back — minutes later.
+      //
+      // The rule: preserve a known-terminal status. A new (live)
+      // run has no prior runMeta (or has a non-terminal one), so
+      // we still set "running" in the live case.
+      const prior = runMeta.value
+      const isTerminal = prior && (prior.status === 'failed' || prior.status === 'completed' || prior.status === 'cancelled')
       runMeta.value = {
+        ...(prior || {}),
         id: e.run_id,
-        startedAt: e.ts,
-        status: 'running',
-        repo: e.payload?.repo,
-        snapshot: e.payload?.snapshot,
-        config: e.payload || {},
+        // Preserve startedAt from the live event when prior has no
+        // value; never overwrite a more precise startedAt that the
+        // sidebar already filled in.
+        startedAt: prior?.startedAt || e.ts,
+        // Keep terminal status sticky; otherwise transition to
+        // running (the live-run case).
+        status: isTerminal ? prior.status : 'running',
+        repo: e.payload?.repo || prior?.repo,
+        snapshot: e.payload?.snapshot || prior?.snapshot,
+        config: e.payload || prior?.config || {},
+        // Preserve any terminal-only fields the sidebar set.
+        finishedAt: prior?.finishedAt,
+        error: prior?.error,
+        errorClass: prior?.errorClass,
       }
       stages.value = initialStages()
       jobs.value = new Map()
       llmCalls.value = new Map()
       watchdogActions.value = []
       break
+    }
 
     case 'run_completed':
     case 'run_failed':
@@ -81,6 +105,16 @@ export function applyEvent(e) {
           // don't have to dig into payload every render.
           empty: !!e.payload?.empty,
           error: e.message || e.payload?.sample_error || prev.error,
+          // errorClass lets the failure banner pick a class-specific
+          // remediation surface (e.g. show the "fresh credentials"
+          // panel by default when the failure was auth or quota).
+          errorClass: e.payload?.error_class || prev.errorClass || '',
+          // tokensTotal is the run-wide total; the full per-stage
+          // breakdown is in payload.tokens for callers that need it
+          // (DetailDrawer renders a table).
+          tokens: e.payload?.tokens || prev.tokens,
+          tokensTotal: e.payload?.tokens?.total?.total ?? prev.tokensTotal,
+          tokensCost: e.payload?.tokens?.total?.cost ?? prev.tokensCost,
         }
       }
       // Mark any stages still showing running as either completed or
@@ -133,6 +167,11 @@ export function applyEvent(e) {
           status: e.status || 'success',
           finishedAt: e.ts,
           percent: 100,
+          // Token totals get attached to the stage record so the
+          // PipelineStrip can render a small "12.3k tokens" line
+          // under the stage's progress bar without touching every
+          // llm_call_completed event.
+          tokens: e.payload?.tokens || prev.tokens,
         })
       })
       break

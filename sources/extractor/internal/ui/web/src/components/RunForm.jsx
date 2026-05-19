@@ -3,8 +3,30 @@ import { startRun } from '../lib/api.js'
 import { runMeta } from '../lib/store.js'
 
 // Default form values are persisted in localStorage so re-runs are quick.
-const STORAGE_KEY = 'diffmind:form-defaults'
+//
+// STORAGE_KEY is versioned. Bump the suffix whenever the saved shape
+// changes in a way that could silently miscompute on the server.
+// Specifically: schema bumps that ADD a field are fine (load() will
+// fall back to the new default), but RENAMING or CHANGING the
+// SEMANTICS of an existing field requires a bump so old saved values
+// don't poison new runs.
+//
+// v2 (this version): bumped because the old form had
+// opencode.timeout_seconds: 300 baked in. Users with that saved
+// kept hitting the 300-second wall even after the SPA was patched
+// to default to 0, because the localStorage merge was shallow.
+// Bumping the key forces a clean slate; we also delete the old key
+// on first load so it doesn't sit around forever.
+const STORAGE_KEY = 'diffmind:form-defaults-v2'
+const LEGACY_STORAGE_KEYS = ['diffmind:form-defaults']
 
+// `timeout_seconds` is the raw http.Client.Timeout on the transport.
+// We DELIBERATELY do not surface it as a primary control — the
+// liveness watchdog (`idle_timeout_seconds`) is what catches stuck
+// calls. The transport timeout is now a 4-hour fail-safe; sending 0
+// from the form means "use the server's default", which is what we
+// want for ~all use cases. The CLI flag is still available for power
+// users.
 const DEFAULTS = {
   repo_path: '',
   opencode: {
@@ -14,7 +36,7 @@ const DEFAULTS = {
     provider_id: 'anthropic',
     model_id: 'claude-sonnet-4-5',
     model_variant: 'high',
-    timeout_seconds: 300,
+    timeout_seconds: 0, // 0 = use server default (4h fail-safe)
   },
   runtime: {
     workers: 6,
@@ -23,15 +45,50 @@ const DEFAULTS = {
     cleanup_opencode_sessions: false,
     opencode_delete_delay_seconds: 5,
     skip_reexamination: false,
+    // Liveness watchdog: this is the real "wait at most N seconds
+    // with no observable progress before aborting" control.
+    idle_timeout_seconds: 120,
+    max_call_seconds: 1800,
+    liveness_poll_seconds: 5,
   },
   quality: { min_confidence: 0.7 },
 }
 
+// deepMerge produces a copy of `base` with values from `over` layered
+// on top, recursing into plain objects. Crucially, this is NOT a
+// shallow spread: a shallow merge of {opencode: {...}} over
+// DEFAULTS.opencode would replace the entire opencode block,
+// dropping any fields that were added in a newer DEFAULTS version.
+// We saw that exact bug let stale opencode.timeout_seconds: 300
+// survive a SPA refresh and re-cripple a run.
+function deepMerge(base, over) {
+  if (over === null || typeof over !== 'object' || Array.isArray(over)) {
+    return over === undefined ? base : over
+  }
+  const out = Array.isArray(base) ? [...base] : { ...base }
+  for (const k of Object.keys(over)) {
+    const bv = base ? base[k] : undefined
+    if (bv && typeof bv === 'object' && !Array.isArray(bv)) {
+      out[k] = deepMerge(bv, over[k])
+    } else {
+      out[k] = over[k]
+    }
+  }
+  return out
+}
+
 function load() {
+  // First, evict any legacy storage entries so the form never reads
+  // them again. We do this regardless of whether the current key is
+  // present.
+  try {
+    for (const legacy of LEGACY_STORAGE_KEYS) localStorage.removeItem(legacy)
+  } catch {}
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return JSON.parse(JSON.stringify(DEFAULTS))
-    return { ...JSON.parse(JSON.stringify(DEFAULTS)), ...JSON.parse(raw) }
+    const saved = JSON.parse(raw)
+    return deepMerge(JSON.parse(JSON.stringify(DEFAULTS)), saved)
   } catch {
     return JSON.parse(JSON.stringify(DEFAULTS))
   }
@@ -120,8 +177,10 @@ export function RunForm({ onLaunched }) {
           <input value={form.opencode.base_url} onInput={(e) => update('opencode.base_url', e.target.value)} disabled={running} />
         </div>
         <div class="field">
-          <label>Timeout (sec)</label>
-          <input type="number" value={form.opencode.timeout_seconds} onInput={(e) => update('opencode.timeout_seconds', Number(e.target.value))} disabled={running} />
+          <label title="Maximum seconds a prompt can go without observable progress on the OpenCode session before the liveness watchdog aborts it. The agent making tool calls or producing reasoning resets this clock. 0 = use server default (120s).">
+            Idle timeout (sec)
+          </label>
+          <input type="number" value={form.runtime.idle_timeout_seconds} onInput={(e) => update('runtime.idle_timeout_seconds', Number(e.target.value))} disabled={running} />
         </div>
       </div>
 
@@ -178,6 +237,26 @@ export function RunForm({ onLaunched }) {
 
       {advanced && (
         <div style="display:flex; flex-direction:column; gap: 8px; padding-left: 4px; border-left: 2px solid var(--border);">
+          <div class="row-3">
+            <div class="field">
+              <label title="Hard ceiling on a single LLM call. Even with continuous progress the watchdog aborts past this. 0 = use server default (1800s = 30min).">
+                Max call (sec)
+              </label>
+              <input type="number" value={form.runtime.max_call_seconds} onInput={(e) => update('runtime.max_call_seconds', Number(e.target.value))} disabled={running} />
+            </div>
+            <div class="field">
+              <label title="How often the liveness watchdog polls OpenCode for progress. Default 5s.">
+                Liveness poll (sec)
+              </label>
+              <input type="number" value={form.runtime.liveness_poll_seconds} onInput={(e) => update('runtime.liveness_poll_seconds', Number(e.target.value))} disabled={running} />
+            </div>
+            <div class="field">
+              <label title="Raw http.Client.Timeout on the transport. This is a fail-safe; the primary control is Idle timeout above. Default 4h. 0 = server default.">
+                Transport timeout (sec)
+              </label>
+              <input type="number" value={form.opencode.timeout_seconds} onInput={(e) => update('opencode.timeout_seconds', Number(e.target.value))} disabled={running} />
+            </div>
+          </div>
           <div class="toggle">
             <input type="checkbox" id="reuse" checked={form.runtime.reuse_opencode_session} onInput={(e) => update('runtime.reuse_opencode_session', e.target.checked)} disabled={running} />
             <label for="reuse">Reuse one OpenCode session per run</label>
@@ -221,6 +300,9 @@ function buildCLI(f) {
   if (f.opencode.timeout_seconds) parts.push(`  --opencode-timeout-seconds ${f.opencode.timeout_seconds}`)
   if (f.runtime.workers) parts.push(`  --workers ${f.runtime.workers}`)
   if (f.runtime.max_catalog_items) parts.push(`  --max-catalog-items ${f.runtime.max_catalog_items}`)
+  if (f.runtime.idle_timeout_seconds) parts.push(`  --idle-timeout-seconds ${f.runtime.idle_timeout_seconds}`)
+  if (f.runtime.max_call_seconds) parts.push(`  --max-call-seconds ${f.runtime.max_call_seconds}`)
+  if (f.runtime.liveness_poll_seconds) parts.push(`  --liveness-poll-seconds ${f.runtime.liveness_poll_seconds}`)
   if (f.runtime.reuse_opencode_session) parts.push('  --reuse-opencode-session')
   if (f.runtime.cleanup_opencode_sessions) parts.push('  --cleanup-opencode-sessions')
   if (f.runtime.skip_reexamination) parts.push('  --skip-reexamination')

@@ -125,4 +125,25 @@ type RunManifest struct {
 	// pipeline ("discovery", "reexamination", "detail", "connections")
 	// and values are the count of items that failed in that stage.
 	StageFailures map[string]int `json:"stage_failures,omitempty"`
+
+	// TokenTotals holds the per-stage token / cost totals reported
+	// by OpenCode. Keys are stage names; the special key "total" is
+	// the run-wide aggregate. Nil when the provider doesn't return
+	// token counters or when token reads were disabled.
+	TokenTotals map[string]TokenBucket `json:"token_totals,omitempty"`
+}
+
+// TokenBucket mirrors agents.tokenBucket in the model package so
+// callers outside agents (artifacts writer, validate command, SPA
+// JSON API) don't need to import the agents package just to read
+// numbers off a manifest.
+type TokenBucket struct {
+	Calls      int     `json:"calls"`
+	Input      int     `json:"input"`
+	Output     int     `json:"output"`
+	Reasoning  int     `json:"reasoning"`
+	CacheRead  int     `json:"cache_read"`
+	CacheWrite int     `json:"cache_write"`
+	Total      int     `json:"total"`
+	Cost       float64 `json:"cost"`
 }

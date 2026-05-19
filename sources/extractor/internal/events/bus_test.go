@@ -117,24 +117,41 @@ func TestBusJSONLPersistence(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- ReplayJSONL(ctx, path, out) }()
 
+	// Drain the `out` channel until replay is done AND nothing more is
+	// queued. A naive select that exits the loop as soon as `done`
+	// fires races with the producer: ReplayJSONL can complete (signal
+	// `done`) with events still buffered in `out`, and we would miss
+	// them. Wait for `done` first, then drain whatever is left.
 	got := []Event{}
-collect:
+	replayErrCh := make(chan error, 1)
+	go func() { replayErrCh <- <-done }()
 	for {
 		select {
 		case e := <-out:
 			got = append(got, e)
 			if len(got) == 2 {
-				break collect
+				if err := <-replayErrCh; err != nil {
+					t.Fatalf("ReplayJSONL: %v", err)
+				}
+				return
 			}
-		case err := <-done:
+		case err := <-replayErrCh:
 			if err != nil {
 				t.Fatalf("ReplayJSONL: %v", err)
 			}
-			break collect
+			// Replay finished; drain any remaining buffered events.
+			for {
+				select {
+				case e := <-out:
+					got = append(got, e)
+				default:
+					if len(got) < 2 {
+						t.Fatalf("expected 2 events from JSONL replay, got %d", len(got))
+					}
+					return
+				}
+			}
 		}
-	}
-	if len(got) < 2 {
-		t.Fatalf("expected 2 events from JSONL replay, got %d", len(got))
 	}
 }
 

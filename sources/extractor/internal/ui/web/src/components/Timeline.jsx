@@ -1,7 +1,13 @@
-import { useState, useMemo } from 'preact/hooks'
+import { useState, useMemo, useRef, useEffect } from 'preact/hooks'
 import { timeline, selection } from '../lib/store.js'
 
 const STAGE_FILTERS = ['all', 'repo_facts', 'discovery', 'reexamination', 'detail', 'connections', 'reconcile']
+
+// How close to the bottom (in px) counts as "the user is following along".
+// If the user is within this much of the bottom we auto-scroll on every new
+// event; if they're further up we leave their scroll position alone so they
+// can read older entries in peace.
+const STICK_BOTTOM_THRESHOLD_PX = 40
 
 // Activity timeline. Lives below the graph; click a row to inspect that
 // event's source job in the detail drawer.
@@ -22,6 +28,36 @@ export function Timeline() {
     return out.slice(-500) // viewport cap; older still in the buffer.
   }, [events, stageFilter, errorsOnly, search])
 
+  // Auto-scroll to the newest event when the user is already at (or near)
+  // the bottom of the list. If they scrolled up to read older events we do
+  // NOT yank them back — that's the standard chat-window pattern: stay
+  // sticky to the tail only while the user is following along.
+  const listRef = useRef(null)
+  const wasAtBottomRef = useRef(true)
+  // Observe the user's scroll position. We sample it just BEFORE the next
+  // render via useEffect — wasAtBottom captures the state immediately
+  // before new items push the scroll height.
+  useEffect(() => {
+    const el = listRef.current
+    if (!el) return
+    if (wasAtBottomRef.current) {
+      // After Preact paints the new rows the scrollHeight has grown;
+      // jump straight to the new bottom.
+      el.scrollTop = el.scrollHeight
+    }
+  }, [filtered.length])
+  const onScroll = (e) => {
+    const el = e.currentTarget
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    wasAtBottomRef.current = distanceFromBottom <= STICK_BOTTOM_THRESHOLD_PX
+  }
+  const jumpToBottom = () => {
+    const el = listRef.current
+    if (!el) return
+    wasAtBottomRef.current = true
+    el.scrollTop = el.scrollHeight
+  }
+
   return (
     <div class="timeline">
       <div class="timeline-header">
@@ -36,7 +72,7 @@ export function Timeline() {
       <div style="padding: 8px 14px;" class="timeline-search">
         <input placeholder="Filter events…" value={search} onInput={(e) => setSearch(e.target.value)} />
       </div>
-      <ul class="timeline-list">
+      <ul class="timeline-list" ref={listRef} onScroll={onScroll}>
         {filtered.map((e) => (
           <li
             key={`${e.run_id}:${e.seq}`}
@@ -58,6 +94,14 @@ export function Timeline() {
           <li style="color: var(--text-muted); cursor: default;"><span /> <span /> waiting for events…</li>
         )}
       </ul>
+      <button
+        class="timeline-jump"
+        type="button"
+        onClick={jumpToBottom}
+        title="Scroll to newest event"
+      >
+        Jump to latest
+      </button>
     </div>
   )
 }

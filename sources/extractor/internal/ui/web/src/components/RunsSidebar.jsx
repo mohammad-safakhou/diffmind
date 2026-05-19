@@ -64,12 +64,19 @@ export function RunsSidebar({ onPick }) {
                 'border: 1px solid ' + (isActive ? 'var(--accent)' : 'var(--border)') + ';'
               }
             >
-              <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text);">
-                {r.run_id}
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text); display:flex; align-items:center; gap:6px;">
+                <span>{r.run_id}</span>
+                <StatusBadge status={r.status} />
               </div>
               <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">
                 {summary(counts)}{r.duration_ms ? ` · ${humanDuration(r.duration_ms)}` : ''}{r.has_events ? '' : ' · (no events log)'}
               </div>
+              {(r.status === 'failed' || r.status === 'cancelled') && r.failed_stage && (
+                <div style="font-size: 10px; color: var(--error); margin-top: 2px;">
+                  {r.status === 'cancelled' ? 'cancelled' : 'failed'} in {r.failed_stage}
+                  {r.error_class && r.error_class !== 'cancelled' ? ` (${r.error_class})` : ''}
+                </div>
+              )}
               {r.repo_path && (
                 <div style="font-size: 10px; color: var(--text-dim); margin-top: 2px; word-break: break-all;">
                   {r.repo_path}
@@ -90,6 +97,27 @@ function summary(c) {
   if (c.connections) parts.push(`${c.connections} conn`)
   if (c.unresolved) parts.push(`${c.unresolved} unresolved`)
   return parts.length ? parts.join(' · ') : 'no counts'
+}
+
+// StatusBadge renders a small coloured pill next to the run id so
+// the user can see at-a-glance whether a row is a successful run, a
+// failed one, or a half-done unknown. Colours match the dashboard's
+// status palette.
+function StatusBadge({ status }) {
+  if (!status || status === 'unknown') return null
+  const colours = {
+    completed: ['#062b13', '#22c55e'],
+    failed: ['#3a0e11', '#ef4444'],
+    cancelled: ['#3a2306', '#f59e0b'],
+    running: ['#0e2240', '#4f8cff'],
+    cancelling: ['#3a2306', '#f59e0b'],
+  }
+  const [bg, fg] = colours[status] || ['#1a2238', '#9aa6c0']
+  return (
+    <span style={`background:${bg};color:${fg};border:1px solid ${fg}44;border-radius:999px;padding:1px 6px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em`}>
+      {status}
+    </span>
+  )
 }
 
 function humanDuration(ms) {

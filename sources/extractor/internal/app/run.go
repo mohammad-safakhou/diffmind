@@ -92,6 +92,7 @@ func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 		Sink:       in.Sink,
 		CaptureDir: captureDir,
 		RunDir:     runDir,
+		RunID:      runID,
 	})
 	if err != nil {
 		// On a hard pipeline failure the orchestrator already wrote the
@@ -130,6 +131,7 @@ func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 		Warnings:      warnings,
 		StartedAt:     started,
 		FinishedAt:    time.Now().UTC(),
+		TokenTotals:   result.Tokens,
 	})
 	if err != nil {
 		util.Error("app.run", "artifact write failed", map[string]any{"error": err})

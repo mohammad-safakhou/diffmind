@@ -86,6 +86,18 @@ export function cancelRun(runID) {
   return api(`/api/runs/${encodeURIComponent(runID)}`, { method: 'DELETE' })
 }
 
+// retryRun resumes a previously-failed run. `overrides` is optional; the
+// only fields the server cares about are nested OpenCode credentials
+// (password, provider_id, model_id). Stages that completed on the
+// original run are skipped — the orchestrator reads them from
+// <runDir>/state/*.json.
+export function retryRun(runID, overrides = {}) {
+  return api(`/api/runs/${encodeURIComponent(runID)}/retry`, {
+    method: 'POST',
+    body: JSON.stringify(overrides),
+  })
+}
+
 export function getJob(runID, jobID) {
   return api(`/api/runs/${encodeURIComponent(runID)}/job/${encodeURIComponent(jobID)}`)
 }
