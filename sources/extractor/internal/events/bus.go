@@ -78,8 +78,25 @@ func (b *Bus) StartRun(runID, persistDir string) (Sink, error) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if _, exists := b.runs[runID]; exists {
-		return nil, fmt.Errorf("events: run %s already started", runID)
+	if existing, ok := b.runs[runID]; ok {
+		// A retry of a finished run is legitimate: drop the old
+		// in-memory ring buffer (JSONL on disk is preserved by
+		// append-mode), close any leftover persistence handle, and
+		// start fresh. We refuse only if the existing entry is
+		// still LIVE (no FinishRun yet) — that would indicate a
+		// concurrent Start, which the runner singleton should
+		// already have prevented.
+		existing.mu.Lock()
+		finished := existing.finished
+		if existing.persistFile != nil {
+			_ = existing.persistFile.Close()
+			existing.persistFile = nil
+		}
+		existing.mu.Unlock()
+		if !finished {
+			return nil, fmt.Errorf("events: run %s already started and not yet finished", runID)
+		}
+		delete(b.runs, runID)
 	}
 	rs := &runState{
 		runID:   runID,

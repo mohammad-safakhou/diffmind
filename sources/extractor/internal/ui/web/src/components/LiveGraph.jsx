@@ -6,8 +6,15 @@ import { jobs, stages, selection, runMeta } from '../lib/store.js'
 // LiveGraph renders the run as a DAG. Stage nodes are persistent; job
 // nodes are added/updated as events arrive. Click → selects a node, which
 // the DetailDrawer subscribes to.
+//
+// Each node's label is two lines: the entity/stage name on top, and a
+// live duration timer below (in HH:MM:SS / MM:SS / SSs format). The
+// timer is recomputed every second via a 1s ticker.
 export function LiveGraph() {
   const ref = useRef(null)
+  // The cy instance is created once. We expose it on a ref so the
+  // ticker effect can re-label nodes without resetting the whole graph.
+  const cyRef = useRef(null)
 
   useEffect(() => {
     const cy = cytoscape({
@@ -18,6 +25,7 @@ export function LiveGraph() {
       minZoom: 0.3,
       maxZoom: 2.5,
     })
+    cyRef.current = cy
 
     seedStages(cy)
 
@@ -46,10 +54,30 @@ export function LiveGraph() {
     })
     if (ref.current) ro.observe(ref.current)
 
+    // 1-second ticker for the live duration labels. We don't need a
+    // full re-sync, just re-compute the label for every node whose
+    // status is "running". For finished nodes the label was set once
+    // at completion and never needs to change.
+    const ticker = setInterval(() => {
+      cy.nodes().forEach((n) => {
+        // Only running nodes need their timer ticked. Pending nodes
+        // have no start timestamp yet, so their duration would render
+        // as empty either way. Finished nodes are frozen by sync.
+        if (!n.hasClass('status-running')) return
+        if (n.data('kind') === 'stage') {
+          n.data('label', stageLabel(n.data('stage'), stageById(stages.value, n.data('stage'))))
+        } else {
+          n.data('label', jobLabelLive(jobById(jobs.value, n.data('jobID'))))
+        }
+      })
+    }, 1000)
+
     return () => {
+      clearInterval(ticker)
       stop()
       ro.disconnect()
       cy.destroy()
+      cyRef.current = null
     }
   }, [])
 
@@ -105,6 +133,7 @@ function syncGraph(cy, stagesMap, jobsMap) {
         node.data('progress', st.percent || 0)
         node.data('total', st.total || 0)
         node.data('done', st.done || 0)
+        node.data('label', stageLabel(id, st))
       }
     }
 
@@ -125,7 +154,7 @@ function syncGraph(cy, stagesMap, jobsMap) {
         seenJobIDs.add(id)
         const status = job.status || 'pending'
         let node = cy.getElementById(id)
-        const label = jobLabel(job)
+        const label = jobLabelLive(job)
         if (node.length === 0) {
           cy.add({
             data: {
@@ -136,7 +165,7 @@ function syncGraph(cy, stagesMap, jobsMap) {
               jobID: job.id,
               status,
             },
-            position: { x: stageX[stage] || 80, y: 160 + idx * 36 },
+            position: { x: stageX[stage] || 80, y: 220 + idx * 72 },
             classes: 'job status-' + status,
           })
           // Edge from stage parent to job (or from parent job if known).
@@ -167,19 +196,92 @@ function syncGraph(cy, stagesMap, jobsMap) {
   layoutFor(cy)
 }
 
-function jobLabel(job) {
-  // Compact label: the entity name if available, else the last segment of
-  // the job id.
-  const p = job.payload || {}
-  if (p.name) return truncate(p.name, 24)
-  if (p.objective_id) return truncate(p.objective_id, 24)
-  const tail = job.id.split('.').slice(-2).join('.')
-  return truncate(tail, 24)
+// jobLabelLive builds the two-line label for a job node:
+//
+//     <entity name>
+//     <live duration>
+//
+// The duration ticks every second while the job is running; once the
+// job finishes it freezes at the final value. We compute live values
+// off Date.now() rather than off the start timestamp so a single
+// rerender keeps every node's clock in sync.
+function jobLabelLive(job) {
+  if (!job) return ''
+  const name = jobName(job)
+  const dur = jobDurationLabel(job)
+  return dur ? `${name}\n${dur}` : name
 }
 
-function truncate(s, n) {
-  if (!s) return ''
-  return s.length > n ? s.slice(0, n - 1) + '\u2026' : s
+// jobName extracts the human-readable display name for a node. The
+// orchestrator emits the seed name in the job_started payload; if
+// that's missing we fall back to the objective id or the tail of the
+// job id.
+function jobName(job) {
+  const p = job.payload || {}
+  if (p.name) return p.name
+  if (p.objective_id) return p.objective_id
+  return job.id.split('.').slice(-2).join('.')
+}
+
+// jobDurationLabel renders the per-node timer text. While the job is
+// running the duration grows; once it completes/fails the duration
+// reflects the final elapsed time.
+function jobDurationLabel(job) {
+  const start = job.startedAt ? new Date(job.startedAt).getTime() : null
+  const end = job.finishedAt ? new Date(job.finishedAt).getTime() : null
+  // If the job has a payload duration_ms (from the completed event)
+  // prefer that — it's the canonical "what the server measured" value.
+  if ((job.status === 'success' || job.status === 'failed' || job.status === 'cancelled' || job.status === 'rescued') && job.payload?.duration_ms != null) {
+    return '✓ ' + formatMs(job.payload.duration_ms)
+  }
+  if (!start) return ''
+  const ms = (end ?? Date.now()) - start
+  if (ms < 0) return ''
+  const prefix = job.status === 'running' ? '⏱ ' : '✓ '
+  return prefix + formatMs(ms)
+}
+
+// stageLabel builds the two-line label for a stage node.
+function stageLabel(name, st) {
+  if (!st) return name
+  const dur = stageDurationLabel(st)
+  return dur ? `${name}\n${dur}` : name
+}
+
+function stageDurationLabel(st) {
+  const start = st.startedAt ? new Date(st.startedAt).getTime() : null
+  const end = st.finishedAt ? new Date(st.finishedAt).getTime() : null
+  if (!start) return ''
+  const ms = (end ?? Date.now()) - start
+  if (ms < 0) return ''
+  const prefix = st.status === 'running' ? '⏱ ' : (st.status === 'success' ? '✓ ' : st.status === 'failed' ? '✗ ' : '')
+  return prefix + formatMs(ms)
+}
+
+// formatMs renders a duration in ms as the shortest unambiguous string:
+//   <  60 000ms → "12s"
+//   <  60 minutes → "2m 14s"
+//   ≥ 60 minutes → "1h 03m"
+function formatMs(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return ''
+  const totalSec = Math.floor(ms / 1000)
+  if (totalSec < 60) return totalSec + 's'
+  const m = Math.floor(totalSec / 60)
+  const s = totalSec % 60
+  if (m < 60) return `${m}m ${String(s).padStart(2, '0')}s`
+  const h = Math.floor(m / 60)
+  const mm = m % 60
+  return `${h}h ${String(mm).padStart(2, '0')}m`
+}
+
+// Helpers used by the 1-second ticker to look up current node state
+// from the signal maps without a full re-sync.
+function jobById(jobsMap, id) {
+  for (const j of jobsMap.values()) if (j.id === id) return j
+  return null
+}
+function stageById(stagesMap, id) {
+  return stagesMap.get(id)
 }
 
 function layoutFor(cy) {
@@ -201,22 +303,29 @@ function layoutFor(cy) {
   for (const [stage, nodes] of grouped) {
     nodes.sort((a, b) => a.data('label').localeCompare(b.data('label')))
     nodes.forEach((n, idx) => {
-      n.position({ x: STAGE_X[stage] ?? 80, y: 160 + idx * 36 })
+      // y stride must clear the new larger node height (~80px) plus
+      // padding, otherwise neighbouring nodes overlap visually.
+      n.position({ x: STAGE_X[stage] ?? 80, y: 220 + idx * 72 })
     })
   }
 
-  // Stages always at the same y.
+  // Stages always at the same y. Pulled down slightly so the stage
+  // node's full height (now 80px) fits comfortably below the
+  // graph header.
   STAGES.forEach((name, i) => {
     const node = cy.getElementById('stage:' + name)
-    if (node.length) node.position({ x: STAGE_X[name], y: 70 })
+    if (node.length) node.position({ x: STAGE_X[name], y: 90 })
   })
 }
 
 function stagePositions(cy) {
   const width = Math.max(cy.width() || 0, 0)
-  const xStep = width > 0 ? Math.max(220, (width - 180) / Math.max(1, STAGES.length - 1)) : 220
+  // The stride between adjacent stage columns must accommodate the new
+  // wider node (220px) plus comfortable padding. We bumped the floor
+  // from 220 to 280 so labels never bleed into neighbouring columns.
+  const xStep = width > 0 ? Math.max(280, (width - 220) / Math.max(1, STAGES.length - 1)) : 280
   const out = {}
-  STAGES.forEach((name, i) => { out[name] = 90 + i * xStep })
+  STAGES.forEach((name, i) => { out[name] = 130 + i * xStep })
   return out
 }
 
@@ -232,10 +341,16 @@ const STYLE = [
       'color': '#e9eefa',
       'text-valign': 'center',
       'text-halign': 'center',
-      'font-size': 12,
+      'font-size': 13,
       'font-weight': 600,
-      'width': 160,
-      'height': 50,
+      'width': 220,
+      'height': 80,
+      // Wrap so long stage labels + timer line fit; keep newlines so
+      // the two-line label renders as intended.
+      'text-wrap': 'wrap',
+      'text-max-width': 200,
+      'line-height': 1.3,
+      'padding': '6px',
     },
   },
   {
@@ -269,9 +384,16 @@ const STYLE = [
       'color': '#e9eefa',
       'text-valign': 'center',
       'text-halign': 'center',
-      'font-size': 10,
-      'width': 132,
-      'height': 26,
+      'font-size': 11,
+      'width': 230,
+      'height': 58,
+      // Wrap long entity names (some are 30+ characters) and give the
+      // duration line room. The two-line layout means height bumps
+      // proportionally; 58px fits 2 lines comfortably at 11px font.
+      'text-wrap': 'wrap',
+      'text-max-width': 210,
+      'line-height': 1.25,
+      'padding': '4px',
     },
   },
   {

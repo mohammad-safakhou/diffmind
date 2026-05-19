@@ -27,6 +27,11 @@ type WriteInput struct {
 	Warnings      []string
 	StartedAt     time.Time
 	FinishedAt    time.Time
+	// TokenTotals — when present — get persisted under the
+	// manifest's `token_totals` field so the `validate` command and
+	// the dashboard's runs sidebar can show per-stage cost summaries
+	// without re-reading the events log.
+	TokenTotals map[string]model.TokenBucket
 }
 
 func Write(in WriteInput) (string, error) {
@@ -64,6 +69,7 @@ func Write(in WriteInput) (string, error) {
 		},
 		Warnings:      in.Warnings,
 		StageFailures: stageFailures(in.Unresolved),
+		TokenTotals:   in.TokenTotals,
 	}
 	if err := writeJSON(filepath.Join(runDir, "run_manifest.json"), manifest); err != nil {
 		return "", err

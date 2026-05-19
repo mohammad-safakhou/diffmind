@@ -2,7 +2,6 @@ package agents
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -403,9 +402,10 @@ func (o *orchestrator) runReexamination(
 	}
 
 	type resultEnv struct {
-		Trigger reexamineTrigger
-		Item    *llmEntity
-		Err     error
+		Trigger       reexamineTrigger
+		Item          *llmEntity
+		Err           error
+		PeerCancelled bool
 	}
 	stageCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -419,7 +419,9 @@ func (o *orchestrator) runReexamination(
 			defer wg.Done()
 			for t := range jobs {
 				if stageCtx.Err() != nil {
-					results <- resultEnv{Trigger: t, Err: stageCtx.Err()}
+					// Peer-cancelled: another worker tripped
+					// fail-fast before this job ran.
+					results <- resultEnv{Trigger: t, Err: stageCtx.Err(), PeerCancelled: true}
 					continue
 				}
 				item, err := o.runReexamineOne(stageCtx, t, rf)
@@ -455,7 +457,13 @@ func (o *orchestrator) runReexamination(
 				Reason:     r.Err.Error(),
 				Confidence: r.Trigger.Seed.Confidence,
 			})
-			if firstErr == nil && !errors.Is(r.Err, context.Canceled) && !errors.Is(r.Err, context.DeadlineExceeded) {
+			// Capture this as the root cause unless it's a
+			// peer-cancelled sibling (which the worker flagged
+			// explicitly). A per-call HTTP timeout wraps
+			// context.DeadlineExceeded but happens while the parent
+			// is still alive — those MUST surface, not get silently
+			// filtered out.
+			if firstErr == nil && !r.PeerCancelled {
 				firstErr = r.Err
 				firstTrigger = r.Trigger
 			}

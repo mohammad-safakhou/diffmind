@@ -53,7 +53,15 @@ func TestEndToEndPipelineAgainstSampleRepo(t *testing.T) {
 	cfg.Artifacts.BaseDir = out
 
 	start := time.Now()
-	res, err := Run(context.Background(), RunInput{RepoPath: repoPath, Config: cfg})
+	// Pass an explicit, test-unique RunID so parallel test
+	// invocations don't collide on the snapshot directory (which is
+	// keyed by RunID under ~/.diffmind/snapshots). The default
+	// second-precision timestamp was racy under -count=3 -race.
+	res, err := Run(context.Background(), RunInput{
+		RepoPath: repoPath,
+		Config:   cfg,
+		RunID:    "e2e-" + start.UTC().Format("20060102T150405.000000000Z"),
+	})
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("pipeline run failed: %v", err)

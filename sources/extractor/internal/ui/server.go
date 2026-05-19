@@ -227,33 +227,87 @@ func (s *Server) handleRunsList(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// summarizeRun reads the manifest (if present) and returns the small subset
-// of fields the sidebar needs. Any failure produces a "skeleton" record
-// that still names the run, so the UI can show it as "manifest missing".
+// summarizeRun returns the sidebar's projection of a run. Status is
+// derived from the on-disk artifact layout because we don't keep a
+// dedicated terminal-status file: a successful run writes
+// run_manifest.json (and never writes run_failure.json); a failed
+// or cancelled run writes run_failure.json (and skips the manifest
+// until the retry succeeds). Distinguishing failed vs cancelled
+// requires reading the failure report (which carries a `cancelled`
+// boolean).
+//
+// Older runs from before the cancelled flag was added have no way
+// to tell the two apart and surface as "failed"; that matches the
+// CLI's behaviour and is the safer default.
 func (s *Server) summarizeRun(id string) map[string]any {
+	runDir := filepath.Join(s.baseDir, id)
 	out := map[string]any{
 		"run_id":     id,
 		"has_events": s.hasEventsLog(id),
 	}
-	manifestPath := filepath.Join(s.baseDir, id, "run_manifest.json")
-	b, err := os.ReadFile(manifestPath)
-	if err != nil {
+	manifestPath := filepath.Join(runDir, "run_manifest.json")
+	failurePath := filepath.Join(runDir, "run_failure.json")
+
+	// Failure report wins as the source of truth when both files
+	// exist (e.g. a retry that succeeded then failed again would
+	// leave both behind — we read the failure first to surface the
+	// freshest state). When only run_failure.json is present, the
+	// run definitely did not complete successfully.
+	if fb, err := os.ReadFile(failurePath); err == nil {
+		var f struct {
+			Stage      string    `json:"stage"`
+			ErrorClass string    `json:"error_class"`
+			Cancelled  bool      `json:"cancelled"`
+			OccurredAt time.Time `json:"occurred_at"`
+			Error      string    `json:"error"`
+		}
+		if json.Unmarshal(fb, &f) == nil {
+			out["status"] = "failed"
+			if f.Cancelled {
+				out["status"] = "cancelled"
+			}
+			out["failed_stage"] = f.Stage
+			out["error_class"] = f.ErrorClass
+			out["error"] = f.Error
+			if !f.OccurredAt.IsZero() {
+				out["finished_at"] = f.OccurredAt
+			}
+		} else {
+			// run_failure.json exists but is unparseable. The run
+			// definitely failed; we just can't say more.
+			out["status"] = "failed"
+		}
+	}
+
+	// Manifest is opportunistic: when present it overrides status to
+	// "completed" only if no failure report sat next to it (the
+	// failure report only appears on non-success paths in the
+	// current orchestrator). It also fills in repo_path and counts
+	// regardless.
+	if b, err := os.ReadFile(manifestPath); err == nil {
+		var manifest model.RunManifest
+		if err := json.Unmarshal(b, &manifest); err == nil {
+			out["repo_path"] = manifest.RepoPath
+			out["started_at"] = manifest.StartedAt
+			if _, hasFinished := out["finished_at"]; !hasFinished && !manifest.FinishedAt.IsZero() {
+				out["finished_at"] = manifest.FinishedAt
+			}
+			out["counts"] = manifest.Counts
+			if !manifest.FinishedAt.IsZero() && !manifest.StartedAt.IsZero() {
+				out["duration_ms"] = manifest.FinishedAt.Sub(manifest.StartedAt).Milliseconds()
+			}
+			if _, hasStatus := out["status"]; !hasStatus {
+				out["status"] = "completed"
+			}
+		}
+	}
+
+	// Fallback: directory exists but neither manifest nor failure
+	// report was readable. Treat as unknown — the sidebar will show
+	// the run id but won't claim it succeeded.
+	if _, hasStatus := out["status"]; !hasStatus {
 		out["status"] = "unknown"
-		return out
 	}
-	var manifest model.RunManifest
-	if err := json.Unmarshal(b, &manifest); err != nil {
-		out["status"] = "unknown"
-		return out
-	}
-	out["repo_path"] = manifest.RepoPath
-	out["started_at"] = manifest.StartedAt
-	out["finished_at"] = manifest.FinishedAt
-	out["counts"] = manifest.Counts
-	if !manifest.FinishedAt.IsZero() && !manifest.StartedAt.IsZero() {
-		out["duration_ms"] = manifest.FinishedAt.Sub(manifest.StartedAt).Milliseconds()
-	}
-	out["status"] = "completed"
 	return out
 }
 
@@ -315,6 +369,16 @@ func (s *Server) handleRunsItem(w http.ResponseWriter, r *http.Request) {
 			jobID = parts[2]
 		}
 		s.handleRunJob(w, r, runID, jobID)
+	case "retry":
+		// POST /api/runs/{id}/retry — resume a previously failed run
+		// from the failed stage onwards. Reads the failure report and
+		// state files from disk, re-attaches to the retained
+		// snapshot. Returns 409 if a run is already in progress.
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleRunRetry(w, r, runID)
 	default:
 		http.NotFound(w, r)
 	}

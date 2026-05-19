@@ -43,9 +43,34 @@ func RetryRun(ctx context.Context, in RetryInput) (RunOutput, error) {
 	if runID == "" {
 		return RunOutput{}, fmt.Errorf("retry: run id is required")
 	}
+
+	// fail emits a synthetic run_failed event on the sink (when one
+	// is wired) before returning the error. This guarantees the
+	// dashboard sees a proper terminal event with the actual error
+	// message instead of bouncing through the _eof-then-reconcile
+	// path — which has lower information density and previously
+	// confused users with a near-instant "failed" status and no
+	// explanation. Pre-flight failures (missing manifest, no
+	// snapshot, opencode unreachable) all flow through here.
+	fail := func(err error) (RunOutput, error) {
+		if in.Sink != nil {
+			in.Sink.Emit(events.Event{
+				Kind: events.KindRunFailed, Status: events.StatusFailed,
+				Message: err.Error(),
+				Payload: map[string]any{
+					"stage":       "retry_preflight",
+					"error_class": "retry_preflight",
+					"error":       err.Error(),
+					"elapsed_ms":  time.Since(started).Milliseconds(),
+				},
+			})
+		}
+		return RunOutput{RunID: runID}, err
+	}
+
 	runDir := filepath.Join(in.BaseDir, runID)
 	if info, err := os.Stat(runDir); err != nil || !info.IsDir() {
-		return RunOutput{}, fmt.Errorf("retry: run dir %q does not exist", runDir)
+		return fail(fmt.Errorf("retry: run dir %q does not exist", runDir))
 	}
 	util.Info("app.retry", "resuming failed run", map[string]any{"run_id": runID, "run_dir": runDir})
 
@@ -54,11 +79,11 @@ func RetryRun(ctx context.Context, in RetryInput) (RunOutput, error) {
 	failurePath := filepath.Join(runDir, "run_failure.json")
 	failureBytes, err := os.ReadFile(failurePath)
 	if err != nil {
-		return RunOutput{}, fmt.Errorf("retry: %w (no run_failure.json — run did not fail or has been cleaned up)", err)
+		return fail(fmt.Errorf("retry: %w (no run_failure.json — run did not fail or has been cleaned up)", err))
 	}
 	var prior agents.Failure
 	if err := json.Unmarshal(failureBytes, &prior); err != nil {
-		return RunOutput{}, fmt.Errorf("retry: failed to parse run_failure.json: %w", err)
+		return fail(fmt.Errorf("retry: failed to parse run_failure.json: %w", err))
 	}
 	util.Info("app.retry", "prior failure context", map[string]any{
 		"stage":        prior.Stage,
@@ -69,33 +94,54 @@ func RetryRun(ctx context.Context, in RetryInput) (RunOutput, error) {
 		"occurred_at":  prior.OccurredAt,
 	})
 
-	// Read the original manifest for repoPath / minConfidence / opencodeURL.
-	manifestPath := filepath.Join(runDir, "run_manifest.json")
-	mb, err := os.ReadFile(manifestPath)
-	if err != nil {
-		return RunOutput{}, fmt.Errorf("retry: read manifest: %w", err)
-	}
-	var manifest model.RunManifest
-	if err := json.Unmarshal(mb, &manifest); err != nil {
-		return RunOutput{}, fmt.Errorf("retry: parse manifest: %w", err)
-	}
-	if strings.TrimSpace(manifest.RepoPath) == "" {
-		return RunOutput{}, fmt.Errorf("retry: manifest is missing repo_path")
-	}
+	// The retry needs repo_path + snapshot_path. We look in three
+	// places, in priority order:
+	//
+	//   1. run_manifest.json  — only present after a successful run
+	//      (or a successful retry). Carries everything.
+	//   2. run_failure.json   — present after every failed run.
+	//      Has snapshot_path but NOT repo_path historically; we
+	//      filled it more recently but older runs lack it.
+	//   3. events.jsonl::run_started.payload — fallback for older
+	//      runs that have neither of the above filled in.
+	//
+	// Failing all three is an unrecoverable retry — surface that
+	// clearly rather than silently dying with "manifest missing".
+	var repoPath, snapshotPath string
 
-	// Locate the retained snapshot. The failure report carries it
-	// explicitly; older runs (before SnapshotPath was added) fall back
-	// to the path embedded in the events log.
-	snapshotPath := strings.TrimSpace(prior.SnapshotPath)
-	if snapshotPath == "" {
-		snapshotPath = scanSnapshotPathFromEvents(filepath.Join(runDir, "events.jsonl"))
+	manifestPath := filepath.Join(runDir, "run_manifest.json")
+	if mb, err := os.ReadFile(manifestPath); err == nil {
+		var manifest model.RunManifest
+		if err := json.Unmarshal(mb, &manifest); err == nil {
+			repoPath = strings.TrimSpace(manifest.RepoPath)
+		}
 	}
 	if snapshotPath == "" {
-		return RunOutput{}, fmt.Errorf("retry: could not determine retained snapshot path; was the run created with a recent diffmind version?")
+		snapshotPath = strings.TrimSpace(prior.SnapshotPath)
+	}
+	// Final fallback: walk events.jsonl looking for run_started.
+	if repoPath == "" || snapshotPath == "" {
+		gotRepo, gotSnap := scanRunStartedFromEvents(filepath.Join(runDir, "events.jsonl"))
+		if repoPath == "" {
+			repoPath = gotRepo
+		}
+		if snapshotPath == "" {
+			snapshotPath = gotSnap
+		}
+	}
+	if repoPath == "" {
+		return fail(fmt.Errorf("retry: could not determine repo path; the run dir %q has no manifest and no run_started event with a repo field — run from scratch", runDir))
+	}
+	if snapshotPath == "" {
+		return fail(fmt.Errorf("retry: could not determine retained snapshot path; was the run created with a recent diffmind version?"))
 	}
 	if info, err := os.Stat(snapshotPath); err != nil || !info.IsDir() {
-		return RunOutput{}, fmt.Errorf("retry: retained snapshot %q is gone; please run from scratch", snapshotPath)
+		return fail(fmt.Errorf("retry: retained snapshot %q is gone; please run from scratch", snapshotPath))
 	}
+	util.Info("app.retry", "resolved retry inputs", map[string]any{
+		"repo_path":     repoPath,
+		"snapshot_path": snapshotPath,
+	})
 
 	// Reuse the run's existing prompts/state/events directory layout.
 	captureDir := filepath.Join(runDir, "prompts")
@@ -113,13 +159,13 @@ func RetryRun(ctx context.Context, in RetryInput) (RunOutput, error) {
 		time.Duration(in.Config.OpenCode.TimeoutSec)*time.Second,
 	)
 	if !oc.Enabled() {
-		return RunOutput{}, fmt.Errorf("retry: opencode-url is required")
+		return fail(fmt.Errorf("retry: opencode-url is required"))
 	}
 	if err := oc.Health(ctx); err != nil {
-		return RunOutput{}, fmt.Errorf("retry: opencode health check failed at %s: %w", in.Config.OpenCode.BaseURL, err)
+		return fail(fmt.Errorf("retry: opencode health check failed at %s: %w", in.Config.OpenCode.BaseURL, err))
 	}
 
-	result, err := agents.RunWith(ctx, in.Config, manifest.RepoPath, oc, agents.RunOptions{
+	result, err := agents.RunWith(ctx, in.Config, repoPath, oc, agents.RunOptions{
 		Sink:          in.Sink,
 		CaptureDir:    captureDir,
 		RunDir:        runDir,
@@ -143,7 +189,7 @@ func RetryRun(ctx context.Context, in RetryInput) (RunOutput, error) {
 	if _, err := artifacts.Write(artifacts.WriteInput{
 		RunID:         runID,
 		BaseDir:       in.BaseDir,
-		RepoPath:      manifest.RepoPath,
+		RepoPath:      repoPath,
 		OpenCodeURL:   in.Config.OpenCode.BaseURL,
 		MinConfidence: in.Config.Quality.MinConfidence,
 		Exposures:     result.Exposures,
@@ -153,6 +199,7 @@ func RetryRun(ctx context.Context, in RetryInput) (RunOutput, error) {
 		Warnings:      result.Warnings,
 		StartedAt:     started, // start of THIS retry; keeps things consistent
 		FinishedAt:    time.Now().UTC(),
+		TokenTotals:   result.Tokens,
 	}); err != nil {
 		util.Error("app.retry", "artifact write failed", map[string]any{"error": err})
 		return RunOutput{}, err
@@ -164,14 +211,21 @@ func RetryRun(ctx context.Context, in RetryInput) (RunOutput, error) {
 	return RunOutput{RunID: runID, RunDir: runDir, Warning: result.Warnings}, nil
 }
 
-// scanSnapshotPathFromEvents pulls the snapshot path out of the
-// run_started event when the failure report doesn't carry it
-// explicitly (older run dirs). The events log is JSONL so we can
-// stream-decode without loading the entire file at once.
-func scanSnapshotPathFromEvents(path string) string {
+// scanRunStartedFromEvents pulls the repo path and snapshot path out
+// of the run_started event recorded in the run's events.jsonl. It is
+// the fallback used when the manifest is missing (failed runs) and
+// the failure report doesn't have snapshot_path filled in (older
+// runs). Returns ("", "") on any error so the caller can decide
+// whether to keep trying or surface a clear "no info" message.
+//
+// We stream-decode rather than load the whole file because
+// events.jsonl can be tens of MB for a long-running pipeline. The
+// run_started event is always the FIRST line of the file, so we
+// always hit it on the very first decode.
+func scanRunStartedFromEvents(path string) (repoPath, snapshotPath string) {
 	f, err := os.Open(path)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	defer f.Close()
 	dec := json.NewDecoder(f)
@@ -181,13 +235,17 @@ func scanSnapshotPathFromEvents(path string) string {
 			Payload map[string]any `json:"payload"`
 		}
 		if err := dec.Decode(&ev); err != nil {
-			return ""
+			return "", ""
 		}
 		if ev.Kind != "run_started" {
 			continue
 		}
-		if v, ok := ev.Payload["snapshot"].(string); ok {
-			return v
+		if v, ok := ev.Payload["repo"].(string); ok {
+			repoPath = v
 		}
+		if v, ok := ev.Payload["snapshot"].(string); ok {
+			snapshotPath = v
+		}
+		return repoPath, snapshotPath
 	}
 }

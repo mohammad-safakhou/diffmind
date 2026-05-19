@@ -80,6 +80,16 @@ type StartParams struct {
 	Config   config.Config
 }
 
+// RetryParams carries everything Retry needs. The run id and base
+// dir tell the runner which previously-failed run to resume; Config
+// is the CURRENT (possibly-different) config to use — typically with
+// fresh OpenCode credentials when the failure was an auth/quota
+// problem.
+type RetryParams struct {
+	RunID  string
+	Config config.Config
+}
+
 // Start launches a goroutine that runs the pipeline. The function returns
 // as soon as the run has been registered and the events sink is wired.
 func (r *Runner) Start(parent context.Context, p StartParams) (string, error) {
@@ -113,6 +123,50 @@ func (r *Runner) Start(parent context.Context, p StartParams) (string, error) {
 	return runID, nil
 }
 
+// Retry resumes a previously-failed run. Like Start it is async: the
+// goroutine runs the pipeline through app.RetryRun while the caller
+// returns the (existing) run id so the UI can immediately reattach
+// its SSE stream.
+//
+// The retry re-uses the run's existing artifact directory (events
+// append to the same events.jsonl) and the retained snapshot. Stages
+// that completed successfully on the original run are skipped via
+// the on-disk state/*.json files.
+func (r *Runner) Retry(parent context.Context, p RetryParams) (string, error) {
+	r.mu.Lock()
+	if r.state.Status == StatusRunning || r.state.Status == StatusCancelling {
+		r.mu.Unlock()
+		return "", ErrBusy
+	}
+	runID := p.RunID
+	if runID == "" {
+		r.mu.Unlock()
+		return "", fmt.Errorf("runner: retry requires a run id")
+	}
+	persistDir := ""
+	if r.baseDir != "" {
+		persistDir = filepath.Join(r.baseDir, runID)
+	}
+	sink, err := r.bus.StartRun(runID, persistDir)
+	if err != nil {
+		r.mu.Unlock()
+		return "", fmt.Errorf("runner: start bus for retry: %w", err)
+	}
+	ctx, cancel := context.WithCancel(parent)
+	r.cancel = cancel
+	r.doneCh = make(chan struct{})
+	r.state = State{
+		RunID:     runID,
+		Status:    StatusRunning,
+		StartedAt: time.Now().UTC(),
+		RunDir:    persistDir,
+	}
+	r.mu.Unlock()
+
+	go r.executeRetry(ctx, runID, sink, p)
+	return runID, nil
+}
+
 // execute performs the actual work; it is the goroutine launched by Start.
 func (r *Runner) execute(ctx context.Context, runID string, sink events.Sink, p StartParams) {
 	defer close(r.doneCh)
@@ -143,6 +197,39 @@ func (r *Runner) execute(ctx context.Context, runID string, sink events.Sink, p 
 
 	r.bus.FinishRun(runID)
 	util.Info("runner", "run finished", map[string]any{"run_id": runID, "status": r.state.Status})
+}
+
+// executeRetry is the goroutine launched by Retry. Symmetric with
+// execute but delegates to app.RetryRun.
+func (r *Runner) executeRetry(ctx context.Context, runID string, sink events.Sink, p RetryParams) {
+	defer close(r.doneCh)
+
+	out, err := app.RetryRun(ctx, app.RetryInput{
+		BaseDir: r.baseDir,
+		RunID:   runID,
+		Config:  p.Config,
+		Sink:    sink,
+	})
+
+	r.mu.Lock()
+	r.state.FinishedAt = time.Now().UTC()
+	r.state.RunDir = out.RunDir
+	if ctx.Err() != nil {
+		r.state.Status = StatusCancelled
+		if err != nil {
+			r.state.Error = err.Error()
+		}
+	} else if err != nil {
+		r.state.Status = StatusFailed
+		r.state.Error = err.Error()
+	} else {
+		r.state.Status = StatusCompleted
+	}
+	r.cancel = nil
+	r.mu.Unlock()
+
+	r.bus.FinishRun(runID)
+	util.Info("runner", "retry finished", map[string]any{"run_id": runID, "status": r.state.Status})
 }
 
 // Cancel asks the active run to stop. Safe to call when nothing is running.

@@ -29,17 +29,55 @@ export function PipelineStrip() {
               {s.done || 0}<span style="color: var(--text-dim)">/{s.total || 0}</span>
             </div>
             <div class="progress"><span style={'width: ' + pct + '%'} /></div>
-            <div style="font-size:11px; color: var(--text-dim); height: 14px; overflow: hidden;">{s.tip}</div>
+            <div class="stage-tip">{s.tip}</div>
+            <div class="stage-tokens" title={s.tokens ? tokensTooltip(s.tokens) : 'token stats appear when the stage completes'}>
+              {s.tokens ? compactTokens(s.tokens) : ''}
+            </div>
           </div>
         )
       })}
-      <div class="pipeline-stage" style="flex: 0 0 130px; border-right: none;">
+      <div class="pipeline-stage" style="flex: 0 0 160px; border-right: none;">
         <div class="name">Elapsed</div>
         <div class="count">{elapsed}</div>
-        <div style="font-size:11px; color: var(--text-dim);">{meta?.status || 'waiting'}</div>
+        <div class="stage-tip">{meta?.status || 'waiting'}</div>
+        <div class="stage-tokens" title={meta?.tokens ? tokensTooltip(meta.tokens.total || meta.tokens) : ''}>
+          {meta?.tokensTotal ? compactTokens({ total: meta.tokensTotal, cost: meta.tokensCost }) : ''}
+        </div>
       </div>
     </div>
   )
+}
+
+// compactTokens renders a 2-line cost summary for a stage. The
+// first line is the total token count abbreviated to k/M; the
+// second is the dollar cost when the provider reports it.
+function compactTokens(t) {
+  if (!t) return ''
+  const total = t.total ?? 0
+  const cost = t.cost ?? 0
+  const parts = []
+  if (total) parts.push(humanTokens(total))
+  if (cost) parts.push('$' + cost.toFixed(4))
+  return parts.join(' · ')
+}
+
+function humanTokens(n) {
+  if (!Number.isFinite(n) || n <= 0) return '0'
+  if (n < 1000) return String(n)
+  if (n < 1_000_000) return (n / 1000).toFixed(n < 10_000 ? 1 : 0) + 'k'
+  return (n / 1_000_000).toFixed(2) + 'M'
+}
+
+function tokensTooltip(t) {
+  if (!t) return ''
+  return [
+    'input ' + (t.input ?? 0),
+    'output ' + (t.output ?? 0),
+    'reasoning ' + (t.reasoning ?? 0),
+    'cache_read ' + (t.cache_read ?? 0),
+    'cache_write ' + (t.cache_write ?? 0),
+    'cost $' + (t.cost ?? 0).toFixed(6),
+  ].join('  ')
 }
 
 function humanDuration(ms) {

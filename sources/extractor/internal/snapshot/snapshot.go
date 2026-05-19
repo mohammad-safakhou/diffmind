@@ -38,6 +38,22 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
+// DefaultParent returns the recommended parent directory for snapshots:
+// `~/.diffmind/snapshots`. Using a stable, user-owned location instead
+// of `os.TempDir()` produces shorter and more predictable absolute
+// paths, which materially reduces the rate of "wrong path"
+// hallucinations from LLM agents when they re-enter their own tool
+// arguments. Falls back to `os.TempDir()` when the user's home
+// directory cannot be resolved (very rare; mostly relevant in
+// containerised CI).
+func DefaultParent() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return os.TempDir()
+	}
+	return filepath.Join(home, ".diffmind", "snapshots")
+}
+
 // Snapshot represents a hardlinked mirror of a source repository under a
 // random temp directory. The Path field is the absolute path to the snapshot
 // root and is what callers should pass to OpenCode as the session directory.
@@ -141,15 +157,27 @@ var defaultSkipDirs = map[string]struct{}{
 // almost never relevant to extraction.
 const defaultMaxFileBytes int64 = 4 << 20
 
-// Create materializes an independent copy of source under a fresh temp dir
-// rooted at parent. Returns a Snapshot whose Path can be handed to OpenCode.
+// Create materializes an independent copy of source under
+// <parent>/<name>. Returns a Snapshot whose Path can be handed to
+// OpenCode.
 //
-// Failure modes (all fatal — the orchestrator must fail fast if it cannot
-// guarantee isolation):
+// Path stability: when name is empty we fall back to a random suffix
+// (legacy behaviour, used by some tests). Production callers should
+// always pass a stable, human-readable name — the run ID — so the
+// resulting path does not contain random tokens. LLM agents are
+// noticeably more reliable when copying short, predictable paths in
+// tool calls; we have observed wrong-character hallucinations
+// (e.g. "603b6b6" instead of "603t") on the older random-hex form.
+//
+// Failure modes (all fatal — the orchestrator must fail fast if it
+// cannot guarantee isolation):
 //   - source does not exist or is not a directory
-//   - cannot create the temp dir or any sub-path
+//   - cannot create the parent dir or destination
+//   - destination already exists with a non-empty content (we refuse
+//     to write over a previous snapshot; the caller must delete or
+//     reattach instead)
 //   - copying a regular file fails
-func Create(source, parent string) (*Snapshot, error) {
+func Create(source, parent, name string) (*Snapshot, error) {
 	abs, err := filepath.Abs(source)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot: resolve source: %w", err)
@@ -172,15 +200,40 @@ func Create(source, parent string) (*Snapshot, error) {
 	if err := os.MkdirAll(parentAbs, 0o755); err != nil {
 		return nil, fmt.Errorf("snapshot: create parent dir: %w", err)
 	}
-	suffix, err := randomSuffix()
-	if err != nil {
-		return nil, fmt.Errorf("snapshot: random suffix: %w", err)
+
+	// Choose the leaf name. Stable when provided (preferred); random
+	// otherwise (legacy/tests).
+	leaf := strings.TrimSpace(name)
+	if leaf == "" {
+		suffix, err := randomSuffix()
+		if err != nil {
+			return nil, fmt.Errorf("snapshot: random suffix: %w", err)
+		}
+		leaf = "diffmind-snap-" + suffix
 	}
 	// dest must be absolute: the OpenCode server resolves the `directory`
 	// query parameter relative to its own CWD, which we do not control. An
 	// absolute path makes the destination unambiguous regardless of where
 	// the server was started.
-	dest := filepath.Join(parentAbs, "diffmind-snap-"+suffix)
+	dest := filepath.Join(parentAbs, leaf)
+	if info, err := os.Stat(dest); err == nil {
+		// Refuse to silently overwrite a previous snapshot at the same
+		// path. A leftover snapshot is almost always evidence of a
+		// crashed run; the caller should explicitly Close() or
+		// Reattach() rather than risk a write race.
+		if info.IsDir() {
+			// Empty leftover dir? remove it. Anything non-empty: bail.
+			entries, _ := os.ReadDir(dest)
+			if len(entries) > 0 {
+				return nil, fmt.Errorf("snapshot: dest %q already exists and is not empty; reattach() it or remove it manually", dest)
+			}
+			if err := os.Remove(dest); err != nil {
+				return nil, fmt.Errorf("snapshot: clear stale dest: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("snapshot: dest %q exists and is not a directory", dest)
+		}
+	}
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return nil, fmt.Errorf("snapshot: create dest: %w", err)
 	}

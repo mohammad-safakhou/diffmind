@@ -48,7 +48,7 @@ func run(args []string) {
 	opencodeURL := fs.String("opencode-url", "", "OpenCode server base URL")
 	opencodeUsername := fs.String("opencode-username", "", "OpenCode basic auth username (default: opencode)")
 	opencodePassword := fs.String("opencode-password", "", "OpenCode basic auth password")
-	opencodeTimeoutSeconds := fs.Int("opencode-timeout-seconds", 0, "OpenCode request timeout in seconds")
+	opencodeTimeoutSeconds := fs.Int("opencode-timeout-seconds", 0, "OpenCode HTTP transport timeout in seconds (0 = use config default 4h fail-safe; primary control is --idle-timeout-seconds)")
 	providerID := fs.String("provider-id", "", "OpenCode provider ID")
 	modelID := fs.String("model-id", "", "OpenCode model ID")
 	modelVariant := fs.String("model-variant", "", "OpenCode model variant (for example: low, medium, high, max)")
@@ -60,6 +60,9 @@ func run(args []string) {
 	reuseOpenCodeSession := fs.Bool("reuse-opencode-session", false, "reuse a single OpenCode session across prompts in a run")
 	skipReexamination := fs.Bool("skip-reexamination", false, "skip stage 2 (LLM re-ask for low-signal seeds) for faster, lower-accuracy runs")
 	minConfidence := fs.Float64("min-confidence", -1, "confidence threshold in [0,1]")
+	idleTimeoutSeconds := fs.Int("idle-timeout-seconds", 0, "abort a prompt after this many seconds without observable progress on the OpenCode session (0 = use config default 120s)")
+	maxCallSeconds := fs.Int("max-call-seconds", 0, "hard ceiling on a single LLM call's duration in seconds (0 = use config default 1800s)")
+	livenessPollSeconds := fs.Int("liveness-poll-seconds", 0, "how often the liveness watchdog polls OpenCode for progress (0 = use config default 5s)")
 	verbose := fs.Bool("verbose", false, "enable debug logs")
 	trace := fs.Bool("trace", false, "enable trace logs (very noisy)")
 	logFile := fs.String("log-file", "", "optional log file path")
@@ -116,6 +119,15 @@ func run(args []string) {
 	if *opencodeDeleteDelaySeconds > 0 {
 		cfg.Runtime.OpenCodeDeleteDelaySec = *opencodeDeleteDelaySeconds
 	}
+	if *idleTimeoutSeconds > 0 {
+		cfg.Runtime.IdleTimeoutSec = *idleTimeoutSeconds
+	}
+	if *maxCallSeconds > 0 {
+		cfg.Runtime.MaxCallSeconds = *maxCallSeconds
+	}
+	if *livenessPollSeconds > 0 {
+		cfg.Runtime.LivenessPollSec = *livenessPollSeconds
+	}
 	if *minConfidence >= 0 {
 		cfg.Quality.MinConfidence = *minConfidence
 	}
@@ -146,7 +158,7 @@ func retry(args []string) {
 	opencodeURL := fs.String("opencode-url", "", "OpenCode server base URL (overrides config)")
 	opencodeUsername := fs.String("opencode-username", "", "OpenCode basic auth username")
 	opencodePassword := fs.String("opencode-password", "", "OpenCode basic auth password")
-	opencodeTimeoutSeconds := fs.Int("opencode-timeout-seconds", 0, "OpenCode request timeout in seconds")
+	opencodeTimeoutSeconds := fs.Int("opencode-timeout-seconds", 0, "OpenCode HTTP transport timeout in seconds (0 = use config default 4h fail-safe; primary control is --idle-timeout-seconds)")
 	providerID := fs.String("provider-id", "", "OpenCode provider ID (overrides config)")
 	modelID := fs.String("model-id", "", "OpenCode model ID (overrides config)")
 	modelVariant := fs.String("model-variant", "", "OpenCode model variant")
@@ -217,7 +229,7 @@ func batchRun(args []string) {
 	fs := flag.NewFlagSet("batch", flag.ExitOnError)
 	reposFlag := fs.String("repos", "", "comma-separated list of repo paths")
 	opencodeURL := fs.String("opencode-url", "", "OpenCode server base URL")
-	opencodeTimeoutSeconds := fs.Int("opencode-timeout-seconds", 300, "OpenCode request timeout in seconds")
+	opencodeTimeoutSeconds := fs.Int("opencode-timeout-seconds", 0, "OpenCode HTTP transport timeout in seconds (0 = use config default 4h fail-safe; primary control is --idle-timeout-seconds)")
 	providerID := fs.String("provider-id", "", "OpenCode provider ID")
 	modelID := fs.String("model-id", "", "OpenCode model ID")
 	parallel := fs.Int("parallel", 3, "max parallel repo extractions")
@@ -340,11 +352,22 @@ func serveUI(args []string) {
 	host := fs.String("host", "127.0.0.1", "dashboard host")
 	port := fs.Int("port", 8080, "dashboard port")
 	uiToken := fs.String("ui-token", "", "optional shared-secret required by /api/* endpoints (set DIFFMIND_UI_TOKEN to override)")
+	noSPARebuild := fs.Bool("no-spa-rebuild", false, "skip automatic SPA rebuild on startup (use the embedded or existing dist/ as-is)")
 	verbose := fs.Bool("verbose", false, "enable debug logs")
 	trace := fs.Bool("trace", false, "enable trace logs (very noisy)")
 	logFile := fs.String("log-file", "", "optional log file path")
 	fs.Parse(args)
 	configureLogging(*verbose, *trace, *logFile)
+
+	// Auto-rebuild the SPA when running from a development checkout
+	// AND the sources are newer than dist/. This makes `go run
+	// ./cmd/diffmind ui` "just work" without the user having to
+	// remember `npm run build`. When no SPA source tree is on disk
+	// (production binary), this returns "" and we serve the embedded
+	// bundle. See cmd/diffmind/spabuild.go for the full logic.
+	if distDir := ensureSPABuilt(*noSPARebuild); distDir != "" {
+		ui.SetDistOverride(distDir)
+	}
 
 	token := *uiToken
 	if token == "" {

@@ -39,11 +39,65 @@ type startRunRequest struct {
 		CleanupOpenCodeSessions bool `json:"cleanup_opencode_sessions"`
 		OpenCodeDeleteDelaySec  int  `json:"opencode_delete_delay_seconds"`
 		SkipReexamination       bool `json:"skip_reexamination"`
+		// Liveness watchdog knobs. 0 = use config default. See
+		// config.Runtime for field semantics.
+		IdleTimeoutSec  int `json:"idle_timeout_seconds"`
+		MaxCallSeconds  int `json:"max_call_seconds"`
+		LivenessPollSec int `json:"liveness_poll_seconds"`
 	} `json:"runtime"`
 
 	Quality struct {
 		MinConfidence float64 `json:"min_confidence"`
 	} `json:"quality"`
+}
+
+// buildConfigFromRequest translates a startRunRequest into a
+// config.Config. It is a PURE function (no I/O, no Runtime.BaseDir
+// override) so it is easy to unit-test the field-mapping logic
+// without spinning up a server. The "0 means use server default"
+// convention applies to every numeric field — the SPA sends 0 from
+// inputs the user has not explicitly populated, and we MUST NOT
+// overwrite a sensible default (e.g. 4-hour transport timeout) with
+// it. See run 20260518T113418Z for the cautionary tale: the SPA was
+// sending timeout_seconds: 300, which silently clobbered the 4-hour
+// fail-safe and reintroduced the 300-second wall that the liveness
+// watchdog was supposed to replace.
+func buildConfigFromRequest(req startRunRequest) config.Config {
+	cfg := config.Default()
+	cfg.OpenCode.BaseURL = req.OpenCode.BaseURL
+	cfg.OpenCode.Username = req.OpenCode.Username
+	cfg.OpenCode.Password = req.OpenCode.Password
+	cfg.OpenCode.ProviderID = req.OpenCode.ProviderID
+	cfg.OpenCode.ModelID = req.OpenCode.ModelID
+	cfg.OpenCode.ModelVariant = req.OpenCode.ModelVariant
+	if req.OpenCode.TimeoutSec > 0 {
+		cfg.OpenCode.TimeoutSec = req.OpenCode.TimeoutSec
+	}
+	if req.Runtime.Workers > 0 {
+		cfg.Runtime.Workers = req.Runtime.Workers
+	}
+	if req.Runtime.MaxCatalogItems > 0 {
+		cfg.Runtime.MaxCatalogItems = req.Runtime.MaxCatalogItems
+	}
+	cfg.Runtime.ReuseOpenCodeSession = req.Runtime.ReuseOpenCodeSession
+	cfg.Runtime.CleanupOpenCodeSessions = req.Runtime.CleanupOpenCodeSessions
+	if req.Runtime.OpenCodeDeleteDelaySec > 0 {
+		cfg.Runtime.OpenCodeDeleteDelaySec = req.Runtime.OpenCodeDeleteDelaySec
+	}
+	cfg.Runtime.SkipReexamination = req.Runtime.SkipReexamination
+	if req.Runtime.IdleTimeoutSec > 0 {
+		cfg.Runtime.IdleTimeoutSec = req.Runtime.IdleTimeoutSec
+	}
+	if req.Runtime.MaxCallSeconds > 0 {
+		cfg.Runtime.MaxCallSeconds = req.Runtime.MaxCallSeconds
+	}
+	if req.Runtime.LivenessPollSec > 0 {
+		cfg.Runtime.LivenessPollSec = req.Runtime.LivenessPollSec
+	}
+	if req.Quality.MinConfidence > 0 {
+		cfg.Quality.MinConfidence = req.Quality.MinConfidence
+	}
+	return cfg
 }
 
 // handleRunCreate validates the form payload, builds a config.Config, then
@@ -69,32 +123,25 @@ func (s *Server) handleRunCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg := config.Default()
-	cfg.OpenCode.BaseURL = req.OpenCode.BaseURL
-	cfg.OpenCode.Username = req.OpenCode.Username
-	cfg.OpenCode.Password = req.OpenCode.Password
-	cfg.OpenCode.ProviderID = req.OpenCode.ProviderID
-	cfg.OpenCode.ModelID = req.OpenCode.ModelID
-	cfg.OpenCode.ModelVariant = req.OpenCode.ModelVariant
-	if req.OpenCode.TimeoutSec > 0 {
-		cfg.OpenCode.TimeoutSec = req.OpenCode.TimeoutSec
-	}
-	if req.Runtime.Workers > 0 {
-		cfg.Runtime.Workers = req.Runtime.Workers
-	}
-	if req.Runtime.MaxCatalogItems > 0 {
-		cfg.Runtime.MaxCatalogItems = req.Runtime.MaxCatalogItems
-	}
-	cfg.Runtime.ReuseOpenCodeSession = req.Runtime.ReuseOpenCodeSession
-	cfg.Runtime.CleanupOpenCodeSessions = req.Runtime.CleanupOpenCodeSessions
-	if req.Runtime.OpenCodeDeleteDelaySec > 0 {
-		cfg.Runtime.OpenCodeDeleteDelaySec = req.Runtime.OpenCodeDeleteDelaySec
-	}
-	cfg.Runtime.SkipReexamination = req.Runtime.SkipReexamination
-	if req.Quality.MinConfidence > 0 {
-		cfg.Quality.MinConfidence = req.Quality.MinConfidence
-	}
+	cfg := buildConfigFromRequest(req)
 	cfg.Artifacts.BaseDir = s.baseDir
+
+	// Log the effective config the dashboard is about to launch. We
+	// learned the hard way (runs 20260518T113418Z, 20260518T115925Z)
+	// that a stale localStorage value can silently set TimeoutSec=300
+	// and bypass every other safeguard. With this log line the next
+	// such regression is one grep away.
+	util.Info("ui.api", "starting run from dashboard", map[string]any{
+		"repo":                           repo,
+		"opencode_transport_timeout_sec": cfg.OpenCode.TimeoutSec,
+		"idle_timeout_sec":               cfg.Runtime.IdleTimeoutSec,
+		"max_call_sec":                   cfg.Runtime.MaxCallSeconds,
+		"liveness_poll_sec":              cfg.Runtime.LivenessPollSec,
+		"workers":                        cfg.Runtime.Workers,
+		"max_catalog_items":              cfg.Runtime.MaxCatalogItems,
+		"skip_reexamination":             cfg.Runtime.SkipReexamination,
+		"reuse_session":                  cfg.Runtime.ReuseOpenCodeSession,
+	})
 
 	runID, err := s.runner.Start(context.Background(), runner.StartParams{
 		RepoPath: repo,
@@ -111,6 +158,120 @@ func (s *Server) handleRunCreate(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, map[string]any{"run_id": runID, "status": runner.StatusRunning})
 	util.Info("ui.api", "run created", map[string]any{"run_id": runID, "repo": repo})
+}
+
+// retryRequest is the body of POST /api/runs/{id}/retry. Every field
+// is optional; when omitted the existing run's manifest provides the
+// repo path and we fall back to default credentials. The typical
+// retry case is "I switched OpenCode accounts after the run failed
+// on an expired token" — for that the user supplies a fresh
+// opencode.password (and optionally provider/model).
+type retryRequest struct {
+	OpenCode struct {
+		BaseURL      string `json:"base_url"`
+		Username     string `json:"username"`
+		Password     string `json:"password"`
+		ProviderID   string `json:"provider_id"`
+		ModelID      string `json:"model_id"`
+		ModelVariant string `json:"model_variant"`
+		TimeoutSec   int    `json:"timeout_seconds"`
+	} `json:"opencode"`
+	Runtime struct {
+		Workers              int  `json:"workers"`
+		MaxCatalogItems      int  `json:"max_catalog_items"`
+		IdleTimeoutSec       int  `json:"idle_timeout_seconds"`
+		MaxCallSeconds       int  `json:"max_call_seconds"`
+		LivenessPollSec      int  `json:"liveness_poll_seconds"`
+		ReuseOpenCodeSession bool `json:"reuse_opencode_session"`
+		SkipReexamination    bool `json:"skip_reexamination"`
+	} `json:"runtime"`
+}
+
+// handleRunRetry resumes a previously-failed run. It only requires
+// the run id (in the URL). The optional JSON body lets the caller
+// override OpenCode credentials for the retry, which is the path
+// the dashboard's Retry button uses when the original failure was an
+// auth or quota issue.
+func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request, runID string) {
+	// Optional body. Empty body is a valid no-override retry.
+	var req retryRequest
+	if r.ContentLength > 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid json body: %w", err))
+			return
+		}
+	}
+
+	// Build the retry config: start from the current server config
+	// (loaded from disk on server startup), then layer any overrides
+	// from the request on top. Note that this is NOT the original
+	// run's config — that lives on disk inside the manifest, but
+	// app.RetryRun rereads what it needs from there. What we pass
+	// here only controls OpenCode connectivity / liveness for the
+	// retry attempt itself.
+	cfg := config.Default()
+	if req.OpenCode.BaseURL != "" {
+		cfg.OpenCode.BaseURL = req.OpenCode.BaseURL
+	}
+	if req.OpenCode.Username != "" {
+		cfg.OpenCode.Username = req.OpenCode.Username
+	}
+	if req.OpenCode.Password != "" {
+		cfg.OpenCode.Password = req.OpenCode.Password
+	}
+	if req.OpenCode.ProviderID != "" {
+		cfg.OpenCode.ProviderID = req.OpenCode.ProviderID
+	}
+	if req.OpenCode.ModelID != "" {
+		cfg.OpenCode.ModelID = req.OpenCode.ModelID
+	}
+	if req.OpenCode.ModelVariant != "" {
+		cfg.OpenCode.ModelVariant = req.OpenCode.ModelVariant
+	}
+	if req.OpenCode.TimeoutSec > 0 {
+		cfg.OpenCode.TimeoutSec = req.OpenCode.TimeoutSec
+	}
+	if req.Runtime.Workers > 0 {
+		cfg.Runtime.Workers = req.Runtime.Workers
+	}
+	if req.Runtime.MaxCatalogItems > 0 {
+		cfg.Runtime.MaxCatalogItems = req.Runtime.MaxCatalogItems
+	}
+	if req.Runtime.IdleTimeoutSec > 0 {
+		cfg.Runtime.IdleTimeoutSec = req.Runtime.IdleTimeoutSec
+	}
+	if req.Runtime.MaxCallSeconds > 0 {
+		cfg.Runtime.MaxCallSeconds = req.Runtime.MaxCallSeconds
+	}
+	if req.Runtime.LivenessPollSec > 0 {
+		cfg.Runtime.LivenessPollSec = req.Runtime.LivenessPollSec
+	}
+	cfg.Runtime.ReuseOpenCodeSession = req.Runtime.ReuseOpenCodeSession
+	cfg.Runtime.SkipReexamination = req.Runtime.SkipReexamination
+	cfg.Artifacts.BaseDir = s.baseDir
+
+	util.Info("ui.api", "retrying run from dashboard", map[string]any{
+		"run_id":                         runID,
+		"opencode_transport_timeout_sec": cfg.OpenCode.TimeoutSec,
+		"idle_timeout_sec":               cfg.Runtime.IdleTimeoutSec,
+		"max_call_sec":                   cfg.Runtime.MaxCallSeconds,
+		"liveness_poll_sec":              cfg.Runtime.LivenessPollSec,
+	})
+
+	id, err := s.runner.Retry(context.Background(), runner.RetryParams{
+		RunID:  runID,
+		Config: cfg,
+	})
+	if err != nil {
+		if errors.Is(err, runner.ErrBusy) {
+			writeErr(w, http.StatusConflict, err)
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+	writeJSON(w, map[string]any{"run_id": id, "status": runner.StatusRunning})
 }
 
 // handleRunCancel cancels the active run if its id matches.

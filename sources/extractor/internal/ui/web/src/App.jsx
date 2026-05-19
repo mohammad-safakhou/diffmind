@@ -34,7 +34,57 @@ export function App() {
     const url = ssePath(`/api/runs/${encodeURIComponent(runID)}/events`)
     closeRef.current = openEventStream(url, {
       onEvent: (e) => applyEvent(e),
+      // Safety net: when SSE signals EOF (or fully disconnects), the
+      // run has either reached a terminal state OR our connection
+      // missed the terminal event mid-flight. Re-query the runner's
+      // authoritative state and reconcile. If the runner says
+      // "failed" but our runMeta still says "running", we flip the
+      // pill. This is the catch-all for the historical class of
+      // "stuck at running" bugs.
+      onEOF: () => { void reconcileTerminalStatus(runID) },
+      onError: () => { void reconcileTerminalStatus(runID) },
     })
+  }
+
+  // reconcileTerminalStatus fetches the runner's State for a run
+  // whose SSE has closed and updates runMeta if it still says
+  // "running" / "cancelling". Idempotent and cheap.
+  const reconcileTerminalStatus = async (runID) => {
+    try {
+      const active = await getActive()
+      // Two cases:
+      //  - The runner's active state still has this run id: trust
+      //    its status field directly.
+      //  - The runner has moved on (status: 'idle' or different id):
+      //    look up the run via /api/runs/{id}/state which returns
+      //    the historical state too.
+      let snap = null
+      if (active && active.run_id === runID) {
+        snap = active
+      } else {
+        try {
+          const s = await getRunState(runID)
+          snap = s.state
+        } catch {
+          /* run was pruned; nothing to reconcile against */
+        }
+      }
+      if (!snap) return
+      const term = snap.status
+      if (term === 'running' || term === 'cancelling' || term === 'idle') return
+      const cur = runMeta.value
+      if (!cur) return
+      if (cur.status !== term) {
+        runMeta.value = {
+          ...cur,
+          status: term,
+          finishedAt: snap.finished_at || cur.finishedAt,
+          error: snap.error || cur.error,
+        }
+      }
+    } catch {
+      /* network blip or auth — ignore; the SSE reconnect path will retry */
+    }
   }
 
   // First load: hydrate from the singleton runner if a run is active, or
@@ -98,12 +148,22 @@ export function App() {
   const onReplay = (run) => {
     resetStore()
     // Synthesize a minimal runMeta so the top bar / pipeline strip have
-    // something to render before the first replayed event arrives.
+    // something to render before the first replayed event arrives. We
+    // MUST honour the run's real terminal status from the runs index
+    // — passing every non-completed run through as "running" leaves
+    // the pill stuck on "running" until the replay reaches its
+    // terminal event (which can be many seconds), and stays wrong
+    // entirely if the SSE replay drops before the terminal event.
+    // The runs-index `status` is one of: completed, failed,
+    // cancelled, running. Trust it.
+    const status = run.status || 'completed'
     runMeta.value = {
       id: run.run_id,
       startedAt: run.started_at,
-      status: run.status === 'completed' ? 'completed' : 'running',
+      finishedAt: run.finished_at,
+      status,
       repo: run.repo_path,
+      error: run.error || '',
     }
     attach(run.run_id)
   }

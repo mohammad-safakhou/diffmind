@@ -12,6 +12,18 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
+// fileExists reports whether the given path resolves to anything on
+// disk (file or directory). Empty path returns false. Used by the
+// failure-report renderer so we never advertise files we didn't
+// actually write.
+func fileExists(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 // stateDir is the subdirectory under runDir where each stage's
 // intermediate output is persisted on its way to the next stage. The
 // retry command reads these files to fast-forward to the failed stage
@@ -162,24 +174,37 @@ func renderFailureMarkdown(f *Failure, runDir, snapshotPath string) string {
 	fmt.Fprintf(&b, "\n## Error message\n\n```\n%s\n```\n", f.Error)
 
 	fmt.Fprintf(&b, "\n## Files to inspect\n\n")
-	if f.PromptPath != "" {
+	// Only list files that actually exist on disk. The capture pipeline
+	// writes .json on a structured success, .raw + .text on a parsed-
+	// text or failed-parse path, and may write only a subset of those
+	// when the call short-circuited. Listing files that were never
+	// written would send the operator to read a non-existent path.
+	if fileExists(f.PromptPath) {
 		fmt.Fprintf(&b, "- Prompt: `%s`\n", f.PromptPath)
 	}
 	if f.ResponsePath != "" {
-		// The exact extension depends on what we managed to capture
-		// (.json on a structured response, .raw on the wire bytes,
-		// .text on the parsed-text fallback). List all three so the
-		// operator can grep whichever one exists.
 		base := strings.TrimSuffix(f.ResponsePath, filepath.Ext(f.ResponsePath))
-		fmt.Fprintf(&b, "- Response (parsed JSON): `%s.json`\n", base)
-		fmt.Fprintf(&b, "- Response (raw HTTP body): `%s.raw`\n", base)
-		fmt.Fprintf(&b, "- Response (text fallback): `%s.text`\n", base)
+		for _, suffix := range []string{".json", ".raw", ".text"} {
+			path := base + suffix
+			if !fileExists(path) {
+				continue
+			}
+			label := map[string]string{
+				".json": "Response (parsed JSON)",
+				".raw":  "Response (raw HTTP body)",
+				".text": "Response (text fallback)",
+			}[suffix]
+			fmt.Fprintf(&b, "- %s: `%s`\n", label, path)
+		}
 	}
 	if runDir != "" {
 		fmt.Fprintf(&b, "- Run dir: `%s`\n", runDir)
-		fmt.Fprintf(&b, "- Events log: `%s/events.jsonl`\n", runDir)
+		events := filepath.Join(runDir, "events.jsonl")
+		if fileExists(events) {
+			fmt.Fprintf(&b, "- Events log: `%s`\n", events)
+		}
 	}
-	if snapshotPath != "" {
+	if snapshotPath != "" && fileExists(snapshotPath) {
 		fmt.Fprintf(&b, "- Snapshot (retained for retry): `%s`\n", snapshotPath)
 	}
 
@@ -199,8 +224,17 @@ func renderFailureMarkdown(f *Failure, runDir, snapshotPath string) string {
 	if f.ErrorClass == "timeout" {
 		fmt.Fprintf(&b, "\n> Tip: the call timed out. Increase `opencode.timeout_sec` and/or shrink `runtime.max_catalog_items` so each prompt is smaller.\n")
 	}
+	if f.ErrorClass == "stuck" {
+		fmt.Fprintf(&b, "\n> Tip: the liveness watchdog declared this call stuck because the OpenCode session stopped emitting parts AND no tool was running AND no permission was pending. The aborted prompt's response is in the response files above — inspect it to see what the model was doing right before it froze. If this objective genuinely needs more thinking time (very large file), raise `runtime.idle_timeout_seconds`.\n")
+	}
 	if f.ErrorClass == "http_4xx" && f.HTTPStatus == 401 {
 		fmt.Fprintf(&b, "\n> Tip: 401 Unauthorized. Verify `DIFFMIND_OPENCODE_USERNAME`/`PASSWORD` and that `opencode auth login` for the configured provider is current.\n")
+	}
+	if f.ErrorClass == "auth" {
+		fmt.Fprintf(&b, "\n> Tip: the provider rejected this call due to authentication. Run `opencode auth login` for the configured provider and then retry from the dashboard (or `diffmind retry --run <id>`). The retry will skip every stage that already succeeded.\n")
+	}
+	if f.ErrorClass == "quota" {
+		fmt.Fprintf(&b, "\n> Tip: the provider's quota or credit limit is exhausted. Top up your account (or switch to a provider with available credit), then retry. Stages that already completed will not be re-billed because they're loaded from `state/*.json`.\n")
 	}
 	return b.String()
 }

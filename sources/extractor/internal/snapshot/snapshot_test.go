@@ -3,6 +3,7 @@ package snapshot
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -22,7 +23,7 @@ func TestCreateMirrorsRegularFiles(t *testing.T) {
 	writeFile(t, filepath.Join(src, "sub", "b.go"), "package sub\n")
 
 	parent := t.TempDir()
-	snap, err := Create(src, parent)
+	snap, err := Create(src, parent, "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -40,7 +41,7 @@ func TestSnapshotEditsDoNotAffectSource(t *testing.T) {
 	src := t.TempDir()
 	writeFile(t, filepath.Join(src, "a.go"), "ORIGINAL\n")
 
-	snap, err := Create(src, t.TempDir())
+	snap, err := Create(src, t.TempDir(), "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestSnapshotAppendsAlsoIsolatedFromSource(t *testing.T) {
 	src := t.TempDir()
 	original := "ORIGINAL\n"
 	writeFile(t, filepath.Join(src, "a.go"), original)
-	snap, err := Create(src, t.TempDir())
+	snap, err := Create(src, t.TempDir(), "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -91,7 +92,7 @@ func TestSnapshotDeletesAlsoIsolatedFromSource(t *testing.T) {
 	// An agent rm-ing a file inside the snapshot must not affect the source.
 	src := t.TempDir()
 	writeFile(t, filepath.Join(src, "a.go"), "x\n")
-	snap, err := Create(src, t.TempDir())
+	snap, err := Create(src, t.TempDir(), "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -110,7 +111,7 @@ func TestCreateSkipsDefaultDirs(t *testing.T) {
 	writeFile(t, filepath.Join(src, "node_modules", "x", "package.json"), "{}\n")
 	writeFile(t, filepath.Join(src, "src", "main.go"), "package main\n")
 
-	snap, err := Create(src, t.TempDir())
+	snap, err := Create(src, t.TempDir(), "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestCreateRecreatesSymlinks(t *testing.T) {
 	if err := os.Symlink("a.go", filepath.Join(src, "alias.go")); err != nil {
 		t.Skipf("symlink unsupported: %v", err)
 	}
-	snap, err := Create(src, t.TempDir())
+	snap, err := Create(src, t.TempDir(), "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -149,7 +150,7 @@ func TestCreateRecreatesSymlinks(t *testing.T) {
 }
 
 func TestCreateFailsOnNonexistentSource(t *testing.T) {
-	if _, err := Create(filepath.Join(t.TempDir(), "missing"), t.TempDir()); err == nil {
+	if _, err := Create(filepath.Join(t.TempDir(), "missing"), t.TempDir(), ""); err == nil {
 		t.Fatal("expected error for non-existent source")
 	}
 }
@@ -158,7 +159,7 @@ func TestCreateFailsWhenSourceIsFile(t *testing.T) {
 	tmp := t.TempDir()
 	f := filepath.Join(tmp, "file.txt")
 	writeFile(t, f, "hi\n")
-	if _, err := Create(f, t.TempDir()); err == nil {
+	if _, err := Create(f, t.TempDir(), ""); err == nil {
 		t.Fatal("expected error when source is a file")
 	}
 }
@@ -166,7 +167,7 @@ func TestCreateFailsWhenSourceIsFile(t *testing.T) {
 func TestCloseRemovesSnapshot(t *testing.T) {
 	src := t.TempDir()
 	writeFile(t, filepath.Join(src, "a.go"), "x\n")
-	snap, err := Create(src, t.TempDir())
+	snap, err := Create(src, t.TempDir(), "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -185,7 +186,7 @@ func TestCloseRemovesSnapshot(t *testing.T) {
 func TestCloseRecoversFromReadOnlyFiles(t *testing.T) {
 	src := t.TempDir()
 	writeFile(t, filepath.Join(src, "a.go"), "x\n")
-	snap, err := Create(src, t.TempDir())
+	snap, err := Create(src, t.TempDir(), "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -201,7 +202,7 @@ func TestCloseRecoversFromReadOnlyFiles(t *testing.T) {
 func TestMapToSourceHandlesAbsoluteAndRelative(t *testing.T) {
 	src := t.TempDir()
 	writeFile(t, filepath.Join(src, "a.go"), "x\n")
-	snap, err := Create(src, t.TempDir())
+	snap, err := Create(src, t.TempDir(), "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -228,7 +229,7 @@ func TestMapToSourceHandlesAbsoluteAndRelative(t *testing.T) {
 func TestMapRelativeToSourceStripsSnapshotBasename(t *testing.T) {
 	src := t.TempDir()
 	writeFile(t, filepath.Join(src, "a.go"), "x\n")
-	snap, err := Create(src, t.TempDir())
+	snap, err := Create(src, t.TempDir(), "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -237,5 +238,62 @@ func TestMapRelativeToSourceStripsSnapshotBasename(t *testing.T) {
 	got := snap.MapRelativeToSource(prefixed)
 	if got != "pkg/a.go" {
 		t.Fatalf("expected snapshot-name prefix stripped, got %q", got)
+	}
+}
+
+// When a stable name is supplied, the resulting Path uses that name
+// verbatim as its leaf — no random suffix appended. This is the
+// property the LLM-friendly snapshot paths depend on.
+func TestCreateWithStableNameProducesPredictablePath(t *testing.T) {
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "main.go"), "package main\n")
+	parent := t.TempDir()
+
+	snap, err := Create(src, parent, "20260601T120000Z")
+	if err != nil {
+		t.Fatalf("Create with stable name: %v", err)
+	}
+	defer snap.Close()
+
+	wantPrefix := filepath.Join(parent, "20260601T120000Z")
+	if snap.Path != wantPrefix {
+		t.Fatalf("snapshot Path = %q; want exactly %q (no random suffix)", snap.Path, wantPrefix)
+	}
+}
+
+// Creating a snapshot at a destination that already contains files
+// MUST be refused — the orchestrator relies on snapshot isolation, and
+// silently overwriting a previous run's snapshot would defeat that.
+// The caller is supposed to Reattach() such a path instead.
+func TestCreateRefusesToOverwriteNonEmptyDestination(t *testing.T) {
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "main.go"), "package main\n")
+	parent := t.TempDir()
+	dest := filepath.Join(parent, "20260601T120000Z")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatalf("mkdir dest: %v", err)
+	}
+	writeFile(t, filepath.Join(dest, "stale.txt"), "leftover\n")
+
+	if _, err := Create(src, parent, "20260601T120000Z"); err == nil {
+		t.Fatalf("Create must refuse to overwrite a non-empty destination")
+	}
+}
+
+// DefaultParent must yield a path under the user's home (when
+// available). The exact value is host-dependent, so we only assert
+// that it lives under the home dir and ends with diffmind/snapshots.
+func TestDefaultParentUnderHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home dir on this host; nothing to assert")
+	}
+	got := DefaultParent()
+	wantSuffix := filepath.Join(".diffmind", "snapshots")
+	if !strings.HasPrefix(got, home) {
+		t.Errorf("DefaultParent %q does not start with home %q", got, home)
+	}
+	if filepath.Base(filepath.Dir(got))+string(filepath.Separator)+filepath.Base(got) != wantSuffix {
+		t.Errorf("DefaultParent = %q; want it to end with %q", got, wantSuffix)
 	}
 }

@@ -26,6 +26,25 @@ type Runtime struct {
 	OpenCodeDeleteDelaySec  int  `json:"opencode_delete_delay_seconds"`
 	ReuseOpenCodeSession    bool `json:"reuse_opencode_session"`
 	SkipReexamination       bool `json:"skip_reexamination"`
+
+	// IdleTimeoutSec is the maximum time (in seconds) the liveness
+	// watchdog will tolerate WITHOUT observable progress on the
+	// OpenCode session before declaring the in-flight prompt stuck and
+	// aborting it. Progress = parts growing, tool transitioning state,
+	// or session token counters advancing. While a tool call is in
+	// status "running" or a permission is pending for the session, the
+	// idle clock is paused (those are not idle states).
+	IdleTimeoutSec int `json:"idle_timeout_seconds"`
+	// MaxCallSeconds is a hard ceiling: even with continuous progress,
+	// no single LLM call may exceed this duration. Acts as a safety
+	// belt for runaway loops; under normal conditions IdleTimeoutSec
+	// is the one doing the work.
+	MaxCallSeconds int `json:"max_call_seconds"`
+	// LivenessPollSec is how often the watchdog polls
+	// /session/{id}/message?limit=1 to check for progress. Defaults
+	// to 5 seconds; smaller values catch hangs faster at the cost of
+	// more HTTP traffic to localhost (the JSON payload is ~4 KB).
+	LivenessPollSec int `json:"liveness_poll_seconds"`
 }
 
 type Artifacts struct {
@@ -41,7 +60,12 @@ type Config struct {
 
 func Default() Config {
 	return Config{
-		OpenCode: OpenCode{TimeoutSec: 300},
+		// TimeoutSec is now a fail-safe ceiling, not the primary
+		// liveness control. The intelligent liveness watchdog
+		// (IdleTimeoutSec) is what stops stuck calls; this is just
+		// here so a totally broken connection eventually surfaces.
+		// 4 hours is plenty for any single LLM call.
+		OpenCode: OpenCode{TimeoutSec: 4 * 60 * 60},
 		Quality: Quality{
 			MinConfidence: 0.70,
 		},
@@ -59,6 +83,10 @@ func Default() Config {
 			CleanupOpenCodeSessions: false,
 			OpenCodeDeleteDelaySec:  5,
 			ReuseOpenCodeSession:    false,
+			// Liveness watchdog defaults. See the field docs on Runtime.
+			IdleTimeoutSec:  120,
+			MaxCallSeconds:  30 * 60,
+			LivenessPollSec: 5,
 		},
 		Artifacts: Artifacts{BaseDir: ".diffmind/runs"},
 	}
@@ -77,4 +105,91 @@ func Load(path string) (Config, error) {
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+// Sanitization is the last line of defence against a stale or
+// malformed config crippling a run. It enforces an invariant: the
+// raw HTTP transport timeout MUST exceed the orchestrator-level
+// MaxCallSeconds hard ceiling, otherwise the transport will fire
+// first and we end up back at the 300-second wall that the liveness
+// watchdog was supposed to make impossible.
+//
+// We have seen this failure mode in production runs more than once
+// (20260518T113418Z, 20260518T115925Z). Every time it traced back to
+// either (a) the SPA's localStorage holding a stale 300 from a
+// previous version of the form, or (b) a CLI/JSON config someone
+// hand-wrote without thinking about the relationship between the
+// transport timeout and the watchdog's ceiling. Treating those as
+// "user knows best" was wrong: the user has no way to know that
+// setting `timeout_seconds: 300` silently neuters the watchdog.
+//
+// Sanitize is idempotent. It mutates the receiver and returns the
+// list of (field, reason) corrections that were applied so callers
+// can log them.
+
+// SanitizationFix records a single defensive correction made by
+// Sanitize. It lives in the manifest's metadata and the run_started
+// event so misconfigurations are visible without diff'ing files.
+type SanitizationFix struct {
+	Field    string `json:"field"`
+	Was      int    `json:"was"`
+	Adjusted int    `json:"adjusted"`
+	Reason   string `json:"reason"`
+}
+
+// Sanitize enforces invariants between the timeout fields and bumps
+// nonsensical values up to safe minimums. It returns the list of
+// fixes it applied so the caller can log/surface them.
+func (c *Config) Sanitize() []SanitizationFix {
+	var fixes []SanitizationFix
+
+	def := Default()
+
+	// Floor liveness fields at 1 second so a zero stored value (from
+	// pre-watchdog configs) doesn't shut the watchdog off entirely.
+	if c.Runtime.IdleTimeoutSec <= 0 {
+		fixes = append(fixes, SanitizationFix{
+			Field: "runtime.idle_timeout_seconds",
+			Was:   c.Runtime.IdleTimeoutSec, Adjusted: def.Runtime.IdleTimeoutSec,
+			Reason: "value was <= 0; reset to default (120s)",
+		})
+		c.Runtime.IdleTimeoutSec = def.Runtime.IdleTimeoutSec
+	}
+	if c.Runtime.MaxCallSeconds <= 0 {
+		fixes = append(fixes, SanitizationFix{
+			Field: "runtime.max_call_seconds",
+			Was:   c.Runtime.MaxCallSeconds, Adjusted: def.Runtime.MaxCallSeconds,
+			Reason: "value was <= 0; reset to default (1800s)",
+		})
+		c.Runtime.MaxCallSeconds = def.Runtime.MaxCallSeconds
+	}
+	if c.Runtime.LivenessPollSec <= 0 {
+		fixes = append(fixes, SanitizationFix{
+			Field: "runtime.liveness_poll_seconds",
+			Was:   c.Runtime.LivenessPollSec, Adjusted: def.Runtime.LivenessPollSec,
+			Reason: "value was <= 0; reset to default (5s)",
+		})
+		c.Runtime.LivenessPollSec = def.Runtime.LivenessPollSec
+	}
+
+	// The invariant: transport timeout must exceed MaxCallSeconds plus
+	// a small headroom (so a per-call timeout caused by genuine
+	// network failure surfaces AFTER MaxCallSeconds, not before). The
+	// headroom is one watchdog poll cycle so the watchdog has a
+	// guaranteed chance to fire its hard-ceiling abort first.
+	headroom := c.Runtime.LivenessPollSec
+	if headroom < 5 {
+		headroom = 5
+	}
+	minTransport := c.Runtime.MaxCallSeconds + headroom
+	if c.OpenCode.TimeoutSec < minTransport {
+		fixes = append(fixes, SanitizationFix{
+			Field: "opencode.timeout_seconds",
+			Was:   c.OpenCode.TimeoutSec, Adjusted: minTransport,
+			Reason: "transport timeout was lower than max_call_seconds + poll headroom; raised to keep the liveness watchdog in charge of stuck-call detection",
+		})
+		c.OpenCode.TimeoutSec = minTransport
+	}
+
+	return fixes
 }

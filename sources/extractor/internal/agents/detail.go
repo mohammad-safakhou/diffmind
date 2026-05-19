@@ -44,14 +44,18 @@ func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []detailJob, rf 
 			defer wg.Done()
 			for j := range jobCh {
 				if stageCtx.Err() != nil {
-					resCh <- detailResult{Objective: j.Objective, Err: stageCtx.Err()}
+					// Peer-cancelled: another worker tripped
+					// fail-fast before this job ran. Flag it so the
+					// orchestrator skips it when looking for the
+					// root-cause failure.
+					resCh <- detailResult{Objective: j.Objective, SeedName: j.Seed.Name, Err: stageCtx.Err(), PeerCancelled: true}
 					continue
 				}
 				util.Trace("agents.detail", "worker picked entity", map[string]any{
 					"worker": workerID, "objective": j.Objective.ID, "name": j.Seed.Name,
 				})
 				item, err := o.runDetailOne(stageCtx, j, rf)
-				resCh <- detailResult{Objective: j.Objective, Item: item, Err: err}
+				resCh <- detailResult{Objective: j.Objective, SeedName: j.Seed.Name, Item: item, Err: err}
 				if err != nil {
 					cancel()
 				}

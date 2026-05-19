@@ -2,7 +2,6 @@ package agents
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -66,7 +65,11 @@ func (o *orchestrator) runConnectionsBatch(
 			defer wg.Done()
 			for exp := range jobCh {
 				if stageCtx.Err() != nil {
-					resCh <- connectionResult{ExposureID: exp.ID, Err: stageCtx.Err()}
+					// Peer-cancelled: another worker tripped
+					// fail-fast before this job ran. Flag it so the
+					// orchestrator skips it when looking for the
+					// root-cause failure.
+					resCh <- connectionResult{ExposureID: exp.ID, Err: stageCtx.Err(), PeerCancelled: true}
 					continue
 				}
 				util.Trace("agents.connections", "worker mapping exposure", map[string]any{"worker": workerID, "exposure": exp.ID})
@@ -102,9 +105,10 @@ func (o *orchestrator) runConnectionsBatch(
 				Kind: model.KindDependency, Type: "connection", Name: r.ExposureID,
 				ReasonCode: "connections_failure", Reason: r.Err.Error(),
 			})
-			// Skip cancellation echoes from peers; capture only the
-			// first true failure as the cause.
-			if firstErr == nil && !errors.Is(r.Err, context.Canceled) && !errors.Is(r.Err, context.DeadlineExceeded) {
+			// Skip peer-cancelled siblings (flagged by the worker).
+			// Capture per-call HTTP timeouts and any other real
+			// error as the root cause.
+			if firstErr == nil && !r.PeerCancelled {
 				firstErr = r.Err
 				firstExposureID = r.ExposureID
 			}

@@ -70,10 +70,13 @@ func (o *orchestrator) runDiscovery(ctx context.Context, objs []objectives.Objec
 			for obj := range jobs {
 				if stageCtx.Err() != nil {
 					// Another worker already failed; surface the
-					// cancellation as the result so progress still
-					// advances and the orchestrator sees a complete
-					// result-set.
-					results <- discoveryResult{Objective: obj, Err: stageCtx.Err()}
+					// cancellation as a "peer-cancelled" result so
+					// progress still advances and the orchestrator
+					// sees a complete result-set. The flag lets the
+					// orchestrator tell this apart from a per-call
+					// HTTP timeout (which would also surface a
+					// context.DeadlineExceeded but is a root cause).
+					results <- discoveryResult{Objective: obj, Err: stageCtx.Err(), PeerCancelled: true}
 					continue
 				}
 				util.Debug("agents.discovery", "worker picked objective", map[string]any{"worker": workerID, "objective": obj.ID})

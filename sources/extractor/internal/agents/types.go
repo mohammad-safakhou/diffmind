@@ -42,6 +42,39 @@ type verbosePrompter interface {
 	PromptStructuredVerboseRaw(ctx context.Context, sessionID, directory, prompt string, schema map[string]any) (parsed map[string]any, raw []byte, text string, err error)
 }
 
+// tokenReader is the optional capability the orchestrator uses to
+// read final token / cost counters off a session AFTER a prompt POST
+// completes. OpenCode reports cumulative session totals at
+// /session/{id}; because every promptAgent call (in the default
+// per-call session mode) uses a fresh session, those cumulative
+// totals ARE that prompt's tokens. Implementations: the real
+// *opencode.Client implements this; bare test fakes don't (and
+// produce zero token reads, which the aggregator handles gracefully).
+type tokenReader interface {
+	GetSession(ctx context.Context, sessionID, directory string) (sessionState, error)
+}
+
+// sessionState is the minimal projection the agents package needs
+// from opencode.SessionState. Declared here as a separate type so
+// the agents package stays free of the opencode package's full
+// surface — tests can build sessionState values directly.
+type sessionState struct {
+	ID         string
+	Cost       float64
+	Input      int
+	Output     int
+	Reasoning  int
+	CacheRead  int
+	CacheWrite int
+}
+
+// totalTokens returns input + output + reasoning, the user-facing
+// number we surface in the UI. Cache reads/writes are reported
+// separately because they're billed differently (often free).
+func (s sessionState) totalTokens() int {
+	return s.Input + s.Output + s.Reasoning
+}
+
 // PendingPermission and PendingQuestion mirror the opencode client types so
 // the orchestrator can treat the watchdog interface in isolation. We keep
 // them as plain structs (not aliases) to avoid forcing every test fake to
@@ -94,6 +127,13 @@ type Result struct {
 	// boundaries. `diffmind retry` reads this so it can fast-forward to
 	// the failed stage instead of re-running everything from scratch.
 	Intermediate IntermediateState
+
+	// Tokens holds the per-stage token / cost totals collected from
+	// each promptAgent call's final GET /session/{id}. Keys are
+	// stage names (e.g. "discovery") plus the special "total" key
+	// for the run-wide aggregate. Nil when the underlying OpenCode
+	// client doesn't expose token reads (test fakes).
+	Tokens map[string]model.TokenBucket
 }
 
 // Failure describes why the pipeline halted. Every field is optional so
@@ -112,6 +152,13 @@ type Failure struct {
 	SnapshotPath string         `json:"snapshot_path,omitempty"` // retained snapshot dir
 	OccurredAt   time.Time      `json:"occurred_at"`
 	Extra        map[string]any `json:"extra,omitempty"`
+
+	// Cancelled is true when the halt was triggered by the user
+	// pressing Cancel (parent context died) rather than by an
+	// underlying provider error. It lets the runs-list endpoint
+	// report a status of "cancelled" instead of "failed" without
+	// needing to consult the in-memory runner state.
+	Cancelled bool `json:"cancelled,omitempty"`
 }
 
 // IntermediateState is what a successful stage hands to the next one,
@@ -215,11 +262,20 @@ type repoFacts struct {
 }
 
 // discoveryResult is the output of stage 1 for a single objective.
+//
+// PeerCancelled is set by workers that never actually issued the
+// prompt because a sibling worker had already tripped fail-fast and
+// cancelled the stage's child context. We need this flag because we
+// CANNOT reliably tell apart "parent context cancelled" from
+// "per-call HTTP timeout" — both wrap context.DeadlineExceeded — at
+// the orchestrator level. Workers know which is which, so they
+// declare it explicitly.
 type discoveryResult struct {
-	Objective  objectives.Objective
-	Items      []llmEntity
-	Err        error
-	Unresolved []model.UnresolvedItem
+	Objective     objectives.Objective
+	Items         []llmEntity
+	Err           error
+	PeerCancelled bool
+	Unresolved    []model.UnresolvedItem
 }
 
 // detailJob pairs a verified seed entity with its objective for stage 3.
@@ -229,15 +285,31 @@ type detailJob struct {
 }
 
 // detailResult is the output of stage 3 for a single seed.
+//
+// SeedName is the name of the seed entity the worker was asked to
+// enrich. It is required for accurate failure reporting: results
+// arrive on the channel in completion order, not submission order, so
+// we cannot recover the seed from the result's slice index. Carrying
+// the name in the result envelope is the only correct way to
+// attribute a failure back to the entity that caused it.
+//
+// PeerCancelled mirrors discoveryResult: set when the worker exited
+// before issuing its prompt because a sibling tripped fail-fast.
 type detailResult struct {
-	Objective objectives.Objective
-	Item      *llmEntity
-	Err       error
+	Objective     objectives.Objective
+	SeedName      string
+	Item          *llmEntity
+	Err           error
+	PeerCancelled bool
 }
 
 // connectionResult is the output of stage 4 for a single exposure.
+//
+// PeerCancelled mirrors discoveryResult: set when the worker exited
+// before issuing its prompt because a sibling tripped fail-fast.
 type connectionResult struct {
-	ExposureID string
-	Items      []llmConnection
-	Err        error
+	ExposureID    string
+	Items         []llmConnection
+	Err           error
+	PeerCancelled bool
 }
