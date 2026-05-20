@@ -30,6 +30,18 @@ export function PipelineStrip() {
             </div>
             <div class="progress"><span style={'width: ' + pct + '%'} /></div>
             <div class="stage-tip">{s.tip}</div>
+            {/*
+              When the stage has batches (currently only detail),
+              show a second line "X/B batches" so the user sees the
+              LLM-call axis alongside the entity axis. The detail
+              stage batches related entities so far fewer LLM calls
+              are needed than the entity count would suggest.
+            */}
+            {s.batchesTotal > 0 && (
+              <div class="stage-batches" title={'detail entities are processed in batches of up to 12 related entities per LLM call'}>
+                {(s.batchesDone || 0)}/{s.batchesTotal} batches
+              </div>
+            )}
             <div class="stage-tokens" title={s.tokens ? tokensTooltip(s.tokens) : 'token stats appear when the stage completes'}>
               {s.tokens ? compactTokens(s.tokens) : ''}
             </div>

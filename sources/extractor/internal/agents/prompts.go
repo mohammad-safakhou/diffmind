@@ -188,6 +188,118 @@ OUTPUT: Return a single JSON object {"item": {...}} matching the provided schema
 	return sb.String()
 }
 
+// buildDetailBatchPrompt produces the multi-entity variant of the
+// detail prompt: instead of asking the model to enrich ONE seed,
+// it asks for several at once. The seeds in a batch are
+// objective-homogenous (same kind+type) and selected by file/name
+// affinity (see grouping.go), so the model can read each shared
+// source file once and answer N entities from it.
+//
+// The prompt also lists the unique source files referenced by the
+// batch's seeds upfront, so the model has a hint about which files
+// to open with its first tool call. We do NOT pre-read them
+// ourselves — that would make the prompt huge and unbounded; the
+// agent decides when each file is worth opening.
+//
+// Failure-tolerance: the model is told to return ONE item per input
+// seed in the same order, EVEN IF it can't fully enrich one
+// (return the seed unchanged with details_complete:false). This is
+// what lets the parser distinguish "model dropped this entity" from
+// "model deliberately marked it incomplete" — the orchestrator
+// treats the former as an error (re-batch later) and the latter as
+// a normal "not enough info" outcome.
+func buildDetailBatchPrompt(obj objectives.Objective, seeds []llmEntity, rf *repoFacts, subDir string) string {
+	var sb strings.Builder
+	sb.WriteString("AGENT ROLE: detail-extractor (BATCH)\n")
+	sb.WriteString(readOnlyPreamble)
+	sb.WriteString("OBJECTIVE_ID: ")
+	sb.WriteString(obj.ID)
+	sb.WriteString("\n")
+	sb.WriteString("OBJECTIVE_KIND: ")
+	sb.WriteString(string(obj.Kind))
+	sb.WriteString("\n")
+	sb.WriteString("OBJECTIVE_TYPE: ")
+	sb.WriteString(obj.Type)
+	sb.WriteString("\n\n")
+	sb.WriteString(monorepoScopeLine(subDir))
+	sb.WriteString(repoFactsBlock(rf))
+
+	// Collect the unique source files this batch points at. The
+	// affinity grouper picks seeds that share files, so this list
+	// is short (typically 1-5 paths). Tell the model these are the
+	// files most worth opening first.
+	fileSet := map[string]struct{}{}
+	var fileList []string
+	for _, s := range seeds {
+		for _, loc := range s.Locations {
+			if loc.File == "" {
+				continue
+			}
+			if _, seen := fileSet[loc.File]; !seen {
+				fileSet[loc.File] = struct{}{}
+				fileList = append(fileList, loc.File)
+			}
+		}
+	}
+	if len(fileList) > 0 {
+		sb.WriteString("RELATED_FILES (open these once; many seeds reference them):\n")
+		for _, f := range fileList {
+			sb.WriteString("  - ")
+			sb.WriteString(f)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("SEEDS (")
+	sb.WriteString(itoa(len(seeds)))
+	sb.WriteString("):\n")
+	seedsJSON, _ := json.MarshalIndent(seeds, "", "  ")
+	sb.Write(seedsJSON)
+	sb.WriteString("\n\n")
+
+	sb.WriteString("DETAIL INSTRUCTIONS (apply to EACH seed):\n")
+	sb.WriteString(obj.DetailPrompt)
+	sb.WriteString("\n\n")
+
+	sb.WriteString(`HARD RULES:
+- Open each seed's source_locations + the RELATED_FILES list. Where multiple seeds reference the same file, use ONE read to answer all of them.
+- For EVERY input seed produce EXACTLY one output item, in the same order.
+- Preserve the seed's type and name (correct if clearly wrong, but do not change the underlying entity).
+- Return rich details{} per item (method/path, table/operation, queue, topic, target_url, schedule, batch, auth, transaction, etc.).
+- Include key_actions in execution order.
+- Keep at least one evidence snippet per item with a real code excerpt.
+- confidence reflects how well you could confirm the details from code.
+- If you genuinely cannot enrich a particular seed (file unreadable, ambiguous context, etc.), STILL return it in the output array — copy the seed as-is, set confidence to the seed's original value, and add "details_complete": false in details. NEVER drop a seed from the output.
+
+OUTPUT: a single JSON object {"items": [<one entry per input seed, same order>]} matching the provided schema. Length of items MUST equal the number of input seeds.`)
+	return sb.String()
+}
+
+// itoa is a tiny helper so prompts.go does not need to pull in
+// strconv just to render a count.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
+}
+
 // ---- Stage 4: connection mapping ----
 
 type connectionCatalogItem struct {

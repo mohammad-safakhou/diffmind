@@ -556,7 +556,37 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		dependencies = resumeDeps
 	} else {
 		progress.StartPhase("detail", len(reexamined), 45, 70, "Enriching each verified entity with evidence, IO contract, and details.")
-		o.emit(events.Event{Kind: events.KindStageStarted, Stage: "detail", Status: events.StatusRunning, Payload: map[string]any{"total": len(reexamined), "tip": "Enriching each verified entity with evidence, IO contract, and details."}})
+		// Pre-compute batch counts so stage_started carries both
+		// "entities total" AND "batches total". The dashboard renders
+		// "X/N entities · X/B batches" to communicate the batched
+		// nature of detail work. We compute over the same set the
+		// detail stage will see — and we account for the per-entity
+		// checkpoint so a resume shows the truly-pending count, not
+		// the original 152.
+		previewPending := reexamined
+		if o.runDir != "" {
+			checkpoint := o.loadDetailCheckpoint(o.runDir + "/" + stateDir)
+			if len(checkpoint) > 0 {
+				filtered := make([]detailJob, 0, len(reexamined))
+				for _, j := range reexamined {
+					if _, ok := checkpoint[detailEntityKey(j.Objective.ID, j.Seed.Name)]; ok {
+						continue
+					}
+					filtered = append(filtered, j)
+				}
+				previewPending = filtered
+			}
+		}
+		previewBatches := detailGroups(previewPending)
+		o.emit(events.Event{
+			Kind: events.KindStageStarted, Stage: "detail", Status: events.StatusRunning,
+			Payload: map[string]any{
+				"total":         len(reexamined),     // total entities in scope
+				"pending":       len(previewPending), // entities NOT yet checkpointed
+				"batches_total": len(previewBatches),
+				"tip":           "Enriching each verified entity with evidence, IO contract, and details.",
+			},
+		})
 		details := o.runDetailBatch(ctx, reexamined, rf, progress.Advance)
 		progress.CompletePhase()
 

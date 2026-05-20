@@ -30,6 +30,121 @@ func fileExists(path string) bool {
 // without re-running everything that already worked.
 const stateDir = "state"
 
+// detailEntitiesJSONL is the append-only per-entity checkpoint
+// written by the detail stage's worker pool. Each line is one
+// `detailCheckpointEntry`. We use JSON-lines (not a single JSON
+// object) so a partial write on a crash never corrupts already-
+// persisted entries; the worst case is a torn last line, which
+// loadDetailCheckpoint detects and ignores.
+const detailEntitiesJSONL = "detail_entities.jsonl"
+
+// detailCheckpointEntry is one row of state/detail_entities.jsonl.
+// The Key field is the deterministic identifier the orchestrator
+// uses to decide whether a seed has already been enriched on a
+// previous run (see detailEntityKey). Exposure and Dependency are
+// optional pointers: a successful enrichment produces exactly one
+// of them; an explicit "model could not enrich" still produces an
+// entry (with neither populated) so we don't re-attempt the same
+// seed on every retry — the model already told us it can't.
+type detailCheckpointEntry struct {
+	Key         string            `json:"key"`
+	ObjectiveID string            `json:"objective_id"`
+	SeedName    string            `json:"seed_name"`
+	Exposure    *model.Exposure   `json:"exposure,omitempty"`
+	Dependency  *model.Dependency `json:"dependency,omitempty"`
+	Skipped     bool              `json:"skipped,omitempty"` // model returned nil — keep seed as-is
+	WrittenAt   time.Time         `json:"written_at"`
+}
+
+// detailEntityKey is the deterministic key the orchestrator uses
+// to look up whether a seed has been enriched. Composed of the
+// objective id (always present, kind+type+namespace) plus the
+// safe-jobid'd seed name. Two different seeds with the same name
+// under the same objective WOULD collide — but the orchestrator
+// already requires names to be unique within an objective for the
+// stable-ID generation, so this is safe.
+func detailEntityKey(objectiveID, seedName string) string {
+	return objectiveID + "::" + safeJobID(seedName)
+}
+
+// appendDetailEntity writes one entry to the detail checkpoint file
+// in append-only mode. Best-effort: any I/O error is logged and
+// swallowed because losing one checkpoint line is never worse than
+// what the operator faces today (re-running the whole stage).
+func (o *orchestrator) appendDetailEntity(entry detailCheckpointEntry) {
+	if strings.TrimSpace(o.runDir) == "" {
+		return
+	}
+	dir := filepath.Join(o.runDir, stateDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		util.Warn("agents.state", "could not create state dir for checkpoint", map[string]any{"dir": dir, "error": err})
+		return
+	}
+	path := filepath.Join(dir, detailEntitiesJSONL)
+	entry.WrittenAt = time.Now().UTC()
+	b, err := json.Marshal(entry)
+	if err != nil {
+		util.Warn("agents.state", "could not marshal detail checkpoint entry", map[string]any{"key": entry.Key, "error": err})
+		return
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		util.Warn("agents.state", "could not open detail checkpoint", map[string]any{"path": path, "error": err})
+		return
+	}
+	defer f.Close()
+	if _, err := f.Write(append(b, '\n')); err != nil {
+		util.Warn("agents.state", "could not append detail checkpoint", map[string]any{"path": path, "error": err})
+	}
+}
+
+// loadDetailCheckpoint reads the per-entity detail checkpoint for
+// a previously-failed run. Returns a map keyed by entity key (see
+// detailEntityKey). A torn last line is ignored. Missing file
+// returns an empty map (not an error) — the caller treats "no
+// checkpoint" as "all seeds need processing".
+func (o *orchestrator) loadDetailCheckpoint(dir string) map[string]detailCheckpointEntry {
+	out := map[string]detailCheckpointEntry{}
+	if strings.TrimSpace(dir) == "" {
+		return out
+	}
+	path := filepath.Join(dir, detailEntitiesJSONL)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var entry detailCheckpointEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			// Torn last line or schema drift; skip and keep going.
+			util.Trace("agents.resume", "skipping malformed detail checkpoint line", map[string]any{"error": err})
+			continue
+		}
+		if entry.Key == "" {
+			continue
+		}
+		out[entry.Key] = entry
+	}
+	return out
+}
+
+// resumeState is the bundle returned by loadResumeState. The struct
+// (rather than a positional return) makes new fields backwards-
+// compatible: adding the detail checkpoint here would have been an
+// ugly 7-value return.
+type resumeState struct {
+	RepoFacts        *repoFacts
+	Seeds            []detailJob
+	ExposureObjs     map[string]string
+	Reexam           []detailJob
+	Exposures        []model.Exposure
+	Dependencies     []model.Dependency
+	DetailCheckpoint map[string]detailCheckpointEntry
+}
+
 // loadResumeState reads previously-saved per-stage outputs from
 // `<runDir>/state/*.json`. It returns one tuple value per stage; nil
 // means "not found, re-execute". Any read/parse error for a single

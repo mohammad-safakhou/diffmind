@@ -153,20 +153,29 @@ function syncGraph(cy, stagesMap, jobsMap) {
         const id = 'job:' + job.id
         seenJobIDs.add(id)
         const status = job.status || 'pending'
+        const isBatch = job.payload?.batch === true
         let node = cy.getElementById(id)
         const label = jobLabelLive(job)
+        // The "kind" subtype lets the stylesheet pick a distinct
+        // appearance for batch nodes vs single-entity jobs (bigger,
+        // bolder, different border colour). The dashboard's
+        // detail stage is dominated by these, so making them
+        // visually distinct from their children is what makes the
+        // batching legible at a glance.
+        const subkind = isBatch ? 'batch' : 'job'
         if (node.length === 0) {
           cy.add({
             data: {
               id,
               label,
               kind: 'job',
+              subkind,
               stage,
               jobID: job.id,
               status,
             },
             position: { x: stageX[stage] || 80, y: 220 + idx * 72 },
-            classes: 'job status-' + status,
+            classes: 'job ' + subkind + ' status-' + status,
           })
           // Edge from stage parent to job (or from parent job if known).
           const sourceID = job.parentId ? ('job:' + job.parentId) : ('stage:' + stage)
@@ -178,8 +187,9 @@ function syncGraph(cy, stagesMap, jobsMap) {
           }
         } else {
           node.data('label', label)
-          node.removeClass('status-pending status-running status-success status-failed status-cancelled status-rescued status-skipped')
-          node.addClass('status-' + status)
+          node.data('subkind', subkind)
+          node.removeClass('status-pending status-running status-success status-failed status-cancelled status-rescued status-skipped batch job')
+          node.addClass(subkind + ' status-' + status)
         }
       })
     }
@@ -216,11 +226,31 @@ function jobLabelLive(job) {
 // orchestrator emits the seed name in the job_started payload; if
 // that's missing we fall back to the objective id or the tail of the
 // job id.
+//
+// Batch nodes get a special label that includes the entity count:
+// "BATCH × 12 · GET /a + 11 more". Without this users could not
+// tell at a glance which nodes are batches.
 function jobName(job) {
   const p = job.payload || {}
+  if (p.batch === true) {
+    const size = p.batch_size || (p.seed_names ? p.seed_names.length : '?')
+    const preview = jobBatchPreview(p)
+    return preview ? `BATCH × ${size}\n${preview}` : `BATCH × ${size}`
+  }
   if (p.name) return p.name
   if (p.objective_id) return p.objective_id
   return job.id.split('.').slice(-2).join('.')
+}
+
+// jobBatchPreview returns "GET /a, GET /b, + N more" for a batch
+// job. Uses the seed_names array the server attached at
+// job_pending / job_started time.
+function jobBatchPreview(p) {
+  const names = p.seed_names || []
+  if (!Array.isArray(names) || names.length === 0) return ''
+  const head = names.slice(0, 2).join(', ')
+  if (names.length <= 2) return head
+  return `${head} +${names.length - 2} more`
 }
 
 // jobDurationLabel renders the per-node timer text. While the job is
@@ -290,8 +320,12 @@ function layoutFor(cy) {
     fit: false,
   }).run()
 
-  // Compute a stable column-by-stage layout. Columns spread out on wide
-  // screens but keep a minimum gap so stage and job labels do not collide.
+  // Compute a stable column-by-stage layout. Within each stage we
+  // group jobs by their batch parent: each batch node appears
+  // first (slightly to the left, bolder visual), then its child
+  // entities appear indented to the right. Nodes with no batch
+  // parent (objective-level jobs or non-batched stages) line up
+  // along the stage's primary column.
   const STAGE_X = stagePositions(cy)
 
   const grouped = new Map()
@@ -301,12 +335,7 @@ function layoutFor(cy) {
     grouped.get(stage).push(n)
   })
   for (const [stage, nodes] of grouped) {
-    nodes.sort((a, b) => a.data('label').localeCompare(b.data('label')))
-    nodes.forEach((n, idx) => {
-      // y stride must clear the new larger node height (~80px) plus
-      // padding, otherwise neighbouring nodes overlap visually.
-      n.position({ x: STAGE_X[stage] ?? 80, y: 220 + idx * 72 })
-    })
+    layoutStageNodes(cy, nodes, STAGE_X[stage] ?? 80)
   }
 
   // Stages always at the same y. Pulled down slightly so the stage
@@ -316,6 +345,84 @@ function layoutFor(cy) {
     const node = cy.getElementById('stage:' + name)
     if (node.length) node.position({ x: STAGE_X[name], y: 90 })
   })
+}
+
+// layoutStageNodes arranges all job nodes in one stage column.
+// Visual model:
+//   - Batch nodes sit at the column's main X.
+//   - Entity nodes whose parentId is a batch sit one column-width
+//     to the right of their batch, vertically aligned just below
+//     their batch's row.
+//   - Plain (non-batched) job nodes line up at the main X.
+// Vertical spacing is chosen so a batch's entities are visually
+// "tucked under" it; spacing breathes for non-batched stages.
+function layoutStageNodes(cy, nodes, mainX) {
+  const batchEntityOffsetX = 260 // children indent to the right
+  const yStride = 72            // vertical spacing between sibling rows
+
+  // Identify roots: nodes whose parent is the stage (or a non-batch
+  // job). They form the main column. The remaining nodes are
+  // children of a batch and sit indented.
+  const byID = new Map()
+  for (const n of nodes) byID.set(n.id(), n)
+
+  const rootNodes = []
+  const childrenByBatch = new Map() // batch node id -> array of child entity nodes
+  for (const n of nodes) {
+    const parentJobID = parentJobOf(cy, n)
+    // If the parent is a job AND that job has subkind=batch, this
+    // node is an entity under that batch.
+    if (parentJobID) {
+      const parentNode = cy.getElementById(parentJobID)
+      if (parentNode.length && parentNode.data('subkind') === 'batch') {
+        if (!childrenByBatch.has(parentJobID)) childrenByBatch.set(parentJobID, [])
+        childrenByBatch.get(parentJobID).push(n)
+        continue
+      }
+    }
+    rootNodes.push(n)
+  }
+
+  // Sort roots so the layout is stable across renders (otherwise
+  // nodes pop around as new events arrive).
+  rootNodes.sort((a, b) => sortKey(a).localeCompare(sortKey(b)))
+
+  let y = 220
+  for (const root of rootNodes) {
+    root.position({ x: mainX, y })
+    y += yStride
+    const kids = childrenByBatch.get(root.id())
+    if (kids && kids.length) {
+      kids.sort((a, b) => sortKey(a).localeCompare(sortKey(b)))
+      for (const k of kids) {
+        k.position({ x: mainX + batchEntityOffsetX, y })
+        y += yStride
+      }
+      // A little extra breathing room after a batch's last entity.
+      y += 16
+    }
+  }
+}
+
+// parentJobOf returns the job: id of a node's parent if its parent
+// is a job-typed node (i.e. another job inside the graph). Returns
+// '' when the parent is a stage node (or there is no parent edge
+// yet because Cytoscape hasn't processed the incoming edge yet).
+function parentJobOf(cy, n) {
+  const inc = n.incomers('edge')
+  for (let i = 0; i < inc.length; i++) {
+    const src = inc[i].source()
+    if (src.data('kind') === 'job') return src.id()
+  }
+  return ''
+}
+
+// sortKey is used to order sibling nodes in the column. We prefer
+// the label which the renderer already keeps in sync with the
+// underlying entity name; falls back to the node id for stability.
+function sortKey(n) {
+  const l = n.data('label') || n.id()
+  return String(l)
 }
 
 function stagePositions(cy) {
@@ -419,6 +526,34 @@ const STYLE = [
   {
     selector: 'node[kind = "job"].status-skipped',
     style: { 'border-color': '#5b6a8c', 'background-color': '#1a2238', 'opacity': 0.6 },
+  },
+  // BATCH nodes — visually distinct from per-entity job nodes so the
+  // user can see at a glance "this is one LLM call covering N
+  // entities" vs "this is one entity". Bigger, bolder border,
+  // slightly different background.
+  {
+    selector: 'node[kind = "job"].batch',
+    style: {
+      'width': 260,
+      'height': 70,
+      'border-width': 2,
+      'border-color': '#7aa2ff',
+      'background-color': '#21305c',
+      'font-weight': 700,
+      'font-size': 12,
+    },
+  },
+  {
+    selector: 'node[kind = "job"].batch.status-running',
+    style: { 'border-color': '#4f8cff', 'background-color': '#243a72', 'border-width': 3 },
+  },
+  {
+    selector: 'node[kind = "job"].batch.status-success',
+    style: { 'border-color': '#22c55e', 'background-color': '#143a23' },
+  },
+  {
+    selector: 'node[kind = "job"].batch.status-failed',
+    style: { 'border-color': '#ef4444', 'background-color': '#3a121a' },
   },
   {
     selector: 'edge',

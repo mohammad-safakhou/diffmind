@@ -140,6 +140,13 @@ export function applyEvent(e) {
           startedAt: e.ts,
           done: 0,
           percent: 0,
+          // Batch counts (currently only emitted for the detail
+          // stage). PipelineStrip renders "X/N entities · X/B
+          // batches" so the user sees the LLM-cost-relevant
+          // number alongside the entity tally.
+          batchesTotal: e.payload?.batches_total ?? prev.batchesTotal ?? 0,
+          batchesDone: 0,
+          pendingEntities: e.payload?.pending ?? prev.pendingEntities ?? 0,
         })
       })
       break
@@ -180,6 +187,20 @@ export function applyEvent(e) {
     case 'job_started':
     case 'job_completed':
     case 'job_failed':
+      // Track batches separately from per-entity jobs so the
+      // pipeline strip can render the dual counter ("X/N entities ·
+      // X/B batches"). A batch-level job event carries
+      // payload.batch === true and represents one LLM call covering
+      // multiple entities.
+      if (e.payload?.batch === true && (e.kind === 'job_completed' || e.kind === 'job_failed') && e.stage) {
+        mutateStages((m) => {
+          const prev = m.get(e.stage) || {}
+          m.set(e.stage, {
+            ...prev,
+            batchesDone: (prev.batchesDone || 0) + 1,
+          })
+        })
+      }
       mutateJobs((m) => {
         const id = e.job_id
         const prev = m.get(id) || {

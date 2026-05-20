@@ -496,17 +496,25 @@ func (f *fakeBatching) PromptStructured(ctx context.Context, sessionID, director
 			"source_locations": []any{map[string]any{"file": "api.go", "start_line": 10, "end_line": 30}},
 		}}, nil
 	case role == "detail" && strings.Contains(prompt, "OBJECTIVE_ID: dependency.db_operation"):
+		// Batched detail: return one item per dep whose name appears
+		// in the prompt. The new batch prompt contains all 5 deps
+		// together; the older single-entity path would still work
+		// because we'd see exactly 1 dep name.
+		items := make([]any, 0, 5)
 		for i := 0; i < 5; i++ {
 			name := "dep" + string(rune('0'+i))
 			if strings.Contains(prompt, "\"name\": \""+name+"\"") || strings.Contains(prompt, "\"name\":\""+name+"\"") {
-				return map[string]any{"item": map[string]any{
+				items = append(items, map[string]any{
 					"type": "db_operation", "name": name, "summary": "db op", "confidence": 0.95,
 					"details":          map[string]any{"operation": "read", "table": "t" + string(rune('0'+i))},
 					"source_locations": []any{map[string]any{"file": "repo.go", "start_line": 40 + i, "end_line": 40 + i}},
-				}}, nil
+				})
 			}
 		}
-		return map[string]any{"item": nil}, nil
+		if len(items) == 0 {
+			return map[string]any{"items": []any{}}, nil
+		}
+		return map[string]any{"items": items}, nil
 	case role == "detail":
 		return map[string]any{"item": nil}, nil
 	case role == "connection":
