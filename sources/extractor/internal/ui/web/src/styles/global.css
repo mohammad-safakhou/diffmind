@@ -135,6 +135,14 @@ a:hover { text-decoration: underline; }
   font-family: 'JetBrains Mono', monospace;
   letter-spacing: 0;
 }
+/* Per-stage batch counter — currently only the detail stage emits
+   batches_total, but the field gracefully handles other stages
+   that might adopt the same pattern later. */
+.pipeline-stage .stage-batches {
+  font-size: 10px; color: var(--text-dim);
+  height: 12px; overflow: hidden;
+  font-family: 'JetBrains Mono', monospace;
+}
 .pipeline-stage.running::after {
   content: '';
   position: absolute; top: 8px; right: 12px; width: 8px; height: 8px;

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { applyEvent, resetStore, runMeta } from './store.js'
+import { applyEvent, resetStore, runMeta, stages } from './store.js'
 
 // Helper: replay a sequence of events through the reducer as if
 // they came off the SSE wire in order.
@@ -102,6 +102,86 @@ describe('runMeta status preservation on replay', () => {
     expect(runMeta.value.status).toBe('failed')
     expect(runMeta.value.error).toBe('fresh failure message')
     expect(runMeta.value.errorClass).toBe('schema')
+  })
+
+  // REGRESSION: the user complained "152 remaining, not correct if
+  // some are batch processing". The detail stage now emits
+  // batches_total alongside the entity total so the pipeline strip
+  // can render "X/N entities · X/B batches". The store must keep
+  // both counters in sync.
+  it('tracks per-stage batch counts independently from entity counts', () => {
+    // Stage starts with 152 entities and 20 batches.
+    applyEvent({
+      kind: 'stage_started',
+      stage: 'detail',
+      ts: 't1',
+      payload: { total: 152, batches_total: 20, pending: 152 },
+    })
+    const detail0 = stages.value.get('detail')
+    expect(detail0.total).toBe(152)
+    expect(detail0.batchesTotal).toBe(20)
+    expect(detail0.batchesDone).toBe(0)
+
+    // A batch-level job_completed fires (payload.batch = true).
+    applyEvent({
+      kind: 'job_completed',
+      stage: 'detail',
+      job_id: 'detail.dep.batch.X',
+      ts: 't2',
+      status: 'success',
+      payload: { batch: true, batch_size: 12 },
+    })
+    expect(stages.value.get('detail').batchesDone).toBe(1)
+
+    // Per-entity job_completed events do NOT increment batchesDone.
+    applyEvent({
+      kind: 'job_completed',
+      stage: 'detail',
+      job_id: 'detail.dep.entity-1',
+      ts: 't3',
+      status: 'success',
+      payload: { name: 'entity-1' },
+    })
+    expect(stages.value.get('detail').batchesDone).toBe(1)
+
+    // Another batch finishes.
+    applyEvent({
+      kind: 'job_completed',
+      stage: 'detail',
+      job_id: 'detail.dep.batch.Y',
+      ts: 't4',
+      status: 'success',
+      payload: { batch: true, batch_size: 8 },
+    })
+    expect(stages.value.get('detail').batchesDone).toBe(2)
+
+    // A batch FAILURE also counts toward batchesDone (the batch
+    // ran, just failed) — the dashboard shows "5/20 batches"
+    // regardless of pass/fail, and the timeline + banner surface
+    // the failure separately.
+    applyEvent({
+      kind: 'job_failed',
+      stage: 'detail',
+      job_id: 'detail.dep.batch.Z',
+      ts: 't5',
+      status: 'failed',
+      payload: { batch: true, batch_size: 5 },
+    })
+    expect(stages.value.get('detail').batchesDone).toBe(3)
+  })
+
+  // Stages without batching (e.g. discovery, repo_facts) MUST NOT
+  // have batchesTotal set, so the PipelineStrip skips that row.
+  it('does not display batches when stage has no batch info', () => {
+    applyEvent({
+      kind: 'stage_started',
+      stage: 'discovery',
+      ts: 't1',
+      payload: { total: 13 },
+    })
+    const disc = stages.value.get('discovery')
+    expect(disc.total).toBe(13)
+    expect(disc.batchesTotal).toBe(0)
   })
 
   // A live run sequence: run_started -> ... -> run_completed

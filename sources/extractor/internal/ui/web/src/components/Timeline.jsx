@@ -85,7 +85,7 @@ export function Timeline() {
             <span>
               <strong>{e.kind}</strong>
               {e.stage ? ` · ${e.stage}` : ''}
-              {e.job_id ? ` · ${shortJob(e.job_id)}` : ''}
+              {batchSummary(e) || (e.job_id ? ` · ${shortJob(e.job_id)}` : '')}
               {e.message ? ` · ${e.message}` : ''}
             </span>
           </li>
@@ -109,6 +109,24 @@ export function Timeline() {
 function onSelect(e) {
   if (e.job_id) selection.value = { type: 'job', id: 'job:' + e.job_id }
   else if (e.stage) selection.value = { type: 'stage', id: 'stage:' + e.stage }
+}
+
+// batchSummary returns a human-readable phrase for batch-level
+// events. e.g. "detail batch ×12: GET /a, GET /b, +10 more".
+// Returns empty string when the event isn't a batch event;
+// callers fall back to the shortJob rendering in that case.
+function batchSummary(e) {
+  if (!e || !e.payload) return ''
+  if (e.payload.batch !== true) return ''
+  const size = e.payload.batch_size ?? (e.payload.seed_names ? e.payload.seed_names.length : null)
+  const names = Array.isArray(e.payload.seed_names) ? e.payload.seed_names : []
+  let preview = ''
+  if (names.length > 0) {
+    preview = names.slice(0, 3).join(', ')
+    if (names.length > 3) preview += ', +' + (names.length - 3) + ' more'
+  }
+  const sizeStr = size != null ? ' ×' + size : ''
+  return ` · batch${sizeStr}${preview ? ': ' + preview : ''}`
 }
 
 function shortJob(id) {
