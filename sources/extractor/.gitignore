@@ -3,3 +3,21 @@
 .gocache
 .idea
 /diffmind
+/diffmind-index
+/wrapper
+cover.cov
+*.out
+
+# Build artifacts inside SCIP fixture repos. Fixtures are real
+# project trees we run indexers against in integration tests; we
+# do not commit per-language build outputs (Maven target/, Gradle
+# build/, .gradle/, Node node_modules/, .NET bin/obj/, scip output)
+# because they're regenerated on demand and would bloat the repo
+# by hundreds of MB.
+internal/scip/testdata/fixtures/**/node_modules/
+internal/scip/testdata/fixtures/**/target/
+internal/scip/testdata/fixtures/**/build/
+internal/scip/testdata/fixtures/**/.gradle/
+internal/scip/testdata/fixtures/**/bin/
+internal/scip/testdata/fixtures/**/obj/
+internal/scip/testdata/fixtures/**/*.scip
