@@ -1,0 +1,10 @@
+{
+  "name": "scipfixture-typescript-express",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {},
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

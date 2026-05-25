@@ -301,66 +301,9 @@ func itoa(n int) string {
 }
 
 // ---- Stage 4: connection mapping ----
-
-type connectionCatalogItem struct {
-	ID       string         `json:"id"`
-	Type     string         `json:"type"`
-	Name     string         `json:"name"`
-	Summary  string         `json:"summary"`
-	Details  map[string]any `json:"details,omitempty"`
-	Location string         `json:"location,omitempty"`
-}
-
-func buildConnectionPrompt(
-	obj objectives.Objective,
-	exposure connectionCatalogItem,
-	catalog []connectionCatalogItem,
-	batchIndex, batchCount int,
-	rf *repoFacts,
-	subDir string,
-) string {
-	expJSON, _ := json.MarshalIndent(exposure, "", "  ")
-	catJSON, _ := json.MarshalIndent(catalog, "", "  ")
-	var sb strings.Builder
-	sb.WriteString("AGENT ROLE: connection-extractor\n")
-	sb.WriteString(readOnlyPreamble)
-	sb.WriteString("OBJECTIVE_ID: ")
-	sb.WriteString(obj.ID)
-	sb.WriteString("\n")
-	sb.WriteString("OBJECTIVE_KIND: exposure\n")
-	sb.WriteString("OBJECTIVE_TYPE: ")
-	sb.WriteString(obj.Type)
-	sb.WriteString("\n")
-	sb.WriteString("EXPOSURE_ID: ")
-	sb.WriteString(exposure.ID)
-	sb.WriteString("\n")
-	sb.WriteString(fmt.Sprintf("BATCH: %d/%d\n\n", batchIndex, batchCount))
-	sb.WriteString(monorepoScopeLine(subDir))
-	sb.WriteString(repoFactsBlock(rf))
-	sb.WriteString("EXPOSURE:\n")
-	sb.Write(expJSON)
-	sb.WriteString("\n\n")
-	sb.WriteString("DEPENDENCY_CATALOG (closed set - you MUST pick to_dependency_id from these IDs):\n")
-	sb.Write(catJSON)
-	sb.WriteString("\n\n")
-	sb.WriteString("CONNECTION CONTEXT:\n")
-	sb.WriteString(obj.ConnectionContext)
-	sb.WriteString("\n\n")
-	sb.WriteString(`TASK:
-Trace the execution paths from EXPOSURE's handler through the codebase and identify
-which DEPENDENCY_CATALOG entries are actually invoked. For each invoked dependency,
-produce ONE connection entry with ordered steps and the condition under which the
-dependency is reached.
-
-HARD RULES:
-- from_exposure_id MUST equal the EXPOSURE_ID above.
-- to_dependency_id MUST be one of the id values from DEPENDENCY_CATALOG. If the real
-  dependency is not in the catalog (e.g. out of this batch), OMIT the connection.
-- If the exposure does not call any dependency in this batch, return {"items": []}.
-- Every connection MUST include a condition (kind, expression, explanation).
-- Prefer ordered steps with file+line locations where the call actually happens.
-- confidence in [0,1] reflects how strongly the call path is evidenced in source.
-
-OUTPUT: Return a single JSON object {"items": [...]} matching the provided schema.`)
-	return sb.String()
-}
+//
+// The connections stage is now deterministic and SCIP-driven. No LLM
+// prompt is built or sent. The old buildConnectionPrompt /
+// connectionCatalogItem types have been removed. See
+// internal/agents/connections.go for the new pipeline and
+// internal/scip/ for the underlying call-graph walker.

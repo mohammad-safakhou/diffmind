@@ -45,16 +45,10 @@ func TestBuildReexaminePromptContainsTrigger(t *testing.T) {
 	mustContain(t, p, "\"name\": \"GET /x\"")
 }
 
-func TestBuildConnectionPromptHasClosedSetSignal(t *testing.T) {
-	exp := connectionCatalogItem{ID: "exp1", Type: "http_route", Name: "GET /"}
-	cat := []connectionCatalogItem{{ID: "dep1", Type: "db_operation", Name: "users_select"}}
-	p := buildConnectionPrompt(testObj(), exp, cat, 1, 1, nil, "")
-	mustContain(t, p, "AGENT ROLE: connection-extractor")
-	mustContain(t, p, "EXPOSURE_ID: exp1")
-	mustContain(t, p, "DEPENDENCY_CATALOG (closed set")
-	mustContain(t, p, "\"id\": \"dep1\"")
-	mustContain(t, p, "http route connection context")
-}
+// TestBuildConnectionPromptHasClosedSetSignal was a regression guard
+// for the old LLM-based connections prompt. The deterministic
+// SCIP-driven stage does not build any prompt for connections, so the
+// test (and the prompt builder it exercised) have been removed.
 
 func TestBuildRepoFactsPromptReferencesMonorepo(t *testing.T) {
 	p := buildRepoFactsPrompt("apps/x")

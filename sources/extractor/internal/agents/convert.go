@@ -115,35 +115,11 @@ func toEvidence(in []llmEvidence) []model.Evidence {
 	return out
 }
 
-func toConnectionPaths(in []llmPath) []model.ConnectionPath {
-	out := make([]model.ConnectionPath, 0, len(in))
-	for _, p := range in {
-		steps := make([]model.ConnectionPathStep, 0, len(p.Steps))
-		for _, s := range p.Steps {
-			loc := model.Location{File: s.Location.File, StartLine: s.Location.StartLine, EndLine: s.Location.EndLine}
-			if loc.EndLine < loc.StartLine {
-				loc.EndLine = loc.StartLine
-			}
-			steps = append(steps, model.ConnectionPathStep{
-				Order:     s.Order,
-				Action:    s.Action,
-				Operation: s.Operation,
-				From:      s.From,
-				To:        s.To,
-				Condition: fillCondition(s.Condition, s.Action),
-				Location:  loc,
-				Evidence:  toEvidence(s.Evidence),
-			})
-		}
-		out = append(out, model.ConnectionPath{
-			ID:        defaultStr(p.ID, util.StableID("path", p.Summary)),
-			Summary:   defaultStr(p.Summary, "path"),
-			Condition: fillCondition(p.Condition, p.Summary),
-			Steps:     steps,
-		})
-	}
-	return out
-}
+// toConnectionPaths was the LLM→model.ConnectionPath converter used by
+// the old connections stage. The SCIP-driven stage builds
+// model.ConnectionPath directly from scip.Path, so this helper is
+// obsolete and has been removed. See internal/agents/connections.go's
+// convertPath function for the replacement.
 
 func fillCondition(c model.Condition, fallbackExplanation string) model.Condition {
 	if strings.TrimSpace(c.Kind) == "" {
@@ -269,18 +245,9 @@ func parseSingleEntity(v any) *llmEntity {
 	return &e
 }
 
-func parseConnections(v any) []llmConnection {
-	if v == nil {
-		return nil
-	}
-	b, err := json.Marshal(v)
-	if err != nil {
-		return nil
-	}
-	var out []llmConnection
-	_ = json.Unmarshal(b, &out)
-	return out
-}
+// parseConnections was the JSON → []llmConnection decoder used by the
+// old LLM-based connections stage. With the deterministic SCIP path
+// no LLM connection JSON is ever produced, so this helper is removed.
 
 func parseRepoFacts(v map[string]any) *repoFacts {
 	if v == nil {

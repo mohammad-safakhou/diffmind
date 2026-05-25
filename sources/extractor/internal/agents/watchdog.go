@@ -31,9 +31,18 @@ type watchdog struct {
 	mu            sync.Mutex
 	ownedSessions map[string]struct{}
 	answered      map[string]struct{} // permissions we have already responded to
-	stopCh        chan struct{}
-	doneCh        chan struct{}
-	stopOnce      sync.Once
+	// parentCache memoises the result of LookupSessionParent for
+	// session ids that are NOT directly owned, so the watchdog spends
+	// at most one round-trip per unrecognised session over the whole
+	// run. Entries are written even for sessions we end up NOT
+	// claiming (parent unknown / API error): empty string means "we
+	// looked and it isn't ours", which is just as actionable as
+	// "looked it up and it IS ours" — both cases need to be cached
+	// so we don't re-poll every 2s.
+	parentCache map[string]string
+	stopCh      chan struct{}
+	doneCh      chan struct{}
+	stopOnce    sync.Once
 }
 
 func (w *watchdog) markAnswered(permID string) {
@@ -77,6 +86,7 @@ func newWatchdog(api pauseHandler, directory string, poll time.Duration) *watchd
 		pollInterval:  poll,
 		ownedSessions: map[string]struct{}{},
 		answered:      map[string]struct{}{},
+		parentCache:   map[string]string{},
 		stopCh:        make(chan struct{}),
 		doneCh:        make(chan struct{}),
 	}
@@ -138,6 +148,105 @@ func (w *watchdog) owns(sessionID string) bool {
 	return ok
 }
 
+// cachedParent returns the cached parent id for a session and a flag
+// indicating whether we've ever looked it up. The flag distinguishes
+// "we haven't checked yet" from "we checked and there is no parent
+// (or the lookup failed)". The watchdog uses both states to avoid
+// re-polling /session/{id} on every tick for sessions that turned
+// out not to be ours.
+func (w *watchdog) cachedParent(sessionID string) (string, bool) {
+	if w == nil || sessionID == "" {
+		return "", false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	parent, ok := w.parentCache[sessionID]
+	return parent, ok
+}
+
+// rememberParent records the looked-up parent for a session. We
+// cache even the negative result ("" parent) so we don't repeatedly
+// hit the server for the same untracked session.
+func (w *watchdog) rememberParent(sessionID, parentID string) {
+	if w == nil || sessionID == "" {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.parentCache == nil {
+		w.parentCache = map[string]string{}
+	}
+	w.parentCache[sessionID] = parentID
+}
+
+// ownsTransitive returns true when sessionID is either directly owned
+// (the common case for our top-level prompts) OR is a subagent whose
+// parent chain leads to one of our owned sessions. The lookup walks
+// at most depth subagents deep, using the cache to keep the cost at
+// O(unique sessions seen) for the whole run.
+//
+// This exists because OpenCode's `task` tool creates an entirely
+// separate session for each subagent, and any permission/question
+// raised inside the subagent carries the subagent's id — not the
+// parent's. If we ignore subagent permissions the parent's `task`
+// tool sits in state=running forever; see the watchdog comment at
+// the top of this file for the broader rationale.
+//
+// We bound the recursion at depth=4 as a safety net against
+// pathological cycles in the parentID chain (the API hasn't shown
+// any, but cycles in a remote-driven structure aren't worth
+// trusting). depth=4 is plenty: a subagent calling task to spawn
+// another subagent is rare; calling it 4 levels deep is implausible
+// and a strong sign something has gone wrong upstream.
+func (w *watchdog) ownsTransitive(ctx context.Context, sessionID string) bool {
+	if w == nil || sessionID == "" {
+		return false
+	}
+	if w.owns(sessionID) {
+		return true
+	}
+	seen := map[string]struct{}{sessionID: {}}
+	current := sessionID
+	for depth := 0; depth < 4; depth++ {
+		parent, cached := w.cachedParent(current)
+		if !cached {
+			lookCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			p, err := w.api.LookupSessionParent(lookCtx, current, w.directory)
+			cancel()
+			if err != nil {
+				util.Trace("agents.watchdog", "lookup parent failed", map[string]any{
+					"session_id": current, "error": err.Error(),
+				})
+				// Cache the empty result so we don't re-poll on
+				// every tick for this session. If it really IS
+				// ours, the worst case is one missed permission
+				// — the next subagent the same parent spawns
+				// will produce a fresh session id and we'll try
+				// again.
+				w.rememberParent(current, "")
+				return false
+			}
+			w.rememberParent(current, p)
+			parent = p
+		}
+		if parent == "" {
+			return false
+		}
+		if w.owns(parent) {
+			return true
+		}
+		if _, loop := seen[parent]; loop {
+			util.Trace("agents.watchdog", "parent chain cycle", map[string]any{
+				"session_id": sessionID, "loop_at": parent,
+			})
+			return false
+		}
+		seen[parent] = struct{}{}
+		current = parent
+	}
+	return false
+}
+
 // Start launches the polling goroutine. It is a no-op if api is nil.
 func (w *watchdog) Start(ctx context.Context) {
 	if w == nil || w.api == nil {
@@ -182,7 +291,7 @@ func (w *watchdog) tick(ctx context.Context) {
 
 	if perms, err := w.api.ListPermissions(pollCtx, w.directory); err == nil {
 		for _, p := range perms {
-			if !w.owns(p.SessionID) {
+			if !w.ownsTransitive(pollCtx, p.SessionID) {
 				continue
 			}
 			// Skip permissions we already answered. OpenCode keeps them
@@ -242,7 +351,7 @@ func (w *watchdog) tick(ctx context.Context) {
 
 	if qs, err := w.api.ListQuestions(pollCtx, w.directory); err == nil {
 		for _, q := range qs {
-			if !w.owns(q.SessionID) {
+			if !w.ownsTransitive(pollCtx, q.SessionID) {
 				continue
 			}
 			util.Warn("agents.watchdog", "auto-rejecting clarification question", map[string]any{

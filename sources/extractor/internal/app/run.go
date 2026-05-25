@@ -12,6 +12,7 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/opencode"
+	"github.com/mohammad-safakhou/diffmind/internal/preflight"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -53,6 +54,37 @@ func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 	}
 	util.Debug("app.run", "resolved repo path", map[string]any{"repo": repo})
 	logProgress("bootstrap", 5, "Repository path resolved.")
+
+	// Preflight gate: run the system-readiness checks before we
+	// touch the snapshot or open any OpenCode connection. A single
+	// SeverityFail aborts the run with a clear message. The UI
+	// handler does the same on the HTTP edge; the CLI path covers
+	// `diffmind run` invocations that bypass the dashboard.
+	{
+		checks := preflight.DefaultChecks(preflight.OptionsFromConfig(in.Config))
+		rep := preflight.NewRunner(checks).Run(ctx)
+		if rep.HasFail() {
+			failures := rep.Failures()
+			var msg strings.Builder
+			msg.WriteString("preflight rejected the run; ")
+			for i, f := range failures {
+				if i > 0 {
+					msg.WriteString("; ")
+				}
+				msg.WriteString(f.Title + ": " + f.Message)
+				if f.Remediation != "" {
+					msg.WriteString(" (")
+					msg.WriteString(f.Remediation)
+					msg.WriteString(")")
+				}
+			}
+			util.Error("app.run", "preflight failed", map[string]any{
+				"failures": len(failures),
+				"message":  msg.String(),
+			})
+			return RunOutput{}, fmt.Errorf("%s", msg.String())
+		}
+	}
 
 	oc := opencode.New(
 		in.Config.OpenCode.BaseURL,

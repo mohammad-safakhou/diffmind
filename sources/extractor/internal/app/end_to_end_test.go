@@ -51,6 +51,10 @@ func TestEndToEndPipelineAgainstSampleRepo(t *testing.T) {
 	cfg.Runtime.MaxCatalogItems = 10
 	cfg.Quality.MinConfidence = 0.7
 	cfg.Artifacts.BaseDir = out
+	// Unit-test environments don't have Docker (or the indexer image).
+	// Disable the SCIP index stage explicitly so the test isn't slowed
+	// down by a doomed `docker pull` and so log noise stays minimal.
+	cfg.Indexer.Disabled = true
 
 	start := time.Now()
 	// Pass an explicit, test-unique RunID so parallel test
@@ -359,10 +363,19 @@ func stubResponseFor(prompt string) map[string]any {
 
 	// ---- Detail ----
 	case strings.Contains(prompt, "AGENT ROLE: detail-extractor") && strings.Contains(prompt, "OBJECTIVE_ID: exposure.http_route"):
+		// Name the deps in the exposure detail so the shallow connection
+		// matcher (no SCIP index in unit tests) pairs them. This is the
+		// same pattern real LLM responses follow.
 		return map[string]any{"item": map[string]any{
 			"type": "http_route", "name": "POST /orders", "summary": "Handles new order POST requests", "confidence": 0.97,
-			"key_actions":      []any{"check method", "open postgres", "POST billing/charge"},
-			"details":          map[string]any{"method": "POST", "path": "/orders", "handler": "orderHandler"},
+			"key_actions": []any{"check method", "open postgres", "POST billing/charge"},
+			"details": map[string]any{
+				"method": "POST", "path": "/orders", "handler": "orderHandler",
+				"dependencies": []any{
+					map[string]any{"name": "orders_db_open", "type": "db_operation"},
+					map[string]any{"name": "POST billing/charge", "type": "outbound_http"},
+				},
+			},
 			"source_locations": []any{map[string]any{"file": "cmd/api.go", "start_line": 12, "end_line": 18}},
 			"evidence": []any{map[string]any{
 				"file": "cmd/api.go", "start_line": 13, "end_line": 13,
@@ -372,7 +385,12 @@ func stubResponseFor(prompt string) map[string]any {
 	case strings.Contains(prompt, "AGENT ROLE: detail-extractor") && strings.Contains(prompt, "OBJECTIVE_ID: exposure.scheduled_job"):
 		return map[string]any{"item": map[string]any{
 			"type": "scheduled_job", "name": "StartCronJob", "summary": "kicks off a shell command", "confidence": 0.9,
-			"details":          map[string]any{"schedule": "manual", "handler": "StartCronJob"},
+			"details": map[string]any{
+				"schedule": "manual", "handler": "StartCronJob",
+				"dependencies": []any{
+					map[string]any{"name": "shell_exec_echo_run", "type": "command_exec"},
+				},
+			},
 			"source_locations": []any{map[string]any{"file": "internal/worker.go", "start_line": 5, "end_line": 8}},
 			"evidence": []any{map[string]any{
 				"file": "internal/worker.go", "start_line": 7, "end_line": 7,

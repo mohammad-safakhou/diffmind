@@ -79,3 +79,20 @@ func (p *pauseBridge) RejectQuestion(ctx context.Context, requestID, directory s
 	}
 	return p.c.RejectQuestion(ctx, requestID, directory)
 }
+
+// LookupSessionParent returns the parentID field of an OpenCode session,
+// or "" when the session is top-level / not found. We hit the cheap
+// GET /session/{id} endpoint (~500B) and read SessionState.ParentID.
+// The watchdog calls this only for permissions whose SessionID is not
+// directly in ownedSessions, so it costs at most one round-trip per
+// unrecognised session (cached afterwards).
+func (p *pauseBridge) LookupSessionParent(ctx context.Context, sessionID, directory string) (string, error) {
+	if p == nil || p.c == nil || sessionID == "" {
+		return "", nil
+	}
+	s, err := p.c.GetSession(ctx, sessionID, directory)
+	if err != nil {
+		return "", err
+	}
+	return s.ParentID, nil
+}

@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Minimal C# class library for the SCIP integration fixture.
+    scip-dotnet drives `dotnet build` to produce an SCIP index; this
+    project must be buildable from a clean checkout for the test to
+    pass. We deliberately avoid ASP.NET Core (heavy SDK install): the
+    integration test cares about the controller → service → repository
+    call graph, not HTTP routing.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>ScipFixture</RootNamespace>
+    <AssemblyName>ScipFixture</AssemblyName>
+  </PropertyGroup>
+</Project>
