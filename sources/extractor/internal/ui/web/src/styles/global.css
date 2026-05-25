@@ -435,3 +435,116 @@ a:hover { text-decoration: underline; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--bg-3); border-radius: 5px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+
+/* System Status header strip. Always visible directly under the
+   TopBar; tells the user at a glance whether Docker / OpenCode /
+   credentials / disk are ready. */
+.system-status {
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-1);
+  padding: 0;
+}
+.system-status.loading .system-status-pill { color: var(--text-muted); }
+.system-status-pill {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 16px;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  width: 100%;
+  text-align: left;
+}
+.system-status-pill:hover { background: var(--bg-2); }
+.system-status-pill .checks-summary {
+  margin-left: 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.system-status-pill .caret {
+  margin-left: auto;
+  color: var(--text-muted);
+}
+.system-status .dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--pending);
+}
+.system-status .dot.ok { background: var(--success); }
+.system-status .dot.warn { background: var(--warn); }
+.system-status .dot.fail { background: var(--error); }
+.system-status.fail { background: rgba(239, 68, 68, 0.08); }
+.system-status.warn { background: rgba(245, 158, 11, 0.08); }
+.system-status-detail {
+  padding: 0 16px 12px 16px;
+  background: var(--bg-1);
+  border-top: 1px solid var(--border);
+  overflow: auto;
+}
+.system-status-detail table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.system-status-detail th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 8px 6px 6px 6px;
+  border-bottom: 1px solid var(--border);
+}
+.system-status-detail td {
+  padding: 6px;
+  vertical-align: top;
+  border-bottom: 1px dashed var(--border);
+}
+.system-status-detail .msg { color: var(--text); }
+.system-status-detail .detail {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+  white-space: pre-wrap;
+}
+.system-status-detail .remediation {
+  margin-top: 4px;
+  color: var(--accent);
+  font-size: 11px;
+}
+.system-status-detail tr.row-fail td { background: rgba(239, 68, 68, 0.05); }
+.system-status-detail tr.row-warn td { background: rgba(245, 158, 11, 0.04); }
+
+/* IndexBuildPanel in the DetailDrawer: per-base build status +
+   live docker-build tail. */
+.build-jobs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-top: 6px;
+}
+.build-jobs-table th,
+.build-jobs-table td {
+  text-align: left;
+  padding: 4px 6px;
+  border-bottom: 1px dashed var(--border);
+}
+.build-jobs-table tr.row-success td { color: var(--success); }
+.build-jobs-table tr.row-failed td { color: var(--error); }
+.build-jobs-table tr.row-running td { color: var(--running); }
+.build-log-tail {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+  max-height: 320px;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  color: var(--text-muted);
+}

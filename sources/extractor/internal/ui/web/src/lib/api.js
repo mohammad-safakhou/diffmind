@@ -112,3 +112,18 @@ export function getRunArtifact(runID) {
 export function getRunArtifacts(runID) {
   return api(`/api/runs/${encodeURIComponent(runID)}/artifacts`)
 }
+
+// Preflight API. The dashboard's SystemStatus panel polls
+// /api/preflight every 15s and pushes form-derived options to
+// /api/preflight/options whenever the user edits the URL or
+// credentials. Both endpoints return the latest Report.
+export function getPreflight() {
+  return api('/api/preflight')
+}
+
+export function pushPreflightOptions(opts) {
+  return api('/api/preflight/options', {
+    method: 'POST',
+    body: JSON.stringify(opts),
+  })
+}

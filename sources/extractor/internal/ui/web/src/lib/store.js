@@ -11,7 +11,13 @@
 
 import { computed, signal } from '@preact/signals'
 
-const STAGES = ['repo_facts', 'discovery', 'reexamination', 'detail', 'connections', 'reconcile']
+// STAGES_MAIN is the main pipeline row in event-emission order.
+const STAGES_MAIN = ['repo_facts', 'discovery', 'reexamination', 'detail', 'index', 'connections', 'reconcile']
+// STAGES_PARALLEL are stages that run in parallel WITH the main row
+// rather than sequentially. They each get their own graph node above
+// the main pipeline row. Today this is just the indexer image build.
+const STAGES_PARALLEL = ['index.build']
+const STAGES = [...STAGES_MAIN, ...STAGES_PARALLEL]
 
 export const runMeta = signal(null)
 export const stages = signal(initialStages())
@@ -21,6 +27,19 @@ export const llmCalls = signal(new Map()) // by jobID
 export const watchdogActions = signal([])
 export const selection = signal(null) // { type: 'job'|'stage', id }
 export const counts = computed(() => deriveCounts(jobs.value))
+
+// preflight is the latest /api/preflight Report (or null while we
+// have not polled yet). The SystemStatus component subscribes to
+// this; the RunForm reads it to gate the Run button.
+export const preflight = signal(null)
+
+// buildLogs is a ring buffer of recent docker-build log lines for
+// the parallel `index.build` stage. The DetailDrawer subscribes
+// to this when the user selects the index.build node so they see
+// live tail of the build output.
+//
+// We cap at 200 entries to keep memory bounded across long builds.
+export const buildLogs = signal([])
 
 function initialStages() {
   const m = new Map()
@@ -246,8 +265,23 @@ export function applyEvent(e) {
       watchdogActions.value = [...watchdogActions.value, e]
       break
 
+    case 'log':
+      // Capture image-build log lines so DetailDrawer can render
+      // a live tail when the user inspects the index.build node.
+      // Other 'log' events (rare today) just hit the timeline.
+      if (e.stage === 'index.build' || e.job_id === 'index.build') {
+        const next = [...buildLogs.value, {
+          ts: e.ts,
+          message: e.message || '',
+          tail: e.payload?.tail || '',
+        }]
+        if (next.length > 200) next.splice(0, next.length - 200)
+        buildLogs.value = next
+      }
+      break
+
     default:
-      // session_created, session_aborted, log, subscriber_dropped — purely informational.
+      // session_created, session_aborted, subscriber_dropped — purely informational.
       break
   }
 }

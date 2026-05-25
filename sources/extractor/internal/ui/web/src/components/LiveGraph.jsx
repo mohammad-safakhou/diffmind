@@ -103,14 +103,27 @@ export function LiveGraph() {
   )
 }
 
-const STAGES = ['repo_facts', 'discovery', 'reexamination', 'detail', 'connections', 'reconcile']
+// Main pipeline row, in left-to-right execution order.
+const STAGES = ['repo_facts', 'discovery', 'reexamination', 'detail', 'index', 'connections', 'reconcile']
+// Parallel stages live ABOVE the main row. Today we have one
+// parallel stage: 'index.build' (the per-language Docker image
+// build that runs while Stages 1-3 LLM work happens). It has
+// edges FROM repo_facts (which triggers it) and INTO index
+// (which consumes its output), making the parallelism legible.
+const PARALLEL_STAGES = ['index.build']
+
+// y positions. PARALLEL_Y is the row above the main pipeline;
+// MAIN_Y is the main row.
+const PARALLEL_Y = 30
+const MAIN_Y = 130
+const JOBS_Y_START = 270 // top of the job-node block under stages
 
 function seedStages(cy) {
   const stageX = stagePositions(cy)
   STAGES.forEach((name, i) => {
     cy.add({
       data: { id: 'stage:' + name, label: name, kind: 'stage', stage: name, status: 'pending' },
-      position: { x: stageX[name], y: 70 },
+      position: { x: stageX[name], y: MAIN_Y },
       classes: 'stage status-pending',
     })
     if (i > 0) {
@@ -119,6 +132,27 @@ function seedStages(cy) {
         classes: 'stage-edge',
       })
     }
+  })
+  // Parallel branch: place "index.build" between repo_facts and
+  // index on the row ABOVE the main pipeline. Edges flow from
+  // repo_facts (which triggers it) and into the main `index`
+  // stage (which waits on the built image).
+  PARALLEL_STAGES.forEach((name) => {
+    // Position roughly between repo_facts and index along x.
+    const px = (stageX['repo_facts'] + stageX['index']) / 2
+    cy.add({
+      data: { id: 'stage:' + name, label: name, kind: 'stage', stage: name, status: 'pending' },
+      position: { x: px, y: PARALLEL_Y },
+      classes: 'stage parallel status-pending',
+    })
+    cy.add({
+      data: { id: 'e:repo_facts->' + name, source: 'stage:repo_facts', target: 'stage:' + name, kind: 'stage-edge' },
+      classes: 'stage-edge parallel-edge',
+    })
+    cy.add({
+      data: { id: 'e:' + name + '->index', source: 'stage:' + name, target: 'stage:index', kind: 'stage-edge' },
+      classes: 'stage-edge parallel-edge',
+    })
   })
 }
 
@@ -335,43 +369,77 @@ function layoutFor(cy) {
     grouped.get(stage).push(n)
   })
   for (const [stage, nodes] of grouped) {
-    layoutStageNodes(cy, nodes, STAGE_X[stage] ?? 80)
+    // index.build jobs live on the parallel row, so its column
+    // is the midpoint between repo_facts and index (matches
+    // seedStages). Other stages use their own column.
+    let x
+    if (stage === 'index.build') {
+      x = (STAGE_X['repo_facts'] + STAGE_X['index']) / 2
+    } else {
+      x = STAGE_X[stage] ?? 80
+    }
+    // index.build jobs stack ABOVE the stage node (toward y<PARALLEL_Y);
+    // main-row jobs stack BELOW (toward y>MAIN_Y). The layoutStageNodes
+    // helper accepts a startY + direction so both orientations work.
+    if (stage === 'index.build') {
+      layoutStageNodes(cy, nodes, x, PARALLEL_Y - 90, -1)
+    } else {
+      layoutStageNodes(cy, nodes, x, JOBS_Y_START, +1)
+    }
   }
 
-  // Stages always at the same y. Pulled down slightly so the stage
-  // node's full height (now 80px) fits comfortably below the
-  // graph header.
-  STAGES.forEach((name, i) => {
+  // Pin stage nodes to their fixed positions so node insertions
+  // don't drift them. Main row at MAIN_Y; parallel row at PARALLEL_Y.
+  STAGES.forEach((name) => {
     const node = cy.getElementById('stage:' + name)
-    if (node.length) node.position({ x: STAGE_X[name], y: 90 })
+    if (node.length) node.position({ x: STAGE_X[name], y: MAIN_Y })
+  })
+  PARALLEL_STAGES.forEach((name) => {
+    const node = cy.getElementById('stage:' + name)
+    if (node.length) {
+      const px = (STAGE_X['repo_facts'] + STAGE_X['index']) / 2
+      node.position({ x: px, y: PARALLEL_Y })
+    }
   })
 }
 
 // layoutStageNodes arranges all job nodes in one stage column.
 // Visual model:
 //   - Batch nodes sit at the column's main X.
-//   - Entity nodes whose parentId is a batch sit one column-width
-//     to the right of their batch, vertically aligned just below
-//     their batch's row.
+//   - Entity nodes whose parentId is a batch sit OFFSET (to the
+//     right for downward-growing stages, to the left for
+//     upward-growing parallel stages). The offset is bounded so
+//     entity nodes never cross into the NEXT stage's column.
 //   - Plain (non-batched) job nodes line up at the main X.
-// Vertical spacing is chosen so a batch's entities are visually
-// "tucked under" it; spacing breathes for non-batched stages.
-function layoutStageNodes(cy, nodes, mainX) {
-  const batchEntityOffsetX = 260 // children indent to the right
-  const yStride = 72            // vertical spacing between sibling rows
+//
+// startY is the y coordinate of the FIRST job; dirY is +1 to
+// grow downward (main row) or -1 to grow upward (parallel row).
+// Caller passes the right combination based on stage placement.
+//
+// CRITICAL LAYOUT FIX (Sprint 4): batched entities used to indent
+// rightward by 260px, which on small viewports + many batches put
+// them straight into the next stage's column. Now we bound the
+// indent + cap each stage's job stack at a maximum width so no
+// batched child node overlaps the next column.
+function layoutStageNodes(cy, nodes, mainX, startY, dirY) {
+  // The next column's center is the closest reference point;
+  // we keep child entities at most halfway between us and them.
+  const stageX = stagePositions(cy)
+  const allStageX = Object.values(stageX).sort((a, b) => a - b)
+  const myIdx = allStageX.indexOf(mainX)
+  const nextX = myIdx >= 0 && myIdx + 1 < allStageX.length ? allStageX[myIdx + 1] : mainX + 280
+  const halfGap = Math.max(80, Math.min(160, (nextX - mainX) / 2 - 20))
+  const batchEntityOffsetX = halfGap // children indent toward (but not into) the next column
+  const yStride = 70                 // vertical spacing between sibling rows
 
-  // Identify roots: nodes whose parent is the stage (or a non-batch
-  // job). They form the main column. The remaining nodes are
-  // children of a batch and sit indented.
+  // Identify roots vs batch children.
   const byID = new Map()
   for (const n of nodes) byID.set(n.id(), n)
 
   const rootNodes = []
-  const childrenByBatch = new Map() // batch node id -> array of child entity nodes
+  const childrenByBatch = new Map()
   for (const n of nodes) {
     const parentJobID = parentJobOf(cy, n)
-    // If the parent is a job AND that job has subkind=batch, this
-    // node is an entity under that batch.
     if (parentJobID) {
       const parentNode = cy.getElementById(parentJobID)
       if (parentNode.length && parentNode.data('subkind') === 'batch') {
@@ -382,24 +450,21 @@ function layoutStageNodes(cy, nodes, mainX) {
     }
     rootNodes.push(n)
   }
-
-  // Sort roots so the layout is stable across renders (otherwise
-  // nodes pop around as new events arrive).
   rootNodes.sort((a, b) => sortKey(a).localeCompare(sortKey(b)))
 
-  let y = 220
+  let y = startY
+  const stride = dirY * yStride
   for (const root of rootNodes) {
     root.position({ x: mainX, y })
-    y += yStride
+    y += stride
     const kids = childrenByBatch.get(root.id())
     if (kids && kids.length) {
       kids.sort((a, b) => sortKey(a).localeCompare(sortKey(b)))
       for (const k of kids) {
         k.position({ x: mainX + batchEntityOffsetX, y })
-        y += yStride
+        y += stride
       }
-      // A little extra breathing room after a batch's last entity.
-      y += 16
+      y += dirY * 14 // extra breathing room after a batch's last entity
     }
   }
 }
@@ -427,10 +492,15 @@ function sortKey(n) {
 
 function stagePositions(cy) {
   const width = Math.max(cy.width() || 0, 0)
-  // The stride between adjacent stage columns must accommodate the new
-  // wider node (220px) plus comfortable padding. We bumped the floor
-  // from 220 to 280 so labels never bleed into neighbouring columns.
-  const xStep = width > 0 ? Math.max(280, (width - 220) / Math.max(1, STAGES.length - 1)) : 280
+  // Stride between adjacent stage columns must accommodate the
+  // wider stage node (220 px) plus comfortable padding. We bumped
+  // the floor to 260 so labels never bleed into neighbouring
+  // columns; for very wide viewports we stretch the row out to
+  // fill available space.
+  const minStride = 260
+  const xStep = width > 0
+    ? Math.max(minStride, (width - 200) / Math.max(1, STAGES.length - 1))
+    : minStride
   const out = {}
   STAGES.forEach((name, i) => { out[name] = 130 + i * xStep })
   return out
@@ -568,6 +638,29 @@ const STYLE = [
   {
     selector: 'edge.stage-edge',
     style: { 'width': 2, 'line-color': '#3a4c7a', 'target-arrow-color': '#3a4c7a' },
+  },
+  // Parallel stages (index.build) render with a dashed border so
+  // the user instantly sees they don't sit on the main sequential
+  // pipeline row.
+  {
+    selector: 'node[kind = "stage"].parallel',
+    style: {
+      'border-style': 'dashed',
+      'border-width': 2,
+      'background-color': '#172240',
+    },
+  },
+  {
+    selector: 'edge.parallel-edge',
+    style: {
+      'width': 1,
+      'line-style': 'dashed',
+      'line-color': '#4f8cff',
+      'target-arrow-color': '#4f8cff',
+      'curve-style': 'unbundled-bezier',
+      'control-point-distances': [-40],
+      'control-point-weights': [0.5],
+    },
   },
   {
     selector: 'node:selected',

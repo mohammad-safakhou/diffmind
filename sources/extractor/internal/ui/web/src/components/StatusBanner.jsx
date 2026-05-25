@@ -155,9 +155,10 @@ function FailedBanner({ meta }) {
 // a fresh upgrade.
 //
 // Keep this list in sync with RunForm.jsx (STORAGE_KEY +
-// LEGACY_STORAGE_KEYS).
+// LEGACY_STORAGE_KEYS). When RunForm bumps to a new version, prepend
+// the new key here so retry hydration uses the freshest payload.
 function loadFormDefaults() {
-  const keys = ['diffmind:form-defaults-v2', 'diffmind:form-defaults']
+  const keys = ['diffmind:form-defaults-v3', 'diffmind:form-defaults-v2', 'diffmind:form-defaults']
   for (const k of keys) {
     try {
       const raw = localStorage.getItem(k)

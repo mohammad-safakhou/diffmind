@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'preact/hooks'
-import { startRun } from '../lib/api.js'
-import { runMeta } from '../lib/store.js'
+import { startRun, pushPreflightOptions } from '../lib/api.js'
+import { runMeta, preflight } from '../lib/store.js'
 
 // Default form values are persisted in localStorage so re-runs are quick.
 //
@@ -17,8 +17,12 @@ import { runMeta } from '../lib/store.js'
 // to default to 0, because the localStorage merge was shallow.
 // Bumping the key forces a clean slate; we also delete the old key
 // on first load so it doesn't sit around forever.
-const STORAGE_KEY = 'diffmind:form-defaults-v2'
-const LEGACY_STORAGE_KEYS = ['diffmind:form-defaults']
+// Bumped to v3 when the indexer block was added to DEFAULTS in Sprint 3.
+// Saved v2 payloads are layered through deepMerge, so users who saved
+// their preferred form before this change still get correct defaults
+// for the new indexer fields. We still wipe pre-v2 storage on load.
+const STORAGE_KEY = 'diffmind:form-defaults-v3'
+const LEGACY_STORAGE_KEYS = ['diffmind:form-defaults', 'diffmind:form-defaults-v2']
 
 // `timeout_seconds` is the raw http.Client.Timeout on the transport.
 // We DELIBERATELY do not surface it as a primary control — the
@@ -52,6 +56,23 @@ const DEFAULTS = {
     liveness_poll_seconds: 5,
   },
   quality: { min_confidence: 0.7 },
+  // Indexer controls the SCIP indexing stage (deterministic call-graph
+  // extraction; replaces the old LLM-based connections stage). All
+  // fields are optional. Empty strings / false fall back to server
+  // defaults — see internal/config/config.go and the indexer block in
+  // internal/ui/handlers_run.go.
+  //
+  //   disabled   = true                → skip indexing entirely; connections
+  //                                      degrade to the shallow name matcher.
+  //   image      = "<tag>"             → use a custom prebuilt image.
+  //   auto_build = "missing"           → build if missing (default).
+  //              = "always"            → rebuild every run (for Dockerfile dev).
+  //              = "never"             → never auto-build; fail-soft if missing.
+  indexer: {
+    disabled: false,
+    image: '', // empty → diffmind-indexer:dev (server default)
+    auto_build: '', // empty → "missing" (server default)
+  },
 }
 
 // deepMerge produces a copy of `base` with values from `over` layered
@@ -107,6 +128,12 @@ export function RunForm({ onLaunched }) {
   const meta = runMeta.value
   const running = meta?.status === 'running' || meta?.status === 'cancelling'
 
+  // Preflight gate: any SeverityFail across the system-status
+  // checks disables the Run button. The user can still type into
+  // the form (so they can FIX the cause); only submit is blocked.
+  const pf = preflight.value
+  const preflightBlocked = pf && pf.overall === 'fail'
+
   const update = (path, value) => {
     setForm((f) => {
       const next = { ...f }
@@ -122,6 +149,32 @@ export function RunForm({ onLaunched }) {
   }
 
   useEffect(() => { save(form) }, [form])
+
+  // Whenever the OpenCode-related form fields change, push them to
+  // the server's preflight cache so the System Status pill
+  // reflects the values the user IS ABOUT TO SUBMIT (not the
+  // server's loaded defaults). Debounced so a fast typist doesn't
+  // generate one request per keystroke.
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      pushPreflightOptions({
+        opencode: {
+          base_url: form.opencode.base_url,
+          username: form.opencode.username,
+          password: form.opencode.password,
+          provider_id: form.opencode.provider_id,
+          model_id: form.opencode.model_id,
+        },
+      }).then((rep) => { preflight.value = rep }).catch(() => {})
+    }, 600)
+    return () => clearTimeout(handle)
+  }, [
+    form.opencode.base_url,
+    form.opencode.username,
+    form.opencode.password,
+    form.opencode.provider_id,
+    form.opencode.model_id,
+  ])
 
   const cli = useMemo(() => buildCLI(form), [form])
 
@@ -269,15 +322,85 @@ export function RunForm({ onLaunched }) {
             <input type="checkbox" id="skip-reex" checked={form.runtime.skip_reexamination} onInput={(e) => update('runtime.skip_reexamination', e.target.checked)} disabled={running} />
             <label for="skip-reex">Skip Stage 2 (re-examination)</label>
           </div>
+
+          {/*
+            INDEXER section.
+            The SCIP index stage is what makes Stage 4 (connections)
+            deterministic instead of LLM-driven. On a fresh install
+            with no prebuilt image, the server auto-builds
+            diffmind-indexer:dev from the embedded Dockerfile the
+            first time it's needed (one-off ~20 min). These knobs let
+            advanced users opt out, point at a prebuilt image, or
+            force a rebuild after editing Dockerfile.indexer.
+          */}
+          <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border);">
+            <div class="toggle">
+              <input
+                type="checkbox"
+                id="indexer-disabled"
+                checked={form.indexer.disabled}
+                onInput={(e) => update('indexer.disabled', e.target.checked)}
+                disabled={running}
+              />
+              <label for="indexer-disabled" title="Skip the SCIP index stage entirely. Connections will degrade to the shallow name matcher.">
+                Disable SCIP indexer (use shallow matcher)
+              </label>
+            </div>
+            <div class="row-3">
+              <div class="field" style="grid-column: span 2;">
+                <label title="Container image to use for the SCIP indexer. Leave blank to use the server default (diffmind-indexer:dev, auto-built from the embedded Dockerfile on first run).">
+                  Indexer image
+                </label>
+                <input
+                  type="text"
+                  placeholder="diffmind-indexer:dev"
+                  value={form.indexer.image}
+                  onInput={(e) => update('indexer.image', e.target.value)}
+                  disabled={running || form.indexer.disabled}
+                />
+              </div>
+              <div class="field">
+                <label title="When to build the indexer image. 'missing' = build if absent (default). 'always' = rebuild every run (use while iterating on Dockerfile.indexer). 'never' = fail-soft if absent.">
+                  Auto-build
+                </label>
+                <select
+                  value={form.indexer.auto_build}
+                  onInput={(e) => update('indexer.auto_build', e.target.value)}
+                  disabled={running || form.indexer.disabled}
+                >
+                  <option value="">missing (default)</option>
+                  <option value="always">always</option>
+                  <option value="never">never</option>
+                </select>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
       <div class="actions">
-        <button class="btn" onClick={submit} disabled={running || busy}>
-          {busy ? 'Starting…' : (running ? 'Run in progress…' : 'Run extraction')}
+        <button
+          class="btn"
+          onClick={submit}
+          disabled={running || busy || preflightBlocked}
+          title={preflightBlocked ? preflightFailReason(pf) : ''}
+        >
+          {busy
+            ? 'Starting\u2026'
+            : running
+              ? 'Run in progress\u2026'
+              : preflightBlocked
+                ? 'Blocked by preflight'
+                : 'Run extraction'}
         </button>
         <button class="btn secondary" onClick={() => { setForm(load()); }} disabled={running}>Reset</button>
       </div>
+
+      {preflightBlocked && (
+        <div class="banner error">
+          The system isn\u2019t ready: {preflightFailReason(pf)}. See the System Status strip above for remediation.
+        </div>
+      )}
 
       {error && <div class="banner error">{error}</div>}
 
@@ -307,6 +430,9 @@ function buildCLI(f) {
   if (f.runtime.cleanup_opencode_sessions) parts.push('  --cleanup-opencode-sessions')
   if (f.runtime.skip_reexamination) parts.push('  --skip-reexamination')
   if (f.quality.min_confidence) parts.push(`  --min-confidence ${f.quality.min_confidence}`)
+  if (f.indexer?.disabled) parts.push('  --no-index')
+  if (f.indexer?.image) parts.push(`  --indexer-image ${q(f.indexer.image)}`)
+  if (f.indexer?.auto_build) parts.push(`  --indexer-auto-build ${f.indexer.auto_build}`)
   return parts.join(' \\\n')
 }
 
@@ -314,4 +440,13 @@ function q(s) {
   if (!s) return ''
   if (/[\s'"$]/.test(s)) return "'" + s.replace(/'/g, "'\\''") + "'"
   return s
+}
+
+// preflightFailReason summarises the failed checks into a single
+// line for the Run button's title + the inline banner.
+function preflightFailReason(rep) {
+  if (!rep || !Array.isArray(rep.checks)) return 'preflight check failed'
+  const failed = rep.checks.filter((c) => c.severity === 'fail')
+  if (failed.length === 0) return 'preflight check failed'
+  return failed.map((c) => (c.title || c.name) + ': ' + c.message).join('; ')
 }

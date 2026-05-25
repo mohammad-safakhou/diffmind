@@ -53,9 +53,16 @@ func TestRetryEndpoint_RegisteredAndAccepted(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	// POST /api/runs/{id}/retry with an empty body — the simplest
-	// "just resume from where you stopped" call.
-	resp, err := http.Post(srv.URL+"/api/runs/"+runID+"/retry", "application/json", bytes.NewReader([]byte(`{}`)))
+	// POST /api/runs/{id}/retry with credentials so the preflight
+	// gate doesn't reject the request. Real users supply these via
+	// the dashboard's Retry-with-fresh-creds panel. Empty bodies
+	// are still ACCEPTED at the protocol layer (the handler treats
+	// missing fields as "use server defaults"), but the new
+	// preflight gate added in Sprint 4 requires provider+model to
+	// be set somewhere; the server falls back to config.Default()
+	// values which leave them blank.
+	reqBody := bytes.NewReader([]byte(`{"opencode":{"provider_id":"anthropic","model_id":"claude-sonnet-4-5","base_url":"http://127.0.0.1:4096"}}`))
+	resp, err := http.Post(srv.URL+"/api/runs/"+runID+"/retry", "application/json", reqBody)
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}

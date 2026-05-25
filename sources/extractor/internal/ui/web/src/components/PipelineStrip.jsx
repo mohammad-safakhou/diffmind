@@ -1,13 +1,17 @@
 import { stages, runMeta } from '../lib/store.js'
 
-// Six-stage strip across the top of the workspace. Each stage shows current
-// status, count, progress, and a one-line tip.
-const ORDER = ['repo_facts', 'discovery', 'reexamination', 'detail', 'connections', 'reconcile']
+// Seven-stage strip across the top of the workspace. Each stage shows current
+// status, count, progress, and a one-line tip. The 'index' stage (SCIP)
+// is shown inline; the parallel 'index.build' stage is exposed by the
+// LiveGraph in a separate top row, not here, so the strip mirrors only
+// the SEQUENTIAL pipeline.
+const ORDER = ['repo_facts', 'discovery', 'reexamination', 'detail', 'index', 'connections', 'reconcile']
 const PRETTY = {
   repo_facts: 'Repo Facts',
   discovery: 'Discovery',
   reexamination: 'Re-examination',
   detail: 'Detail',
+  index: 'Index (SCIP)',
   connections: 'Connections',
   reconcile: 'Reconcile',
 }

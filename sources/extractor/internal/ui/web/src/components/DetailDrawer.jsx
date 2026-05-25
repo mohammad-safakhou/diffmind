@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks'
-import { selection, jobs, stages, runMeta, llmCalls } from '../lib/store.js'
+import { selection, jobs, stages, runMeta, llmCalls, buildLogs } from '../lib/store.js'
 import { getJob } from '../lib/api.js'
 
 export function DetailDrawer() {
@@ -28,6 +28,12 @@ export function DetailDrawer() {
   if (sel.type === 'stage') {
     const id = sel.id.replace(/^stage:/, '')
     const st = stages.value.get(id) || {}
+    // The parallel 'index.build' stage gets a special panel
+    // that surfaces live docker-build output, the resolved
+    // language plan, and per-base build status.
+    if (id === 'index.build') {
+      return <IndexBuildPanel stageInfo={st} />
+    }
     return (
       <div class="drawer">
         <h2>Stage · {id}</h2>
@@ -35,8 +41,8 @@ export function DetailDrawer() {
         <dl class="kv">
           <dt>status</dt><dd>{st.status}</dd>
           <dt>progress</dt><dd>{st.done || 0} / {st.total || 0} ({Math.round(st.percent || 0)}%)</dd>
-          <dt>started</dt><dd>{st.startedAt || '–'}</dd>
-          <dt>finished</dt><dd>{st.finishedAt || '–'}</dd>
+          <dt>started</dt><dd>{st.startedAt || '\u2013'}</dd>
+          <dt>finished</dt><dd>{st.finishedAt || '\u2013'}</dd>
         </dl>
       </div>
     )
@@ -97,6 +103,66 @@ export function DetailDrawer() {
           <pre>{detail.response}</pre>
         </details>
       )}
+    </div>
+  )
+}
+
+// IndexBuildPanel is the dedicated drawer surface for the parallel
+// indexer image build. It shows:
+//   - per-base + composite build status (derived from jobs)
+//   - resolved language plan from stage_started payload
+//   - live tail of docker-build stdout/stderr via buildLogs signal
+function IndexBuildPanel({ stageInfo }) {
+  const logs = buildLogs.value
+  const jobMap = jobs.value
+  const buildJobs = []
+  for (const j of jobMap.values()) {
+    if (j.stage === 'index.build') buildJobs.push(j)
+  }
+  buildJobs.sort((a, b) => a.id.localeCompare(b.id))
+
+  return (
+    <div class="drawer">
+      <h2>Stage \u00b7 index.build</h2>
+      <div class="muted">{stageInfo?.tip || 'Building per-language indexer images in parallel with the LLM pipeline.'}</div>
+      <dl class="kv">
+        <dt>status</dt><dd>{stageInfo?.status || 'pending'}</dd>
+        {stageInfo?.startedAt && (<><dt>started</dt><dd>{stageInfo.startedAt}</dd></>)}
+        {stageInfo?.finishedAt && (<><dt>finished</dt><dd>{stageInfo.finishedAt}</dd></>)}
+      </dl>
+
+      {buildJobs.length > 0 && (
+        <details open>
+          <summary>Build jobs ({buildJobs.length})</summary>
+          <table class="build-jobs-table">
+            <thead>
+              <tr>
+                <th>Tag</th>
+                <th>Status</th>
+                <th>Note</th>
+              </tr>
+            </thead>
+            <tbody>
+              {buildJobs.map((j) => (
+                <tr key={j.id} class={'row-' + j.status}>
+                  <td>{j.payload?.tag || j.id}</td>
+                  <td>{j.status}{j.payload?.cached ? ' (cached)' : ''}</td>
+                  <td>{j.message || ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
+      )}
+
+      <details open>
+        <summary>Build log (live tail, last {logs.length} lines)</summary>
+        <pre class="build-log-tail">
+          {logs.length === 0
+            ? '(no build output yet)'
+            : logs.map((l) => l.message).join('\n')}
+        </pre>
+      </details>
     </div>
   )
 }
