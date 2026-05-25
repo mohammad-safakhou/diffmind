@@ -44,6 +44,9 @@ func (f *stickyPauseAPI) ListQuestions(ctx context.Context, directory string) ([
 func (f *stickyPauseAPI) RejectQuestion(ctx context.Context, requestID, directory string) error {
 	return nil
 }
+func (f *stickyPauseAPI) LookupSessionParent(ctx context.Context, sessionID, directory string) (string, error) {
+	return "", nil
+}
 
 func (f *stickyPauseAPI) addPermission(p PendingPermission) {
 	f.mu.Lock()

@@ -30,6 +30,14 @@ type pauseHandler interface {
 	RespondPermission(ctx context.Context, sessionID, permissionID, directory, response string) error
 	ListQuestions(ctx context.Context, directory string) ([]PendingQuestion, error)
 	RejectQuestion(ctx context.Context, requestID, directory string) error
+	// LookupSessionParent returns the parentID of a session, or "" when
+	// the session has no parent (top-level session) OR cannot be found.
+	// The watchdog uses this to follow `task`-spawned subagent sessions
+	// up to one of the parent sessions it owns, so permissions raised
+	// by subagents can be answered. Errors are non-fatal: callers
+	// treat any error or empty string as "not a known sub-session" and
+	// skip the permission, matching the pre-fix behaviour.
+	LookupSessionParent(ctx context.Context, sessionID, directory string) (string, error)
 }
 
 // verbosePrompter is the optional richer surface implemented by the real
@@ -212,36 +220,6 @@ type llmEntity struct {
 	Evidence   []llmEvidence  `json:"evidence"`
 }
 
-type llmConnection struct {
-	FromExposureID string          `json:"from_exposure_id"`
-	ToDependencyID string          `json:"to_dependency_id"`
-	Summary        string          `json:"summary"`
-	Confidence     float64         `json:"confidence"`
-	PathSignature  string          `json:"path_signature"`
-	Condition      model.Condition `json:"condition"`
-	Paths          []llmPath       `json:"paths"`
-	Locations      []llmLocation   `json:"source_locations"`
-	Evidence       []llmEvidence   `json:"evidence"`
-}
-
-type llmPath struct {
-	ID        string          `json:"id"`
-	Summary   string          `json:"summary"`
-	Condition model.Condition `json:"condition"`
-	Steps     []llmPathStep   `json:"steps"`
-}
-
-type llmPathStep struct {
-	Order     int             `json:"order"`
-	Action    string          `json:"action"`
-	Operation string          `json:"operation"`
-	From      string          `json:"from"`
-	To        string          `json:"to"`
-	Condition model.Condition `json:"condition"`
-	Location  llmLocation     `json:"location"`
-	Evidence  []llmEvidence   `json:"evidence"`
-}
-
 // ----------------------------------------------------------------------------
 // Stage-internal result types.
 // ----------------------------------------------------------------------------
@@ -259,6 +237,26 @@ type repoFacts struct {
 	ProbableTechHints []string            `json:"probable_tech_hints"`
 	DeploymentHints   []string            `json:"deployment_hints"`
 	ExtraObservations []string            `json:"extra_observations"`
+	// LanguageFacts carries the marker-file-detected language
+	// inventory the index stage needs to plan its image build.
+	// Populated by runRepoFacts AFTER the LLM call completes,
+	// from internal/langdetect.Inspect(); the LLM's "languages"
+	// field above is kept for prompt continuity (downstream
+	// stages still inject it) but the index stage trusts the
+	// deterministic facts here.
+	LanguageFacts []langFact `json:"language_facts,omitempty"`
+}
+
+// langFact mirrors langdetect.Fact for serialisation purposes.
+// We avoid importing the langdetect package into types.go to
+// keep the types layer free of cross-stage dependencies; the
+// orchestrator does the conversion in repo_facts.go.
+type langFact struct {
+	Language         string   `json:"language"`
+	Version          string   `json:"version,omitempty"`
+	BuildTool        string   `json:"build_tool,omitempty"`
+	BuildToolVersion string   `json:"build_tool_version,omitempty"`
+	Sources          []string `json:"sources,omitempty"`
 }
 
 // discoveryResult is the output of stage 1 for a single objective.
@@ -303,13 +301,13 @@ type detailResult struct {
 	PeerCancelled bool
 }
 
-// connectionResult is the output of stage 4 for a single exposure.
-//
-// PeerCancelled mirrors discoveryResult: set when the worker exited
-// before issuing its prompt because a sibling tripped fail-fast.
+// connectionResult was the per-exposure envelope returned by the
+// LLM-based connections worker. It is no longer used by the
+// deterministic SCIP path — kept here only because some test helpers
+// still reference its shape. The Items field has been removed since
+// the deterministic stage emits model.Connection directly.
 type connectionResult struct {
 	ExposureID    string
-	Items         []llmConnection
 	Err           error
 	PeerCancelled bool
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mohammad-safakhou/diffmind/internal/events"
+	"github.com/mohammad-safakhou/diffmind/internal/langdetect"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
@@ -23,12 +24,36 @@ func (o *orchestrator) runRepoFacts(ctx context.Context) (*repoFacts, error) {
 		return nil, err
 	}
 	rf := parseRepoFacts(payload)
+
+	// Augment the LLM-derived facts with deterministic marker-
+	// file inspection. The result feeds the parallel image build:
+	// if the LLM forgot to mention a language version (which
+	// happens regularly) the marker scan picks it up.
+	//
+	// Failures here are non-fatal — we just leave LanguageFacts
+	// empty and let the index stage's recipe fall back to
+	// language defaults.
 	if rf != nil {
+		facts, derr := langdetect.Inspect(ctx, o.sessionDir)
+		if derr != nil {
+			util.Warn("agents.repo_facts", "marker-file language detection failed", map[string]any{"error": derr})
+		} else {
+			for _, f := range facts {
+				rf.LanguageFacts = append(rf.LanguageFacts, langFact{
+					Language:         string(f.Language),
+					Version:          f.Version,
+					BuildTool:        f.BuildTool,
+					BuildToolVersion: f.BuildToolVersion,
+					Sources:          f.Sources,
+				})
+			}
+		}
 		util.Info("agents.repo_facts", "repo facts gathered", map[string]any{
-			"languages":    len(rf.Languages),
-			"frameworks":   len(rf.Frameworks),
-			"build_files":  len(rf.BuildFiles),
-			"config_files": len(rf.ConfigFiles),
+			"languages":      len(rf.Languages),
+			"frameworks":     len(rf.Frameworks),
+			"build_files":    len(rf.BuildFiles),
+			"config_files":   len(rf.ConfigFiles),
+			"language_facts": len(rf.LanguageFacts),
 		})
 	}
 	return rf, nil

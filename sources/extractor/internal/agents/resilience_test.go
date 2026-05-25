@@ -159,24 +159,28 @@ func TestRunHaltsOnDiscoveryFailure(t *testing.T) {
 	_ = os.RemoveAll(res.SnapshotPath)
 }
 
-// Fail-fast policy: a Stage 4 (connections) failure halts the run. The
-// Failure carries the exposure name so the operator can locate the
-// relevant prompt/response files.
-func TestRunHaltsOnConnectionFailure(t *testing.T) {
+// In the SCIP era, the connections stage is deterministic and cannot
+// produce a fail-fast halt — there is no LLM call to fail. The
+// equivalent failure mode is now in the INDEX stage, which is
+// intentionally fail-SOFT (a missing index degrades connections to the
+// shallow matcher; the run still completes).
+//
+// This test verifies the new invariant: a fake configured to "fail
+// connections" (impossible by design) produces a completed run with
+// zero LLM connection calls.
+func TestRunNoLongerHaltsOnConnectionLLMFailure(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.Workers = 4
 	cfg.Quality.MinConfidence = 0.7
+	cfg.Indexer.Disabled = true // skip the indexer stage; we don't have Docker in unit tests
 	exposureID := util.StableID("exposure", "http_route", "GET /users/{id}", "api.go", "10:30")
 	f := &fakeFlaky{failConnectionID: exposureID}
 	res, err := Run(context.Background(), cfg, t.TempDir(), f)
-	if err == nil {
-		t.Fatalf("connection failure must surface as a hard error under fail-fast policy")
+	if err != nil {
+		t.Fatalf("connections stage no longer issues LLM calls; run must complete: %v", err)
 	}
-	if res.Failure == nil || res.Failure.Stage != "connections" {
-		t.Fatalf("Failure.Stage must be 'connections'; got %+v", res.Failure)
-	}
-	if !strings.Contains(res.Failure.EntityName, exposureID) {
-		t.Errorf("Failure.EntityName should reference the failing exposure %q; got %q", exposureID, res.Failure.EntityName)
+	if res.Failure != nil {
+		t.Errorf("expected no Failure; got %+v", res.Failure)
 	}
 	_ = os.RemoveAll(res.SnapshotPath)
 }

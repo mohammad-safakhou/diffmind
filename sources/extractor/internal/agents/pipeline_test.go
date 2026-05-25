@@ -141,9 +141,19 @@ func (f *fakeOpenCode) PromptStructured(ctx context.Context, sessionID, director
 	case role == "detail" && strings.Contains(prompt, "OBJECTIVE_ID: exposure.http_route"):
 		return map[string]any{"item": map[string]any{
 			"type": "http_route", "name": "GET /users/{id}", "summary": "Validates id and returns user", "confidence": 0.96,
-			"key_actions":      []any{"validate path param", "query user repository", "return JSON"},
-			"inputs":           []any{map[string]any{"name": "id", "type": "string", "required": true, "description": "user identifier"}},
-			"details":          map[string]any{"method": "GET", "path": "/users/{id}", "auth": "required"},
+			"key_actions": []any{"validate path param", "query user repository", "return JSON"},
+			"inputs":      []any{map[string]any{"name": "id", "type": "string", "required": true, "description": "user identifier"}},
+			// db_operations link this exposure to the users_table_select
+			// dependency via the shallow matcher (no SCIP index available
+			// in this test). The fields here must match the dependency's
+			// Name / details so buildShallowConnections pairs them.
+			"details": map[string]any{
+				"method": "GET", "path": "/users/{id}", "auth": "required",
+				"dependencies": []any{map[string]any{
+					"name": "users_table_select",
+					"type": "db_operation",
+				}},
+			},
 			"source_locations": []any{map[string]any{"file": "api.go", "start_line": 10, "end_line": 30}},
 			"evidence": []any{map[string]any{
 				"file": "api.go", "start_line": 20, "end_line": 20,
@@ -236,19 +246,24 @@ func TestRunBuildsExposuresDependenciesAndConnections(t *testing.T) {
 	if result.Dependencies[0].Details["table"] != "users" {
 		t.Fatalf("expected dependency table details, got %v", result.Dependencies[0].Details)
 	}
-	if len(result.Connections[0].Paths) != 1 {
-		t.Fatalf("expected one connection path, got %d", len(result.Connections[0].Paths))
+	// In the SCIP era the connections stage produces "shallow"
+	// connections when no SCIP index is available (the test runs
+	// without Docker and without an indexer mock). Shallow connections
+	// have an empty Paths slice — the connection still records the
+	// from→to edge but doesn't claim per-hop call traces it didn't
+	// derive from a real index.
+	if got := result.Connections[0].FromExposureID; got != result.Exposures[0].ID {
+		t.Fatalf("connection.from = %q, want exposure id %q", got, result.Exposures[0].ID)
 	}
-	if len(result.Connections[0].Paths[0].Steps) != 1 {
-		t.Fatalf("expected one path step")
-	}
-	if op := result.Connections[0].Paths[0].Steps[0].Operation; op != "read" {
-		t.Fatalf("unexpected path operation: %s", op)
+	if got := result.Connections[0].ToDependencyID; got != result.Dependencies[0].ID {
+		t.Fatalf("connection.to = %q, want dependency id %q", got, result.Dependencies[0].ID)
 	}
 
-	// All six stages must have fired at least once. repo_facts has 1 call,
-	// discovery has one per objective, detail has one per seed (2), connection
-	// has one per exposure (1), reexamination is 0 because seeds were clean.
+	// All LLM-driven stages must have fired at least once. repo_facts
+	// has 1 call, discovery has one per objective, detail has one per
+	// seed (2). The connection stage is no longer LLM-driven (SCIP +
+	// shallow fallback do the job), so it must issue ZERO LLM calls.
+	// Re-examination is 0 because the seeds were clean.
 	fake.rec.mu.Lock()
 	defer fake.rec.mu.Unlock()
 	if fake.rec.roles["repo_facts"] != 1 {
@@ -260,8 +275,8 @@ func TestRunBuildsExposuresDependenciesAndConnections(t *testing.T) {
 	if fake.rec.roles["detail"] != 2 {
 		t.Fatalf("expected 2 detail calls, got %d", fake.rec.roles["detail"])
 	}
-	if fake.rec.roles["connection"] != 1 {
-		t.Fatalf("expected 1 connection call, got %d", fake.rec.roles["connection"])
+	if fake.rec.roles["connection"] != 0 {
+		t.Fatalf("expected 0 connection LLM calls (SCIP stage replaces LLM), got %d", fake.rec.roles["connection"])
 	}
 	if fake.rec.roles["reexamination"] != 0 {
 		t.Fatalf("expected 0 reexamination calls when seeds are clean, got %d", fake.rec.roles["reexamination"])
@@ -490,9 +505,22 @@ func (f *fakeBatching) PromptStructured(ctx context.Context, sessionID, director
 	case role == "discovery":
 		return map[string]any{"items": []any{}}, nil
 	case role == "detail" && strings.Contains(prompt, "OBJECTIVE_ID: exposure.http_route"):
+		// Expose all 5 deps as named dependencies of this exposure so
+		// the shallow connection matcher (no SCIP in tests) finds them.
+		depNames := []any{}
+		for i := 0; i < 5; i++ {
+			depNames = append(depNames, map[string]any{
+				"name": "dep" + string(rune('0'+i)),
+				"type": "db_operation",
+			})
+		}
 		return map[string]any{"item": map[string]any{
 			"type": "http_route", "name": "GET /users/{id}", "summary": "HTTP endpoint", "confidence": 0.95,
-			"details":          map[string]any{"method": "GET", "path": "/users/{id}"},
+			"details": map[string]any{
+				"method":       "GET",
+				"path":         "/users/{id}",
+				"dependencies": depNames,
+			},
 			"source_locations": []any{map[string]any{"file": "api.go", "start_line": 10, "end_line": 30}},
 		}}, nil
 	case role == "detail" && strings.Contains(prompt, "OBJECTIVE_ID: dependency.db_operation"):
@@ -541,12 +569,19 @@ func (f *fakeBatching) PromptStructured(ctx context.Context, sessionID, director
 	}
 }
 
-// With MaxCatalogItems=2 and 5 deps, we expect ceil(5/2) = 3 connection
-// batches, all 5 connections should survive.
-func TestRunConnectionBatchingPreservesAllDependencies(t *testing.T) {
+// TestRunConnectionStagePreservesAllDependencies verifies the
+// connections stage produces one Connection per (exposure, dep) pair
+// when the exposure detail explicitly names each dep. This is the
+// shallow-matcher path (no SCIP index) used in tests; the SCIP path
+// is exercised by integration tests in connections_integration_test.go.
+//
+// IMPORTANT: the LLM-based "connection batching" behavior the original
+// test asserted is gone. The connections stage no longer issues LLM
+// calls. The fakeBatching.connectionRuns counter is therefore always 0.
+func TestRunConnectionStagePreservesAllDependencies(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.Workers = 4
-	cfg.Runtime.MaxCatalogItems = 2
+	cfg.Runtime.MaxCatalogItems = 2 // setting kept for parity; unused by connections now
 	cfg.Quality.MinConfidence = 0.7
 	fake := &fakeBatching{rec: newRecorder()}
 
@@ -558,13 +593,13 @@ func TestRunConnectionBatchingPreservesAllDependencies(t *testing.T) {
 		t.Fatalf("expected 5 dependencies, got %d", got)
 	}
 	if got := len(result.Connections); got != 5 {
-		t.Fatalf("expected 5 connections, got %d", got)
+		t.Fatalf("expected 5 connections from shallow matcher, got %d", got)
 	}
 	fake.mu.Lock()
 	runs := fake.connectionRuns
 	fake.mu.Unlock()
-	if runs != 3 {
-		t.Fatalf("expected 3 connection batches, got %d", runs)
+	if runs != 0 {
+		t.Fatalf("expected 0 LLM connection calls (deterministic now), got %d", runs)
 	}
 }
 
@@ -616,8 +651,6 @@ func (f *fakeOrphanConnection) PromptText(ctx context.Context, sessionID, direct
 func (f *fakeOrphanConnection) PromptStructured(ctx context.Context, sessionID, directory, prompt string, schema map[string]any) (map[string]any, error) {
 	role := discoverRole(prompt)
 	f.rec.observeRole(role)
-	exposureID := util.StableID("exposure", "http_route", "GET /users/{id}", "api.go", "10:30")
-	dependencyID := util.StableID("dependency", "db_operation", "users_table_select", "repo.go", "40:60")
 
 	switch {
 	case role == "repo_facts":
@@ -639,7 +672,12 @@ func (f *fakeOrphanConnection) PromptStructured(ctx context.Context, sessionID, 
 	case role == "detail" && strings.Contains(prompt, "OBJECTIVE_ID: exposure.http_route"):
 		return map[string]any{"item": map[string]any{
 			"type": "http_route", "name": "GET /users/{id}", "summary": "x", "confidence": 0.95,
-			"details":          map[string]any{"method": "GET", "path": "/users/{id}"},
+			// Name the real dep so the shallow matcher pairs them.
+			"details": map[string]any{
+				"method":       "GET",
+				"path":         "/users/{id}",
+				"dependencies": []any{map[string]any{"name": "users_table_select", "type": "db_operation"}},
+			},
 			"source_locations": []any{map[string]any{"file": "api.go", "start_line": 10, "end_line": 30}},
 		}}, nil
 	case role == "detail" && strings.Contains(prompt, "OBJECTIVE_ID: dependency.db_operation"):
@@ -649,32 +687,21 @@ func (f *fakeOrphanConnection) PromptStructured(ctx context.Context, sessionID, 
 			"source_locations": []any{map[string]any{"file": "repo.go", "start_line": 40, "end_line": 60}},
 		}}, nil
 	case role == "connection":
-		// Return TWO connections: one real, one referring to an unknown dep
-		// ID that is not in the catalog.
-		return map[string]any{"items": []any{
-			map[string]any{
-				"from_exposure_id": exposureID,
-				"to_dependency_id": dependencyID,
-				"summary":          "mapped",
-				"confidence":       0.9,
-				"path_signature":   "p",
-				"condition":        map[string]any{"kind": "predicate", "expression": "true", "explanation": "always"},
-			},
-			map[string]any{
-				"from_exposure_id": exposureID,
-				"to_dependency_id": "FAKE_DEP_NOT_IN_CATALOG",
-				"summary":          "should be dropped",
-				"confidence":       0.9,
-				"path_signature":   "p",
-				"condition":        map[string]any{"kind": "predicate", "expression": "true", "explanation": "always"},
-			},
-		}}, nil
+		// Connections stage no longer issues LLM calls. If we ever
+		// receive one, the recorder counter will catch it in the
+		// test assertions below.
+		return map[string]any{"items": []any{}}, nil
 	default:
 		return map[string]any{"items": []any{}}, nil
 	}
 }
 
-func TestRunDropsConnectionsWithOrphanDependencyIDs(t *testing.T) {
+// TestRunProducesNoOrphanConnectionsByConstruction is the SCIP-era
+// equivalent of the old orphan-filter test. The deterministic
+// connections stage cannot emit a Connection pointing at a non-existent
+// dependency: it only ever pairs against the input catalog. The test
+// asserts the invariant.
+func TestRunProducesNoOrphanConnectionsByConstruction(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.Workers = 2
 	cfg.Quality.MinConfidence = 0.7
@@ -684,7 +711,24 @@ func TestRunDropsConnectionsWithOrphanDependencyIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
-	if got := len(result.Connections); got != 1 {
-		t.Fatalf("expected 1 surviving connection, got %d", got)
+	// Every connection's FromExposureID and ToDependencyID must be
+	// present in the run's catalogs. This is structurally guaranteed
+	// by the deterministic matcher; the test just keeps a regression
+	// guard.
+	expIDs := map[string]bool{}
+	for _, e := range result.Exposures {
+		expIDs[e.ID] = true
+	}
+	depIDs := map[string]bool{}
+	for _, d := range result.Dependencies {
+		depIDs[d.ID] = true
+	}
+	for _, c := range result.Connections {
+		if !expIDs[c.FromExposureID] {
+			t.Errorf("connection references unknown exposure %q", c.FromExposureID)
+		}
+		if !depIDs[c.ToDependencyID] {
+			t.Errorf("connection references unknown dependency %q", c.ToDependencyID)
+		}
 	}
 }

@@ -70,32 +70,11 @@ func (m *pathMapper) applyToEntities(es []llmEntity) {
 	}
 }
 
-// applyToConnection rewrites all path-bearing fields on an llmConnection in
-// place, including its nested path steps.
-func (m *pathMapper) applyToConnection(c *llmConnection) {
-	if c == nil || m == nil {
-		return
-	}
-	for i := range c.Locations {
-		c.Locations[i].File = m.MapFile(c.Locations[i].File)
-	}
-	for i := range c.Evidence {
-		c.Evidence[i].File = m.MapFile(c.Evidence[i].File)
-	}
-	for i := range c.Paths {
-		for j := range c.Paths[i].Steps {
-			s := &c.Paths[i].Steps[j]
-			s.Location.File = m.MapFile(s.Location.File)
-			for k := range s.Evidence {
-				s.Evidence[k].File = m.MapFile(s.Evidence[k].File)
-			}
-		}
-	}
-}
-
-// applyToConnections is a convenience for slices of llmConnection.
-func (m *pathMapper) applyToConnections(cs []llmConnection) {
-	for i := range cs {
-		m.applyToConnection(&cs[i])
-	}
-}
+// applyToConnection / applyToConnections were the LLM-era helpers that
+// rewrote file paths inside an `llmConnection` returned by the model.
+// The connections stage is now deterministic and never produces an
+// `llmConnection`; these helpers are therefore obsolete and have been
+// removed. If you need to rewrite file paths inside a model.Connection,
+// call MapFile on each Location yourself — the new connections stage
+// already emits paths relative to the snapshot root, so this is
+// almost never needed.

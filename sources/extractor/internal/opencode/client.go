@@ -715,7 +715,16 @@ func extractFirstJSONObject(s string) (string, bool) {
 type SessionState struct {
 	ID    string `json:"id"`
 	Title string `json:"title,omitempty"`
-	Time  struct {
+	// ParentID is set when the session was spawned as a subagent via
+	// the parent's `task` tool. We surface it because the orchestrator's
+	// permission watchdog only tracks sessions IT created, but OpenCode
+	// can transitively create subagent sessions that emit their own
+	// permission requests (e.g. external_directory /tmp/* when the
+	// explore subagent tries to write a summary file). Without
+	// ParentID we cannot recognise those permissions as ours and they
+	// hang forever — see run 20260521T112326Z for the symptom.
+	ParentID string `json:"parentID,omitempty"`
+	Time     struct {
 		Created int64 `json:"created"`
 		Updated int64 `json:"updated"`
 	} `json:"time"`

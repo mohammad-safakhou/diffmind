@@ -59,6 +59,9 @@ func (f *fakeAbortable) ListQuestions(ctx context.Context, directory string) ([]
 func (f *fakeAbortable) RejectQuestion(ctx context.Context, requestID, directory string) error {
 	return nil
 }
+func (f *fakeAbortable) LookupSessionParent(ctx context.Context, sessionID, directory string) (string, error) {
+	return "", nil
+}
 
 func (f *fakeAbortable) snap() (creates, aborts []string, prompts int) {
 	f.mu.Lock()

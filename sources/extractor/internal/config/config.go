@@ -51,11 +51,76 @@ type Artifacts struct {
 	BaseDir string `json:"base_dir"`
 }
 
+// Indexer configures the diffmind-indexer container that produces the
+// SCIP index consumed by the connections stage. Defaults are tuned for
+// a developer machine with Docker installed; CI / air-gapped
+// environments can override Image, PullPolicy, and NetworkMode.
+type Indexer struct {
+	// Image is the container image reference. Empty falls back to
+	// internal/indexer.DefaultImage (baked at build time by CI to
+	// point at the matching ghcr.io/anomalyco/diffmind-indexer tag).
+	Image string `json:"image"`
+
+	// PullPolicy controls when Docker pulls the image:
+	// "always", "if-absent" (default), or "never".
+	PullPolicy string `json:"pull_policy"`
+
+	// AutoBuild controls automatic image building from the embedded
+	// indexerbuild context. Values: "missing" (default), "always",
+	// "never". See internal/indexer/build.go for semantics.
+	//
+	// First-time setup story: with AutoBuild="missing" and a default
+	// Image tag of "diffmind-indexer:dev", a fresh checkout of
+	// diffmind runs end-to-end without any manual `docker build` —
+	// the index stage detects the missing image and builds it inline.
+	// Cold build is ~20 min, all subsequent runs reuse the local image.
+	AutoBuild string `json:"auto_build"`
+
+	// NetworkMode is the Docker --network flag. Defaults to "bridge"
+	// (Docker default). Use "host" to share the host network when
+	// indexers need to reach internal artifact registries that the
+	// container network can't see. Use "none" to force air-gapped
+	// indexing (some indexers will produce reduced indexes in this
+	// mode).
+	NetworkMode string `json:"network_mode"`
+
+	// Languages explicitly restricts which indexers run. Empty (the
+	// default) means "auto-detect from the source tree". Useful when
+	// a polyglot repo contains, say, vendored Python that we don't
+	// want to spend time indexing.
+	Languages []string `json:"languages"`
+
+	// PerIndexerTimeoutSec bounds wall-clock time of every individual
+	// indexer process inside the container. Defaults to 1800 (30
+	// minutes) when zero — enough for medium services, generous
+	// enough that a slow Maven cold-pull won't trigger a false-timeout.
+	PerIndexerTimeoutSec int `json:"per_indexer_timeout_seconds"`
+
+	// Parallel is how many indexers the wrapper runs concurrently
+	// inside the container. Defaults to 4 when zero.
+	Parallel int `json:"parallel"`
+
+	// Disabled, when true, skips the index stage entirely. The
+	// connections stage then degrades to the no-paths heuristic
+	// matcher. Useful for offline / smoke-test runs where the user
+	// wants the extractor to complete even without Docker.
+	Disabled bool `json:"disabled"`
+
+	// ExtraEnv is appended verbatim to the container's environment.
+	ExtraEnv map[string]string `json:"extra_env"`
+
+	// ExtraMounts maps host paths to container paths (Docker volume
+	// syntax). Useful for sharing a host's ~/.m2 / ~/.gradle / ~/.npm
+	// caches across runs.
+	ExtraMounts map[string]string `json:"extra_mounts"`
+}
+
 type Config struct {
 	OpenCode  OpenCode  `json:"opencode"`
 	Quality   Quality   `json:"quality"`
 	Runtime   Runtime   `json:"runtime"`
 	Artifacts Artifacts `json:"artifacts"`
+	Indexer   Indexer   `json:"indexer"`
 }
 
 func Default() Config {
@@ -89,6 +154,17 @@ func Default() Config {
 			LivenessPollSec: 5,
 		},
 		Artifacts: Artifacts{BaseDir: ".diffmind/runs"},
+		Indexer: Indexer{
+			// Empty Image causes indexer.NewDockerIndexer to fall back
+			// to indexer.DefaultImage. CI rewrites that constant at
+			// release time via -ldflags.
+			PullPolicy:           "if-absent",
+			AutoBuild:            "missing", // build from embedded context if image missing
+			NetworkMode:          "",        // Docker default (bridge)
+			Languages:            nil,       // auto-detect
+			PerIndexerTimeoutSec: 1800,      // 30 min
+			Parallel:             4,
+		},
 	}
 }
 

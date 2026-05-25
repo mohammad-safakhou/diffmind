@@ -15,18 +15,23 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
-// fakeRetryAware fails connections on the first run, then succeeds on
-// the second. The role-aware switch lets us reuse one fake across both
-// invocations of RunWith via a shared atomic counter.
+// fakeRetryAware fails the detail stage on the first run, then
+// succeeds on the second. The role-aware switch lets us reuse one fake
+// across both invocations of RunWith via a shared atomic counter.
+//
+// Originally this fake targeted the connections stage; that stage is
+// now deterministic and cannot fail with an LLM error. The detail
+// stage is the new "LLM stage that can fail and be resumed", so we
+// exercise resume against it instead.
 type fakeRetryAware struct {
-	mu              sync.Mutex
-	connFailedOnce  atomic.Bool
-	httpRouteID     string
-	dbDepID         string
-	connectionCalls atomic.Int32
-	discoveryCalls  atomic.Int32
-	detailCalls     atomic.Int32
-	repoFactsCalls  atomic.Int32
+	mu               sync.Mutex
+	detailFailedOnce atomic.Bool
+	httpRouteID      string
+	dbDepID          string
+	connectionCalls  atomic.Int32
+	discoveryCalls   atomic.Int32
+	detailCalls      atomic.Int32
+	repoFactsCalls   atomic.Int32
 }
 
 func newFakeRetryAware() *fakeRetryAware {
@@ -80,11 +85,22 @@ func (f *fakeRetryAware) PromptStructured(ctx context.Context, sessionID, direct
 		f.detailCalls.Add(1)
 		return map[string]any{"item": map[string]any{
 			"type": "http_route", "name": "GET /users/{id}", "summary": "x", "confidence": 0.95,
-			"details":          map[string]any{"method": "GET", "path": "/users/{id}"},
+			// Name the dep so the shallow connection matcher pairs them
+			// when this fake's detail succeeds on the resumed run.
+			"details": map[string]any{
+				"method":       "GET",
+				"path":         "/users/{id}",
+				"dependencies": []any{map[string]any{"name": "users_select", "type": "db_operation"}},
+			},
 			"source_locations": []any{map[string]any{"file": "api.go", "start_line": 10, "end_line": 30}},
 		}}, nil
 	case role == "detail" && strings.Contains(prompt, "OBJECTIVE_ID: dependency.db_operation"):
 		f.detailCalls.Add(1)
+		// Fail once for the dep detail prompt; succeed thereafter.
+		if !f.detailFailedOnce.Load() {
+			f.detailFailedOnce.Store(true)
+			return nil, errors.New("detail 401 Unauthorized: scripted failure")
+		}
 		return map[string]any{"item": map[string]any{
 			"type": "db_operation", "name": "users_select", "summary": "x", "confidence": 0.95,
 			"details":          map[string]any{"operation": "read", "table": "users"},
@@ -96,31 +112,31 @@ func (f *fakeRetryAware) PromptStructured(ctx context.Context, sessionID, direct
 
 	case role == "connection":
 		f.connectionCalls.Add(1)
-		if !f.connFailedOnce.Load() {
-			f.connFailedOnce.Store(true)
-			return nil, errors.New("connection 401 Unauthorized: scripted failure")
-		}
-		return map[string]any{"items": []any{map[string]any{
-			"from_exposure_id": f.httpRouteID,
-			"to_dependency_id": f.dbDepID,
-			"summary":          "ok",
-			"confidence":       0.9,
-			"path_signature":   "p",
-			"condition":        map[string]any{"kind": "predicate", "expression": "true", "explanation": "always"},
-		}}}, nil
+		// The new connections stage is deterministic — no LLM prompts
+		// should reach this branch in a normal run. We keep the case
+		// here so older tests' assertions about the counter still hold.
+		return map[string]any{"items": []any{}}, nil
 	}
 	return map[string]any{"items": []any{}}, nil
 }
 
-// End-to-end resume: a connection-stage failure halts the run, leaving
+// End-to-end resume: a DETAIL-stage failure halts the run, leaving
 // state/*.json + run_failure.json + a retained snapshot. A second
-// RunWith using ResumeFromDir + SnapshotPath skips Stages 0-3 and only
-// re-runs connections, which now succeeds.
-func TestResumeAfterConnectionFailure(t *testing.T) {
+// RunWith using ResumeFromDir + SnapshotPath replays the detail stage
+// (since the failed entity is not yet checkpointed), the new
+// deterministic connections stage runs, and the overall result is
+// success.
+//
+// Originally this test targeted the connections stage. With the SCIP
+// rewrite that stage is deterministic and cannot fail with an LLM
+// error; the meaningful "LLM-stage-failure → resume" path now lives
+// in detail. The fake fails the dep detail prompt once, then succeeds.
+func TestResumeAfterDetailFailure(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.Workers = 4
 	cfg.Quality.MinConfidence = 0.7
 	cfg.Runtime.SkipReexamination = true
+	cfg.Indexer.Disabled = true // unit tests don't have Docker; skip SCIP
 	tmp := t.TempDir()
 	runDir := filepath.Join(tmp, "20260101T000000Z")
 	repoDir := filepath.Join(tmp, "repo")
@@ -129,24 +145,24 @@ func TestResumeAfterConnectionFailure(t *testing.T) {
 	}
 	f := newFakeRetryAware()
 
-	// Run #1: should fail on connections.
+	// Run #1: should fail on detail.
 	res1, err := RunWith(context.Background(), cfg, repoDir, f, RunOptions{
 		RunDir: runDir,
 	})
 	if err == nil {
-		t.Fatalf("expected first run to fail on connections")
+		t.Fatalf("expected first run to fail on detail")
 	}
-	if res1.Failure == nil || res1.Failure.Stage != "connections" {
-		t.Fatalf("expected failure in connections stage; got %+v", res1.Failure)
+	if res1.Failure == nil || res1.Failure.Stage != "detail" {
+		t.Fatalf("expected failure in detail stage; got %+v", res1.Failure)
 	}
 	if res1.SnapshotPath == "" {
 		t.Fatalf("expected retained snapshot path on failure")
 	}
 	beforeRetryRepoFacts := f.repoFactsCalls.Load()
 	beforeRetryDiscovery := f.discoveryCalls.Load()
-	beforeRetryDetail := f.detailCalls.Load()
 
-	// Run #2: resume from state. Connection now succeeds.
+	// Run #2: resume from state. Detail now succeeds and connections
+	// completes successfully.
 	res2, err := RunWith(context.Background(), cfg, repoDir, f, RunOptions{
 		RunDir:        runDir,
 		ResumeFromDir: filepath.Join(runDir, "state"),
@@ -162,17 +178,12 @@ func TestResumeAfterConnectionFailure(t *testing.T) {
 		t.Fatalf("expected 1 connection from the resumed run; got %d", len(res2.Connections))
 	}
 
-	// Confirm the resume actually skipped the earlier stages — the call
-	// counts must NOT have changed across the two runs.
+	// Confirm earlier non-detail stages were NOT re-run.
 	if got := f.repoFactsCalls.Load(); got != beforeRetryRepoFacts {
 		t.Errorf("repo_facts was re-run on resume: before=%d after=%d", beforeRetryRepoFacts, got)
 	}
 	if got := f.discoveryCalls.Load(); got != beforeRetryDiscovery {
 		t.Errorf("discovery was re-run on resume: before=%d after=%d", beforeRetryDiscovery, got)
 	}
-	if got := f.detailCalls.Load(); got != beforeRetryDetail {
-		t.Errorf("detail was re-run on resume: before=%d after=%d", beforeRetryDetail, got)
-	}
-	// Cleanup.
 	_ = os.RemoveAll(res1.SnapshotPath)
 }

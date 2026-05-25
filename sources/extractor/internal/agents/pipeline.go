@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,8 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	"github.com/mohammad-safakhou/diffmind/internal/opencode"
 	"github.com/mohammad-safakhou/diffmind/internal/reconcile"
+	"github.com/mohammad-safakhou/diffmind/internal/indexer"
+	"github.com/mohammad-safakhou/diffmind/internal/scip"
 	"github.com/mohammad-safakhou/diffmind/internal/snapshot"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
@@ -52,8 +55,60 @@ type orchestrator struct {
 	// completes; no synchronisation needed.
 	tokenAgg tokenTotals
 
+	// scipIndex is set by the index stage when SCIP indexing was
+	// enabled and at least one indexer succeeded. Nil indicates the
+	// connections stage must fall back to its name-based matcher.
+	// Read-only after the index stage completes; safe for concurrent
+	// reads by the connections workers.
+	scipIndex *scip.Index
+
+	// indexerOverride lets tests inject a fake Indexer implementation
+	// in place of the production Docker driver. Nil in production.
+	// Set via RunOptions.IndexerOverride.
+	indexerOverride indexer.Indexer
+
+	// buildDone signals when the parallel image-build goroutine
+	// has finished. runIndexStage blocks on `<-buildDone` so it
+	// never proceeds with a missing or partially-built image.
+	// The orchestrator closes the channel from runImageBuild
+	// after writing buildResult. Receive on a closed channel is
+	// instant + safe, which gives runIndexStage a simple wait.
+	buildDone chan struct{}
+	// buildResult carries the outcome of the parallel image
+	// build. Only valid AFTER `<-buildDone` returns; the
+	// orchestrator never writes to it after closing the channel
+	// so a single-writer / single-reader pattern holds.
+	buildResult buildOutcome
+	// pipelineCancel cancels the orchestrator-wide context so
+	// in-flight LLM calls in Stages 1-3 exit promptly when the
+	// parallel image build fails. We treat indexer image-build
+	// failure as FAIL-FAST (deliberate policy choice from Sprint
+	// 4 retro: without the SCIP index the connections stage is
+	// useless, so the whole run is useless — better to halt and
+	// surface the failure clearly than waste LLM money on a
+	// pipeline whose output won't include connection paths).
+	//
+	// Set in RunWith right after the cancellable context is
+	// created; invoked once from runImageBuild on hard failure.
+	pipelineCancel context.CancelFunc
+
 	sessionMu       sync.Mutex
 	sharedSessionID string
+}
+
+// buildOutcome is what runImageBuild reports back to the rest of
+// the orchestrator. Image is the composite tag we eventually
+// shipped (empty on failure); Err is non-nil if the build failed
+// outright. Skipped means we deliberately bypassed the build
+// (e.g. indexer disabled via config); the index stage treats this
+// as a no-op success and degrades to the shallow matcher.
+type buildOutcome struct {
+	Image   string
+	Err     error
+	Skipped bool
+	// Plan is the resolved recipe we built. Captured for the
+	// index_status.json + dashboard event payloads.
+	PlanResolved string
 }
 
 // emit is the convenience wrapper used by every stage to publish a single
@@ -145,6 +200,11 @@ type RunOptions struct {
 	RunID         string
 	ResumeFromDir string
 	SnapshotPath  string
+
+	// IndexerOverride lets tests inject a fake Indexer in place of
+	// the production Docker driver. Nil in production. See
+	// internal/agents/index_stage_test.go for usage.
+	IndexerOverride indexer.Indexer
 }
 
 // Run is the public entrypoint used by internal/app. It returns an aggregated
@@ -211,6 +271,15 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		snap = s
 	}
 
+	// Pipeline-wide cancellable context. We hand `ctx` (= pipelineCtx)
+	// to every stage so a hard image-build failure in the parallel
+	// goroutine can yank every in-flight LLM call (Stages 1-3) via
+	// pipelineCancel and let the pipeline halt promptly with a
+	// clear failure report instead of letting wasted LLM work
+	// drag on for minutes after the build has already failed.
+	pipelineCtx, pipelineCancel := context.WithCancel(ctx)
+	defer pipelineCancel()
+
 	o := &orchestrator{
 		cfg:              cfg,
 		repoPath:         repoPath,
@@ -222,7 +291,12 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		sink:             sink,
 		captureDir:       opts.CaptureDir,
 		runDir:           opts.RunDir,
+		indexerOverride:  opts.IndexerOverride,
+		pipelineCancel:   pipelineCancel,
 	}
+	// All stages read `ctx`; alias the cancellable child so the
+	// existing call sites stay untouched.
+	ctx = pipelineCtx
 	if o.captureDir != "" {
 		_ = os.MkdirAll(o.captureDir, 0o755)
 	}
@@ -322,6 +396,37 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	// state captured up to (but not including) the failing stage so the
 	// retry command has a consistent base to resume from.
 	haltFailure := func(stage, jobID, objectiveID, entityName string, err error, extra map[string]any) (Result, error) {
+		// Re-attribute when the root cause is a parallel image-
+		// build failure that cancelled the pipeline.
+		//
+		// When `runImageBuild` failed it called pipelineCancel(),
+		// which propagates context.Canceled into every in-flight
+		// LLM call across Stages 1-3. Whichever stage is first to
+		// observe the cancellation reaches this haltFailure with
+		// its own (stage, jobID) and a wrapped context.Canceled
+		// error. Without this re-attribution the dashboard's
+		// run_failure.json would blame, say, "discovery
+		// (cancelled)" — which is technically true but not the
+		// root cause.
+		//
+		// We only re-attribute when:
+		//   - the parallel build actually failed (o.buildResult.Err != nil), AND
+		//   - the caller isn't ALREADY reporting an "index" failure
+		//     (runIndexStage hands us stage="index" with the same
+		//     intent — preserve its attribution, it has more context).
+		if stage != "index" && o.buildResult.Err != nil && err != nil && errors.Is(err, context.Canceled) {
+			stage = "index"
+			jobID = "index.build"
+			entityName = o.buildResult.Image
+			objectiveID = ""
+			err = o.buildResult.Err
+			if extra == nil {
+				extra = map[string]any{}
+			}
+			extra["build_image"] = o.buildResult.Image
+			extra["plan_resolved"] = o.buildResult.PlanResolved
+			extra["reattributed_from_cancel"] = true
+		}
 		errClass := classifyError(err)
 		// Only attach a numeric HTTP status when the error is actually
 		// HTTP-shaped (4xx/5xx/rate-limit). For schema/network/timeout
@@ -332,7 +437,22 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		if shouldReportHTTPStatus(errClass) {
 			httpStatus = extractHTTPStatus(err.Error())
 		}
-		cancelled := ctx.Err() != nil
+		// `cancelled` means the run was halted by an external
+		// cancel (user clicked Cancel, parent context expired).
+		// We deliberately do NOT mark image-build-driven halts
+		// as cancelled — they are real FAILURES, even though our
+		// fail-fast mechanism propagates cancellation through the
+		// pipeline context. The marker the re-attribution branch
+		// above sets lets us tell them apart.
+		buildDriven := false
+		if extra != nil {
+			if v, ok := extra["reattributed_from_cancel"]; ok {
+				if b, ok2 := v.(bool); ok2 {
+					buildDriven = b
+				}
+			}
+		}
+		cancelled := ctx.Err() != nil && !buildDriven
 		f := &Failure{
 			Stage:        stage,
 			JobID:        jobID,
@@ -424,6 +544,17 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		o.emitStageCompleted("repo_facts", events.StatusSuccess, map[string]any{"facts_present": rf != nil})
 	}
 	state.RepoFacts = rf
+
+	// Kick off the parallel indexer image build NOW, before
+	// Stage 1-3 LLM work starts. The build runs in a goroutine
+	// and writes its outcome to o.buildResult; runIndexStage
+	// later blocks on `<-o.buildDone` to consume it.
+	//
+	// We do this immediately after repo_facts because that's
+	// when we have language+version data; doing it earlier
+	// would either be impossible (no facts yet) or wasteful
+	// (full multi-language image with no version info).
+	o.kickoffImageBuild(ctx, rf)
 
 	// --- Stage 1: per-objective discovery ---
 	seeds := make([]detailJob, 0)
@@ -649,6 +780,39 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	}
 	state.DetailExposures = append([]model.Exposure(nil), exposures...)
 	state.DetailDependency = append([]model.Dependency(nil), dependencies...)
+
+	// --- Stage 3.5: SCIP indexing ---
+	// Produces an index.scip on disk and loads it into o.scipIndex for
+	// the connections stage to query. The image build is FAIL-FAST
+	// per the Sprint 4 retro: without the SCIP index, the connections
+	// stage degrades to a shallow matcher and the run's primary
+	// output (the path-with-conditions graph) is missing. Better to
+	// halt and surface the failure clearly than waste downstream LLM
+	// work on a useless pipeline.
+	//
+	// The CONTAINER-run failure (image exists but scip-* crashed on
+	// the snapshot) is still fail-soft inside runIndexStage — that
+	// degrades only the unfortunate language's connections, not the
+	// whole run.
+	//
+	// Skipped entirely when cfg.Indexer.Disabled is true; in that
+	// case runIndexStage returns nil with no side effects.
+	if err := o.runIndexStage(ctx); err != nil {
+		// Identify whether this came from the parallel image build
+		// or from in-stage processing; both halt, but the
+		// failure_state job_id should reflect the right origin so
+		// the dashboard's retry button points at the right step.
+		jobID := "index"
+		entityName := ""
+		if o.buildResult.Err != nil {
+			jobID = "index.build"
+			entityName = o.buildResult.Image
+		}
+		return haltFailure("index", jobID, "", entityName, err, map[string]any{
+			"build_image":   o.buildResult.Image,
+			"plan_resolved": o.buildResult.PlanResolved,
+		})
+	}
 
 	// --- Stage 4: connection mapping ---
 	progress.StartPhase("connections", len(exposures), 70, 90, "Mapping conditional exposure-to-dependency paths per exposure.")

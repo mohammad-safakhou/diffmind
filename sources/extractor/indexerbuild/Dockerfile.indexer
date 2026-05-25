@@ -1,0 +1,291 @@
+# syntax=docker/dockerfile:1.7
+
+# =====================================================================
+# diffmind-indexer
+# ---------------------------------------------------------------------
+# Multi-language SCIP indexer image. Contains:
+#   - scip CLI                 (Sourcegraph, https://github.com/scip-code/scip)
+#   - scip-java                Java / Scala / Kotlin
+#   - scip-typescript          TypeScript / JavaScript
+#   - scip-python              Python
+#   - scip-go                  Go
+#   - scip-ruby                Ruby
+#   - scip-clang               C / C++
+#
+# This image is invoked by DiffMind's `index` pipeline stage. DiffMind
+# runs the image with the snapshot mounted read-only at /sources and a
+# writable output directory at /output. The image's entrypoint is the
+# `diffmind-index` Go wrapper (built from `wrapper/`), which
+# detects which indexers to run, runs them in parallel, merges their
+# outputs into a single `index.scip`, and writes a JSON status report.
+#
+# DESIGN NOTES
+#
+# 1. We use a multi-stage build to keep the final image small. Each
+#    indexer is fetched/compiled in a dedicated builder stage, then the
+#    final stage `COPY --from=...` only the binaries it needs.
+#
+# 2. The wrapper binary is built from the diffmind repo itself, NOT
+#    pulled from a release. This means the image version is tied to the
+#    diffmind commit hash. CI publishes both:
+#      - ghcr.io/<owner>/diffmind-indexer:<commit-sha>
+#      - ghcr.io/<owner>/diffmind-indexer:<semver>   (on release tags)
+#
+# 3. Indexers that require a language runtime (Node for scip-typescript,
+#    Python for scip-python) get that runtime in the final image too,
+#    because the indexers shell out to it during indexing. This is the
+#    reason the image is large (~4-6 GB). It is the price of being
+#    truly language-agnostic.
+#
+# 4. We do NOT bake project dependencies (Maven local cache, node_modules,
+#    pip cache, etc.) into the image. Those are fetched per-run with
+#    network access enabled. Caching across runs is the runner's job.
+#
+# 5. We pin every indexer to a specific version. Floating tags ("latest")
+#    are a recipe for non-deterministic CI. Bump these via Renovate or a
+#    quarterly review.
+# =====================================================================
+
+# ---------------------------------------------------------------------
+# Pinned versions (single place to bump)
+# ---------------------------------------------------------------------
+ARG SCIP_VERSION=v0.7.1
+ARG SCIP_JAVA_VERSION=0.12.3
+ARG SCIP_TYPESCRIPT_VERSION=0.4.0
+ARG SCIP_PYTHON_VERSION=0.6.4
+ARG SCIP_RUBY_VERSION=0.4.1
+ARG SCIP_CLANG_VERSION=0.3.5
+ARG SCIP_DOTNET_VERSION=0.2.14
+ARG GO_VERSION=1.22.8
+ARG NODE_VERSION=20
+ARG PYTHON_VERSION=3.12
+ARG RUBY_VERSION=3.3
+ARG JDK_VERSION=21
+ARG DOTNET_VERSION=8.0
+ARG MAVEN_VERSION=3.9.9
+ARG GRADLE_VERSION=8.10.2
+ARG COURSIER_VERSION=2.1.10
+
+# ---------------------------------------------------------------------
+# Stage: scip-cli-builder
+# Build the `scip` CLI from source. We need this binary in the final
+# image to merge per-language indexes (`scip merge`) and to inspect /
+# validate indexes (`scip stats`, `scip print`).
+# ---------------------------------------------------------------------
+FROM golang:${GO_VERSION}-bookworm AS scip-cli-builder
+ARG SCIP_VERSION
+WORKDIR /build
+RUN git clone --depth=1 --branch=${SCIP_VERSION} https://github.com/scip-code/scip.git . \
+    && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/scip ./cmd/scip
+
+# ---------------------------------------------------------------------
+# Stage: scip-go-builder
+# Build scip-go from source. Pure Go, easy.
+# ---------------------------------------------------------------------
+FROM golang:${GO_VERSION}-bookworm AS scip-go-builder
+WORKDIR /build
+RUN git clone --depth=1 https://github.com/sourcegraph/scip-go.git . \
+    && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/scip-go ./cmd/scip-go
+
+# ---------------------------------------------------------------------
+# Stage: scip-java-fetcher
+# Fetch the scip-java fat-jar via Coursier. We deliberately use the
+# JVM-based fat jar instead of the giant `sourcegraph/scip-java` image
+# (the latter is several GB on its own and bundles JDKs we don't need).
+# ---------------------------------------------------------------------
+FROM eclipse-temurin:${JDK_VERSION}-jdk AS scip-java-fetcher
+ARG SCIP_JAVA_VERSION
+ARG COURSIER_VERSION
+WORKDIR /work
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL -o coursier "https://github.com/coursier/coursier/releases/download/v${COURSIER_VERSION}/cs-x86_64-pc-linux.gz" \
+    && (file coursier | grep -q gzip && gunzip coursier || true) \
+    && chmod +x coursier \
+    && ./coursier bootstrap --standalone \
+        -o /out/scip-java \
+        "com.sourcegraph:scip-java_2.13:${SCIP_JAVA_VERSION}" \
+        --main com.sourcegraph.scip_java.ScipJava
+
+# ---------------------------------------------------------------------
+# Stage: scip-typescript-fetcher
+# Install scip-typescript globally so we can copy the resulting node
+# package out. We keep node_modules small by using a slim base.
+# ---------------------------------------------------------------------
+FROM node:${NODE_VERSION}-bookworm-slim AS scip-typescript-fetcher
+ARG SCIP_TYPESCRIPT_VERSION
+RUN npm install -g "@sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION}"
+
+# ---------------------------------------------------------------------
+# Stage: scip-python-fetcher
+# scip-python is distributed as a Node package as well (it embeds
+# Pyright). We pull it the same way we pull scip-typescript.
+# ---------------------------------------------------------------------
+FROM node:${NODE_VERSION}-bookworm-slim AS scip-python-fetcher
+ARG SCIP_PYTHON_VERSION
+RUN npm install -g "@sourcegraph/scip-python@${SCIP_PYTHON_VERSION}"
+
+# ---------------------------------------------------------------------
+# Stage: scip-dotnet-fetcher
+# scip-dotnet ships as a .NET "global tool" installed from NuGet via
+# `dotnet tool install`. We use a Microsoft .NET SDK base image so the
+# tool's transitive deps resolve cleanly, then copy the installed
+# tool out of /out (--tool-path).
+#
+# NUGET PACKAGE NAME
+# The published package id is plain lowercase `scip-dotnet` (NOT
+# `Sourcegraph.Scip.Dotnet`). Documented in the upstream readme; we
+# learned this live when an earlier `Sourcegraph.Scip.Dotnet` install
+# failed with "package not found in NuGet feeds".
+# ---------------------------------------------------------------------
+FROM mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION} AS scip-dotnet-fetcher
+ARG SCIP_DOTNET_VERSION
+RUN dotnet tool install --tool-path /out \
+        scip-dotnet \
+        --version ${SCIP_DOTNET_VERSION}
+
+# ---------------------------------------------------------------------
+# Stage: wrapper-builder
+# Compile the in-image entrypoint binary from `wrapper/`.
+#
+# The wrapper is stdlib-only by design (see indexerbuild/embed.go for
+# why). We still drop a minimal go.mod into the build context at
+# extract time so `go build` works without pulling the rest of the
+# diffmind module graph.
+# ---------------------------------------------------------------------
+FROM golang:${GO_VERSION}-bookworm AS wrapper-builder
+WORKDIR /src
+COPY go.mod ./
+COPY wrapper ./wrapper
+RUN CGO_ENABLED=0 go build \
+        -trimpath \
+        -ldflags='-s -w -X main.version=docker' \
+        -o /out/diffmind-index \
+        ./wrapper
+
+# ---------------------------------------------------------------------
+# Stage: final
+# The runtime image. Contains:
+#   - JDK + Maven + Gradle      (for scip-java; Gradle is required for Kotlin)
+#   - Node.js                    (for scip-typescript, scip-python)
+#   - Python                     (for any python tooling the user uses)
+#   - Go                         (for scip-go, and for any go modules)
+#   - Ruby                       (for scip-ruby; placeholder; will add)
+#   - .NET SDK                   (for scip-dotnet)
+#   - bash, curl, git            (general utilities)
+#   - All scip binaries copied from the builder stages.
+# ---------------------------------------------------------------------
+FROM eclipse-temurin:${JDK_VERSION}-jdk AS final
+
+ARG MAVEN_VERSION
+ARG GRADLE_VERSION
+ARG GO_VERSION
+ARG NODE_VERSION
+ARG PYTHON_VERSION
+ARG DOTNET_VERSION
+
+# ----- OS packages -----
+# - bash: indexer scripts assume bash
+# - ca-certificates, curl, gnupg: TLS + downloads
+# - git: many indexers shell out to git for project metadata
+# - unzip, xz-utils, tar: archive handling for cached deps
+# - build-essential: rebuilds of native node_modules / Python wheels
+# - python3 + python3-pip: scip-python's runtime + transitive pyright deps
+# - ruby + bundler: scip-ruby's runtime (added later)
+# - libc6-dev: needed by some Go build chains
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        curl \
+        gnupg \
+        git \
+        unzip \
+        xz-utils \
+        tar \
+        build-essential \
+        libc6-dev \
+        pkg-config \
+        python3 \
+        python3-pip \
+        python3-venv \
+        ruby \
+        ruby-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# ----- Node.js (for scip-typescript + scip-python) -----
+RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g npm@latest yarn pnpm
+
+# ----- Maven -----
+RUN curl -fsSL "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
+        | tar -xz -C /opt \
+    && ln -s /opt/apache-maven-${MAVEN_VERSION}/bin/mvn /usr/local/bin/mvn
+ENV MAVEN_HOME=/opt/apache-maven-${MAVEN_VERSION}
+
+# ----- Gradle -----
+RUN curl -fsSL -o /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
+    && unzip -q /tmp/gradle.zip -d /opt \
+    && rm /tmp/gradle.zip \
+    && ln -s /opt/gradle-${GRADLE_VERSION}/bin/gradle /usr/local/bin/gradle
+ENV GRADLE_HOME=/opt/gradle-${GRADLE_VERSION}
+
+# ----- Go (for scip-go indexing of go projects) -----
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+        | tar -xz -C /usr/local
+ENV PATH=/usr/local/go/bin:/root/go/bin:${PATH}
+ENV GOPATH=/root/go
+
+# ----- Bundler for scip-ruby -----
+RUN gem install --no-document bundler
+
+# ----- .NET SDK (for scip-dotnet) -----
+# Microsoft's packages.microsoft.com repo gives us reproducible SDK
+# installs across architectures. We install the SDK (not just the
+# runtime) because scip-dotnet shells into `dotnet build` to drive
+# Roslyn-based indexing.
+RUN curl -fsSL -o /tmp/packages-microsoft-prod.deb \
+        https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb \
+    && dpkg -i /tmp/packages-microsoft-prod.deb \
+    && rm /tmp/packages-microsoft-prod.deb \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends "dotnet-sdk-${DOTNET_VERSION}" \
+    && rm -rf /var/lib/apt/lists/*
+# Turn off the first-run telemetry prompt and unnecessary file watchers
+# so containerised invocations stay quiet and reproducible.
+ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+    DOTNET_NOLOGO=1 \
+    DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
+
+# ----- Copy scip binaries from builder stages -----
+COPY --from=scip-cli-builder /out/scip /usr/local/bin/scip
+COPY --from=scip-go-builder /out/scip-go /usr/local/bin/scip-go
+COPY --from=scip-java-fetcher /out/scip-java /usr/local/bin/scip-java
+# Node-installed indexers: copy global node_modules + symlinks
+COPY --from=scip-typescript-fetcher /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=scip-typescript-fetcher /usr/local/bin/scip-typescript /usr/local/bin/scip-typescript
+COPY --from=scip-python-fetcher /usr/local/lib/node_modules/@sourcegraph/scip-python /usr/local/lib/node_modules/@sourcegraph/scip-python
+COPY --from=scip-python-fetcher /usr/local/bin/scip-python /usr/local/bin/scip-python
+# .NET global tool: scip-dotnet is a self-contained binary in /out.
+COPY --from=scip-dotnet-fetcher /out/scip-dotnet /usr/local/bin/scip-dotnet
+
+# ----- Wrapper -----
+COPY --from=wrapper-builder /out/diffmind-index /usr/local/bin/diffmind-index
+
+# ----- Workspace conventions -----
+# DiffMind mounts the snapshot at /sources (read-only) and a writable
+# output directory at /output. The wrapper writes index.scip and a
+# status report under /output.
+WORKDIR /sources
+ENV DIFFMIND_INDEXER_OUTPUT=/output
+
+# Stable label used by diffmind to discover the image inside CI / locally
+LABEL org.opencontainers.image.title="diffmind-indexer" \
+      org.opencontainers.image.description="Multi-language SCIP indexer for DiffMind" \
+      org.opencontainers.image.source="https://github.com/anomalyco/diffmind"
+
+ENTRYPOINT ["/usr/local/bin/diffmind-index"]
+CMD ["--help"]
