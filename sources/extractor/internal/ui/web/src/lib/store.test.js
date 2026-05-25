@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { applyEvent, resetStore, runMeta, stages } from './store.js'
+import { applyEvent, resetStore, runMeta, stages, buildLogs } from './store.js'
 
 // Helper: replay a sequence of events through the reducer as if
 // they came off the SSE wire in order.
@@ -195,5 +195,32 @@ describe('runMeta status preservation on replay', () => {
     ])
     expect(runMeta.value.status).toBe('completed')
     expect(runMeta.value.summary?.exposures).toBe(3)
+  })
+
+  // log events scoped to the index.build stage land in the
+  // buildLogs ring buffer; other 'log' events (rare) are ignored
+  // so the dashboard doesn't accumulate noise.
+  it('captures index.build log events into buildLogs (capped at 200)', () => {
+    resetStore()
+    applyEvent({
+      kind: 'log',
+      stage: 'index.build',
+      ts: 't1',
+      message: 'building base java:21',
+      payload: { tail: '...maven cold pull...' },
+    })
+    expect(buildLogs.value.length).toBe(1)
+    expect(buildLogs.value[0].message).toBe('building base java:21')
+
+    // Unrelated log → ignored.
+    applyEvent({ kind: 'log', stage: 'detail', ts: 't2', message: 'should be ignored' })
+    expect(buildLogs.value.length).toBe(1)
+
+    // Ring buffer cap at 200.
+    for (let i = 0; i < 250; i++) {
+      applyEvent({ kind: 'log', stage: 'index.build', ts: 't', message: 'line ' + i })
+    }
+    expect(buildLogs.value.length).toBe(200)
+    expect(buildLogs.value[199].message).toBe('line 249')
   })
 })

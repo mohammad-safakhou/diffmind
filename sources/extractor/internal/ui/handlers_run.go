@@ -13,6 +13,7 @@ import (
 
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
+	"github.com/mohammad-safakhou/diffmind/internal/preflight"
 	"github.com/mohammad-safakhou/diffmind/internal/runner"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
@@ -49,6 +50,23 @@ type startRunRequest struct {
 	Quality struct {
 		MinConfidence float64 `json:"min_confidence"`
 	} `json:"quality"`
+
+	// Indexer covers the SCIP indexer (the new deterministic
+	// connections stage). All fields are optional; zero values mean
+	// "use the server's config.Default() value". The dashboard's
+	// advanced section exposes these so a user can:
+	//   - disable indexing for a quick run (Disabled = true)
+	//   - point at a custom image tag the operator pre-built
+	//     (Image = "myregistry/diffmind-indexer:custom")
+	//   - force a rebuild after a Dockerfile.indexer edit
+	//     (AutoBuild = "always")
+	//   - turn auto-build off in an air-gapped environment
+	//     (AutoBuild = "never")
+	Indexer struct {
+		Disabled  bool   `json:"disabled"`
+		Image     string `json:"image"`
+		AutoBuild string `json:"auto_build"`
+	} `json:"indexer"`
 }
 
 // buildConfigFromRequest translates a startRunRequest into a
@@ -97,6 +115,18 @@ func buildConfigFromRequest(req startRunRequest) config.Config {
 	if req.Quality.MinConfidence > 0 {
 		cfg.Quality.MinConfidence = req.Quality.MinConfidence
 	}
+	// Indexer overrides. Each falls back to the default when empty /
+	// false, matching the "0 means use server default" convention
+	// used elsewhere in this function.
+	if req.Indexer.Disabled {
+		cfg.Indexer.Disabled = true
+	}
+	if strings.TrimSpace(req.Indexer.Image) != "" {
+		cfg.Indexer.Image = req.Indexer.Image
+	}
+	if strings.TrimSpace(req.Indexer.AutoBuild) != "" {
+		cfg.Indexer.AutoBuild = req.Indexer.AutoBuild
+	}
 	return cfg
 }
 
@@ -126,6 +156,42 @@ func (s *Server) handleRunCreate(w http.ResponseWriter, r *http.Request) {
 	cfg := buildConfigFromRequest(req)
 	cfg.Artifacts.BaseDir = s.baseDir
 
+	// Hard-rejection gate: run a synchronous preflight against
+	// the EFFECTIVE config we are about to launch with. We
+	// deliberately do not trust the cached /api/preflight Report
+	// here — the user may have edited the form between the
+	// last ticker fire and the Run click, and a stale Report
+	// could let a misconfigured run through.
+	//
+	// Any SeverityFail aborts the request with 422 + a payload
+	// listing every failed check so the UI can surface clear
+	// remediation. Warnings are allowed through.
+	checks := preflight.DefaultChecks(preflight.OptionsFromConfig(cfg))
+	rep := preflight.NewRunner(checks).Run(r.Context())
+	if rep.HasFail() {
+		failures := rep.Failures()
+		// Build a single-line summary for the legacy `error` field
+		// + the full structured payload for the new UI.
+		var brief strings.Builder
+		brief.WriteString("preflight rejected the run: ")
+		for i, f := range failures {
+			if i > 0 {
+				brief.WriteString("; ")
+			}
+			brief.WriteString(f.Title + " - " + f.Message)
+		}
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		writeJSON(w, map[string]any{
+			"error":     brief.String(),
+			"preflight": rep,
+		})
+		util.Warn("ui.api", "run rejected by preflight", map[string]any{
+			"repo":     repo,
+			"failures": len(failures),
+		})
+		return
+	}
+
 	// Log the effective config the dashboard is about to launch. We
 	// learned the hard way (runs 20260518T113418Z, 20260518T115925Z)
 	// that a stale localStorage value can silently set TimeoutSec=300
@@ -141,6 +207,9 @@ func (s *Server) handleRunCreate(w http.ResponseWriter, r *http.Request) {
 		"max_catalog_items":              cfg.Runtime.MaxCatalogItems,
 		"skip_reexamination":             cfg.Runtime.SkipReexamination,
 		"reuse_session":                  cfg.Runtime.ReuseOpenCodeSession,
+		"indexer_disabled":               cfg.Indexer.Disabled,
+		"indexer_image":                  cfg.Indexer.Image,
+		"indexer_auto_build":             cfg.Indexer.AutoBuild,
 	})
 
 	runID, err := s.runner.Start(context.Background(), runner.StartParams{
@@ -249,6 +318,35 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request, runID st
 	cfg.Runtime.ReuseOpenCodeSession = req.Runtime.ReuseOpenCodeSession
 	cfg.Runtime.SkipReexamination = req.Runtime.SkipReexamination
 	cfg.Artifacts.BaseDir = s.baseDir
+
+	// Hard-rejection: retries face the same preflight gate as fresh
+	// runs. The whole point is to never enqueue a run we know will
+	// fail (Docker down, OpenCode unreachable, etc.).
+	{
+		checks := preflight.DefaultChecks(preflight.OptionsFromConfig(cfg))
+		rep := preflight.NewRunner(checks).Run(r.Context())
+		if rep.HasFail() {
+			failures := rep.Failures()
+			var brief strings.Builder
+			brief.WriteString("preflight rejected the retry: ")
+			for i, f := range failures {
+				if i > 0 {
+					brief.WriteString("; ")
+				}
+				brief.WriteString(f.Title + " - " + f.Message)
+			}
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			writeJSON(w, map[string]any{
+				"error":     brief.String(),
+				"preflight": rep,
+			})
+			util.Warn("ui.api", "retry rejected by preflight", map[string]any{
+				"run_id":   runID,
+				"failures": len(failures),
+			})
+			return
+		}
+	}
 
 	util.Info("ui.api", "retrying run from dashboard", map[string]any{
 		"run_id":                         runID,

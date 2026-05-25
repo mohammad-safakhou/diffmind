@@ -11,6 +11,7 @@ import { DetailDrawer } from './components/DetailDrawer.jsx'
 import { RunsSidebar } from './components/RunsSidebar.jsx'
 import { HelpOverlay } from './components/HelpOverlay.jsx'
 import { StatusBanner } from './components/StatusBanner.jsx'
+import { SystemStatus } from './components/SystemStatus.jsx'
 
 // App owns the SSE subscription. Whenever a new run is launched OR the user
 // picks a finished run from the sidebar to replay, we close the previous
@@ -172,6 +173,7 @@ export function App() {
     <div class="app">
       <TopBar onHelp={() => setHelp(true)} />
       {authError && <AuthBanner onSubmit={(t) => { setToken(t); setAuthError(false); window.location.reload() }} initial={getToken()} />}
+      <SystemStatus />
       <StatusBanner />
       <PipelineStrip />
       <div class="workspace">

@@ -35,6 +35,16 @@ type Server struct {
 	bus     *events.Bus
 	runner  *runner.Runner
 	token   string // optional auth; empty = open
+
+	// preflight caches the most recent system-readiness report
+	// and the form-derived Options the SPA last pushed. Populated
+	// by startPreflight() before the HTTP listener accepts
+	// requests, then refreshed every preflightTicker (default 30s).
+	preflight *preflightState
+	// preflightTicker overrides the refresh cadence. Tests set
+	// this to a tiny value to verify periodic refresh; production
+	// uses the 30s default via preflightInterval().
+	preflightTicker time.Duration
 }
 
 // SetToken protects every endpoint with the given shared secret. Clients
@@ -82,6 +92,10 @@ func (s *Server) Bus() *events.Bus { return s.bus }
 
 // Start runs the HTTP server until ctx is cancelled.
 func (s *Server) Start(ctx context.Context) error {
+	// Kick off the preflight ticker BEFORE the HTTP listener
+	// accepts requests so /api/preflight is never empty.
+	s.startPreflight(ctx)
+
 	mux := http.NewServeMux()
 	s.routes(mux)
 
@@ -186,6 +200,13 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/runs", s.handleRunsCollection)   // GET (list) | POST (create)
 	mux.HandleFunc("/api/runs/active", s.handleActiveRun) // GET status of singleton
 	mux.HandleFunc("/api/runs/", s.handleRunsItem)        // /{id}/(events|state|cancel|job/...)
+
+	// Preflight / System Status. GET returns the cached Report
+	// (refreshed every 30s by the background ticker); POST options
+	// pushes form-derived OpenCode URL / credentials so the cached
+	// Report reflects what the SPA is about to submit.
+	mux.HandleFunc("/api/preflight", s.handlePreflight)
+	mux.HandleFunc("/api/preflight/options", s.handlePreflightOptions)
 
 	// Legacy artifact browser.
 	mux.HandleFunc("/api/run/", s.handleRun)
