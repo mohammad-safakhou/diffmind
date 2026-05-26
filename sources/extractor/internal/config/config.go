@@ -27,13 +27,19 @@ type Runtime struct {
 	ReuseOpenCodeSession    bool `json:"reuse_opencode_session"`
 	SkipReexamination       bool `json:"skip_reexamination"`
 
+	// PromptRetryCount is how many times DiffMind retries a prompt after
+	// the liveness watchdog declares it stuck. The initial attempt is not
+	// counted; default 3 means up to 4 total attempts. Set to 0 to fail
+	// immediately after the first stuck verdict.
+	PromptRetryCount int `json:"prompt_retry_count"`
+
 	// IdleTimeoutSec is the maximum time (in seconds) the liveness
 	// watchdog will tolerate WITHOUT observable progress on the
 	// OpenCode session before declaring the in-flight prompt stuck and
 	// aborting it. Progress = parts growing, tool transitioning state,
-	// or session token counters advancing. While a tool call is in
-	// status "running" or a permission is pending for the session, the
-	// idle clock is paused (those are not idle states).
+	// or session token counters advancing. While a permission is pending
+	// for the session, the idle clock is paused because DiffMind's
+	// permission watchdog is expected to resolve it.
 	IdleTimeoutSec int `json:"idle_timeout_seconds"`
 	// MaxCallSeconds is a hard ceiling: even with continuous progress,
 	// no single LLM call may exceed this duration. Acts as a safety
@@ -148,6 +154,7 @@ func Default() Config {
 			CleanupOpenCodeSessions: false,
 			OpenCodeDeleteDelaySec:  5,
 			ReuseOpenCodeSession:    false,
+			PromptRetryCount:        3,
 			// Liveness watchdog defaults. See the field docs on Runtime.
 			IdleTimeoutSec:  120,
 			MaxCallSeconds:  30 * 60,
@@ -246,6 +253,14 @@ func (c *Config) Sanitize() []SanitizationFix {
 			Reason: "value was <= 0; reset to default (5s)",
 		})
 		c.Runtime.LivenessPollSec = def.Runtime.LivenessPollSec
+	}
+	if c.Runtime.PromptRetryCount < 0 {
+		fixes = append(fixes, SanitizationFix{
+			Field: "runtime.prompt_retry_count",
+			Was:   c.Runtime.PromptRetryCount, Adjusted: def.Runtime.PromptRetryCount,
+			Reason: "value was < 0; reset to default (3)",
+		})
+		c.Runtime.PromptRetryCount = def.Runtime.PromptRetryCount
 	}
 
 	// The invariant: transport timeout must exceed MaxCallSeconds plus

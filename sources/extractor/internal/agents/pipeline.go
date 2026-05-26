@@ -14,11 +14,11 @@ import (
 
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
+	"github.com/mohammad-safakhou/diffmind/internal/indexer"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	"github.com/mohammad-safakhou/diffmind/internal/opencode"
 	"github.com/mohammad-safakhou/diffmind/internal/reconcile"
-	"github.com/mohammad-safakhou/diffmind/internal/indexer"
 	"github.com/mohammad-safakhou/diffmind/internal/scip"
 	"github.com/mohammad-safakhou/diffmind/internal/snapshot"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
@@ -357,6 +357,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		// if any of these is too small, the watchdog can't do its job.
 		"opencode_transport_timeout_sec": cfg.OpenCode.TimeoutSec,
 		"idle_timeout_sec":               cfg.Runtime.IdleTimeoutSec,
+		"prompt_retry_count":             cfg.Runtime.PromptRetryCount,
 		"max_call_sec":                   cfg.Runtime.MaxCallSeconds,
 		"liveness_poll_sec":              cfg.Runtime.LivenessPollSec,
 	})
@@ -378,6 +379,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 			// configs.
 			"opencode_transport_timeout_sec": cfg.OpenCode.TimeoutSec,
 			"idle_timeout_sec":               cfg.Runtime.IdleTimeoutSec,
+			"prompt_retry_count":             cfg.Runtime.PromptRetryCount,
 			"max_call_sec":                   cfg.Runtime.MaxCallSeconds,
 			"liveness_poll_sec":              cfg.Runtime.LivenessPollSec,
 		},
@@ -791,9 +793,8 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	// work on a useless pipeline.
 	//
 	// The CONTAINER-run failure (image exists but scip-* crashed on
-	// the snapshot) is still fail-soft inside runIndexStage — that
-	// degrades only the unfortunate language's connections, not the
-	// whole run.
+	// the snapshot) is also fail-fast. A failed index stage means the
+	// connections graph is not trustworthy.
 	//
 	// Skipped entirely when cfg.Indexer.Disabled is true; in that
 	// case runIndexStage returns nil with no side effects.
@@ -917,20 +918,53 @@ func (o *orchestrator) pathMapper() *pathMapper {
 // cancel, or server error) it best-effort aborts the session so the server
 // is not left holding a paused agent.
 //
-// There is intentionally no retry: an LLM call is expensive enough that
-// silently re-issuing it on a transient blip burns money and can mask the
-// real failure. A failure here propagates up to the orchestrator which
-// halts the whole run; the operator inspects the failure report and runs
-// `diffmind retry <run-id>` once they have fixed (or accepted) the cause.
-//
-// The function emits an llm_call_started/llm_call_completed pair around
+// promptAgent retries only liveness-stuck prompts. Auth/schema/quota/provider
+// failures still propagate immediately because re-issuing those calls burns
+// money and masks the real cause. RetryCount is the number of retries AFTER
+// the initial attempt.
+func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, schema map[string]any) (map[string]any, error) {
+	retries := o.cfg.Runtime.PromptRetryCount
+	if retries < 0 {
+		retries = 0
+	}
+	attempts := retries + 1
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		payload, err := o.promptAgentOnce(ctx, role, prompt, schema, attempt, attempts)
+		if err == nil {
+			return payload, nil
+		}
+		lastErr = err
+		if !errors.Is(err, ErrStuck) || attempt == attempts || ctx.Err() != nil {
+			return nil, err
+		}
+
+		o.resetSharedSessionAfterStuckRetry()
+		o.emit(events.Event{
+			Kind: events.KindLog, JobID: role,
+			Message: "prompt stuck; retrying",
+			Payload: map[string]any{
+				"attempt":      attempt,
+				"next_attempt": attempt + 1,
+				"max_attempts": attempts,
+				"error":        err.Error(),
+			},
+		})
+		util.Warn("agents.agent", "prompt stuck; retrying", map[string]any{
+			"role": role, "attempt": attempt, "max_attempts": attempts, "error": err.Error(),
+		})
+	}
+	return nil, lastErr
+}
+
+// promptAgentOnce emits an llm_call_started/llm_call_completed pair around
 // the PromptStructured call and persists the prompt + response under
 // captureDir/<role>.{prompt,response}.{txt,json,raw} so the dashboard
 // can show the full payloads on demand. When the structured slot is
 // missing from the OpenCode response (some providers don't honor
 // json_schema) we fall back to a plain-text prompt and JSON-scrape the
 // reply.
-func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, schema map[string]any) (map[string]any, error) {
+func (o *orchestrator) promptAgentOnce(ctx context.Context, role, prompt string, schema map[string]any, attempt, attempts int) (map[string]any, error) {
 	sessionID, cleanupFn, err := o.acquireSession(ctx, role)
 	if err != nil {
 		return nil, err
@@ -939,6 +973,8 @@ func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, sch
 		Kind: events.KindLLMCallStarted, JobID: role, Status: events.StatusRunning,
 		Payload: map[string]any{
 			"session_id":   sessionID,
+			"attempt":      attempt,
+			"max_attempts": attempts,
 			"prompt_len":   len(prompt),
 			"snapshot_dir": o.sessionDir,
 		},
@@ -949,7 +985,7 @@ func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, sch
 
 	// Liveness watchdog: poll OpenCode while the prompt POST is in
 	// flight. If the agent stops making progress for too long (and is
-	// not waiting on a tool or permission), the watchdog aborts the
+	// not waiting on a permission), the watchdog aborts the
 	// session, which causes the in-flight POST to return with a
 	// cancellation error that we then re-label as ErrStuck.
 	//
@@ -959,6 +995,7 @@ func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, sch
 	// their PromptStructured returns synchronously.
 	watchCtx, stopWatch := context.WithCancel(ctx)
 	watchDone := make(chan *livenessReport, 1)
+	watchStarted := false
 	if o.verbose != nil {
 		if client, ok := o.oc.(livenessClient); ok {
 			if ab, ok := o.oc.(livenessAborter); ok {
@@ -970,12 +1007,13 @@ func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, sch
 					PollInterval: time.Duration(o.cfg.Runtime.LivenessPollSec) * time.Second,
 				}
 				go func() { watchDone <- runLiveness(watchCtx, cfg, probe, abort, role, o.sink) }()
+				watchStarted = true
 			}
 		}
 	}
 	// Ensure we always close the channel so a non-watchdogged call
 	// can still drain on `<-watchDone` below.
-	if o.verbose == nil {
+	if !watchStarted {
 		watchDone <- nil
 	}
 
@@ -1028,6 +1066,8 @@ func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, sch
 					Message: "structured slot empty; recovered via free-text fallback",
 					Payload: map[string]any{
 						"session_id":    sessionID,
+						"attempt":       attempt,
+						"max_attempts":  attempts,
 						"duration_ms":   dur.Milliseconds(),
 						"prompt_len":    len(prompt),
 						"response_keys": mapKeys(fallback),
@@ -1057,6 +1097,8 @@ func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, sch
 			Message: err.Error(),
 			Payload: map[string]any{
 				"session_id":   sessionID,
+				"attempt":      attempt,
+				"max_attempts": attempts,
 				"duration_ms":  time.Since(started).Milliseconds(),
 				"raw_preview":  previewBytes(rawBody, 360),
 				"text_preview": previewString(textBody, 360),
@@ -1074,6 +1116,8 @@ func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, sch
 	}
 	payloadOut := map[string]any{
 		"session_id":    sessionID,
+		"attempt":       attempt,
+		"max_attempts":  attempts,
 		"duration_ms":   time.Since(started).Milliseconds(),
 		"prompt_len":    len(prompt),
 		"response_keys": mapKeys(payload),
@@ -1346,7 +1390,9 @@ func (o *orchestrator) acquireSession(ctx context.Context, role string) (string,
 			return "", nil, fmt.Errorf("%s create shared session: %w", role, err)
 		}
 		o.sharedSessionID = sid
-		o.wd.Track(sid)
+		if o.wd != nil {
+			o.wd.Track(sid)
+		}
 		o.emit(events.Event{
 			Kind: events.KindSessionCreated, JobID: role,
 			Payload: map[string]any{"session_id": sid, "shared": true, "directory": o.sessionDir},
@@ -1358,7 +1404,9 @@ func (o *orchestrator) acquireSession(ctx context.Context, role string) (string,
 	if err != nil {
 		return "", nil, fmt.Errorf("%s create session: %w", role, err)
 	}
-	o.wd.Track(sid)
+	if o.wd != nil {
+		o.wd.Track(sid)
+	}
 	o.emit(events.Event{
 		Kind: events.KindSessionCreated, JobID: role,
 		Payload: map[string]any{"session_id": sid, "shared": false, "directory": o.sessionDir},
@@ -1381,9 +1429,27 @@ func (o *orchestrator) maybeScheduleDelete(role, sessionID string) {
 			util.Warn("agents.agent", "session delete failed", map[string]any{"role": role, "session_id": sessionID, "error": err})
 			return
 		}
-		o.wd.Untrack(sessionID)
+		if o.wd != nil {
+			o.wd.Untrack(sessionID)
+		}
 		util.Trace("agents.agent", "session deleted", map[string]any{"role": role, "session_id": sessionID})
 	}()
+}
+
+func (o *orchestrator) resetSharedSessionAfterStuckRetry() {
+	if !o.cfg.Runtime.ReuseOpenCodeSession {
+		return
+	}
+	o.sessionMu.Lock()
+	sid := strings.TrimSpace(o.sharedSessionID)
+	o.sharedSessionID = ""
+	o.sessionMu.Unlock()
+	if sid == "" || o.wd == nil {
+		return
+	}
+	if o.wd != nil {
+		o.wd.Untrack(sid)
+	}
 }
 
 func (o *orchestrator) closeSharedSession() {
