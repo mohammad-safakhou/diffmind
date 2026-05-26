@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -365,8 +366,13 @@ func (o *orchestrator) runReexamination(
 		return nil, nil, nil, noTrigger
 	}
 
+	// Load per-item checkpoint so a retry can skip already-completed suspects.
+	checkpoint := o.loadReexaminationCheckpoint(filepath.Join(o.runDir, stateDir))
+
 	cleanJobs := make([]detailJob, 0, len(seeds))
 	suspect := make([]reexamineTrigger, 0)
+	unresolved := make([]model.UnresolvedItem, 0)
+
 	for i := range seeds {
 		// shouldReexamine MUTATES seeds[i].Seed.Details when it can
 		// derive missing fields from the name/summary. Take a pointer so
@@ -376,6 +382,27 @@ func (o *orchestrator) runReexamination(
 			cleanJobs = append(cleanJobs, seeds[i])
 			continue
 		}
+
+		key := reexamKey(seeds[i].Objective.ID, seeds[i].Seed.Name)
+		if entry, done := checkpoint[key]; done {
+			// This suspect was already resolved in a prior run.
+			// Restore the outcome without re-asking the model.
+			switch entry.Outcome {
+			case "confirmed":
+				if entry.Seed != nil {
+					cleanJobs = append(cleanJobs, detailJob{Objective: seeds[i].Objective, Seed: *entry.Seed})
+				}
+			case "rejected":
+				if entry.Unresolved != nil {
+					unresolved = append(unresolved, *entry.Unresolved)
+				}
+			}
+			if onResult != nil {
+				onResult()
+			}
+			continue
+		}
+
 		suspect = append(suspect, reexamineTrigger{
 			Seed:     seeds[i].Seed,
 			Obj:      seeds[i].Objective,
@@ -385,12 +412,16 @@ func (o *orchestrator) runReexamination(
 	}
 
 	if len(suspect) == 0 {
-		util.Info("agents.reexamine", "no suspects to re-examine", map[string]any{"total": len(seeds)})
-		return cleanJobs, nil, nil, noTrigger
+		skipped := len(checkpoint)
+		util.Info("agents.reexamine", "no suspects to re-examine", map[string]any{
+			"total": len(seeds), "skipped_from_checkpoint": skipped,
+		})
+		return cleanJobs, unresolved, nil, noTrigger
 	}
 
 	util.Info("agents.reexamine", "re-examination starting", map[string]any{
 		"total": len(seeds), "clean": len(cleanJobs), "suspect": len(suspect),
+		"skipped_from_checkpoint": len(checkpoint),
 	})
 
 	workers := o.cfg.Runtime.Workers
@@ -441,7 +472,6 @@ func (o *orchestrator) runReexamination(
 		close(results)
 	}()
 
-	unresolved := make([]model.UnresolvedItem, 0)
 	var firstErr error
 	var firstTrigger reexamineTrigger
 	for r := range results {
@@ -449,14 +479,15 @@ func (o *orchestrator) runReexamination(
 			onResult()
 		}
 		if r.Err != nil {
-			unresolved = append(unresolved, model.UnresolvedItem{
+			u := model.UnresolvedItem{
 				Kind:       r.Trigger.Obj.Kind,
 				Type:       r.Trigger.Obj.Type,
 				Name:       r.Trigger.Seed.Name,
 				ReasonCode: "reexamine_failure",
 				Reason:     r.Err.Error(),
 				Confidence: r.Trigger.Seed.Confidence,
-			})
+			}
+			unresolved = append(unresolved, u)
 			// Capture this as the root cause unless it's a
 			// peer-cancelled sibling (which the worker flagged
 			// explicitly). A per-call HTTP timeout wraps
@@ -467,11 +498,14 @@ func (o *orchestrator) runReexamination(
 				firstErr = r.Err
 				firstTrigger = r.Trigger
 			}
+			// Do NOT checkpoint a hard error — the item must be
+			// retried. PeerCancelled siblings also skip the
+			// checkpoint because they were never actually attempted.
 			continue
 		}
 		if r.Item == nil {
 			// LLM confirmed the candidate is not real.
-			unresolved = append(unresolved, model.UnresolvedItem{
+			u := model.UnresolvedItem{
 				Kind:       r.Trigger.Obj.Kind,
 				Type:       r.Trigger.Obj.Type,
 				Name:       r.Trigger.Seed.Name,
@@ -479,6 +513,12 @@ func (o *orchestrator) runReexamination(
 				Reason:     "Re-examination agent rejected candidate (trigger: " + r.Trigger.ReasonID + ")",
 				Confidence: r.Trigger.Seed.Confidence,
 				Evidence:   toEvidence(r.Trigger.Seed.Evidence),
+			}
+			unresolved = append(unresolved, u)
+			o.appendReexamEntity(reexamCheckpointEntry{
+				Key:        reexamKey(r.Trigger.Obj.ID, r.Trigger.Seed.Name),
+				Outcome:    "rejected",
+				Unresolved: &u,
 			})
 			continue
 		}
@@ -487,6 +527,11 @@ func (o *orchestrator) runReexamination(
 			r.Item.Confidence = r.Trigger.Seed.Confidence
 		}
 		cleanJobs = append(cleanJobs, detailJob{Objective: r.Trigger.Obj, Seed: *r.Item})
+		o.appendReexamEntity(reexamCheckpointEntry{
+			Key:     reexamKey(r.Trigger.Obj.ID, r.Trigger.Seed.Name),
+			Outcome: "confirmed",
+			Seed:    r.Item,
+		})
 	}
 
 	util.Info("agents.reexamine", "re-examination completed", map[string]any{
