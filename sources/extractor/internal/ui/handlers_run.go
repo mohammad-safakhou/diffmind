@@ -40,6 +40,7 @@ type startRunRequest struct {
 		CleanupOpenCodeSessions bool `json:"cleanup_opencode_sessions"`
 		OpenCodeDeleteDelaySec  int  `json:"opencode_delete_delay_seconds"`
 		SkipReexamination       bool `json:"skip_reexamination"`
+		PromptRetryCount        *int `json:"prompt_retry_count"`
 		// Liveness watchdog knobs. 0 = use config default. See
 		// config.Runtime for field semantics.
 		IdleTimeoutSec  int `json:"idle_timeout_seconds"`
@@ -103,6 +104,9 @@ func buildConfigFromRequest(req startRunRequest) config.Config {
 		cfg.Runtime.OpenCodeDeleteDelaySec = req.Runtime.OpenCodeDeleteDelaySec
 	}
 	cfg.Runtime.SkipReexamination = req.Runtime.SkipReexamination
+	if req.Runtime.PromptRetryCount != nil {
+		cfg.Runtime.PromptRetryCount = *req.Runtime.PromptRetryCount
+	}
 	if req.Runtime.IdleTimeoutSec > 0 {
 		cfg.Runtime.IdleTimeoutSec = req.Runtime.IdleTimeoutSec
 	}
@@ -201,6 +205,7 @@ func (s *Server) handleRunCreate(w http.ResponseWriter, r *http.Request) {
 		"repo":                           repo,
 		"opencode_transport_timeout_sec": cfg.OpenCode.TimeoutSec,
 		"idle_timeout_sec":               cfg.Runtime.IdleTimeoutSec,
+		"prompt_retry_count":             cfg.Runtime.PromptRetryCount,
 		"max_call_sec":                   cfg.Runtime.MaxCallSeconds,
 		"liveness_poll_sec":              cfg.Runtime.LivenessPollSec,
 		"workers":                        cfg.Runtime.Workers,
@@ -249,6 +254,7 @@ type retryRequest struct {
 		Workers              int  `json:"workers"`
 		MaxCatalogItems      int  `json:"max_catalog_items"`
 		IdleTimeoutSec       int  `json:"idle_timeout_seconds"`
+		PromptRetryCount     *int `json:"prompt_retry_count"`
 		MaxCallSeconds       int  `json:"max_call_seconds"`
 		LivenessPollSec      int  `json:"liveness_poll_seconds"`
 		ReuseOpenCodeSession bool `json:"reuse_opencode_session"`
@@ -309,6 +315,9 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request, runID st
 	if req.Runtime.IdleTimeoutSec > 0 {
 		cfg.Runtime.IdleTimeoutSec = req.Runtime.IdleTimeoutSec
 	}
+	if req.Runtime.PromptRetryCount != nil {
+		cfg.Runtime.PromptRetryCount = *req.Runtime.PromptRetryCount
+	}
 	if req.Runtime.MaxCallSeconds > 0 {
 		cfg.Runtime.MaxCallSeconds = req.Runtime.MaxCallSeconds
 	}
@@ -352,6 +361,7 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request, runID st
 		"run_id":                         runID,
 		"opencode_transport_timeout_sec": cfg.OpenCode.TimeoutSec,
 		"idle_timeout_sec":               cfg.Runtime.IdleTimeoutSec,
+		"prompt_retry_count":             cfg.Runtime.PromptRetryCount,
 		"max_call_sec":                   cfg.Runtime.MaxCallSeconds,
 		"liveness_poll_sec":              cfg.Runtime.LivenessPollSec,
 	})
