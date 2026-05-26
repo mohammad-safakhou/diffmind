@@ -159,6 +159,13 @@ func TestPromptStructuredIncludesVariant(t *testing.T) {
 			if payload["variant"] != "high" {
 				t.Fatalf("expected variant=high, got %#v", payload["variant"])
 			}
+			tools, ok := payload["tools"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected tools map, got %#v", payload["tools"])
+			}
+			if tools["task"] != false {
+				t.Fatalf("expected task tool disabled, got %#v", tools["task"])
+			}
 			body = `{"info":{"structured":{"ok":true}}}`
 		default:
 			status = 404
@@ -178,5 +185,42 @@ func TestPromptStructuredIncludesVariant(t *testing.T) {
 	}
 	if _, err := c.PromptStructured(ctx, sid, "/tmp/repo", "prompt", map[string]any{"type": "object"}); err != nil {
 		t.Fatalf("prompt failed: %v", err)
+	}
+}
+
+func TestPromptTextDisablesTaskTool(t *testing.T) {
+	c := New("http://opencode.local", "", "", "", "", "", 3*time.Second)
+	c.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		status := 200
+		body := "{}"
+		switch {
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/session/s1/message"):
+			raw, _ := io.ReadAll(r.Body)
+			defer r.Body.Close()
+			var payload map[string]any
+			if err := json.Unmarshal(raw, &payload); err != nil {
+				t.Fatalf("failed parsing request body: %v", err)
+			}
+			tools, ok := payload["tools"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected tools map, got %#v", payload["tools"])
+			}
+			if tools["task"] != false {
+				t.Fatalf("expected task tool disabled, got %#v", tools["task"])
+			}
+			body = `{"parts":[{"type":"text","text":"ok"}]}`
+		default:
+			status = 404
+			body = `{"error":"not found"}`
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(bytes.NewBufferString(body)), Header: make(http.Header)}, nil
+	})}
+
+	text, err := c.PromptText(context.Background(), "s1", "/tmp/repo", "prompt")
+	if err != nil {
+		t.Fatalf("prompt text failed: %v", err)
+	}
+	if text != "ok" {
+		t.Fatalf("unexpected text: %q", text)
 	}
 }

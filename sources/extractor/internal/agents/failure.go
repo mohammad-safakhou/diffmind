@@ -12,8 +12,8 @@ import (
 
 // ErrStuck is the sentinel returned by promptAgent when the liveness
 // watchdog determined that an in-flight prompt is stuck (no observable
-// progress on the OpenCode session for IdleTimeout, with no running
-// tool call and no pending permission). The orchestrator surfaces it
+// progress on the OpenCode session for IdleTimeout and no pending
+// permission). The orchestrator surfaces it
 // as error_class=stuck so the failure report and dashboard can render
 // the right remediation tip.
 var ErrStuck = errors.New("stuck")
@@ -43,7 +43,7 @@ func newStuckError(cause string) error { return &stuckError{cause: cause} }
 //   - cancelled: caller cancelled the run (Ctrl-C, SIGTERM, ctx deadline)
 //   - timeout:   net.Error.Timeout() OR clear timeout substring
 //   - stuck:     liveness watchdog observed no progress for IdleTimeout
-//     AND no tool was running / no permission was pending
+//     and no permission was pending
 //   - auth:      OAuth token expired, invalid api key, 401, etc.
 //     (matches nested provider errors too, not just the
 //     top-level HTTP status)

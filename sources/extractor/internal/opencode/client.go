@@ -26,6 +26,10 @@ type Client struct {
 	httpClient *http.Client
 }
 
+var diffmindPromptTools = map[string]bool{
+	"task": false,
+}
+
 func New(baseURL, providerID, modelID, variant, username, password string, timeout time.Duration) *Client {
 	return &Client{
 		baseURL:    strings.TrimSuffix(baseURL, "/"),
@@ -397,6 +401,7 @@ func (c *Client) PromptText(ctx context.Context, sessionID, directory, prompt st
 		u += "?directory=" + url.QueryEscape(directory)
 	}
 	body := map[string]any{
+		"tools": diffmindPromptTools,
 		"parts": []map[string]any{{
 			"type": "text",
 			"text": prompt,
@@ -483,6 +488,7 @@ func (c *Client) PromptStructuredVerbose(ctx context.Context, sessionID, directo
 		u += "?directory=" + url.QueryEscape(directory)
 	}
 	body := map[string]any{
+		"tools": diffmindPromptTools,
 		"format": map[string]any{
 			"type":       "json_schema",
 			"schema":     schema,

@@ -61,6 +61,7 @@ func run(args []string) {
 	skipReexamination := fs.Bool("skip-reexamination", false, "skip stage 2 (LLM re-ask for low-signal seeds) for faster, lower-accuracy runs")
 	minConfidence := fs.Float64("min-confidence", -1, "confidence threshold in [0,1]")
 	idleTimeoutSeconds := fs.Int("idle-timeout-seconds", 0, "abort a prompt after this many seconds without observable progress on the OpenCode session (0 = use config default 120s)")
+	promptRetryCount := fs.Int("prompt-retry-count", -1, "retry a prompt this many times after the liveness watchdog declares it stuck (-1 = use config default 3; 0 = disable)")
 	maxCallSeconds := fs.Int("max-call-seconds", 0, "hard ceiling on a single LLM call's duration in seconds (0 = use config default 1800s)")
 	livenessPollSeconds := fs.Int("liveness-poll-seconds", 0, "how often the liveness watchdog polls OpenCode for progress (0 = use config default 5s)")
 	indexerImage := fs.String("indexer-image", "", "container image for the SCIP indexer (default diffmind-indexer:dev; built from embedded context on first run)")
@@ -125,6 +126,9 @@ func run(args []string) {
 	if *idleTimeoutSeconds > 0 {
 		cfg.Runtime.IdleTimeoutSec = *idleTimeoutSeconds
 	}
+	if *promptRetryCount >= 0 {
+		cfg.Runtime.PromptRetryCount = *promptRetryCount
+	}
 	if *maxCallSeconds > 0 {
 		cfg.Runtime.MaxCallSeconds = *maxCallSeconds
 	}
@@ -174,6 +178,7 @@ func retry(args []string) {
 	providerID := fs.String("provider-id", "", "OpenCode provider ID (overrides config)")
 	modelID := fs.String("model-id", "", "OpenCode model ID (overrides config)")
 	modelVariant := fs.String("model-variant", "", "OpenCode model variant")
+	promptRetryCount := fs.Int("prompt-retry-count", -1, "retry a prompt this many times after the liveness watchdog declares it stuck (-1 = use config default 3; 0 = disable)")
 	outDir := fs.String("out", "", "artifact base directory (default .diffmind/runs)")
 	runID := fs.String("run", "", "run id to resume")
 	verbose := fs.Bool("verbose", false, "enable debug logs")
@@ -214,6 +219,9 @@ func retry(args []string) {
 	}
 	if *outDir != "" {
 		cfg.Artifacts.BaseDir = *outDir
+	}
+	if *promptRetryCount >= 0 {
+		cfg.Runtime.PromptRetryCount = *promptRetryCount
 	}
 	if cfg.OpenCode.Password == "" {
 		cfg.OpenCode.Password = os.Getenv("OPENCODE_SERVER_PASSWORD")

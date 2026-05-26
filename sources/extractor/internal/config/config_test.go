@@ -77,12 +77,47 @@ func TestSanitize_ZeroLivenessFieldsResetToDefaults(t *testing.T) {
 	if c.Runtime.LivenessPollSec != def.Runtime.LivenessPollSec {
 		t.Errorf("LivenessPollSec not reset: got %d", c.Runtime.LivenessPollSec)
 	}
+	if c.Runtime.PromptRetryCount != def.Runtime.PromptRetryCount {
+		t.Errorf("PromptRetryCount changed: got %d", c.Runtime.PromptRetryCount)
+	}
 	// We expect 3 zero-value fixes plus a transport timeout fix (since
 	// MaxCall went from 0 → 1800 and the transport stays at default,
 	// which may or may not need bumping depending on order). Just
 	// assert that at least 3 fixes were reported.
 	if len(fixes) < 3 {
 		t.Errorf("expected at least 3 fixes for the three zero liveness fields; got %d: %+v", len(fixes), fixes)
+	}
+}
+
+func TestSanitize_NegativeRetryCountResetsToDefault(t *testing.T) {
+	c := Default()
+	c.Runtime.PromptRetryCount = -1
+	fixes := c.Sanitize()
+	if c.Runtime.PromptRetryCount != Default().Runtime.PromptRetryCount {
+		t.Fatalf("PromptRetryCount = %d, want default %d", c.Runtime.PromptRetryCount, Default().Runtime.PromptRetryCount)
+	}
+	found := false
+	for _, f := range fixes {
+		if f.Field == "runtime.prompt_retry_count" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected runtime.prompt_retry_count fix; got %+v", fixes)
+	}
+}
+
+func TestSanitize_AllowsZeroRetryCount(t *testing.T) {
+	c := Default()
+	c.Runtime.PromptRetryCount = 0
+	fixes := c.Sanitize()
+	if c.Runtime.PromptRetryCount != 0 {
+		t.Fatalf("PromptRetryCount = %d, want 0", c.Runtime.PromptRetryCount)
+	}
+	for _, f := range fixes {
+		if f.Field == "runtime.prompt_retry_count" {
+			t.Fatalf("zero retry count should disable retries, not sanitize: %+v", fixes)
+		}
 	}
 }
 

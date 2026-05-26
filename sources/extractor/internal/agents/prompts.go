@@ -18,6 +18,8 @@ const readOnlyPreamble = `OPERATIONAL RULES (apply to the entire response):
   edit, create, rename, chmod, delete, or move any file. Do NOT run shell
   commands that mutate state (no installs, no formatters, no codegen).
 - Your job is to READ source code and return a structured JSON answer.
+- Do NOT delegate to subagents or use a task tool; inspect directly with
+  read, glob, grep, and other direct read-only tools.
 - All file paths in your answer MUST be paths relative to the working
   directory (no leading slash, no temp-dir prefix). Use forward slashes.
 

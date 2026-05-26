@@ -21,8 +21,16 @@ var readOnlyPermissions = map[string]struct{}{
 	"read":     {},
 	"glob":     {},
 	"grep":     {},
-	"task":     {},
 	"webfetch": {}, // network-only, doesn't touch disk
+}
+
+// deniedPermissions are non-mutating in the filesystem sense, but they are
+// unsafe for DiffMind's headless pipeline. `task` delegates to a subagent
+// session whose progress is opaque to the parent and has repeatedly wedged
+// discovery until the hard ceiling. The parent prompt can do the same work
+// with direct read/glob/grep tools, so deny delegation.
+var deniedPermissions = map[string]struct{}{
+	"task": {},
 }
 
 // mutatingPermissions are tools we never want to allow. These are the
@@ -43,9 +51,11 @@ var mutatingPermissions = map[string]struct{}{
 //
 // Rules:
 //
-//   - If permission kind is read-only ("read", "glob", "grep", "task",
+//   - If permission kind is read-only ("read", "glob", "grep",
 //     "webfetch"), allow regardless of pattern. Read tools cannot mutate
 //     anything.
+//   - If permission kind is denied ("task"), deny because delegation can
+//     wedge headless runs even though it is not a filesystem mutation.
 //   - If permission kind is mutating ("edit", "write", "bash", ...) AND
 //     no pattern matches our snapshot, deny.
 //   - If permission kind is "external_directory" and at least one
@@ -66,6 +76,12 @@ func decidePermission(p PendingPermission, snapshotPath string) permissionDecisi
 		return permissionDecision{
 			Response: "allow",
 			Reason:   "read-only permission (" + kind + "); always allowed",
+		}
+	}
+	if _, denied := deniedPermissions[kind]; denied {
+		return permissionDecision{
+			Response: "deny",
+			Reason:   "delegating tool (" + kind + ") disabled for headless extraction",
 		}
 	}
 	if kind == "external_directory" {

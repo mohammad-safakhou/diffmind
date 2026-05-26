@@ -227,11 +227,13 @@ func runLiveness(watchCtx context.Context, cfg livenessConfig, probe livenessPro
 			continue
 		}
 
-		// No new activity. But idleness is only meaningful when the
-		// agent is "free to make progress" — i.e. not waiting on a
-		// tool result or a pending permission. Both of those mean
-		// "the ball is in someone else's court", not "the agent has
-		// frozen".
+		// No new activity. A pending permission is still our problem to
+		// resolve, so pause while the permission watchdog catches up. A
+		// running tool is different: OpenCode exposes no inner progress for
+		// tools like `task`, so treating "tool running" as permanent
+		// activity can mask a dead subagent until MaxCall. The tool start was
+		// already counted as progress above; if the tool remains the latest
+		// unchanged part, the regular idle window must be allowed to trip.
 		if snap.PermissionWait {
 			// Pause the idle clock: refresh the timestamp so the
 			// next iteration starts fresh once the permission
@@ -244,18 +246,6 @@ func runLiveness(watchCtx context.Context, cfg livenessConfig, probe livenessPro
 			pollTimer.Reset(cfg.PollInterval)
 			continue
 		}
-		if latestToolRunning(snap.Latest) {
-			lastActivityAt = time.Now()
-			if prevState != stateToolRunning {
-				emit("liveness: tool running, idle clock paused", map[string]any{
-					"last_part": describeLatestPart(snap.Latest),
-				})
-				prevState = stateToolRunning
-			}
-			pollTimer.Reset(cfg.PollInterval)
-			continue
-		}
-
 		idle := time.Since(lastActivityAt)
 		if idle > cfg.IdleTimeout {
 			lastDesc := describeLatestPart(snap.Latest)
@@ -278,6 +268,19 @@ func runLiveness(watchCtx context.Context, cfg livenessConfig, probe livenessPro
 				LastWhen: lastActivityAt,
 				Aborted:  true,
 			}
+		}
+
+		if latestToolRunning(snap.Latest) {
+			if prevState != stateToolRunning {
+				emit("liveness: tool running, waiting for progress", map[string]any{
+					"idle_sec":     int(idle.Seconds()),
+					"idle_max_sec": int(cfg.IdleTimeout.Seconds()),
+					"last_part":    describeLatestPart(snap.Latest),
+				})
+				prevState = stateToolRunning
+			}
+			pollTimer.Reset(cfg.PollInterval)
+			continue
 		}
 
 		// Idle — but not yet past the threshold. Emit ONCE on
@@ -339,8 +342,8 @@ func latestPartStart(m opencode.Message) int64 {
 }
 
 // latestToolRunning reports whether the latest part is a tool call
-// whose state is still "running" — i.e. the agent is waiting on its
-// own tool to finish, which is NOT idleness from our perspective.
+// whose state is still "running". The tool start counts as progress,
+// but an unchanged running tool is still subject to the idle timeout.
 func latestToolRunning(m opencode.Message) bool {
 	p, ok := latestPart(m)
 	if !ok || p.Type != "tool" || p.State == nil {

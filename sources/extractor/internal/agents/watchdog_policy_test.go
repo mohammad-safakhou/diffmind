@@ -18,11 +18,18 @@ func TestDecidePermission_ReadIsAlwaysAllowed(t *testing.T) {
 }
 
 func TestDecidePermission_GlobAndGrepAreAllowed(t *testing.T) {
-	for _, kind := range []string{"glob", "grep", "task", "webfetch"} {
+	for _, kind := range []string{"glob", "grep", "webfetch"} {
 		d := decidePermission(PendingPermission{Permission: kind}, snapshotDir)
 		if d.Response != "allow" {
 			t.Fatalf("%s should allow, got %q", kind, d.Response)
 		}
+	}
+}
+
+func TestDecidePermission_TaskIsDenied(t *testing.T) {
+	d := decidePermission(PendingPermission{Permission: "task"}, snapshotDir)
+	if d.Response != "deny" {
+		t.Fatalf("task should deny, got %q (%s)", d.Response, d.Reason)
 	}
 }
 

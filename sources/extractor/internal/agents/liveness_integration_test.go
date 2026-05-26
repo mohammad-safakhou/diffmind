@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -29,9 +30,11 @@ import (
 // because of the watchdog, not collateral.
 type stuckFake struct {
 	stuckObjective string
+	stuckAttempts  int
 	aborted        atomic.Bool
-	abortSignal    chan struct{}
-	abortOnce      sync.Once
+	mu             sync.Mutex
+	abortSignals   map[string]chan struct{}
+	sessionSeq     atomic.Int32
 
 	httpRouteAttempts atomic.Int32
 }
@@ -39,13 +42,18 @@ type stuckFake struct {
 func newStuckFake(stuckObjective string) *stuckFake {
 	return &stuckFake{
 		stuckObjective: stuckObjective,
-		abortSignal:    make(chan struct{}),
+		stuckAttempts:  999,
+		abortSignals:   map[string]chan struct{}{},
 	}
 }
 
 func (f *stuckFake) Enabled() bool { return true }
 func (f *stuckFake) CreateSession(ctx context.Context, directory string) (string, error) {
-	return "ses_test", nil
+	sid := fmt.Sprintf("ses_test_%d", f.sessionSeq.Add(1))
+	f.mu.Lock()
+	f.abortSignals[sid] = make(chan struct{})
+	f.mu.Unlock()
+	return sid, nil
 }
 func (f *stuckFake) DeleteSession(ctx context.Context, sessionID, directory string) error {
 	return nil
@@ -76,12 +84,16 @@ func (f *stuckFake) PromptStructuredVerboseRaw(ctx context.Context, sessionID, d
 		return map[string]any{}, nil, "", nil
 
 	case role == "discovery" && strings.Contains(prompt, "OBJECTIVE_ID: "+f.stuckObjective):
-		f.httpRouteAttempts.Add(1)
+		attempt := int(f.httpRouteAttempts.Add(1))
+		if attempt > f.stuckAttempts {
+			return map[string]any{"items": []any{}}, nil, "", nil
+		}
 		// Block until abort or ctx cancellation.
+		abortSignal := f.abortSignal(sessionID)
 		select {
 		case <-ctx.Done():
 			return nil, nil, "", ctx.Err()
-		case <-f.abortSignal:
+		case <-abortSignal:
 			f.aborted.Store(true)
 			return nil, nil, "", errors.New("prompt aborted by liveness watchdog")
 		}
@@ -120,11 +132,28 @@ func (f *stuckFake) ListPermissions(ctx context.Context, directory string) ([]op
 	return nil, nil
 }
 
+func (f *stuckFake) abortSignal(sessionID string) <-chan struct{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ch := f.abortSignals[sessionID]
+	if ch == nil {
+		ch = make(chan struct{})
+		f.abortSignals[sessionID] = ch
+	}
+	return ch
+}
+
 // livenessAborter surface: fire the abort signal so the in-flight
 // PromptStructuredVerboseRaw returns. This is the real-world
 // equivalent of POST /session/{id}/abort taking effect.
 func (f *stuckFake) AbortSession(ctx context.Context, sessionID, directory string) error {
-	f.abortOnce.Do(func() { close(f.abortSignal) })
+	f.mu.Lock()
+	ch := f.abortSignals[sessionID]
+	if ch != nil {
+		close(ch)
+		delete(f.abortSignals, sessionID)
+	}
+	f.mu.Unlock()
 	return nil
 }
 
@@ -147,6 +176,7 @@ func TestLivenessWatchdogAbortsStuckDiscoveryPrompt(t *testing.T) {
 	cfg.Runtime.IdleTimeoutSec = 1  // 1 second
 	cfg.Runtime.MaxCallSeconds = 60 // safety belt, not under test here
 	cfg.Runtime.LivenessPollSec = 1 // 1 second
+	cfg.Runtime.PromptRetryCount = 0
 	// Override defaults via direct manipulation since these are int
 	// fields with a 1-second floor. We'll override the watchdog
 	// config more aggressively by setting tiny values directly on
@@ -189,5 +219,34 @@ func TestLivenessWatchdogAbortsStuckDiscoveryPrompt(t *testing.T) {
 	// Cleanup retained snapshot.
 	if res.SnapshotPath != "" {
 		_ = os.RemoveAll(res.SnapshotPath)
+	}
+}
+
+func TestPromptRetriesStuckDiscoveryAndCompletes(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.Workers = 4
+	cfg.Quality.MinConfidence = 0.7
+	cfg.Runtime.SkipReexamination = true
+	cfg.Runtime.IdleTimeoutSec = 1
+	cfg.Runtime.MaxCallSeconds = 60
+	cfg.Runtime.LivenessPollSec = 1
+	cfg.Runtime.PromptRetryCount = 3
+	cfg.Indexer.Disabled = true
+
+	f := newStuckFake("exposure.http_route")
+	f.stuckAttempts = 1
+
+	res, err := Run(context.Background(), cfg, t.TempDir(), f)
+	if err != nil {
+		t.Fatalf("expected retry to recover stuck discovery prompt, got err: %v failure=%+v", err, res.Failure)
+	}
+	if res.Failure != nil {
+		t.Fatalf("Failure must be nil after retry recovery; got %+v", res.Failure)
+	}
+	if got := f.httpRouteAttempts.Load(); got != 2 {
+		t.Fatalf("expected first stuck attempt plus one retry, got %d attempts", got)
+	}
+	if !f.aborted.Load() {
+		t.Errorf("first stuck attempt should have been aborted by liveness")
 	}
 }

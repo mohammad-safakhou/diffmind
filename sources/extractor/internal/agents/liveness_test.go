@@ -213,10 +213,11 @@ func TestLivenessAbortsOnIdle(t *testing.T) {
 	}
 }
 
-// A tool with status=running pauses the idle clock indefinitely.
-// The watchdog must NOT abort even if no parts appear, as long as the
-// tool stays in running state.
-func TestLivenessPausesWhileToolRunning(t *testing.T) {
+// A tool with status=running must not pause the idle clock forever.
+// OpenCode's task tool can spawn a subagent whose inner progress is not
+// visible to the parent message; if the parent sees no further progress,
+// the watchdog should abort at IdleTimeout instead of waiting for MaxCall.
+func TestLivenessAbortsWhenToolRunningWithoutProgress(t *testing.T) {
 	frozen := snap{parts: []opencode.MessagePart{toolPart("read", "running", 50)}}.build()
 	probe := newScriptedProbe(frozen)
 	abort := &countingAborter{}
@@ -227,22 +228,23 @@ func TestLivenessPausesWhileToolRunning(t *testing.T) {
 		PollInterval: 15 * time.Millisecond,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan *livenessReport, 1)
 	go func() { done <- runLiveness(ctx, cfg, probe, abort, "test", nil) }()
 
-	// Run for several idle windows worth of time. Should NOT abort.
-	time.Sleep(200 * time.Millisecond)
-	cancel()
 	select {
 	case rep := <-done:
-		if rep != nil {
-			t.Fatalf("must not abort while tool is running; got %+v", rep)
+		if rep == nil {
+			t.Fatalf("expected abort while running tool made no progress")
 		}
-	case <-time.After(time.Second):
-		t.Fatalf("watchdog did not exit")
+		if !rep.Aborted {
+			t.Errorf("report.Aborted must be true; got %+v", rep)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("watchdog did not abort running tool")
 	}
-	if abort.n.Load() != 0 {
-		t.Errorf("Abort must not be called: count = %d", abort.n.Load())
+	if abort.n.Load() == 0 {
+		t.Errorf("Abort must be called for stuck running tool")
 	}
 }
 

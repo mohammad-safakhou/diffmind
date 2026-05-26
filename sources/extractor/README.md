@@ -68,6 +68,9 @@ Recommended OpenCode server config for a DiffMind-only deployment (`~/.config/op
 
 ```json
 {
+  "tools": {
+    "task": false
+  },
   "permission": {
     "edit": "deny",
     "bash": "deny",
@@ -103,7 +106,8 @@ go run ./cmd/diffmind run \
   --model-variant <variant> \
   --workers 16 \
   --max-catalog-items 80 \
-  --opencode-timeout-seconds 300 \
+  --idle-timeout-seconds 120 \
+  --prompt-retry-count 3 \
   --reuse-opencode-session=false \
   --cleanup-opencode-sessions=false \
   --min-confidence 0.70 \
@@ -135,7 +139,9 @@ Controls:
 - `--trace` => maximum logs
 - `--log-file` => append logs to file
 - `DIFFMIND_LOG_LEVEL=info|debug|trace`
-- `--opencode-timeout-seconds` => per-request timeout to OpenCode (default 90)
+- `--idle-timeout-seconds` => abort a prompt after this many seconds without observable progress (default 120)
+- `--prompt-retry-count` => retry a stuck prompt this many times after idle abort (default 3, set 0 to disable)
+- `--opencode-timeout-seconds` => raw transport fail-safe timeout to OpenCode (default 4h)
 - `--model-variant` => pass model variant to OpenCode (`medium`, `high`, `max`, etc. depending on provider/model support)
 - `--max-catalog-items` => dependency items sent per connection-mapping prompt batch (default 80)
 - `--reuse-opencode-session` => reuse one OpenCode session across prompts for A/B testing (default false)
@@ -174,7 +180,9 @@ grep "service=tool.registry" ~/.local/share/opencode/log/<file>.log | head
 
 DiffMind's own watchdog auto-replies to permission asks so the run never
 deadlocks:
-- `read`, `glob`, `grep`, `task`, `webfetch` are auto-allowed.
+- `read`, `glob`, `grep`, `webfetch` are auto-allowed.
+- `task` is disabled/denied: DiffMind prompts must use direct read-only
+  tools, not nested subagents whose progress is opaque to the parent run.
 - `external_directory` is auto-allowed if the asked pattern references our
   snapshot directory (the LLM occasionally hallucinates the macOS user-
   folder hash and OpenCode flags those paths as "external" — the basename
