@@ -209,6 +209,165 @@ func (o *orchestrator) loadResumeState(dir string) (
 	return
 }
 
+// ---- discovery per-objective checkpoint ----
+//
+// Without this, a single objective failing mid-stage causes all
+// already-completed objectives to be re-run on retry, wasting LLM
+// calls that succeeded. The pattern mirrors detail_entities.jsonl.
+
+const discoverEntitiesJSONL = "discover_entities.jsonl"
+
+// discoveryCheckpointEntry is one row of state/discover_entities.jsonl.
+type discoveryCheckpointEntry struct {
+	// ObjectiveID is the unique identifier of the completed objective.
+	ObjectiveID string      `json:"objective_id"`
+	// Items is the list of entities discovered for this objective.
+	// Empty slice (not nil) means the objective ran and found nothing.
+	Items       []llmEntity `json:"items"`
+	WrittenAt   time.Time   `json:"written_at"`
+}
+
+// appendDiscoveryObjective appends one completed objective's result to the
+// per-item checkpoint. Best-effort; errors are logged and swallowed.
+func (o *orchestrator) appendDiscoveryObjective(entry discoveryCheckpointEntry) {
+	if strings.TrimSpace(o.runDir) == "" {
+		return
+	}
+	dir := filepath.Join(o.runDir, stateDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	entry.WrittenAt = time.Now().UTC()
+	b, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	path := filepath.Join(dir, discoverEntitiesJSONL)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(b, '\n'))
+}
+
+// loadDiscoveryCheckpoint reads the per-objective discovery checkpoint.
+// Returns a map keyed by objective_id. Missing file returns empty map.
+func (o *orchestrator) loadDiscoveryCheckpoint(dir string) map[string]discoveryCheckpointEntry {
+	out := map[string]discoveryCheckpointEntry{}
+	if strings.TrimSpace(dir) == "" {
+		return out
+	}
+	path := filepath.Join(dir, discoverEntitiesJSONL)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var entry discoveryCheckpointEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry.ObjectiveID == "" {
+			continue
+		}
+		out[entry.ObjectiveID] = entry
+	}
+	return out
+}
+
+// ---- reexamination per-item checkpoint ----
+//
+// Unlike the detail stage (which writes one JSONL line per entity) the
+// reexamination stage had no per-item checkpoint — it only wrote
+// reexamination.json when the whole stage succeeded. A single prompt
+// failure halted the stage and on retry ALL suspects were re-run, even
+// the ones that had already been confirmed/rejected.
+//
+// The fix: write one JSONL line per completed suspect immediately after
+// runReexamineOne returns (success OR explicit rejection). Only hard
+// errors (stuck, timeout, 5xx) skip the write so those items are
+// retried. On resume, loadReexaminationCheckpoint tells the stage which
+// suspects it can skip.
+
+const reexamEntitiesJSONL = "reexam_entities.jsonl"
+
+// reexamCheckpointEntry is one row of state/reexam_entities.jsonl.
+type reexamCheckpointEntry struct {
+	// Key is objective_id::safe_seed_name, same scheme as detail.
+	Key      string `json:"key"`
+	// Outcome is "confirmed", "rejected", or "clean" (was never suspect).
+	// We only write "confirmed" and "rejected"; "clean" seeds never enter
+	// the suspect list and are always passed through.
+	Outcome  string            `json:"outcome"`
+	// Seed is the (possibly corrected) seed after re-examination.
+	// Populated only for outcome=="confirmed".
+	Seed     *llmEntity        `json:"seed,omitempty"`
+	// Unresolved is populated only for outcome=="rejected".
+	Unresolved *model.UnresolvedItem `json:"unresolved,omitempty"`
+	WrittenAt time.Time         `json:"written_at"`
+}
+
+func reexamKey(objectiveID, seedName string) string {
+	return objectiveID + "::" + safeJobID(seedName)
+}
+
+// appendReexamEntity appends one completed reexamination result to the
+// per-item checkpoint. Best-effort; errors are logged and swallowed.
+func (o *orchestrator) appendReexamEntity(entry reexamCheckpointEntry) {
+	if strings.TrimSpace(o.runDir) == "" {
+		return
+	}
+	dir := filepath.Join(o.runDir, stateDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	entry.WrittenAt = time.Now().UTC()
+	b, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	path := filepath.Join(dir, reexamEntitiesJSONL)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(b, '\n'))
+}
+
+// loadReexaminationCheckpoint reads the per-item checkpoint written by
+// previous runs. Returns a map keyed by reexamKey. Missing file returns
+// an empty map (caller treats it as "nothing done yet").
+func (o *orchestrator) loadReexaminationCheckpoint(dir string) map[string]reexamCheckpointEntry {
+	out := map[string]reexamCheckpointEntry{}
+	if strings.TrimSpace(dir) == "" {
+		return out
+	}
+	path := filepath.Join(dir, reexamEntitiesJSONL)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var entry reexamCheckpointEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry.Key == "" {
+			continue
+		}
+		out[entry.Key] = entry
+	}
+	return out
+}
+
 // persistStageState writes a single stage's output as JSON to
 // <runDir>/state/<filename>. It is best-effort: errors are logged but
 // never abort the run because we don't want artifact persistence to

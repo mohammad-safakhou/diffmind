@@ -73,12 +73,39 @@ func (o *orchestrator) runDiscovery(ctx context.Context, objs []objectives.Objec
 	if len(objs) == 0 {
 		return nil
 	}
+
+	// Load per-objective checkpoint so a retry skips already-completed objectives.
+	checkpoint := o.loadDiscoveryCheckpoint(o.runDir + "/" + stateDir)
+
+	// Objectives that are already in the checkpoint are satisfied immediately
+	// without any LLM call. We still add them to `out` so the rest of the
+	// pipeline sees a complete result set.
+	out := make([]discoveryResult, 0, len(objs))
+	pending := make([]objectives.Objective, 0, len(objs))
+	for _, obj := range objs {
+		if entry, done := checkpoint[obj.ID]; done {
+			out = append(out, discoveryResult{Objective: obj, Items: entry.Items})
+			if onResult != nil {
+				onResult()
+			}
+			util.Info("agents.discovery", "objective skipped (loaded from checkpoint)", map[string]any{
+				"objective": obj.ID, "items": len(entry.Items),
+			})
+			continue
+		}
+		pending = append(pending, obj)
+	}
+
+	if len(pending) == 0 {
+		return out
+	}
+
 	workers := o.cfg.Runtime.Workers
 	if workers <= 0 {
 		workers = 8
 	}
-	if workers > len(objs) {
-		workers = len(objs)
+	if workers > len(pending) {
+		workers = len(pending)
 	}
 
 	stageCtx, cancel := context.WithCancel(ctx)
@@ -106,6 +133,14 @@ func (o *orchestrator) runDiscovery(ctx context.Context, objs []objectives.Objec
 				}
 				util.Debug("agents.discovery", "worker picked objective", map[string]any{"worker": workerID, "objective": obj.ID})
 				items, err := o.runDiscoveryOne(stageCtx, obj, rf)
+				if err == nil {
+					// Checkpoint the success immediately so a mid-stage
+					// failure on a later objective won't re-run this one.
+					o.appendDiscoveryObjective(discoveryCheckpointEntry{
+						ObjectiveID: obj.ID,
+						Items:       items,
+					})
+				}
 				results <- discoveryResult{Objective: obj, Items: items, Err: err}
 				if err != nil {
 					// First failure trips the kill-switch. Subsequent
@@ -118,7 +153,7 @@ func (o *orchestrator) runDiscovery(ctx context.Context, objs []objectives.Objec
 	}
 
 	go func() {
-		for _, obj := range objs {
+		for _, obj := range pending {
 			jobs <- obj
 		}
 		close(jobs)
@@ -126,7 +161,6 @@ func (o *orchestrator) runDiscovery(ctx context.Context, objs []objectives.Objec
 		close(results)
 	}()
 
-	out := make([]discoveryResult, 0, len(objs))
 	for r := range results {
 		out = append(out, r)
 		if onResult != nil {
