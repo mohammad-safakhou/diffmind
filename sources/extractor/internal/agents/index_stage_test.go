@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -17,6 +18,14 @@ import (
 type captureIndexer struct {
 	mu  sync.Mutex
 	req indexer.RunRequest
+}
+
+type failingIndexer struct{}
+
+func (f failingIndexer) Index(_ context.Context, _ indexer.RunRequest) (*indexer.RunResult, error) {
+	return &indexer.RunResult{
+		SchemaVersion: indexer.ReportSchemaVersion,
+	}, errors.New("indexer container exited with code 1")
 }
 
 // Index implements indexer.Indexer. It returns an empty (but valid)
@@ -147,6 +156,23 @@ func TestRunIndexStageHaltsOnImageBuildFailure(t *testing.T) {
 	// dashboard's failure report shows the user the real cause.
 	if !errorContains(err, "indexer image build failed") {
 		t.Errorf("error %q should mention 'indexer image build failed'", err)
+	}
+}
+
+func TestRunIndexStageHaltsOnIndexerRuntimeFailure(t *testing.T) {
+	o := &orchestrator{
+		cfg:             config.Default(),
+		runDir:          t.TempDir(),
+		sessionDir:      t.TempDir(),
+		indexerOverride: failingIndexer{},
+	}
+
+	err := o.runIndexStage(context.Background())
+	if err == nil {
+		t.Fatalf("expected runIndexStage to fail when configured indexer execution fails")
+	}
+	if !errorContains(err, "indexer failed") {
+		t.Errorf("error %q should mention 'indexer failed'", err)
 	}
 }
 

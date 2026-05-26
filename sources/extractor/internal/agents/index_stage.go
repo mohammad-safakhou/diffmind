@@ -24,13 +24,14 @@ import (
 //   - <runDir>/index/index.scip          merged multi-language SCIP index
 //   - <runDir>/index/index_status.json   per-language status report
 //   - orchestrator.scipIndex             in-memory *scip.Index for the
-//                                        connections stage to query
+//     connections stage to query
 //
 // The stage emits standard pipeline events so the dashboard renders
-// per-language progress just like any other stage. We do NOT halt the
-// whole run on indexer failure: a partial index (or even an empty one)
-// still lets connections fall back to its name-based matcher. The
-// run_failure record gets a warning so users can triage.
+// per-language progress just like any other stage. Deliberate skips
+// (Indexer.Disabled or no supported languages) are allowed to degrade to the
+// shallow matcher, but a configured indexer that actually fails must halt the
+// run. Otherwise the dashboard can show a successful run with a failed stage
+// and a path-less connections graph.
 func (o *orchestrator) runIndexStage(ctx context.Context) error {
 	if o.cfg.Indexer.Disabled {
 		o.emit(events.Event{
@@ -102,6 +103,39 @@ func (o *orchestrator) runIndexStage(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("index dir absolute: %w", err)
 	}
+
+	// Fast-path: if a valid index.scip already exists in the run directory
+	// (e.g. the run was retried after connections failed, not after indexing
+	// failed), load it directly and skip the Docker container entirely.
+	// This saves many minutes on retries where only post-index stages need
+	// to re-run.
+	existingIndex := filepath.Join(indexDir, "index.scip")
+	if st, err := os.Stat(existingIndex); err == nil && st.Size() > 0 {
+		idx, loadErr := scip.Load(existingIndex)
+		if loadErr == nil {
+			o.scipIndex = idx
+			o.emit(events.Event{
+				Kind: events.KindStageCompleted, Stage: "index", Status: events.StatusSuccess,
+				Message: "loaded existing index from prior run",
+				Payload: map[string]any{
+					"index_path":  existingIndex,
+					"index_bytes": st.Size(),
+					"reused":      true,
+				},
+			})
+			util.Info("agents.index", "reusing existing index.scip from run directory", map[string]any{
+				"index_path":  existingIndex,
+				"index_bytes": st.Size(),
+				"documents":   idx.DocumentCount(),
+			})
+			return nil
+		}
+		util.Warn("agents.index", "existing index.scip unreadable, re-running indexer", map[string]any{
+			"index_path": existingIndex,
+			"error":      loadErr.Error(),
+		})
+	}
+
 	sourceDir, err := filepath.Abs(o.sessionDir)
 	if err != nil {
 		return fmt.Errorf("source dir absolute: %w", err)
@@ -154,7 +188,7 @@ func (o *orchestrator) runIndexStage(ctx context.Context) error {
 		PullPolicy:        indexer.PullPolicy(effectivePullPolicy(o.cfg.Indexer)),
 		NetworkMode:       o.cfg.Indexer.NetworkMode,
 		ExtraEnv:          o.cfg.Indexer.ExtraEnv,
-		ExtraMounts:       o.cfg.Indexer.ExtraMounts,
+		ExtraMounts:       mergeMounts(o.cfg.Indexer.ExtraMounts, defaultIndexerMounts()),
 	}
 	// The parallel image build already ensured the image
 	// exists. We no longer call ensureIndexerImage from this
@@ -186,9 +220,10 @@ func (o *orchestrator) runIndexStage(ctx context.Context) error {
 	}
 
 	if err != nil {
-		// Treat docker errors as non-fatal: log + warn + carry on.
-		// Connections will degrade to the name-matcher fallback.
-		util.Warn("agents.index", "indexer failed; connections will degrade", map[string]any{
+		// The indexer was configured and ran, but failed. Halt the run so
+		// users do not mistake a path-less connection graph for a complete
+		// extraction.
+		util.Warn("agents.index", "indexer failed; halting run", map[string]any{
 			"error": err.Error(),
 		})
 		o.emit(events.Event{
@@ -202,17 +237,17 @@ func (o *orchestrator) runIndexStage(ctx context.Context) error {
 			Kind: events.KindStageCompleted, Stage: "index", Status: events.StatusFailed,
 			Message: err.Error(),
 		})
-		return nil // never abort the whole run because indexing failed
+		return fmt.Errorf("indexer failed: %w", err)
 	}
 
 	o.emit(events.Event{
 		Kind: events.KindJobCompleted, Stage: "index", JobID: indexJobID,
 		Status: events.StatusSuccess,
 		Payload: map[string]any{
-			"index_path":   result.IndexPath,
-			"index_bytes":  result.IndexBytes,
-			"duration_ms":  time.Since(stageStart).Milliseconds(),
-			"languages":    languageNames(result.Languages),
+			"index_path":  result.IndexPath,
+			"index_bytes": result.IndexBytes,
+			"duration_ms": time.Since(stageStart).Milliseconds(),
+			"languages":   languageNames(result.Languages),
 		},
 	})
 
@@ -227,10 +262,10 @@ func (o *orchestrator) runIndexStage(ctx context.Context) error {
 		} else {
 			o.scipIndex = idx
 			util.Info("agents.index", "scip index loaded", map[string]any{
-				"index_path":            result.IndexPath,
-				"documents":             idx.DocumentCount(),
-				"symbol_definitions":    idx.SymbolDefinitionCount(),
-				"detected_languages":    result.DetectedLanguages,
+				"index_path":         result.IndexPath,
+				"documents":          idx.DocumentCount(),
+				"symbol_definitions": idx.SymbolDefinitionCount(),
+				"detected_languages": result.DetectedLanguages,
 			})
 		}
 	}
@@ -459,6 +494,79 @@ func (w *indexerLogWriter) Write(p []byte) (int, error) {
 	// tens of thousands of lines for a Maven cold pull and that
 	// would saturate the SSE channel.
 	return len(p), nil
+}
+
+// defaultIndexerMounts returns volume mounts to inject into every indexer
+// container run, based on what exists on the host. Mounts are read-only
+// and are skipped silently when the host path is absent.
+//
+// Rationale for each mount:
+//
+//   ~/.m2/settings.xml  Maven reads this for repository credentials and
+//                       mirror URLs. Projects that depend on a private
+//                       Artifactory/Nexus instance (common in enterprises)
+//                       will fail to resolve their parent POM without it.
+//
+//   ~/.m2/repository    The local Maven cache. Mounting it read-only lets
+//                       the container resolve already-downloaded artifacts
+//                       without hitting the network at all, cutting cold
+//                       build time from minutes to seconds on retry runs.
+//                       Read-only is intentional: we don't want the
+//                       container to pollute the host cache with snapshot
+//                       artifacts built with our patched javac.
+//
+//   ~/.gradle/caches    Analogous cache directory for Gradle-based projects.
+//
+//   ~/.gradle/wrapper   Gradle wrapper JARs; avoids re-downloading the
+//                       Gradle distribution on every container start.
+func defaultIndexerMounts() map[string]string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+
+	candidates := []struct{ host, container string }{
+		{filepath.Join(home, ".m2", "settings.xml"), "/root/.m2/settings.xml:ro"},
+		{filepath.Join(home, ".m2", "repository"), "/root/.m2/repository:ro"},
+		{filepath.Join(home, ".gradle", "caches"), "/root/.gradle/caches:ro"},
+		{filepath.Join(home, ".gradle", "wrapper"), "/root/.gradle/wrapper:ro"},
+	}
+
+	mounts := map[string]string{}
+	for _, c := range candidates {
+		if _, err := os.Stat(c.host); err == nil {
+			mounts[c.host] = c.container
+		}
+	}
+	return mounts
+}
+
+// mergeMounts merges explicit user-configured mounts (higher priority) with
+// auto-detected defaults (lower priority). If the user has already configured
+// a mount for the same container path, their value wins.
+func mergeMounts(explicit, defaults map[string]string) map[string]string {
+	if len(defaults) == 0 && len(explicit) == 0 {
+		return nil
+	}
+	// Build a set of container paths already claimed by explicit mounts.
+	explicitContainerPaths := map[string]bool{}
+	for _, containerSpec := range explicit {
+		// containerSpec may be "path:ro" or just "path".
+		containerPath := strings.SplitN(containerSpec, ":", 2)[0]
+		explicitContainerPaths[containerPath] = true
+	}
+
+	merged := make(map[string]string, len(explicit)+len(defaults))
+	for k, v := range defaults {
+		containerPath := strings.SplitN(v, ":", 2)[0]
+		if !explicitContainerPaths[containerPath] {
+			merged[k] = v
+		}
+	}
+	for k, v := range explicit {
+		merged[k] = v
+	}
+	return merged
 }
 
 // _ keeps imports referenced even if no production path uses them yet.

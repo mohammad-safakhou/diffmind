@@ -222,6 +222,7 @@ func TestRunBuildsExposuresDependenciesAndConnections(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.Workers = 4
 	cfg.Quality.MinConfidence = 0.7
+	cfg.Indexer.Disabled = true
 	fake := newFakeOpenCode()
 
 	result, err := Run(context.Background(), cfg, t.TempDir(), fake)
@@ -583,6 +584,7 @@ func TestRunConnectionStagePreservesAllDependencies(t *testing.T) {
 	cfg.Runtime.Workers = 4
 	cfg.Runtime.MaxCatalogItems = 2 // setting kept for parity; unused by connections now
 	cfg.Quality.MinConfidence = 0.7
+	cfg.Indexer.Disabled = true
 	fake := &fakeBatching{rec: newRecorder()}
 
 	result, err := Run(context.Background(), cfg, t.TempDir(), fake)
@@ -611,6 +613,7 @@ func TestRunWithSharedSessionCreatesSingleSession(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.Workers = 2
 	cfg.Runtime.ReuseOpenCodeSession = true
+	cfg.Indexer.Disabled = true
 	fake := newFakeOpenCode()
 
 	if _, err := Run(context.Background(), cfg, t.TempDir(), fake); err != nil {
