@@ -32,6 +32,7 @@ func TestBuildConfigFromRequest_ZeroFieldsKeepDefaults(t *testing.T) {
 		{"Runtime.IdleTimeoutSec", got.Runtime.IdleTimeoutSec, want.Runtime.IdleTimeoutSec},
 		{"Runtime.MaxCallSeconds", got.Runtime.MaxCallSeconds, want.Runtime.MaxCallSeconds},
 		{"Runtime.LivenessPollSec", got.Runtime.LivenessPollSec, want.Runtime.LivenessPollSec},
+		{"Runtime.PromptRetryCount", got.Runtime.PromptRetryCount, want.Runtime.PromptRetryCount},
 		{"Runtime.Workers", got.Runtime.Workers, want.Runtime.Workers},
 		{"Runtime.MaxCatalogItems", got.Runtime.MaxCatalogItems, want.Runtime.MaxCatalogItems},
 		{"Runtime.OpenCodeDeleteDelaySec", got.Runtime.OpenCodeDeleteDelaySec, want.Runtime.OpenCodeDeleteDelaySec},
@@ -54,6 +55,7 @@ func TestBuildConfigFromRequest_PositiveValuesOverrideDefaults(t *testing.T) {
             "workers": 16,
             "max_catalog_items": 50,
             "idle_timeout_seconds": 240,
+			"prompt_retry_count": 4,
             "max_call_seconds": 3600,
             "liveness_poll_seconds": 10,
             "opencode_delete_delay_seconds": 20,
@@ -80,6 +82,9 @@ func TestBuildConfigFromRequest_PositiveValuesOverrideDefaults(t *testing.T) {
 	if got.Runtime.LivenessPollSec != 10 {
 		t.Errorf("LivenessPollSec = %d, want 10", got.Runtime.LivenessPollSec)
 	}
+	if got.Runtime.PromptRetryCount != 4 {
+		t.Errorf("PromptRetryCount = %d, want 4", got.Runtime.PromptRetryCount)
+	}
 	if got.Runtime.Workers != 16 {
 		t.Errorf("Workers = %d, want 16", got.Runtime.Workers)
 	}
@@ -97,6 +102,21 @@ func TestBuildConfigFromRequest_PositiveValuesOverrideDefaults(t *testing.T) {
 	}
 	if got.Quality.MinConfidence != 0.5 {
 		t.Errorf("MinConfidence = %f, want 0.5", got.Quality.MinConfidence)
+	}
+}
+
+func TestBuildConfigFromRequest_ZeroPromptRetryCountDisablesRetries(t *testing.T) {
+	body := []byte(`{
+        "opencode": {"base_url":"http://x"},
+        "runtime": {"prompt_retry_count": 0}
+    }`)
+	var req startRunRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got := buildConfigFromRequest(req)
+	if got.Runtime.PromptRetryCount != 0 {
+		t.Fatalf("PromptRetryCount = %d, want 0", got.Runtime.PromptRetryCount)
 	}
 }
 

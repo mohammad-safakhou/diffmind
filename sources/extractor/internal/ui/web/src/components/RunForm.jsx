@@ -52,6 +52,7 @@ const DEFAULTS = {
     // Liveness watchdog: this is the real "wait at most N seconds
     // with no observable progress before aborting" control.
     idle_timeout_seconds: 120,
+    prompt_retry_count: 3,
     max_call_seconds: 1800,
     liveness_poll_seconds: 5,
   },
@@ -224,7 +225,7 @@ export function RunForm({ onLaunched }) {
         <input value={form.repo_path} onInput={(e) => update('repo_path', e.target.value)} placeholder="/abs/path/to/repo" disabled={running} />
       </div>
 
-      <div class="row-2">
+      <div class="row-3">
         <div class="field">
           <label>OpenCode URL</label>
           <input value={form.opencode.base_url} onInput={(e) => update('opencode.base_url', e.target.value)} disabled={running} />
@@ -234,6 +235,12 @@ export function RunForm({ onLaunched }) {
             Idle timeout (sec)
           </label>
           <input type="number" value={form.runtime.idle_timeout_seconds} onInput={(e) => update('runtime.idle_timeout_seconds', Number(e.target.value))} disabled={running} />
+        </div>
+        <div class="field">
+          <label title="How many times to retry a prompt after the liveness watchdog aborts it for idleness. Default 3. Set 0 to disable retries.">
+            Retry count
+          </label>
+          <input type="number" min="0" value={form.runtime.prompt_retry_count} onInput={(e) => update('runtime.prompt_retry_count', Number(e.target.value))} disabled={running} />
         </div>
       </div>
 
@@ -424,6 +431,7 @@ function buildCLI(f) {
   if (f.runtime.workers) parts.push(`  --workers ${f.runtime.workers}`)
   if (f.runtime.max_catalog_items) parts.push(`  --max-catalog-items ${f.runtime.max_catalog_items}`)
   if (f.runtime.idle_timeout_seconds) parts.push(`  --idle-timeout-seconds ${f.runtime.idle_timeout_seconds}`)
+  if (f.runtime.prompt_retry_count !== undefined && f.runtime.prompt_retry_count !== null) parts.push(`  --prompt-retry-count ${f.runtime.prompt_retry_count}`)
   if (f.runtime.max_call_seconds) parts.push(`  --max-call-seconds ${f.runtime.max_call_seconds}`)
   if (f.runtime.liveness_poll_seconds) parts.push(`  --liveness-poll-seconds ${f.runtime.liveness_poll_seconds}`)
   if (f.runtime.reuse_opencode_session) parts.push('  --reuse-opencode-session')
