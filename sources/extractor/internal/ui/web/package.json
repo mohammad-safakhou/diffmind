@@ -12,6 +12,7 @@
   "dependencies": {
     "@preact/signals": "1.2.3",
     "cytoscape": "3.30.0",
+    "d3": "^7.9.0",
     "preact": "10.22.1"
   },
   "devDependencies": {

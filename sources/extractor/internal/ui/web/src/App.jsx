@@ -12,6 +12,7 @@ import { RunsSidebar } from './components/RunsSidebar.jsx'
 import { HelpOverlay } from './components/HelpOverlay.jsx'
 import { StatusBanner } from './components/StatusBanner.jsx'
 import { SystemStatus } from './components/SystemStatus.jsx'
+import { OutcomeGraph } from './components/OutcomeGraph.jsx'
 
 // App owns the SSE subscription. Whenever a new run is launched OR the user
 // picks a finished run from the sidebar to replay, we close the previous
@@ -21,6 +22,7 @@ export function App() {
   const closeRef = useRef(null)
   const [help, setHelp] = useState(false)
   const [authError, setAuthError] = useState(false)
+  const [showGraph, setShowGraph] = useState(false)
 
   useEffect(() => {
     onAuthFailure(() => setAuthError(true))
@@ -130,7 +132,9 @@ export function App() {
       if (e.key === '?' || (e.shiftKey && e.key === '/')) {
         setHelp((v) => !v)
       } else if (e.key === 'Escape') {
-        if (help) {
+        if (showGraph) {
+          setShowGraph(false)
+        } else if (help) {
           setHelp(false)
         } else if (selection.value) {
           selection.value = null
@@ -139,7 +143,7 @@ export function App() {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [help])
+  }, [help, showGraph])
 
   const onLaunched = (runID) => {
     resetStore()
@@ -171,7 +175,8 @@ export function App() {
 
   return (
     <div class="app">
-      <TopBar onHelp={() => setHelp(true)} />
+      <TopBar onHelp={() => setHelp(true)} onGraph={() => setShowGraph(v => !v)} showGraph={showGraph} />
+      {showGraph && <OutcomeGraph onClose={() => setShowGraph(false)} />}
       {authError && <AuthBanner onSubmit={(t) => { setToken(t); setAuthError(false); window.location.reload() }} initial={getToken()} />}
       <SystemStatus />
       <StatusBanner />

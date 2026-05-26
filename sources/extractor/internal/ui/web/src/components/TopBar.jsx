@@ -2,7 +2,7 @@ import { runMeta } from '../lib/store.js'
 import { cancelRun } from '../lib/api.js'
 
 // TopBar shows brand + active-run status + cancel + help.
-export function TopBar({ onHelp }) {
+export function TopBar({ onHelp, onGraph, showGraph }) {
   const meta = runMeta.value
   const status = meta?.status || 'idle'
   const onCancel = async () => {
@@ -46,6 +46,15 @@ export function TopBar({ onHelp }) {
         </span>
         {status === 'running' && (
           <button class="btn danger" onClick={onCancel}>Cancel</button>
+        )}
+        {meta?.id && (
+          <button
+            class={'og-graph-btn' + (showGraph ? ' active' : '')}
+            onClick={onGraph}
+            title="Outcome graph (connections view)"
+          >
+            Graph
+          </button>
         )}
         <button class="btn secondary" onClick={onHelp} title="Help (press ?)">?</button>
       </div>
