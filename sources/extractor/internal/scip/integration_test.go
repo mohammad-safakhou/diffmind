@@ -133,13 +133,13 @@ func TestIntegrationGoGin(t *testing.T) {
 	}
 
 	// Resolve the GetCampaign handler. The handler is declared at
-	// line 72 in main.go (1-based) — we use the resolver's positional
+	// line 69 in main.go (1-based) — we use the resolver's positional
 	// path, with the name as a fallback safety net.
 	resolver := NewResolver(idx)
 	res := resolver.Resolve(EntityLocation{
 		Name:      "GetCampaign",
 		File:      "main.go",
-		StartLine: 72,
+		StartLine: 69,
 		StartCol:  1,
 	})
 	if len(res.Symbols) == 0 {

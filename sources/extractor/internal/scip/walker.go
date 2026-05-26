@@ -1,6 +1,7 @@
 package scip
 
 import (
+	"context"
 	"sort"
 )
 
@@ -47,6 +48,32 @@ type WalkConfig struct {
 	// Default (when zero): 8.
 	MaxPathsPerTarget int
 
+	// MaxPathsTotal bounds the total number of paths recorded by one walk.
+	// Real handlers should produce a small handful of useful paths; dense call
+	// graphs can otherwise materialise thousands of variants.
+	//
+	// Default (when zero): 1000.
+	MaxPathsTotal int
+
+	// MaxPathsPerSymbol bounds how many distinct partial paths we keep to the
+	// same intermediate local symbol. This is the key to avoiding exponential
+	// blow-ups on diamond-shaped service graphs while still preserving a few
+	// alternative conditional branches.
+	//
+	// Default (when zero): 3.
+	MaxPathsPerSymbol int
+
+	// MaxVisitedEdges bounds total edge visits for one walk. The walker is
+	// deterministic but call graphs can be dense enough to explode
+	// combinatorially when revisiting shared subgraphs through many parents.
+	//
+	// Default (when zero): 50000.
+	MaxVisitedEdges int
+
+	// Context lets callers abort long walks when the pipeline is cancelled or a
+	// per-stage budget expires. Nil means context.Background().
+	Context context.Context
+
 	// FollowImplementations controls whether the walker, on hitting
 	// an interface method symbol, descends into its implementations
 	// (Spring DI pattern, TypeScript decorators, etc.). When false
@@ -74,26 +101,21 @@ func NewWalker(idx *Index) *Walker {
 	return &Walker{idx: idx}
 }
 
-// Walk performs a transitive call-graph traversal starting at
-// `entrySymbol`. It returns every Path that ends at a symbol for
-// which cfg.IsTarget returned true, up to the configured limits.
+// Walk performs a targeted project-local call-graph traversal starting at
+// `entrySymbol`. It returns the shortest/source-order paths that end at a
+// symbol for which cfg.IsTarget returned true, up to the configured limits.
 //
 // Algorithm:
 //
-//  1. We do a DEPTH-FIRST traversal so each Path can be assembled
-//     incrementally on the call stack (Go stack reflects walker stack).
-//  2. We track a `visited` set keyed by (callerSymbol -> calleeSymbol)
-//     to avoid infinite recursion in cycles. This is per-walk; we don't
-//     cache across calls because the IsTarget predicate is per-call.
-//  3. When we reach a target symbol, we materialise the current chain
-//     into a Path and append to the result list. We DO NOT stop the
-//     branch: a single chain may reach multiple targets (e.g. a service
-//     method touches three dependencies in sequence).
-//  4. When we follow into an interface symbol, we ALSO enqueue every
-//     implementation as a sibling branch. We record the impl as the
-//     callee for the step but keep the original (interface) symbol
-//     available via the CallerSymbol of the next step's call site if
-//     useful for diagnostics.
+//  1. We do BREADTH-FIRST traversal, so the first paths found are the shortest
+//     app-code paths from exposure to dependency.
+//  2. We only expand symbols defined in the project index. External/library
+//     symbols may be terminal targets, but they are never expanded.
+//  3. We keep only a small number of partial paths per intermediate symbol.
+//     This gives useful branch diversity without enumerating every diamond in
+//     a service graph.
+//  4. When we hit an interface symbol, we enqueue local implementations as
+//     sibling branches while preserving the source callsite evidence.
 //
 // Returns an empty slice when entrySymbol has no body or no target is
 // reachable. Never returns nil; callers can iterate safely.
@@ -102,18 +124,11 @@ func (w *Walker) Walk(entrySymbol string, cfg WalkConfig) []Path {
 		return []Path{}
 	}
 	cfg = cfg.withDefaults()
-
-	state := &walkState{
-		idx:    w.idx,
-		cfg:    cfg,
-		paths:  []Path{},
-		stack:  []CallSite{},
-		seen:   map[edgeKey]struct{}{},
-		// hitCounts: per-target counter for MaxPathsPerTarget cap.
-		hitCounts: map[string]int{},
+	if cfg.Context == nil {
+		cfg.Context = context.Background()
 	}
-	state.descend(entrySymbol, 0)
-	return state.paths
+
+	return (&walkSearch{idx: w.idx, cfg: cfg}).run(entrySymbol)
 }
 
 // withDefaults returns a copy of cfg with zero-valued fields replaced
@@ -127,6 +142,15 @@ func (c WalkConfig) withDefaults() WalkConfig {
 	if out.MaxPathsPerTarget <= 0 {
 		out.MaxPathsPerTarget = 8
 	}
+	if out.MaxPathsTotal <= 0 {
+		out.MaxPathsTotal = 1000
+	}
+	if out.MaxPathsPerSymbol <= 0 {
+		out.MaxPathsPerSymbol = 3
+	}
+	if out.MaxVisitedEdges <= 0 {
+		out.MaxVisitedEdges = 50000
+	}
 	if !out.FollowImplementations {
 		// Zero-value (false) is treated as "use the default" (true).
 		// To DISABLE implementations, callers pass FollowImplementations:false
@@ -137,110 +161,131 @@ func (c WalkConfig) withDefaults() WalkConfig {
 	return out
 }
 
-// edgeKey identifies a directed edge in the call graph for the
-// visited-set. We key by (caller, callee) — not just callee — so a
-// diamond pattern (A→B→D and A→C→D) records BOTH paths.
-type edgeKey struct{ caller, callee string }
-
-type walkState struct {
+type walkSearch struct {
 	idx       *Index
 	cfg       WalkConfig
 	paths     []Path
-	stack     []CallSite
-	seen      map[edgeKey]struct{}
 	hitCounts map[string]int
-	entrySym  string // set on first descend; immutable after
+	kept      map[string]int
+	visited   int
 }
 
-// descend visits `symbol`. If `symbol` matches a target, we record a
-// Path. Otherwise we recurse into its call sites up to MaxDepth.
-//
-// `depth` is the depth from the entry symbol (0 == entry itself).
-func (s *walkState) descend(symbol string, depth int) {
-	if s.entrySym == "" {
-		s.entrySym = symbol
-	}
-	if depth > s.cfg.MaxDepth {
-		return
-	}
+type walkNode struct {
+	symbol string
+	depth  int
+	steps  []CallSite
+	seen   map[string]struct{}
+}
 
-	// Record a Path when we hit a target — but only if we've actually
-	// traversed at least one edge. The entry symbol itself is not a
-	// useful "path" (it would be a single-symbol path with zero hops),
-	// and callers can detect "entry is target" separately by inspecting
-	// the entity catalog.
-	if s.cfg.IsTarget(symbol) && len(s.stack) > 0 {
-		s.recordPath(symbol)
-		// We deliberately continue the descent here: a service method
-		// may call multiple dependencies in sequence, and we want a
-		// Path for each. Capping is enforced by hitCounts in recordPath.
-	}
+func (s *walkSearch) run(entrySymbol string) []Path {
+	s.paths = []Path{}
+	s.hitCounts = map[string]int{}
+	s.kept = map[string]int{entrySymbol: 1}
+	queue := []walkNode{{
+		symbol: entrySymbol,
+		seen:   map[string]struct{}{entrySymbol: {}},
+	}}
 
-	calls := s.idx.CallsFrom(symbol)
-	for _, c := range calls {
-		key := edgeKey{caller: symbol, callee: c.CalleeSymbol}
-		if _, dup := s.seen[key]; dup {
+	for len(queue) > 0 {
+		if s.cfg.Context.Err() != nil || len(s.paths) >= s.cfg.MaxPathsTotal {
+			break
+		}
+		n := queue[0]
+		queue = queue[1:]
+		if n.depth >= s.cfg.MaxDepth {
 			continue
 		}
-		s.seen[key] = struct{}{}
 
-		// Enter the edge.
-		s.stack = append(s.stack, c)
+		for _, call := range s.idx.CallsFrom(n.symbol) {
+			if s.cfg.Context.Err() != nil || len(s.paths) >= s.cfg.MaxPathsTotal {
+				return s.paths
+			}
+			s.visited++
+			if s.visited > s.cfg.MaxVisitedEdges {
+				return s.paths
+			}
 
-		// 1. Descend directly into the callee. This catches the common
-		// case where the callee is concrete (a service impl method, a
-		// repository method on a concrete class, etc.).
-		s.descend(c.CalleeSymbol, depth+1)
+			steps := appendSteps(n.steps, call)
+			callee := call.CalleeSymbol
+			if s.cfg.IsTarget(callee) {
+				s.recordPath(entrySymbol, callee, steps)
+				// Dependencies are terminal for connection mapping. Do not walk
+				// through repository/client/library bodies after recording the hit.
+				continue
+			}
 
-		// 2. If FollowImplementations and the callee has registered
-		// implementations, descend into each impl as well. This is how
-		// we walk through Spring's `Foo foo = new FooImpl()` boundary:
-		// the call site references the interface symbol, but the actual
-		// body lives on the impl.
-		//
-		// We don't add the impl as an extra step on the stack — the
-		// edge in the source code IS to the interface symbol. The next
-		// hop just continues from the impl's body. The Path's Steps
-		// therefore read naturally as "controller → service interface →
-		// repository" even when behind the scenes we walked the impl.
-		if s.cfg.FollowImplementations {
-			for _, impl := range s.idx.Implementations(c.CalleeSymbol) {
-				implKey := edgeKey{caller: c.CalleeSymbol, callee: impl}
-				if _, dup := s.seen[implKey]; dup {
-					continue
+			if s.cfg.FollowImplementations {
+				for _, impl := range s.idx.Implementations(callee) {
+					if _, inPath := n.seen[impl]; inPath {
+						continue
+					}
+					if s.cfg.IsTarget(impl) {
+						s.recordPath(entrySymbol, impl, steps)
+						continue
+					}
+					if s.enqueueable(impl) {
+						queue = append(queue, walkNode{
+							symbol: impl,
+							depth:  n.depth + 1,
+							steps:  steps,
+							seen:   cloneSeenWith(n.seen, impl),
+						})
+					}
 				}
-				s.seen[implKey] = struct{}{}
-				s.descend(impl, depth+1)
+			}
+
+			if _, inPath := n.seen[callee]; inPath {
+				continue
+			}
+			if s.enqueueable(callee) {
+				queue = append(queue, walkNode{
+					symbol: callee,
+					depth:  n.depth + 1,
+					steps:  steps,
+					seen:   cloneSeenWith(n.seen, callee),
+				})
 			}
 		}
-
-		// Leave the edge.
-		s.stack = s.stack[:len(s.stack)-1]
-		// Allow the edge to be revisited via a *different* parent chain
-		// in a follow-up branch. Without this, two siblings under the
-		// same root would each prevent the other from being explored
-		// because the entire call-graph is one undirected component.
-		// We DO leave per-walk dedup intact for the current chain
-		// (rangeContainedIn + cycle prevention via `seen`) so we don't
-		// spin forever on a cycle.
-		delete(s.seen, key)
 	}
+	return s.paths
 }
 
-// recordPath snapshots the current call stack into a new Path entry.
-// Honours the MaxPathsPerTarget cap.
-func (s *walkState) recordPath(target string) {
+func (s *walkSearch) enqueueable(symbol string) bool {
+	if !s.idx.HasLocalDefinition(symbol) {
+		return false
+	}
+	if s.kept[symbol] >= s.cfg.MaxPathsPerSymbol {
+		return false
+	}
+	s.kept[symbol]++
+	return true
+}
+
+func (s *walkSearch) recordPath(entry, target string, steps []CallSite) {
+	if len(steps) == 0 || len(s.paths) >= s.cfg.MaxPathsTotal {
+		return
+	}
 	if s.hitCounts[target] >= s.cfg.MaxPathsPerTarget {
 		return
 	}
-	steps := make([]CallSite, len(s.stack))
-	copy(steps, s.stack)
-	s.paths = append(s.paths, Path{
-		EntrySymbol:  s.entrySym,
-		TargetSymbol: target,
-		Steps:        steps,
-	})
+	s.paths = append(s.paths, Path{EntrySymbol: entry, TargetSymbol: target, Steps: appendSteps(nil, steps...)})
 	s.hitCounts[target]++
+}
+
+func appendSteps(base []CallSite, steps ...CallSite) []CallSite {
+	out := make([]CallSite, 0, len(base)+len(steps))
+	out = append(out, base...)
+	out = append(out, steps...)
+	return out
+}
+
+func cloneSeenWith(in map[string]struct{}, symbol string) map[string]struct{} {
+	out := make(map[string]struct{}, len(in)+1)
+	for k, v := range in {
+		out[k] = v
+	}
+	out[symbol] = struct{}{}
+	return out
 }
 
 // SortPaths orders a slice of Paths for deterministic output.

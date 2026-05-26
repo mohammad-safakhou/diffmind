@@ -1,6 +1,7 @@
 package scip
 
 import (
+	"sort"
 	"strings"
 )
 
@@ -10,16 +11,16 @@ import (
 //
 // Resolution proceeds in two tiers, from highest to lowest confidence:
 //
-//   1. POSITIONAL: look up SymbolAt(file, line, col). When an entity's
-//      source_locations array points to a definition (controller
-//      handler, repository method body, etc.), this returns the
-//      correct symbol with near-perfect precision.
+//  1. POSITIONAL: look up SymbolAt(file, line, col). When an entity's
+//     source_locations array points to a definition (controller
+//     handler, repository method body, etc.), this returns the
+//     correct symbol with near-perfect precision.
 //
-//   2. NAME-BASED: scan SymbolInformation.DisplayName across the
-//      index for the entity's `Name` field, scoped by the
-//      classification (handler / repository.method / feign client /
-//      etc.). Lower precision but works when source_locations are
-//      missing or pointed at a wrapper file.
+//  2. NAME-BASED: scan SymbolInformation.DisplayName across the
+//     index for the entity's `Name` field, scoped by the
+//     classification (handler / repository.method / feign client /
+//     etc.). Lower precision but works when source_locations are
+//     missing or pointed at a wrapper file.
 //
 // The resolver does NOT mutate the Index. It is safe for concurrent
 // reads.
@@ -96,15 +97,21 @@ func (r *Resolver) Resolve(loc EntityLocation) Resolution {
 				Confidence: 1.0,
 			}
 		}
-		// Sometimes the detail stage records the method's signature
-		// line, but the SCIP definition's `range` lands on the
-		// identifier — try the next 1-3 lines if the exact line missed.
-		for dl := int32(1); dl <= 3; dl++ {
-			if sym := r.idx.SymbolAt(loc.File, line+dl, 0); sym != "" {
+
+		// The LLM-recorded line may be off by several lines: it often
+		// records the annotation line (@GetMapping) rather than the
+		// actual method identifier line. Scan a progressively wider
+		// window of lines until we find a callable definition.
+		for _, window := range []int32{3, 10, 30} {
+			if sym := r.idx.closestDefinition(loc.File, line-1, line+window, line); sym != "" {
+				confidence := 0.9
+				if window > 3 {
+					confidence = 0.75 // wider window = less certain
+				}
 				return Resolution{
 					Symbols:    []string{sym},
 					Source:     "positional",
-					Confidence: 0.9, // slight haircut: not the exact recorded line
+					Confidence: confidence,
 				}
 			}
 		}
@@ -157,17 +164,16 @@ func (r *Resolver) byDisplayName(name string) []string {
 		return nil
 	}
 	out := []string{}
-	for _, doc := range r.idx.documentsByPath {
-		for _, sym := range doc.GetSymbols() {
-			displayName := sym.GetDisplayName()
-			if displayName == "" {
-				displayName = displayNameFromSymbol(sym.GetSymbol())
-			}
-			if displayName == name {
-				out = append(out, sym.GetSymbol())
-			}
+	for s, sym := range r.idx.symbolInfoBySymbol {
+		displayName := sym.GetDisplayName()
+		if displayName == "" {
+			displayName = displayNameFromSymbol(s)
+		}
+		if displayName == name {
+			out = append(out, s)
 		}
 	}
+	sort.Strings(out)
 	return out
 }
 
@@ -282,22 +288,20 @@ func (r *Resolver) ResolveByQualified(qualified string) Resolution {
 	}
 
 	matches := []string{}
-	for _, doc := range r.idx.documentsByPath {
-		for _, sym := range doc.GetSymbols() {
-			s := sym.GetSymbol()
-			if !strings.Contains(s, className) {
-				continue
-			}
-			disp := sym.GetDisplayName()
-			if disp == "" {
-				disp = displayNameFromSymbol(s)
-			}
-			if disp == methodName {
-				matches = append(matches, s)
-			}
+	for s, sym := range r.idx.symbolInfoBySymbol {
+		if !strings.Contains(s, className) {
+			continue
+		}
+		disp := sym.GetDisplayName()
+		if disp == "" {
+			disp = displayNameFromSymbol(s)
+		}
+		if disp == methodName {
+			matches = append(matches, s)
 		}
 	}
 	if len(matches) > 0 {
+		sort.Strings(matches)
 		return Resolution{
 			Symbols:    matches,
 			Source:     "exact_name",

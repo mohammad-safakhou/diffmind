@@ -313,7 +313,13 @@ func buildConnectionsForExposure(
 			return nil, nil
 		}
 		paths := walker.Walk(entry, scip.WalkConfig{
-			IsTarget: isTarget,
+			IsTarget:          isTarget,
+			Context:           ctx,
+			MaxDepth:          12,
+			MaxPathsPerTarget: 8,
+			MaxPathsPerSymbol: 4,
+			MaxPathsTotal:     4000,
+			MaxVisitedEdges:   250000,
 		})
 		scip.SortPaths(paths)
 		for _, p := range paths {
@@ -791,10 +797,10 @@ func (o *orchestrator) emitConnectionsAggregate(
 		Message: fmt.Sprintf("%d connections across %d exposures (%d with no paths)",
 			connections, exposures, exposuresWithoutPaths),
 		Payload: map[string]any{
-			"connections":              connections,
-			"exposures":                exposures,
-			"exposures_without_paths":  exposuresWithoutPaths,
-			"source":                   source,
+			"connections":             connections,
+			"exposures":               exposures,
+			"exposures_without_paths": exposuresWithoutPaths,
+			"source":                  source,
 		},
 	})
 }

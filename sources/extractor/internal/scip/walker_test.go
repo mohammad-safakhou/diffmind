@@ -1,6 +1,7 @@
 package scip
 
 import (
+	"context"
 	"testing"
 
 	pb "github.com/scip-code/scip/bindings/go/scip"
@@ -11,7 +12,8 @@ import (
 // final entry is a leaf with no body. Used to test transitive walking.
 //
 // Chain example: ["Ctrl#h()", "Service#s()", "Repo#r()"] produces:
-//   Ctrl#h() -> Service#s() -> Repo#r()
+//
+//	Ctrl#h() -> Service#s() -> Repo#r()
 func buildChainIndex(t *testing.T, chain []string) *Index {
 	t.Helper()
 	docs := []*pb.Document{}
@@ -105,6 +107,90 @@ func TestWalkerTransitive(t *testing.T) {
 	}
 	if paths[0].Steps[1].CalleeSymbol != target {
 		t.Errorf("step[1] callee = %q", paths[0].Steps[1].CalleeSymbol)
+	}
+}
+
+func TestWalkerStopsAtVisitedEdgeBudget(t *testing.T) {
+	a := "scip-java x ex/A#a()."
+	b := "scip-java x ex/B#b()."
+	c := "scip-java x ex/C#c()."
+	d := "scip-java x ex/D#d()."
+	idx := mustLoad(t, &pb.Index{
+		Metadata: &pb.Metadata{ProjectRoot: "file:///x", ToolInfo: &pb.ToolInfo{Name: "t"}},
+		Documents: []*pb.Document{
+			docWithCalls("a.java", a, []string{b, c}),
+			docWithCalls("b.java", b, []string{c}),
+			docWithCalls("c.java", c, []string{b, d}),
+			docWithCalls("d.java", d, nil),
+		},
+	})
+	// A small dense/cyclic graph. The exact result is unimportant; the
+	// regression is that the walk returns once its edge budget is exhausted.
+
+	w := NewWalker(idx)
+	_ = w.Walk(a, WalkConfig{
+		MaxDepth:        25,
+		MaxVisitedEdges: 3,
+		IsTarget:        func(s string) bool { return s == d },
+	})
+}
+
+func TestWalkerDoesNotExpandSkippedLibraryDocuments(t *testing.T) {
+	entry := "scip-java x app/Ctrl#handle()."
+	lib := "scip-java x lib/Client#call()."
+	libTarget := "scip-java x lib/Hidden#target()."
+	idx := mustLoad(t, &pb.Index{
+		Metadata: &pb.Metadata{ProjectRoot: "file:///x", ToolInfo: &pb.ToolInfo{Name: "t"}},
+		Documents: []*pb.Document{
+			docWithCalls("src/main/java/app/Ctrl.java", entry, []string{lib}),
+			docWithCalls(".m2/repository/lib/Client.java", lib, []string{libTarget}),
+			docWithCalls(".m2/repository/lib/Hidden.java", libTarget, nil),
+		},
+	})
+	if idx.HasLocalDefinition(lib) {
+		t.Fatalf("library document should not define local symbol %q", lib)
+	}
+
+	paths := NewWalker(idx).Walk(entry, WalkConfig{
+		IsTarget: func(s string) bool { return s == libTarget },
+	})
+	if len(paths) != 0 {
+		t.Fatalf("walker expanded skipped library document and found %d paths", len(paths))
+	}
+}
+
+func TestWalkerRecordsExternalTargetButDoesNotExpandIt(t *testing.T) {
+	entry := "scip-java x app/Ctrl#handle()."
+	externalHTTP := "scip-java maven org.springframework/spring-web 6.0 org/springframework/web/client/RestTemplate#exchange()."
+	idx := mustLoad(t, &pb.Index{
+		Metadata: &pb.Metadata{ProjectRoot: "file:///x", ToolInfo: &pb.ToolInfo{Name: "t"}},
+		Documents: []*pb.Document{
+			docWithCalls("src/main/java/app/Ctrl.java", entry, []string{externalHTTP}),
+		},
+	})
+
+	paths := NewWalker(idx).Walk(entry, WalkConfig{
+		IsTarget: func(s string) bool { return s == externalHTTP },
+	})
+	if len(paths) != 1 {
+		t.Fatalf("expected direct path to external dependency target, got %d", len(paths))
+	}
+	if got := paths[0].Steps[len(paths[0].Steps)-1].CalleeSymbol; got != externalHTTP {
+		t.Fatalf("last callee = %q, want %q", got, externalHTTP)
+	}
+}
+
+func TestWalkerStopsWhenContextCancelled(t *testing.T) {
+	idx := buildChainIndex(t, []string{"scip-java x ex/A#a().", "scip-java x ex/B#b()."})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	paths := NewWalker(idx).Walk("scip-java x ex/A#a().", WalkConfig{
+		Context:  ctx,
+		IsTarget: func(s string) bool { return s == "scip-java x ex/B#b()." },
+	})
+	if len(paths) != 0 {
+		t.Fatalf("cancelled walk returned %d paths, want 0", len(paths))
 	}
 }
 

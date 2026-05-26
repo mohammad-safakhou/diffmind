@@ -1,6 +1,8 @@
 package agents
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/mohammad-safakhou/diffmind/internal/model"
@@ -116,15 +118,48 @@ func TestShallowFallbackNoMatchProducesEmptyResult(t *testing.T) {
 // human-readable identifiers for connection summaries.
 func TestLastIdentTrimsScipSymbol(t *testing.T) {
 	cases := map[string]string{
-		"scip-java maven com.ex/Foo#findByIdOrThrow().": "findByIdOrThrow",
+		"scip-java maven com.ex/Foo#findByIdOrThrow().":     "findByIdOrThrow",
 		"scip-typescript pkg ex/svc.ts/UserService#find().": "find",
-		"scip-go pkg ex/repo.User#Get().": "Get",
-		"":      "",
-		"local-1": "local-1",
+		"scip-go pkg ex/repo.User#Get().":                   "Get",
+		"":                                                  "",
+		"local-1":                                           "local-1",
 	}
 	for sym, want := range cases {
 		if got := lastIdent(sym); got != want {
 			t.Errorf("lastIdent(%q) = %q, want %q", sym, got, want)
+		}
+	}
+}
+
+func TestBuildConnectionPreservesPerPathConditions(t *testing.T) {
+	snap := t.TempDir()
+	src := `class Controller {
+  void handle(boolean flag) {
+    if (flag) {
+      repo.saveA();
+    } else {
+      repo.saveB();
+    }
+  }
+}`
+	if err := os.WriteFile(filepath.Join(snap, "Controller.java"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	exp := model.Exposure{BaseEntity: model.BaseEntity{ID: "exp", Type: "http_route", Name: "handle"}}
+	dep := model.Dependency{BaseEntity: model.BaseEntity{ID: "dep", Type: "db_operation", Name: "Repo.save"}}
+	paths := []scip.Path{
+		{EntrySymbol: "Ctrl#handle().", TargetSymbol: "Repo#saveA().", Steps: []scip.CallSite{{CallerSymbol: "Ctrl#handle().", CalleeSymbol: "Repo#saveA().", At: scip.Location{File: "Controller.java", StartLine: 3}}}},
+		{EntrySymbol: "Ctrl#handle().", TargetSymbol: "Repo#saveB().", Steps: []scip.CallSite{{CallerSymbol: "Ctrl#handle().", CalleeSymbol: "Repo#saveB().", At: scip.Location{File: "Controller.java", StartLine: 5}}}},
+	}
+
+	conn := buildConnection(exp, dep, paths, scip.NewConditionExtractor(snap), 0.7)
+	if len(conn.Paths) != 2 {
+		t.Fatalf("expected both branch paths to be preserved, got %d", len(conn.Paths))
+	}
+	for _, p := range conn.Paths {
+		if p.Condition.Kind == "" {
+			t.Fatalf("path %s lost conditional evidence: %+v", p.ID, p)
 		}
 	}
 }

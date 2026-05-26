@@ -11,7 +11,7 @@
 // and never re-emits one. Writing SCIP is the indexer's job; querying
 // is ours.
 //
-// PERFORMANCE
+// # PERFORMANCE
 //
 // A real-world Java index for a medium service is typically 10-50 MB
 // uncompressed proto. We deserialize it once into an in-memory map of
@@ -19,7 +19,7 @@
 // huge monorepos (>500 MB indexes) we'll need an mmap-based loader; for
 // Sprint 1 the simpler approach is fine.
 //
-// THREAD SAFETY
+// # THREAD SAFETY
 //
 // An Index is read-only after Load returns; multiple goroutines may
 // query it concurrently. The exposed types are immutable in practice
@@ -34,6 +34,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 
 	pb "github.com/scip-code/scip/bindings/go/scip"
 )
@@ -74,6 +75,23 @@ type Index struct {
 	// have docstrings but no occurrence; useful for hover but not for
 	// call-graph walking. We retain the slice as-is.
 	externalSymbols []*pb.SymbolInformation
+
+	// symbolInfoBySymbol stores locally-defined SymbolInformation blocks by
+	// symbol. This lets resolvers and walkers avoid repeatedly scanning every
+	// document in the hot connection-mapping path.
+	symbolInfoBySymbol map[string]*pb.SymbolInformation
+
+	// externalInfoBySymbol mirrors externalSymbols for O(1) hover lookups.
+	externalInfoBySymbol map[string]*pb.SymbolInformation
+
+	// implementationsBySymbol maps an interface/abstract symbol to the local
+	// implementation symbols recorded by SCIP relationships.
+	implementationsBySymbol map[string][]string
+
+	// callsBySymbol is the project-local call graph: caller symbol -> call sites
+	// inside that caller body. Callees may be local or external, but only local
+	// callees are expandable by the walker.
+	callsBySymbol map[string][]CallSite
 }
 
 // symbolLocation is the (document path, occurrence index) pair that
@@ -111,9 +129,13 @@ func Load(path string) (*Index, error) {
 // we use that to short-circuit on the first malformed Document.
 func LoadFromReader(name string, r io.Reader) (*Index, error) {
 	idx := &Index{
-		path:              name,
-		documentsByPath:   map[string]*pb.Document{},
-		symbolDefinitions: map[string][]symbolLocation{},
+		path:                    name,
+		documentsByPath:         map[string]*pb.Document{},
+		symbolDefinitions:       map[string][]symbolLocation{},
+		symbolInfoBySymbol:      map[string]*pb.SymbolInformation{},
+		externalInfoBySymbol:    map[string]*pb.SymbolInformation{},
+		implementationsBySymbol: map[string][]string{},
+		callsBySymbol:           map[string][]CallSite{},
 	}
 
 	visitor := &pb.IndexVisitor{
@@ -127,7 +149,21 @@ func LoadFromReader(name string, r io.Reader) (*Index, error) {
 				return nil
 			}
 			path := d.GetRelativePath()
+			if !isProjectDocumentPath(path) {
+				return nil
+			}
 			idx.documentsByPath[path] = d
+			for _, sym := range d.GetSymbols() {
+				if sym.GetSymbol() == "" {
+					continue
+				}
+				idx.symbolInfoBySymbol[sym.GetSymbol()] = sym
+				for _, rel := range sym.GetRelationships() {
+					if rel.GetSymbol() != "" && rel.GetIsImplementation() {
+						idx.implementationsBySymbol[rel.GetSymbol()] = append(idx.implementationsBySymbol[rel.GetSymbol()], sym.GetSymbol())
+					}
+				}
+			}
 			for i, occ := range d.GetOccurrences() {
 				if occ.GetSymbol() == "" {
 					continue
@@ -143,6 +179,9 @@ func LoadFromReader(name string, r io.Reader) (*Index, error) {
 		},
 		VisitExternalSymbol: func(_ context.Context, si *pb.SymbolInformation) error {
 			idx.externalSymbols = append(idx.externalSymbols, si)
+			if si.GetSymbol() != "" {
+				idx.externalInfoBySymbol[si.GetSymbol()] = si
+			}
 			return nil
 		},
 	}
@@ -154,7 +193,23 @@ func LoadFromReader(name string, r io.Reader) (*Index, error) {
 	if idx.metadata == nil {
 		return nil, errors.New("scip index missing metadata block")
 	}
+	idx.buildQueryTables()
 	return idx, nil
+}
+
+func (i *Index) buildQueryTables() {
+	for sym, defs := range i.symbolDefinitions {
+		calls := []CallSite{}
+		for _, def := range defs {
+			calls = append(calls, i.callsFromDefinition(def)...)
+		}
+		sortCallSites(calls)
+		i.callsBySymbol[sym] = calls
+	}
+	for sym, impls := range i.implementationsBySymbol {
+		sort.Strings(impls)
+		i.implementationsBySymbol[sym] = dedupeStrings(impls)
+	}
 }
 
 // Path returns the path the index was loaded from. Useful for log
@@ -194,6 +249,16 @@ func (i *Index) DocumentCount() int { return len(i.documentsByPath) }
 // reporting in the index stage's event payload.
 func (i *Index) SymbolDefinitionCount() int { return len(i.symbolDefinitions) }
 
+// HasLocalDefinition reports whether symbol is defined in a project document
+// retained by this index. External/library symbols may be referenced and even
+// used as terminal dependency targets, but walkers must not expand them.
+func (i *Index) HasLocalDefinition(symbol string) bool {
+	if i == nil || symbol == "" {
+		return false
+	}
+	return len(i.symbolDefinitions[symbol]) > 0
+}
+
 // Document returns the Document for the given relative path, or nil
 // if no such file is in the index. The returned *pb.Document is
 // owned by the Index; callers must not modify it.
@@ -223,4 +288,45 @@ func (i *Index) DocumentPaths() []string {
 // Definition flag. Pulled out so the loader stays readable.
 func isDefinitionRole(roles int32) bool {
 	return roles&int32(pb.SymbolRole_Definition) != 0
+}
+
+func isProjectDocumentPath(path string) bool {
+	if path == "" || strings.HasPrefix(path, "/") || strings.Contains(path, "\x00") {
+		return false
+	}
+	path = strings.TrimPrefix(filepathToSlash(path), "./")
+	for _, part := range strings.Split(path, "/") {
+		switch part {
+		case "", ".", "..":
+			return false
+		case ".git", ".hg", ".svn", ".idea", ".vscode", ".gradle", ".mvn", ".m2", ".ivy2":
+			return false
+		case "node_modules", "bower_components", "vendor", ".bundle":
+			return false
+		case "__pycache__", ".venv", "venv", ".tox", ".pytest_cache", ".mypy_cache":
+			return false
+		case "target", "build", "out", "bin", "dist", "tmp", ".cache":
+			return false
+		}
+	}
+	return true
+}
+
+func filepathToSlash(path string) string {
+	return strings.ReplaceAll(path, "\\", "/")
+}
+
+func dedupeStrings(in []string) []string {
+	if len(in) < 2 {
+		return in
+	}
+	out := in[:0]
+	last := ""
+	for i, s := range in {
+		if i == 0 || s != last {
+			out = append(out, s)
+			last = s
+		}
+	}
+	return out
 }
