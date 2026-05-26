@@ -20,40 +20,40 @@ import (
 // re-verifying):
 //
 //   - scip CLI:        github.com/scip-code/scip
-//                       scip-{linux,darwin}-{amd64,arm64}.tar.gz
-//                       (the asset contains a single binary
-//                        named `scip` at the top of the archive)
-//                       NOTE the repo is "scip-code/scip", NOT
-//                       "sourcegraph/scip". The latter does not
-//                       exist; trying to curl from there is a 404.
+//     scip-{linux,darwin}-{amd64,arm64}.tar.gz
+//     (the asset contains a single binary
+//     named `scip` at the top of the archive)
+//     NOTE the repo is "scip-code/scip", NOT
+//     "sourcegraph/scip". The latter does not
+//     exist; trying to curl from there is a 404.
 //
 //   - scip-java:       github.com/sourcegraph/scip-java
-//                       Releases ship a single coursier-bootstrap
-//                       file named `scip-java-v<version>` (no
-//                       extension, no tarball). It is a self-
-//                       contained executable launcher.
+//     Releases ship a single coursier-bootstrap
+//     file named `scip-java-v<version>` (no
+//     extension, no tarball). It is a self-
+//     contained executable launcher.
 //
 //   - scip-typescript: NO release binary; install via
-//                       `npm install -g @sourcegraph/scip-typescript@<v>`.
+//     `npm install -g @sourcegraph/scip-typescript@<v>`.
 //
 //   - scip-python:     NO release binary; install via
-//                       `npm install -g @sourcegraph/scip-python@<v>`.
-//                       (Yes — it's a Node-based tool that wraps
-//                        Pyright; Python itself is only needed at
-//                        run time to evaluate the target repo.)
+//     `npm install -g @sourcegraph/scip-python@<v>`.
+//     (Yes — it's a Node-based tool that wraps
+//     Pyright; Python itself is only needed at
+//     run time to evaluate the target repo.)
 //
 //   - scip-go:         github.com/sourcegraph/scip-go
-//                       scip-go-{linux,darwin}-{amd64,arm64}.tar.gz
+//     scip-go-{linux,darwin}-{amd64,arm64}.tar.gz
 //
 //   - scip-ruby:       LINUX/x86_64 ONLY as of the latest release.
-//                       No linux/arm64 binary upstream. We install
-//                       on amd64 hosts only; arm64 base image
-//                       skips it (scip-ruby invocations on those
-//                       hosts will fail-soft at index time).
+//     No linux/arm64 binary upstream. We install
+//     on amd64 hosts only; arm64 base image
+//     skips it (scip-ruby invocations on those
+//     hosts will fail-soft at index time).
 //
 //   - scip-dotnet:     installed via `dotnet tool install --global
-//                       scip-dotnet --version <v>` (NuGet); the
-//                       same NuGet package is multi-arch.
+//     scip-dotnet --version <v>` (NuGet); the
+//     same NuGet package is multi-arch.
 const (
 	scipCLIVersion        = "v0.7.1"
 	scipJavaVersion       = "0.12.3"
@@ -86,14 +86,14 @@ RUN ARCH="${TARGETARCH:-$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm6
 // CLI binary into /usr/local/bin/scip. Multi-arch.
 //
 // We:
-//   1. Read /etc/diffmind-arch (set by preambleArchEnv) into ARCH.
-//   2. Build the asset URL deterministically.
-//   3. Verify the download is non-empty + actually a gzip stream
-//      BEFORE piping to tar. If the URL ever 404s again the
-//      build fails immediately with a clear "scip download failed:
-//      HTTP <code>" message instead of "gzip: stdin: not in gzip
-//      format" which is what the user actually saw on the
-//      previous run.
+//  1. Read /etc/diffmind-arch (set by preambleArchEnv) into ARCH.
+//  2. Build the asset URL deterministically.
+//  3. Verify the download is non-empty + actually a gzip stream
+//     BEFORE piping to tar. If the URL ever 404s again the
+//     build fails immediately with a clear "scip download failed:
+//     HTTP <code>" message instead of "gzip: stdin: not in gzip
+//     format" which is what the user actually saw on the
+//     previous run.
 func installScipCLISnippet() string {
 	return fmt.Sprintf(`RUN . /etc/diffmind-arch && \
     URL="https://github.com/scip-code/scip/releases/download/%[1]s/scip-linux-${ARCH}.tar.gz" && \
@@ -237,11 +237,10 @@ FROM eclipse-temurin:%[1]s-jdk AS jdk
 %[2]s
 
 # Mirror layout so the composite COPYs a single tree per tool.
-ENV JAVA_HOME=/opt/java
+ENV JAVA_HOME=/opt/java/openjdk
 ENV PATH=${JAVA_HOME}/bin:/opt/maven/bin:/opt/gradle/bin:/usr/local/bin:${PATH}
 
-RUN ln -s "$(readlink -f $(dirname $(readlink -f $(which javac)))/..)" /opt/java || \
-    mv /opt/java-*-openjdk* /opt/java || true
+RUN test -x ${JAVA_HOME}/bin/java && test -x ${JAVA_HOME}/bin/javac
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates unzip git file \
@@ -272,10 +271,10 @@ FROM eclipse-temurin:21-jdk AS jdk
 
 %[2]s
 
-ENV JAVA_HOME=/opt/java
+ENV JAVA_HOME=/opt/java/openjdk
 ENV PATH=${JAVA_HOME}/bin:/opt/maven/bin:/opt/gradle/bin:/opt/kotlin/bin:/usr/local/bin:${PATH}
 
-RUN ln -s "$(readlink -f $(dirname $(readlink -f $(which javac)))/..)" /opt/java || true
+RUN test -x ${JAVA_HOME}/bin/java && test -x ${JAVA_HOME}/bin/javac
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates unzip git file \
     && rm -rf /var/lib/apt/lists/*
@@ -459,7 +458,8 @@ RUN cd /src/wrapper && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out
 FROM debian:bookworm-slim AS final
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
-ENV PATH=/opt/node-tools/bin:/opt/python-tools/bin:/usr/local/bin:/opt/java/bin:/opt/maven/bin:/opt/gradle/bin:/opt/kotlin/bin:/opt/python/bin:/usr/local/go/bin:/root/.dotnet/tools:${PATH}
+ENV JAVA_HOME=/opt/java/openjdk
+ENV PATH=/opt/node-tools/bin:/opt/python-tools/bin:/usr/local/bin:${JAVA_HOME}/bin:/opt/java/bin:/opt/maven/bin:/opt/gradle/bin:/opt/kotlin/bin:/opt/python/bin:/usr/local/go/bin:/root/.dotnet/tools:${PATH}
 
 `)
 
