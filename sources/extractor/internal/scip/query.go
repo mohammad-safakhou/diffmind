@@ -21,7 +21,7 @@ type Location struct {
 	StartLine int32
 	StartCol  int32
 	EndLine   int32
-	EndCol   int32
+	EndCol    int32
 }
 
 // CallSite is one resolved call (or read access) of a symbol inside
@@ -161,7 +161,7 @@ func (i *Index) FindOccurrencesBySymbol(symbol string) []CallSite {
 //  3. Walking the document's occurrences and selecting references
 //     whose own range falls inside the body.
 //
-// INDEXER QUIRKS
+// # INDEXER QUIRKS
 //
 // `enclosing_range` is OPTIONAL in the SCIP schema. The Sourcegraph
 // scip-java JVM path populates it; the Kotlin compiler plugin path
@@ -171,6 +171,75 @@ func (i *Index) FindOccurrencesBySymbol(symbol string) []CallSite {
 // The fallback below is therefore required, not optional, for
 // real-world cross-language correctness.
 func (i *Index) CallsFrom(callerSymbol string) []CallSite {
+	if i == nil || callerSymbol == "" {
+		return nil
+	}
+	return i.callsBySymbol[callerSymbol]
+}
+
+func (i *Index) callsFromDefinition(defLoc symbolLocation) []CallSite {
+	if i == nil {
+		return nil
+	}
+	doc := i.documentsByPath[defLoc.DocumentPath]
+	if doc == nil {
+		return nil
+	}
+	occs := doc.GetOccurrences()
+	if defLoc.OccurrenceIndex < 0 || defLoc.OccurrenceIndex >= len(occs) {
+		return nil
+	}
+	defOcc := occs[defLoc.OccurrenceIndex]
+	callerSymbol := defOcc.GetSymbol()
+	body := occurrenceEnclosing(defOcc)
+	if body == nil {
+		// Fallback: infer the body as the lines from this definition through
+		// the next sibling definition in the same document. Some indexers omit
+		// enclosing_range, and without this we would lose valid app-code edges.
+		body = inferBodyRange(occs, defLoc.OccurrenceIndex)
+		if body == nil {
+			return nil
+		}
+	}
+
+	out := []CallSite{}
+	for k, occ := range occs {
+		if k == defLoc.OccurrenceIndex {
+			continue
+		}
+		callee := occ.GetSymbol()
+		if callee == "" || callee == callerSymbol {
+			continue
+		}
+		// Skip references to parameters and local variables — those are reads of
+		// values, not invocations. The walker would otherwise spew
+		// "deleteCampaign -> (id)" path hops that aren't real calls.
+		if !isCallableSymbol(callee) {
+			continue
+		}
+		roles := occ.GetSymbolRoles()
+		if isDefinitionRole(roles) {
+			// A nested definition (lambda, anonymous class) — skip; otherwise the
+			// enclosing method appears to call its own nested scope definition.
+			continue
+		}
+		r := occurrenceRange(occ)
+		if !rangeContainedIn(r, body) {
+			continue
+		}
+		out = append(out, CallSite{
+			CallerSymbol: callerSymbol,
+			CalleeSymbol: callee,
+			At:           occurrenceToLocation(defLoc.DocumentPath, occ),
+			Enclosing:    enclosingLocation(defLoc.DocumentPath, occ),
+			Roles:        roles,
+		})
+	}
+	sortCallSites(out)
+	return out
+}
+
+func (i *Index) callsFromSlow(callerSymbol string) []CallSite {
 	if i == nil || callerSymbol == "" {
 		return nil
 	}
@@ -241,17 +310,7 @@ func (i *Index) CallsFrom(callerSymbol string) []CallSite {
 			})
 		}
 	}
-	// Sort by (file, line, col) so the walker's depth-first traversal
-	// produces deterministic paths run-to-run.
-	sort.Slice(out, func(a, b int) bool {
-		if out[a].At.File != out[b].At.File {
-			return out[a].At.File < out[b].At.File
-		}
-		if out[a].At.StartLine != out[b].At.StartLine {
-			return out[a].At.StartLine < out[b].At.StartLine
-		}
-		return out[a].At.StartCol < out[b].At.StartCol
-	})
+	sortCallSites(out)
 	return out
 }
 
@@ -272,18 +331,7 @@ func (i *Index) Implementations(symbol string) []string {
 	if i == nil || symbol == "" {
 		return nil
 	}
-	out := []string{}
-	for _, doc := range i.documentsByPath {
-		for _, sym := range doc.GetSymbols() {
-			for _, rel := range sym.GetRelationships() {
-				if rel.GetSymbol() == symbol && rel.GetIsImplementation() {
-					out = append(out, sym.GetSymbol())
-				}
-			}
-		}
-	}
-	sort.Strings(out)
-	return out
+	return i.implementationsBySymbol[symbol]
 }
 
 // SymbolInfo returns the SymbolInformation block for `symbol`, or nil
@@ -294,22 +342,13 @@ func (i *Index) SymbolInfo(symbol string) *pb.SymbolInformation {
 	if i == nil {
 		return nil
 	}
-	for _, doc := range i.documentsByPath {
-		for _, sym := range doc.GetSymbols() {
-			if sym.GetSymbol() == symbol {
-				return sym
-			}
-		}
+	if sym := i.symbolInfoBySymbol[symbol]; sym != nil {
+		return sym
 	}
 	// External symbols (Maven libs, npm packages, etc.) are stored
 	// separately. They have no definitions in our Document set but the
 	// indexer still annotates them with hover docs.
-	for _, sym := range i.externalSymbols {
-		if sym.GetSymbol() == symbol {
-			return sym
-		}
-	}
-	return nil
+	return i.externalInfoBySymbol[symbol]
 }
 
 // DocumentText returns the source text of the file at `relativePath`.
@@ -352,6 +391,89 @@ func (i *Index) PrefixMatchSymbols(prefix string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// FirstDefinitionInRange returns the closest locally-defined, callable symbol
+// to `anchorLine` whose definition occurrence falls within [startLine, endLine)
+// (0-based, half-open). It skips local variables, parameters, and class-level
+// symbols (constructors, fields) and prefers method/function symbols.
+//
+// "Closest" means the candidate whose definition line is nearest to anchorLine.
+// When two candidates are equidistant, method symbols ("().") beat type symbols.
+//
+// This is used by the resolver as a fallback when SymbolAt fails to hit the
+// exact (line, col) the LLM recorded, which happens when scip-java places the
+// identifier range at a different column than the method signature start line
+// the LLM chose.
+func (i *Index) FirstDefinitionInRange(file string, startLine, endLine int32) string {
+	return i.closestDefinition(file, startLine, endLine, startLine)
+}
+
+func (i *Index) closestDefinition(file string, startLine, endLine, anchorLine int32) string {
+	if i == nil || file == "" {
+		return ""
+	}
+	doc := i.documentsByPath[file]
+	if doc == nil {
+		return ""
+	}
+	if startLine < 0 {
+		startLine = 0
+	}
+	type candidate struct {
+		sym      string
+		dist     int32
+		isMethod bool
+	}
+	var best *candidate
+	for _, occ := range doc.GetOccurrences() {
+		if !isDefinitionRole(occ.GetSymbolRoles()) {
+			continue
+		}
+		sym := occ.GetSymbol()
+		if sym == "" || strings.HasPrefix(sym, "local ") {
+			continue
+		}
+		if !isCallableSymbol(sym) {
+			continue
+		}
+		r := occurrenceRange(occ)
+		if r == nil {
+			continue
+		}
+		if r.startLine < startLine || r.startLine >= endLine {
+			continue
+		}
+		dist := r.startLine - anchorLine
+		if dist < 0 {
+			dist = -dist
+		}
+		isMethod := strings.Contains(sym, "().")
+		if best == nil ||
+			dist < best.dist ||
+			(dist == best.dist && isMethod && !best.isMethod) {
+			best = &candidate{sym: sym, dist: dist, isMethod: isMethod}
+		}
+	}
+	if best == nil {
+		return ""
+	}
+	return best.sym
+}
+
+func sortCallSites(out []CallSite) {
+	sort.Slice(out, func(a, b int) bool {
+		if out[a].At.File != out[b].At.File {
+			return out[a].At.File < out[b].At.File
+		}
+		if out[a].At.StartLine != out[b].At.StartLine {
+			return out[a].At.StartLine < out[b].At.StartLine
+		}
+		if out[a].At.StartCol != out[b].At.StartCol {
+			return out[a].At.StartCol < out[b].At.StartCol
+		}
+		return out[a].CalleeSymbol < out[b].CalleeSymbol
+	})
 }
 
 // ---------------------------------------------------------------------

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // ConditionKind classifies a guard or branch found preceding a call
@@ -59,6 +60,11 @@ type ConditionExtractor struct {
 	// use it to resolve a SCIP relative_path to a real file we can
 	// read. Required.
 	snapshotPath string
+
+	// mu protects fileCache from concurrent goroutine access: the
+	// connections stage runs per-exposure workers in parallel, all
+	// sharing one ConditionExtractor.
+	mu sync.RWMutex
 
 	// fileCache memoises file contents to avoid re-reading the same
 	// file once per call site. Keyed by relative path.
@@ -128,24 +134,33 @@ func (e *ConditionExtractor) Extract(site CallSite, language string) []Condition
 // I/O error (logged but non-fatal — a missing file means we lose
 // some condition extraction for that path, not the entire walk).
 func (e *ConditionExtractor) fileLines(relativePath string) []string {
-	if lines, ok := e.fileCache[relativePath]; ok {
+	e.mu.RLock()
+	lines, ok := e.fileCache[relativePath]
+	e.mu.RUnlock()
+	if ok {
 		return lines
 	}
+
 	full := filepath.Join(e.snapshotPath, filepath.FromSlash(relativePath))
 	f, err := os.Open(full)
 	if err != nil {
+		e.mu.Lock()
 		e.fileCache[relativePath] = nil
+		e.mu.Unlock()
 		return nil
 	}
 	defer f.Close()
-	lines := []string{}
+	result := []string{}
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1024*1024), 8*1024*1024) // 8 MB max line — handles minified bundles
 	for sc.Scan() {
-		lines = append(lines, sc.Text())
+		result = append(result, sc.Text())
 	}
-	e.fileCache[relativePath] = lines
-	return lines
+
+	e.mu.Lock()
+	e.fileCache[relativePath] = result
+	e.mu.Unlock()
+	return result
 }
 
 // ---------------------------------------------------------------------
