@@ -26,7 +26,16 @@ type languageSpec struct {
 //   - The corresponding indexer binary in the wrapper.
 var supportedLanguages = map[langdetect.Language]languageSpec{
 	langdetect.LangJava: {
-		Versions: []string{"8", "11", "17", "21"},
+		// Keep versions in ascending order; pickVersion selects the closest
+		// match and falls back to Default when the requested version is not
+		// in the list or newer than what we know about.
+		// When a project targets a Java version newer than our highest entry
+		// (e.g. Java 25 while our max is 21) we still select the highest
+		// available version rather than falling all the way back to the
+		// default. The newer language features may produce compile errors
+		// inside the container, but those are surfaced clearly in the error
+		// field rather than a silent "wrong JDK" failure.
+		Versions: []string{"8", "11", "17", "21", "25"},
 		Default:  "21",
 	},
 	langdetect.LangKotlin: {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,20 +64,47 @@ func (s *scipJava) Run(ctx context.Context, in indexerInput) []LanguageResult {
 		})
 	}
 
+	// scip-java drives Maven/Gradle which write build artifacts (target/,
+	// build/) directly under the project root. The snapshot at in.Source
+	// is mounted read-only (:ro) by the Docker host, so those writes fail
+	// with "Read-only file system". We work around this by copying the
+	// source tree into a writable subdirectory of in.Workdir before running
+	// the indexer.
+	buildDir := filepath.Join(in.Workdir, "src")
+	if err := copyDirInto(in.Source, buildDir); err != nil {
+		return fanOutLanguages(in.Languages, s.Name(), LanguageResult{
+			Status:     "failed",
+			Reason:     "failed to copy source tree to writable workdir",
+			Error:      err.Error(),
+			DurationMs: 0,
+		})
+	}
+
 	// scip-java cleans the build cache before indexing, by design.
 	// We pass --output to redirect the index file into our workdir.
-	stdout, stderr, dur, err := runProcess(ctx, in.Source,
+	//
+	// NOTE: scip-java (and Maven underneath it) writes all diagnostic
+	// output — including [ERROR] lines — to STDOUT, not stderr. We merge
+	// both streams into the error field on failure so the run report shows
+	// the actual Maven error instead of an empty string.
+	stdout, stderr, dur, err := runProcess(ctx, buildDir,
 		"scip-java", "index", "--output", out)
 
 	if err != nil {
+		// Prefer stdout for the error message (Maven's [ERROR] lines land
+		// there). Fall back to stderr if stdout is empty.
+		errOutput := trimError(stdout)
+		if errOutput == "" {
+			errOutput = trimError(stderr)
+		}
 		return fanOutLanguages(in.Languages, s.Name(), LanguageResult{
 			Status:     "failed",
 			Reason:     "scip-java index failed",
-			Error:      trimError(stderr),
+			Error:      errOutput,
 			DurationMs: dur.Milliseconds(),
 		})
 	}
-	_ = stdout // scip-java is quiet on stdout; we just keep this for parity.
+	_ = stdout
 
 	if statSize(out) == 0 {
 		return fanOutLanguages(in.Languages, s.Name(), LanguageResult{
@@ -92,6 +120,51 @@ func (s *scipJava) Run(ctx context.Context, in indexerInput) []LanguageResult {
 		IndexPath:  out,
 		DurationMs: dur.Milliseconds(),
 	})
+}
+
+// copyDirInto recursively copies all files from src into dst, creating
+// dst and any necessary subdirectories. Symlinks are followed.
+//
+// This is used to give scip-java (and any other JVM build tool) a
+// writable working copy of the read-only source snapshot.
+func copyDirInto(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+		return copyFileMode(path, target, info.Mode())
+	})
+}
+
+// copyFileMode copies a single regular file from src to dst, preserving mode bits.
+func copyFileMode(src, dst string, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Close()
 }
 
 // hasJavaBuildTool returns true if root contains a recognised Java

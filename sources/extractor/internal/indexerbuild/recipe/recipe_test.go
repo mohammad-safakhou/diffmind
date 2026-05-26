@@ -118,21 +118,76 @@ func TestGenerateErrorsWhenNothingSupported(t *testing.T) {
 }
 
 // TestPickVersionMatching exercises the resolver's matching
-// algorithm: exact > major-minor > major > default.
+// algorithm: exact > major-minor > major > highest-known-if-newer > default.
 func TestPickVersionMatching(t *testing.T) {
 	spec := languageSpec{Versions: []string{"11", "17", "21"}, Default: "21"}
 	cases := map[string]string{
 		"21":     "21",
 		"17":     "17",
-		"17.0.1": "17", // major-minor prefix? Java numbering matches major-only
-		"":       "21",
-		"99":     "21", // unknown → default
+		"17.0.1": "17", // major-only match
+		"":       "21", // empty → default
+		"9":      "21", // unknown integer older than all → default
 	}
 	for in, want := range cases {
 		got := pickVersion(spec, in)
 		if got != want {
 			t.Errorf("pickVersion(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestPickVersionJava25 is the regression guard for the two production failures:
+//
+//  1. A project declaring <java.version>25</java.version> resolved to JDK 21.
+//  2. Amazon Corretto version strings like "corretto-25.0.1.8.1" were not
+//     recognised as Java 25, causing the same fallback to JDK 21 and then
+//     [ERROR] error: release version 25 not supported from Maven.
+func TestPickVersionJava25(t *testing.T) {
+	spec := supportedLanguages[langdetect.LangJava]
+
+	cases := map[string]string{
+		"25":                  "25", // plain Java major
+		"corretto-25.0.1.8.1": "25", // Amazon Corretto vendor-prefixed string (real failure)
+		"temurin-25.0.0":      "25", // Temurin variant
+		"openjdk-25":          "25", // OpenJDK variant
+		"25.0.1":              "25", // major.minor.patch
+	}
+	for in, want := range cases {
+		got := pickVersion(spec, in)
+		if got != want {
+			t.Errorf("pickVersion(java, %q) = %q, want %q", in, got, want)
+		}
+	}
+
+	// A future version not yet in the list should return the highest known.
+	highest := spec.Versions[len(spec.Versions)-1]
+	if got := pickVersion(spec, "99"); got != highest {
+		t.Errorf("pickVersion(java, 99) = %q, want highest known %q", got, highest)
+	}
+	if got := pickVersion(spec, "corretto-99.0.1.8.1"); got != highest {
+		t.Errorf("pickVersion(java, corretto-99...) = %q, want highest known %q", got, highest)
+	}
+}
+
+// TestGenerateUsesCorrectJDKForJava25 ensures the full Generate path
+// produces a base image tag with JDK 25 when the project uses Corretto 25.
+func TestGenerateUsesCorrectJDKForJava25(t *testing.T) {
+	// This is the exact version string that langdetect returns for the
+	// checkout-service repo (from its pom.xml / .mvn config).
+	plan, err := Generate([]langdetect.Fact{
+		{Language: langdetect.LangJava, Version: "corretto-25.0.1.8.1", BuildTool: "maven"},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(plan.Base) != 1 {
+		t.Fatalf("expected 1 base job, got %d", len(plan.Base))
+	}
+	if plan.Base[0].Tag != "diffmind-base-java:25" {
+		t.Errorf("base tag = %q, want diffmind-base-java:25 (got JDK 21 regression)", plan.Base[0].Tag)
+	}
+	if plan.Composite.Tag != "diffmind-indexer:java25" {
+		t.Errorf("composite tag = %q, want diffmind-indexer:java25", plan.Composite.Tag)
 	}
 }
 
@@ -179,16 +234,16 @@ func TestCompositeDockerfileIncludesWrapper(t *testing.T) {
 // Dockerfile creates.
 func TestCompositeDockerfileMatchesBaseLayouts(t *testing.T) {
 	cases := []struct {
-		fact          langdetect.Fact
-		mustNotCopy   []string // paths the composite MUST NOT reference
-		mustCopy      []string // paths the composite MUST reference
-		baseMustHave  []string // markers that must appear in the base Dockerfile
+		fact         langdetect.Fact
+		mustNotCopy  []string // paths the composite MUST NOT reference
+		mustCopy     []string // paths the composite MUST reference
+		baseMustHave []string // markers that must appear in the base Dockerfile
 	}{
 		{
 			fact:         langdetect.Fact{Language: langdetect.LangJava, Version: "21"},
 			mustNotCopy:  []string{"/opt/scip-java"}, // dropped in Sprint 4
 			mustCopy:     []string{"/usr/local/bin/scip-java", "/opt/java", "/opt/maven", "/opt/gradle"},
-			baseMustHave: []string{"/usr/local/bin/scip-java"},
+			baseMustHave: []string{"/usr/local/bin/scip-java", "JAVA_HOME=/opt/java/openjdk"},
 		},
 		{
 			fact:         langdetect.Fact{Language: langdetect.LangTypeScript, Version: "20"},
@@ -244,6 +299,19 @@ func TestCompositeDockerfileMatchesBaseLayouts(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCompositeDockerfilePutsJavaRuntimeOnPath(t *testing.T) {
+	plan, err := Generate([]langdetect.Fact{{Language: langdetect.LangJava, Version: "21"}})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(plan.Composite.Dockerfile, "JAVA_HOME=/opt/java/openjdk") {
+		t.Fatalf("composite Dockerfile must set JAVA_HOME to Temurin's actual JDK path:\n%s", plan.Composite.Dockerfile)
+	}
+	if !strings.Contains(plan.Composite.Dockerfile, "${JAVA_HOME}/bin") {
+		t.Fatalf("composite Dockerfile must put Java on PATH for scip-java:\n%s", plan.Composite.Dockerfile)
 	}
 }
 

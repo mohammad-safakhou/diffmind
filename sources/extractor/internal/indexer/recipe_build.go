@@ -2,14 +2,20 @@ package indexer
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 
 	"github.com/mohammad-safakhou/diffmind/internal/indexerbuild/recipe"
 )
+
+const recipeDigestLabel = "org.diffmind.recipe.digest"
 
 // RecipeBuildResult captures the outcome of EnsureRecipe. It mirrors
 // the per-job structure of a recipe.Plan so the orchestrator can
@@ -80,10 +86,11 @@ func (b *Builder) EnsureRecipe(ctx context.Context, plan recipe.Plan) RecipeBuil
 func (b *Builder) buildOneRecipeJob(ctx context.Context, job recipe.BuildJob) SingleBuildResult {
 	res := SingleBuildResult{Tag: job.Tag}
 
-	// Cache hit fast path. The image tag is content-addressed via
-	// the language+version combo, so a presence check is enough
-	// to know it's the right image.
-	if b.imagePresent(ctx, job.Tag) {
+	digest := recipeJobDigest(job)
+	// Cache hit fast path. Tags are human-readable language+version combos, so
+	// we also require a content digest label. Older images without the label, or
+	// images built from stale Dockerfiles, are rebuilt automatically.
+	if b.recipeImagePresent(ctx, job.Tag, digest) {
 		return res
 	}
 
@@ -99,6 +106,7 @@ func (b *Builder) buildOneRecipeJob(ctx context.Context, job recipe.BuildJob) Si
 		args := []string{
 			"build",
 			"-f", filepath.Join(ctxDir, "Dockerfile"),
+			"--label", recipeDigestLabel + "=" + digest,
 			"-t", job.Tag,
 			ctxDir,
 		}
@@ -136,6 +144,39 @@ func (b *Builder) buildOneRecipeJob(ctx context.Context, job recipe.BuildJob) Si
 	res.Built = true
 	res.LogTail = tail.String()
 	return res
+}
+
+func recipeJobDigest(job recipe.BuildJob) string {
+	h := sha256.New()
+	h.Write([]byte(job.Tag))
+	h.Write([]byte("\x00"))
+	h.Write([]byte(job.Kind))
+	h.Write([]byte("\x00"))
+	h.Write([]byte(job.Language))
+	h.Write([]byte("\x00"))
+	h.Write([]byte(job.Dockerfile))
+	h.Write([]byte("\x00"))
+	keys := make([]string, 0, len(job.ContextFiles))
+	for k := range job.ContextFiles {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		h.Write([]byte(k))
+		h.Write([]byte("\x00"))
+		h.Write([]byte(job.ContextFiles[k]))
+		h.Write([]byte("\x00"))
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+func (b *Builder) recipeImagePresent(ctx context.Context, tag, wantDigest string) bool {
+	cmd := exec.CommandContext(ctx, b.dockerPath(), "image", "inspect", "--format", "{{ index .Config.Labels \""+recipeDigestLabel+"\" }}", tag)
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == wantDigest
 }
 
 // prepareRecipeContext writes the Dockerfile + context files for a

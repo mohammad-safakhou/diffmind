@@ -12,6 +12,8 @@ import (
 	"testing/fstest"
 
 	"github.com/mohammad-safakhou/diffmind/indexerbuild"
+	"github.com/mohammad-safakhou/diffmind/internal/indexerbuild/recipe"
+	"github.com/mohammad-safakhou/diffmind/internal/langdetect"
 )
 
 // TestExtractEmbedSkipsTestFiles confirms that extraction filters out
@@ -21,11 +23,11 @@ func TestExtractEmbedSkipsTestFiles(t *testing.T) {
 	// Build a synthetic FS so the assertion is independent of what
 	// indexerbuild/wrapper currently contains.
 	src := fstest.MapFS{
-		"wrapper/main.go":           {Data: []byte("package main\nfunc main(){}\n")},
-		"wrapper/main_test.go":      {Data: []byte("package main\n")},
-		"wrapper/helper.go":         {Data: []byte("package main\n")},
-		"wrapper/helper_test.go":    {Data: []byte("package main\n")},
-		"Dockerfile.indexer":        {Data: []byte("FROM scratch\n")},
+		"wrapper/main.go":        {Data: []byte("package main\nfunc main(){}\n")},
+		"wrapper/main_test.go":   {Data: []byte("package main\n")},
+		"wrapper/helper.go":      {Data: []byte("package main\n")},
+		"wrapper/helper_test.go": {Data: []byte("package main\n")},
+		"Dockerfile.indexer":     {Data: []byte("FROM scratch\n")},
 	}
 	dst := t.TempDir()
 	if err := extractEmbed(src, dst); err != nil {
@@ -92,6 +94,21 @@ func TestComputeEmbedDigestDifferentiatesPaths(t *testing.T) {
 	b, _ := computeEmbedDigest(fstest.MapFS{"b.txt": {Data: []byte("x")}})
 	if a == b {
 		t.Errorf("digest collided across different paths: %s", a)
+	}
+}
+
+func TestRecipeJobDigestDifferentiatesDockerfileContent(t *testing.T) {
+	base := recipe.BuildJob{
+		Tag:        "diffmind-base-java:21",
+		Dockerfile: "FROM eclipse-temurin:21-jdk\n",
+		Kind:       "base",
+		Language:   langdetect.LangJava,
+	}
+	tweaked := base
+	tweaked.Dockerfile = "FROM eclipse-temurin:21-jdk\nENV JAVA_HOME=/opt/java/openjdk\n"
+
+	if recipeJobDigest(base) == recipeJobDigest(tweaked) {
+		t.Fatalf("recipe digest must change when generated Dockerfile content changes")
 	}
 }
 

@@ -29,6 +29,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/mohammad-safakhou/diffmind/internal/langdetect"
@@ -202,42 +203,127 @@ func resolve(f langdetect.Fact) ResolvedFact {
 }
 
 // pickVersion finds the closest spec.Versions entry to the
-// requested version; falls back to spec.Default. Matching is
-// substring-of-the-major-minor; e.g. "1.22.8" matches "1.22".
+// requested version; falls back to the highest known version when the
+// request is newer than all known versions, or to spec.Default otherwise.
+//
+// Matching order:
+//  1. Exact string match              "21"         → "21"
+//  2. Major-minor prefix              "1.22.8"     → "1.22"
+//  3. Major-only                      "17.0.1"     → "17"
+//  4. Numeric major extracted from
+//     a vendor-prefixed string        "corretto-25.0.1.8.1" → major=25 → "25"
+//  5. Highest known when newer        "26"         → "25"  (if 25 is max)
+//  6. spec.Default
 func pickVersion(spec languageSpec, requested string) string {
 	if requested == "" {
 		return spec.Default
 	}
-	// Exact match first.
-	for _, v := range spec.Versions {
-		if v == requested {
-			return v
-		}
+
+	// normalise: work on the canonical form AND a vendor-stripped form in
+	// parallel so that "corretto-25.0.1.8.1" is also tried as "25.0.1.8.1".
+	candidates := []string{requested}
+	if stripped := stripVendorPrefix(requested); stripped != requested {
+		candidates = append(candidates, stripped)
 	}
-	// Major-minor prefix match.
-	majMin := requested
-	if i := strings.Index(requested, "."); i > 0 {
-		// e.g. "1.22.8" → check for prefix "1.22"
-		if j := strings.Index(requested[i+1:], "."); j > 0 {
-			majMin = requested[:i+1+j]
-		}
-	}
-	for _, v := range spec.Versions {
-		if v == majMin {
-			return v
-		}
-	}
-	// Major-only match for languages where minor doesn't matter
-	// for our purposes (Java, .NET).
-	if i := strings.Index(requested, "."); i > 0 {
-		major := requested[:i]
+
+	for _, cand := range candidates {
+		// 1. Exact match.
 		for _, v := range spec.Versions {
-			if v == major {
+			if v == cand {
+				return v
+			}
+		}
+		// 2. Major-minor prefix: "1.22.8" → "1.22".
+		majMin := cand
+		if i := strings.Index(cand, "."); i > 0 {
+			if j := strings.Index(cand[i+1:], "."); j > 0 {
+				majMin = cand[:i+1+j]
+			}
+		}
+		for _, v := range spec.Versions {
+			if v == majMin {
+				return v
+			}
+		}
+		// 3. Major-only: "17.0.1" → "17".
+		if i := strings.Index(cand, "."); i > 0 {
+			major := cand[:i]
+			for _, v := range spec.Versions {
+				if v == major {
+					return v
+				}
+			}
+		}
+		// 4. Plain integer: "25" → exact match already handled above;
+		//    but also handles the stripped "25" from "corretto-25.0.1.8.1"
+		//    after the dot-split paths above.
+		if _, err := strconv.Atoi(cand); err == nil {
+			for _, v := range spec.Versions {
+				if v == cand {
+					return v
+				}
+			}
+		}
+	}
+
+	// 5. If the requested value contains a numeric major that is larger than
+	//    every known version, return the highest known so the user gets the
+	//    closest JDK rather than falling back to an older Default.
+	//    e.g. requested="corretto-25.0.1.8.1" → major=25 > max=25 → "25"
+	//         requested="26" → major=26 > max=25 → "25"
+	if major := extractMajorInt(requested); major > 0 && len(spec.Versions) > 0 {
+		highest := spec.Versions[len(spec.Versions)-1]
+		if highestInt, err := strconv.Atoi(highest); err == nil && major >= highestInt {
+			return highest
+		}
+		// Also check if it matches any known version directly.
+		majStr := strconv.Itoa(major)
+		for _, v := range spec.Versions {
+			if v == majStr {
 				return v
 			}
 		}
 	}
+
 	return spec.Default
+}
+
+// stripVendorPrefix removes a leading vendor name from version strings like
+// "corretto-25.0.1.8.1" → "25.0.1.8.1", "temurin-21.0.3" → "21.0.3",
+// "openjdk-17" → "17". Returns the input unchanged if no prefix is detected.
+func stripVendorPrefix(v string) string {
+	// Find the first digit run; everything before it (including a trailing
+	// hyphen or dot) is considered a vendor prefix.
+	for i, ch := range v {
+		if ch >= '0' && ch <= '9' {
+			return v[i:]
+		}
+	}
+	return v
+}
+
+// extractMajorInt extracts the first run of digits from a version string and
+// returns it as an integer. Returns 0 if no digit run is found.
+// "corretto-25.0.1.8.1" → 25, "21" → 21, "1.22.8" → 1, "jdk-17" → 17.
+func extractMajorInt(v string) int {
+	start := -1
+	for i, ch := range v {
+		if ch >= '0' && ch <= '9' {
+			if start < 0 {
+				start = i
+			}
+		} else {
+			if start >= 0 {
+				n, _ := strconv.Atoi(v[start:i])
+				return n
+			}
+		}
+	}
+	if start >= 0 {
+		n, _ := strconv.Atoi(v[start:])
+		return n
+	}
+	return 0
 }
 
 // digest produces a short content hash of a Plan, useful for the
