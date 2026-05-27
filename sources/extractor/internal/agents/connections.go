@@ -9,12 +9,17 @@ import (
 	"sync"
 	"time"
 
+	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
+	_ "github.com/mohammad-safakhou/diffmind/internal/ast/framework"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	"github.com/mohammad-safakhou/diffmind/internal/scip"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
+
+// Ensure astpkg is used even when the AST path is disabled at runtime.
+var _ = (*astpkg.ProjectIndex)(nil)
 
 // runConnectionsBatch is Stage 4. It maps each exposure to the
 // dependencies it reaches by walking the SCIP call graph produced in
@@ -56,11 +61,43 @@ func (o *orchestrator) runConnectionsBatch(
 		depByID[d.ID] = d
 	}
 
+	// ── Path A: tree-sitter AST index (preferred) ────────────────────────
+	// Only use the AST path when the index has actual content (at least
+	// some symbols or call edges). An empty index (e.g. tests with empty
+	// temp dirs, or a repo with no recognisable source files) should fall
+	// through to the SCIP path or shallow matcher.
+	if o.astIndex != nil && (len(o.astIndex.Symbols) > 0 || len(o.astIndex.Frameworks) > 0) {
+		conns, unresolved := runASTConnections(ctx, o.astIndex, exposures, dependencies,
+			o.cfg.Quality.MinConfidence, o.cfg.Runtime.Workers, onResult)
+		exposuresWithoutPaths := 0
+		for _, exp := range exposures {
+			found := false
+			for _, c := range conns {
+				if c.FromExposureID == exp.ID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				exposuresWithoutPaths++
+			}
+		}
+		// If the AST walk found zero connections, fall through to shallow
+		// matcher so runs still produce something useful.
+		if len(conns) > 0 || len(unresolved) > 0 {
+			o.emitConnectionsAggregate(len(exposures), len(conns), exposuresWithoutPaths, "ast")
+			sort.Slice(conns, func(i, j int) bool { return conns[i].ID < conns[j].ID })
+			return conns, unresolved, nil, ""
+		}
+		util.Warn("agents.connections", "ast walk produced no connections; falling back to shallow matcher", nil)
+	}
+
+	// ── Path B: SCIP index (legacy fallback) ─────────────────────────────
 	// If indexing is disabled or failed, fall back to the deterministic
 	// name-based matcher. It produces shallow connections (no paths,
 	// no conditions) but they are still valid model.Connection entries.
 	if o.scipIndex == nil {
-		util.Warn("agents.connections", "no SCIP index available; using shallow name matcher", nil)
+		util.Warn("agents.connections", "no index available; using shallow name matcher", nil)
 		conns, unresolved := buildShallowConnections(exposures, dependencies, o.cfg.Quality.MinConfidence)
 		o.emitConnectionsAggregate(len(exposures), len(conns), 0, "no_index")
 		if onResult != nil {
@@ -803,6 +840,469 @@ func (o *orchestrator) emitConnectionsAggregate(
 			"source":                  source,
 		},
 	})
+}
+
+// ─── Tree-sitter connection engine ────────────────────────────────────────────
+
+// runASTConnections finds all connections between exposures and dependencies
+// using the tree-sitter project index. It replaces the SCIP-based connection
+// mapping entirely.
+//
+// Algorithm:
+//  1. Resolve every dependency to a set of qualified symbol names using
+//     the AST index (positional lookup from source_locations, then name lookup).
+//  2. Resolve every exposure's entry symbol the same way.
+//  3. BFS from each entry symbol to any dependency symbol, collecting paths.
+//  4. Each path's hops carry per-step condition + repetition derived from the
+//     tree-sitter enclosing context (populated at parse time, no LLM).
+func runASTConnections(
+	ctx context.Context,
+	idx *astpkg.ProjectIndex,
+	exposures []model.Exposure,
+	dependencies []model.Dependency,
+	minConfidence float64,
+	workerCount int,
+	onResult func(),
+) ([]model.Connection, []model.UnresolvedItem) {
+	if workerCount <= 0 {
+		workerCount = 6
+	}
+
+	// Build the dependency symbol set.
+	depBySymbol := map[string]model.Dependency{} // resolved symbol → dep
+	var unresolvedDeps []model.UnresolvedItem
+
+	for _, dep := range dependencies {
+		syms := resolveEntitySymbolsAST(idx, dep.Name, dep.Locations)
+		if len(syms) == 0 {
+			unresolvedDeps = append(unresolvedDeps, model.UnresolvedItem{
+				Kind:       model.KindDependency,
+				Type:       dep.Type,
+				Name:       dep.Name,
+				ReasonCode: "ast_unresolved",
+				Reason:     fmt.Sprintf("dependency %q not found in AST index", dep.Name),
+				Confidence: dep.Confidence,
+			})
+			continue
+		}
+		for _, sym := range syms {
+			depBySymbol[sym] = dep
+		}
+	}
+
+	// Build a single target predicate.
+	isTarget := func(sym string) bool {
+		_, ok := depBySymbol[sym]
+		return ok
+	}
+
+	walker := astpkg.NewWalker(idx)
+	cfg := astpkg.WalkConfig{
+		IsTarget:          isTarget,
+		Context:           ctx,
+		MaxDepth:          12,
+		MaxPathsPerTarget: 8,
+		MaxPathsTotal:     4000,
+		MaxVisitedEdges:   250000,
+	}
+
+	// Per-exposure parallel walk.
+	type workItem struct {
+		exp     model.Exposure
+		entries []string
+	}
+	type result struct {
+		conns      []model.Connection
+		unresolved []model.UnresolvedItem
+	}
+
+	jobCh := make(chan workItem, len(exposures))
+	resCh := make(chan result, len(exposures))
+
+	var wg sync.WaitGroup
+	if workerCount > len(exposures) {
+		workerCount = len(exposures)
+	}
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for item := range jobCh {
+				if ctx.Err() != nil {
+					resCh <- result{}
+					continue
+				}
+				conns, unr := buildASTConnectionsForExposure(
+					ctx, walker, cfg, item.exp, item.entries, depBySymbol, minConfidence,
+				)
+				resCh <- result{conns: conns, unresolved: unr}
+			}
+		}()
+	}
+
+	go func() {
+		for _, exp := range exposures {
+			entries := resolveEntitySymbolsAST(idx, exp.Name, exp.Locations)
+			if len(entries) == 0 {
+				// No SCIP-equivalent entry point: try framework bindings.
+				for _, fb := range idx.Frameworks {
+					if fb.Symbol != "" && strings.Contains(fb.Trigger, exp.Name) {
+						entries = append(entries, fb.Symbol)
+					}
+				}
+			}
+			jobCh <- workItem{exp: exp, entries: entries}
+		}
+		close(jobCh)
+		wg.Wait()
+		close(resCh)
+	}()
+
+	var allConns []model.Connection
+	allUnresolved := append([]model.UnresolvedItem{}, unresolvedDeps...)
+
+	for r := range resCh {
+		if onResult != nil {
+			onResult()
+		}
+		allConns = append(allConns, r.conns...)
+		allUnresolved = append(allUnresolved, r.unresolved...)
+	}
+
+	return allConns, allUnresolved
+}
+
+// resolveEntitySymbolsAST looks up the SCIP-like qualified symbol for an entity
+// using the AST index. It tries:
+//  1. Positional: look up symbols at the entity's source_locations line/file.
+//  2. Name-based: search for symbols matching the entity's name.
+func resolveEntitySymbolsAST(idx *astpkg.ProjectIndex, name string, locs []model.Location) []string {
+	var found []string
+
+	// 1. Positional lookup.
+	for _, loc := range locs {
+		if loc.File == "" || loc.StartLine <= 0 {
+			continue
+		}
+		// Find symbols defined near this line in this file.
+		fa, ok := idx.Files[loc.File]
+		if !ok {
+			continue
+		}
+		line := uint32(loc.StartLine - 1) // convert to 0-based
+		for _, sym := range fa.Symbols {
+			if sym.Range.StartLine <= line && sym.Range.EndLine >= line {
+				found = append(found, sym.Qualified)
+			}
+		}
+		if len(found) > 0 {
+			return uniqueStrings(found)
+		}
+		// Widen: look ±10 lines.
+		for _, sym := range fa.Symbols {
+			lo := line - 10
+			if line < 10 {
+				lo = 0
+			}
+			if sym.Range.StartLine >= lo && sym.Range.StartLine <= line+30 {
+				found = append(found, sym.Qualified)
+			}
+		}
+		if len(found) > 0 {
+			return uniqueStrings(found)
+		}
+	}
+
+	// 2. Name-based lookup across the whole project.
+	// Split "ClassName.methodName" → method search.
+	searchName := name
+	if dot := strings.LastIndexAny(name, ".#/"); dot >= 0 {
+		searchName = name[dot+1:]
+	}
+	// Strip argument lists "findById(Long id)" → "findById".
+	if paren := strings.Index(searchName, "("); paren > 0 {
+		searchName = searchName[:paren]
+	}
+	searchName = strings.TrimSpace(searchName)
+
+	for qualified, defs := range idx.Symbols {
+		for _, def := range defs {
+			if def.Name == searchName || def.Qualified == name {
+				found = append(found, qualified)
+				break
+			}
+		}
+	}
+	return uniqueStrings(found)
+}
+
+// buildASTConnectionsForExposure walks from each entry symbol and builds
+// Connection records for every dependency it reaches.
+func buildASTConnectionsForExposure(
+	ctx context.Context,
+	walker *astpkg.Walker,
+	cfg astpkg.WalkConfig,
+	exposure model.Exposure,
+	entrySymbols []string,
+	depBySymbol map[string]model.Dependency,
+	minConfidence float64,
+) ([]model.Connection, []model.UnresolvedItem) {
+	if len(entrySymbols) == 0 {
+		return nil, []model.UnresolvedItem{{
+			Kind:       model.KindExposure,
+			Type:       exposure.Type,
+			Name:       exposure.Name,
+			ReasonCode: "ast_unresolved",
+			Reason:     fmt.Sprintf("exposure %q not found in AST index", exposure.Name),
+		}}
+	}
+
+	// Bucket paths by dependency.
+	type bucket struct {
+		dep   model.Dependency
+		paths []astpkg.CallPath
+	}
+	byDep := map[string]*bucket{}
+
+	for _, entry := range entrySymbols {
+		if ctx.Err() != nil {
+			return nil, nil
+		}
+		paths := walker.Walk(entry, cfg)
+		for _, p := range paths {
+			dep, ok := depBySymbol[p.TargetSymbol]
+			if !ok {
+				continue
+			}
+			b, exists := byDep[dep.ID]
+			if !exists {
+				b = &bucket{dep: dep}
+				byDep[dep.ID] = b
+			}
+			b.paths = append(b.paths, p)
+		}
+	}
+
+	conns := make([]model.Connection, 0, len(byDep))
+	for _, b := range byDep {
+		c := buildASTConnection(exposure, b.dep, b.paths, minConfidence)
+		conns = append(conns, c)
+	}
+	return conns, nil
+}
+
+// buildASTConnection assembles a model.Connection from tree-sitter paths.
+func buildASTConnection(
+	exposure model.Exposure,
+	dep model.Dependency,
+	paths []astpkg.CallPath,
+	minConfidence float64,
+) model.Connection {
+	mPaths := make([]model.ConnectionPath, 0, len(paths))
+	var primaryCond model.Condition
+	var locs []model.Location
+
+	for i, p := range paths {
+		mp := convertASTPath(p, dep.Type)
+		if mp.ID == "" {
+			mp.ID = fmt.Sprintf("path-%d", i+1)
+		}
+		mPaths = append(mPaths, mp)
+		if mp.Condition.Kind != "" && primaryCond.Kind == "" {
+			primaryCond = mp.Condition
+		}
+		for _, step := range mp.Steps {
+			if step.Location.File != "" {
+				locs = append(locs, step.Location)
+			}
+		}
+	}
+
+	if len(locs) == 0 {
+		locs = append(locs, exposure.Locations...)
+	}
+	if len(locs) == 0 {
+		locs = append(locs, dep.Locations...)
+	}
+
+	pathSig := buildASTPathSignature(paths)
+	connID := util.StableID(exposure.ID, dep.ID, pathSig)
+	confidence := scoreASTConfidence(paths, minConfidence)
+
+	return model.Connection{
+		ID:             connID,
+		FromExposureID: exposure.ID,
+		ToDependencyID: dep.ID,
+		Condition:      primaryCond,
+		PathSignature:  pathSig,
+		Summary:        fmt.Sprintf("%s → %s", exposure.Name, dep.Name),
+		Locations:      dedupeLocations(locs),
+		Evidence:       buildASTEvidence(paths),
+		Confidence:     confidence,
+		FromType:       exposure.Type,
+		ToType:         dep.Type,
+		Paths:          mPaths,
+	}
+}
+
+// convertASTPath converts a tree-sitter CallPath to a model.ConnectionPath.
+func convertASTPath(p astpkg.CallPath, depType string) model.ConnectionPath {
+	steps := make([]model.ConnectionPathStep, 0, len(p.Steps))
+	var pathCond model.Condition
+
+	for _, s := range p.Steps {
+		loc := model.Location{
+			File:      s.File,
+			StartLine: int(s.Range.StartLine) + 1, // convert 0-based to 1-based
+			EndLine:   int(s.Range.EndLine) + 1,
+		}
+
+		// Convert per-step condition from tree-sitter.
+		stepCond := model.Condition{
+			Kind:        s.Condition.Kind,
+			Expression:  s.Condition.Expression,
+			Explanation: s.Condition.Explanation,
+		}
+		// If this step has a meaningful condition and the path has none, promote it.
+		if stepCond.Kind != "" && stepCond.Kind != "unconditional" && pathCond.Kind == "" {
+			pathCond = stepCond
+		}
+
+		// Convert per-step repetition — encode in condition when loop.
+		if s.Repetition.Kind == "loop" {
+			if stepCond.Kind == "" || stepCond.Kind == "unconditional" {
+				stepCond = model.Condition{
+					Kind:        "loop",
+					Expression:  s.Repetition.IteratesOver,
+					Explanation: "Call is inside a loop; executed once per element",
+				}
+				if pathCond.Kind == "" {
+					pathCond = stepCond
+				}
+			}
+		}
+
+		// Build args summary.
+		argsSummary := ""
+		if len(s.Arguments) > 0 {
+			parts := make([]string, 0, len(s.Arguments))
+			for _, a := range s.Arguments {
+				parts = append(parts, a.Source)
+			}
+			argsSummary = strings.Join(parts, ", ")
+		}
+
+		steps = append(steps, model.ConnectionPathStep{
+			Order:     s.Order,
+			Action:    "invoke",
+			Operation: depType,
+			From:      s.Caller,
+			To:        s.Callee,
+			Condition: stepCond,
+			Location:  loc,
+		})
+		_ = argsSummary // will be exposed in graph export endpoint
+	}
+
+	// Roll up path condition.
+	if pathCond.Kind == "" {
+		pathCond = model.Condition{Kind: "unconditional"}
+	}
+
+	return model.ConnectionPath{
+		ID:        buildASTPathID(p),
+		Summary:   buildASTPathSummary(p),
+		Condition: pathCond,
+		Steps:     steps,
+	}
+}
+
+func buildASTPathID(p astpkg.CallPath) string {
+	parts := make([]string, 0, len(p.Steps))
+	for _, s := range p.Steps {
+		parts = append(parts, s.Callee)
+	}
+	return util.StableID(strings.Join(parts, "->"))
+}
+
+func buildASTPathSummary(p astpkg.CallPath) string {
+	if len(p.Steps) == 0 {
+		return ""
+	}
+	first := lastIdent(p.Steps[0].Caller)
+	last := lastIdent(p.Steps[len(p.Steps)-1].Callee)
+	return fmt.Sprintf("%s → %s (%d hops)", first, last, len(p.Steps))
+}
+
+func buildASTPathSignature(paths []astpkg.CallPath) string {
+	parts := make([]string, 0, len(paths))
+	for _, p := range paths {
+		parts = append(parts, buildASTPathID(p))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "||")
+}
+
+func buildASTEvidence(paths []astpkg.CallPath) []model.Evidence {
+	seen := map[string]struct{}{}
+	var out []model.Evidence
+	for _, p := range paths {
+		for _, s := range p.Steps {
+			key := s.File + ":" + fmt.Sprint(s.Range.StartLine)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, model.Evidence{
+				Location: model.Location{
+					File:      s.File,
+					StartLine: int(s.Range.StartLine) + 1,
+					EndLine:   int(s.Range.EndLine) + 1,
+				},
+				Source: "ast",
+			})
+			if len(out) >= 5 {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+func scoreASTConfidence(paths []astpkg.CallPath, minConfidence float64) float64 {
+	if len(paths) == 0 {
+		return minConfidence
+	}
+	// Shorter paths = higher confidence.
+	minHops := len(paths[0].Steps)
+	for _, p := range paths {
+		if len(p.Steps) < minHops {
+			minHops = len(p.Steps)
+		}
+	}
+	score := 0.98 - float64(minHops-1)*0.04
+	if score < 0.5 {
+		score = 0.5
+	}
+	if score < minConfidence {
+		score = minConfidence
+	}
+	return score
+}
+
+func uniqueStrings(in []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if _, ok := seen[s]; !ok {
+			seen[s] = struct{}{}
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // _ keeps imports referenced even when not all helpers are wired into
