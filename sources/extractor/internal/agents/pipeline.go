@@ -15,7 +15,6 @@ import (
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
-	"github.com/mohammad-safakhou/diffmind/internal/indexer"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	"github.com/mohammad-safakhou/diffmind/internal/opencode"
@@ -56,46 +55,17 @@ type orchestrator struct {
 	// completes; no synchronisation needed.
 	tokenAgg tokenTotals
 
-	// scipIndex is set by the index stage when SCIP indexing was
-	// enabled and at least one indexer succeeded. Nil indicates the
-	// connections stage must fall back to its name-based matcher.
-	// Read-only after the index stage completes; safe for concurrent
-	// reads by the connections workers.
-	scipIndex *scip.Index
-
 	// astIndex is set by the ast_index stage and holds the tree-sitter
 	// project analysis used by the connections stage and discovery hints.
 	// Read-only after the ast_index stage completes.
 	astIndex *astpkg.ProjectIndex
 
-	// indexerOverride lets tests inject a fake Indexer implementation
-	// in place of the production Docker driver. Nil in production.
-	// Set via RunOptions.IndexerOverride.
-	indexerOverride indexer.Indexer
+	// scipIndex is retained as a fallback when the AST index is empty.
+	// Deprecated: will be removed after the SCIP packages are retired.
+	scipIndex *scip.Index
 
-	// buildDone signals when the parallel image-build goroutine
-	// has finished. runIndexStage blocks on `<-buildDone` so it
-	// never proceeds with a missing or partially-built image.
-	// The orchestrator closes the channel from runImageBuild
-	// after writing buildResult. Receive on a closed channel is
-	// instant + safe, which gives runIndexStage a simple wait.
-	buildDone chan struct{}
-	// buildResult carries the outcome of the parallel image
-	// build. Only valid AFTER `<-buildDone` returns; the
-	// orchestrator never writes to it after closing the channel
-	// so a single-writer / single-reader pattern holds.
-	buildResult buildOutcome
-	// pipelineCancel cancels the orchestrator-wide context so
-	// in-flight LLM calls in Stages 1-3 exit promptly when the
-	// parallel image build fails. We treat indexer image-build
-	// failure as FAIL-FAST (deliberate policy choice from Sprint
-	// 4 retro: without the SCIP index the connections stage is
-	// useless, so the whole run is useless — better to halt and
-	// surface the failure clearly than waste LLM money on a
-	// pipeline whose output won't include connection paths).
-	//
-	// Set in RunWith right after the cancellable context is
-	// created; invoked once from runImageBuild on hard failure.
+	// pipelineCancel cancels the orchestrator-wide context. Retained
+	// because some error-handling paths still invoke it.
 	pipelineCancel context.CancelFunc
 
 	sessionMu       sync.Mutex
@@ -207,10 +177,6 @@ type RunOptions struct {
 	ResumeFromDir string
 	SnapshotPath  string
 
-	// IndexerOverride lets tests inject a fake Indexer in place of
-	// the production Docker driver. Nil in production. See
-	// internal/agents/index_stage_test.go for usage.
-	IndexerOverride indexer.Indexer
 }
 
 // Run is the public entrypoint used by internal/app. It returns an aggregated
@@ -297,7 +263,6 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		sink:             sink,
 		captureDir:       opts.CaptureDir,
 		runDir:           opts.RunDir,
-		indexerOverride:  opts.IndexerOverride,
 		pipelineCancel:   pipelineCancel,
 	}
 	// All stages read `ctx`; alias the cancellable child so the
@@ -417,24 +382,9 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		// (cancelled)" — which is technically true but not the
 		// root cause.
 		//
-		// We only re-attribute when:
-		//   - the parallel build actually failed (o.buildResult.Err != nil), AND
-		//   - the caller isn't ALREADY reporting an "index" failure
-		//     (runIndexStage hands us stage="index" with the same
-		//     intent — preserve its attribution, it has more context).
-		if stage != "index" && o.buildResult.Err != nil && err != nil && errors.Is(err, context.Canceled) {
-			stage = "index"
-			jobID = "index.build"
-			entityName = o.buildResult.Image
-			objectiveID = ""
-			err = o.buildResult.Err
-			if extra == nil {
-				extra = map[string]any{}
-			}
-			extra["build_image"] = o.buildResult.Image
-			extra["plan_resolved"] = o.buildResult.PlanResolved
-			extra["reattributed_from_cancel"] = true
-		}
+		// No SCIP image build to re-attribute to; the tree-sitter ast_index
+		// stage runs synchronously and non-fatal, so context cancellation
+		// is always attributable to the stage that actually reported it.
 		errClass := classifyError(err)
 		// Only attach a numeric HTTP status when the error is actually
 		// HTTP-shaped (4xx/5xx/rate-limit). For schema/network/timeout
@@ -558,11 +508,8 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	// and writes its outcome to o.buildResult; runIndexStage
 	// later blocks on `<-o.buildDone` to consume it.
 	//
-	// We do this immediately after repo_facts because that's
-	// when we have language+version data; doing it earlier
-	// would either be impossible (no facts yet) or wasteful
-	// (full multi-language image with no version info).
-	o.kickoffImageBuild(ctx, rf)
+	// Docker-based SCIP indexer image build has been retired.
+	// Tree-sitter AST index runs in Stage 0b below.
 
 	// --- Stage 0b: AST index (tree-sitter) ---
 	// Runs in parallel with discovery/reexamination/detail LLM stages.
@@ -817,33 +764,8 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	// Produces an index.scip on disk and loads it into o.scipIndex for
 	// the connections stage to query. The image build is FAIL-FAST
 	// per the Sprint 4 retro: without the SCIP index, the connections
-	// stage degrades to a shallow matcher and the run's primary
-	// output (the path-with-conditions graph) is missing. Better to
-	// halt and surface the failure clearly than waste downstream LLM
-	// work on a useless pipeline.
-	//
-	// The CONTAINER-run failure (image exists but scip-* crashed on
-	// the snapshot) is also fail-fast. A failed index stage means the
-	// connections graph is not trustworthy.
-	//
-	// Skipped entirely when cfg.Indexer.Disabled is true; in that
-	// case runIndexStage returns nil with no side effects.
-	if err := o.runIndexStage(ctx); err != nil {
-		// Identify whether this came from the parallel image build
-		// or from in-stage processing; both halt, but the
-		// failure_state job_id should reflect the right origin so
-		// the dashboard's retry button points at the right step.
-		jobID := "index"
-		entityName := ""
-		if o.buildResult.Err != nil {
-			jobID = "index.build"
-			entityName = o.buildResult.Image
-		}
-		return haltFailure("index", jobID, "", entityName, err, map[string]any{
-			"build_image":   o.buildResult.Image,
-			"plan_resolved": o.buildResult.PlanResolved,
-		})
-	}
+	// The AST index stage already ran above (Stage 0b); no second index
+	// stage needed. The SCIP/Docker path has been retired.
 
 	// --- Stage 4: connection mapping ---
 	progress.StartPhase("connections", len(exposures), 70, 90, "Mapping conditional exposure-to-dependency paths per exposure.")
