@@ -113,6 +113,12 @@ export function getRunArtifacts(runID) {
   return api(`/api/runs/${encodeURIComponent(runID)}/artifacts`)
 }
 
+// getRunGraph returns the versioned graph.v1 export for downstream tools
+// and the sequence-tree panel.
+export function getRunGraph(runID) {
+  return api(`/api/runs/${encodeURIComponent(runID)}/graph`)
+}
+
 // Preflight API. The dashboard's SystemStatus panel polls
 // /api/preflight every 15s and pushes form-derived options to
 // /api/preflight/options whenever the user edits the URL or
