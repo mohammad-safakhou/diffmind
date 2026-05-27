@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/indexer"
@@ -61,6 +62,11 @@ type orchestrator struct {
 	// Read-only after the index stage completes; safe for concurrent
 	// reads by the connections workers.
 	scipIndex *scip.Index
+
+	// astIndex is set by the ast_index stage and holds the tree-sitter
+	// project analysis used by the connections stage and discovery hints.
+	// Read-only after the ast_index stage completes.
+	astIndex *astpkg.ProjectIndex
 
 	// indexerOverride lets tests inject a fake Indexer implementation
 	// in place of the production Docker driver. Nil in production.
@@ -557,6 +563,30 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	// would either be impossible (no facts yet) or wasteful
 	// (full multi-language image with no version info).
 	o.kickoffImageBuild(ctx, rf)
+
+	// --- Stage 0b: AST index (tree-sitter) ---
+	// Runs in parallel with discovery/reexamination/detail LLM stages.
+	// The result is consumed by the connections stage.
+	// We run it synchronously here so it's complete before connections.
+	// For large repos (>500 files) this takes 5-30s — well within the
+	// time LLM stages need. If it fails, we log a warning and continue;
+	// connections will fall back to the shallow matcher.
+	if err := o.runASTIndexStage(ctx); err != nil {
+		util.Warn("agents.orchestrator", "ast_index stage failed; connections will use shallow matcher", map[string]any{"error": err.Error()})
+		// Non-fatal: allow the rest of the pipeline to proceed.
+	}
+
+	// --- Stage 0c: infrastructure inventory ---
+	var infra *InfrastructureInventory
+	if o.astIndex != nil && len(o.astIndex.Configs) > 0 {
+		inv, err := o.runInfrastructureStage(ctx, rf)
+		if err != nil {
+			util.Warn("agents.orchestrator", "infrastructure stage failed; continuing", map[string]any{"error": err.Error()})
+		} else {
+			infra = inv
+		}
+	}
+	_ = infra // used later when we wire endpoint resolution into detail stage
 
 	// --- Stage 1: per-objective discovery ---
 	seeds := make([]detailJob, 0)
