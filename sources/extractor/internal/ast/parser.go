@@ -163,6 +163,11 @@ func extractSymbols(root *sitter.Node, src []byte, lang string, sitterLang *sitt
 		var r Range
 		var node *sitter.Node
 
+		// defRange stores the FULL range of the @def node (method body).
+		// nameRange stores just the identifier position.
+		// We use defRange.EndLine for enclosingSymbol lookup.
+		var defNode *sitter.Node
+
 		for _, c := range m.Captures {
 			capName := query.CaptureNameForId(c.Index)
 			text := c.Node.Content(src)
@@ -174,6 +179,7 @@ func extractSymbols(root *sitter.Node, src []byte, lang string, sitterLang *sitt
 			case "receiver", "class", "type":
 				receiver = text
 			case "def":
+				defNode = c.Node
 				switch c.Node.Type() {
 				case "function_declaration", "function_definition", "function",
 					"func_literal", "function_item", "def":
@@ -198,6 +204,24 @@ func extractSymbols(root *sitter.Node, src []byte, lang string, sitterLang *sitt
 
 		if name == "" {
 			continue
+		}
+
+		// If we have the full @def node, use its EndLine so that
+		// enclosingSymbol() can correctly identify which method body
+		// a call site belongs to. Without this, methods whose identifier
+		// is on line N but body extends to line M would never match calls
+		// on lines N+1..M.
+		if defNode != nil {
+			defR := nodeRange(defNode)
+			r.EndLine = defR.EndLine
+			r.EndColumn = defR.EndColumn
+			r.EndByte = defR.EndByte
+			// Also use the def node's start so the range covers annotations too.
+			if defR.StartLine < r.StartLine {
+				r.StartLine = defR.StartLine
+				r.StartColumn = defR.StartColumn
+				r.StartByte = defR.StartByte
+			}
 		}
 
 		qualified := qualifiedName(receiver, name, lang)
@@ -285,6 +309,18 @@ func extractCalls(root *sitter.Node, src []byte, lang string, sitterLang *sitter
 	defer cursor.Close()
 	cursor.Exec(query, root)
 
+	// seen deduplicates on (callee, startByte) so the same call expression
+	// is not emitted twice when multiple query patterns match it.
+	seen := map[uint64]struct{}{}
+	deupKey := func(callee string, startByte uint32) uint64 {
+		// Simple hash: combine startByte with a hash of the callee string.
+		h := uint64(startByte) * 2654435761
+		for _, ch := range callee {
+			h = h*31 + uint64(ch)
+		}
+		return h
+	}
+
 	var out []CallSite
 	for m, ok := cursor.NextMatch(); ok; m, ok = cursor.NextMatch() {
 		var calleeRaw, argsText string
@@ -307,6 +343,14 @@ func extractCalls(root *sitter.Node, src []byte, lang string, sitterLang *sitter
 		}
 
 		r := nodeRange(callNode)
+
+		// Deduplicate: the same call expression should only be emitted once
+		// even if multiple query patterns both match it.
+		key := deupKey(calleeRaw, r.StartByte)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
 
 		// Find the enclosing function.
 		caller := enclosingSymbol(r.StartLine, symbolsInFile)
