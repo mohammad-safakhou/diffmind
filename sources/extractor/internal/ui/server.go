@@ -384,6 +384,9 @@ func (s *Server) handleRunsItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, data)
+	case "graph":
+		// GET /api/runs/{id}/graph — versioned graph export for downstream tools.
+		s.handleRunGraph(w, r, runID)
 	case "job":
 		jobID := ""
 		if len(parts) == 3 {
@@ -548,6 +551,110 @@ func countByFile(in map[string][]map[string]any) map[string]int {
 	out := make(map[string]int, len(in))
 	for k, items := range in {
 		out[k] = len(items)
+	}
+	return out
+}
+
+// handleRunGraph serves GET /api/runs/{id}/graph — a versioned structured
+// export of the run's connections in a shape optimised for downstream tools
+// and the UI sequence-tree panel.
+func (s *Server) handleRunGraph(w http.ResponseWriter, r *http.Request, runID string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	runDir := filepath.Join(s.baseDir, runID)
+
+	// Try a pre-built graph.v1.json first (written by the pipeline at run time).
+	graphPath := filepath.Join(runDir, "state", "graph.v1.json")
+	if b, err := os.ReadFile(graphPath); err == nil {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(b)
+		return
+	}
+
+	// Otherwise build it on demand from the run artifacts.
+	data, err := s.loadRun(runID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if os.IsNotExist(err) {
+			status = http.StatusNotFound
+		}
+		writeErr(w, status, err)
+		return
+	}
+
+	// Read infrastructure inventory if present.
+	var infra map[string]any
+	infraPath := filepath.Join(runDir, "state", "infrastructure.json")
+	if b, err := os.ReadFile(infraPath); err == nil {
+		_ = json.Unmarshal(b, &infra)
+	}
+
+	graph := buildGraphExport(runID, data, infra)
+	writeJSON(w, graph)
+}
+
+// buildGraphExport assembles the graph.v1 export from run artifacts.
+func buildGraphExport(runID string, data RunData, infra map[string]any) map[string]any {
+	// Flatten artifacts.
+	exposures := flattenObjArrayMap(data.Exposures)
+	deps := flattenObjArrayMap(data.Dependencies)
+	conns := flattenObjArrayMap(data.Connections)
+
+	// Build edges: one per connection, with steps and conditions.
+	edges := make([]map[string]any, 0, len(conns))
+	for _, c := range conns {
+		guarantee := deriveGuarantee(c)
+		edge := map[string]any{
+			"from_exposure_id":  c["from_exposure_id"],
+			"to_dependency_id":  c["to_dependency_id"],
+			"path_signature":    c["path_signature"],
+			"guarantee":         guarantee,
+			"condition":         c["condition"],
+			"paths":             c["paths"],
+		}
+		edges = append(edges, edge)
+	}
+
+	return map[string]any{
+		"schema_version": "graph.v1",
+		"run_id":         runID,
+		"exposures":      exposures,
+		"dependencies":   deps,
+		"edges":          edges,
+		"infrastructure": infra,
+		"unresolved":     flattenObjArrayMap(data.Unresolved),
+	}
+}
+
+// deriveGuarantee infers the top-level calling guarantee from a connection's paths.
+func deriveGuarantee(conn map[string]any) string {
+	paths, _ := conn["paths"].([]any)
+	if len(paths) == 0 {
+		return "unknown"
+	}
+	for _, pRaw := range paths {
+		p, _ := pRaw.(map[string]any)
+		cond, _ := p["condition"].(map[string]any)
+		kind, _ := cond["kind"].(string)
+		switch kind {
+		case "loop", "batch":
+			return "loop"
+		case "if_guard", "match_arm", "ternary", "null_check":
+			return "conditional"
+		case "catch_block":
+			return "exception_only"
+		}
+	}
+	return "always"
+}
+
+// flattenObjArrayMap collapses a map[filename → []obj] to []obj.
+func flattenObjArrayMap(in map[string][]map[string]any) []map[string]any {
+	var out []map[string]any
+	for _, items := range in {
+		out = append(out, items...)
 	}
 	return out
 }

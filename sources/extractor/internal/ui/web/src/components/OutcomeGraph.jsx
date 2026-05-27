@@ -1,6 +1,14 @@
-import { useEffect, useRef, useState, useCallback } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
 import { getRunArtifacts } from '../lib/api.js'
 import { runMeta } from '../lib/store.js'
+
+// Edge legend items — shown at the bottom of the graph.
+const EDGE_LEGEND = [
+  { label: 'Always called', cls: '' },
+  { label: 'Conditional (if)', cls: 'dashed' },
+  { label: 'In a loop', cls: 'thick' },
+  { label: 'On error only', cls: 'dotted' },
+]
 
 // ─── color palette per dependency type ──────────────────────────────────────
 const TYPE_COLOR = {
@@ -262,6 +270,12 @@ export function OutcomeGraph({ onClose }) {
     const ey = expY.get(c.from_exposure_id)
     const dy = depY.get(c.to_dependency_id)
     if (ey == null || dy == null) continue
+    // Derive the dominant condition kind from all paths.
+    const condKinds = (c.paths || []).map(p => p.condition?.kind).filter(Boolean)
+    const domCond = condKinds.find(k => k === 'loop') ||
+                    condKinds.find(k => k === 'if_guard') ||
+                    condKinds.find(k => k === 'catch_block') ||
+                    condKinds[0] || ''
     edges.push({
       key,
       fromId: c.from_exposure_id,
@@ -270,7 +284,7 @@ export function OutcomeGraph({ onClose }) {
       y1: PAD_TOP + ey + NODE_H / 2,
       y2: PAD_TOP + dy + NODE_H / 2,
       paths: c.paths?.length || 0,
-      conditions: (c.paths || []).filter(p => p.condition?.kind).map(p => p.condition.kind),
+      condKind: domCond,
     })
   }
 
@@ -323,8 +337,12 @@ export function OutcomeGraph({ onClose }) {
             {edges.map(edge => {
               const highlighted = isConnHighlighted(edge)
               const color = typeColor(edge.depType)
-              const opacity = !active ? 0.25 : highlighted ? 0.72 : 0.06
-              const strokeW  = !active ? 1 : highlighted ? 1.8 : 0.7
+              const opacity = !active ? 0.22 : highlighted ? 0.75 : 0.05
+              const strokeW  = !active ? 1 : highlighted ? (edge.condKind === 'loop' ? 2.5 : 1.8) : 0.7
+              // Dash pattern encodes the condition kind.
+              const dash = edge.condKind === 'if_guard' ? '5,4' :
+                           edge.condKind === 'catch_block' ? '2,4' :
+                           edge.condKind === 'loop' ? 'none' : 'none'
               return (
                 <path
                   key={edge.key}
@@ -332,6 +350,7 @@ export function OutcomeGraph({ onClose }) {
                   fill="none"
                   stroke={color}
                   stroke-width={strokeW}
+                  stroke-dasharray={dash}
                   opacity={opacity}
                   class="og-edge"
                   onMouseEnter={() => !pinned && setHovered(null)}
@@ -512,6 +531,18 @@ export function OutcomeGraph({ onClose }) {
         onClose={() => { setPinned(null) }}
       />}
 
+      {/* ── Edge legend ────────────────────────────────────────────────────── */}
+      {!pinned && (
+        <div class="og-edge-legend">
+          {EDGE_LEGEND.map(l => (
+            <span key={l.label} class="og-edge-legend-item">
+              <span class={'og-edge-legend-line ' + l.cls} />
+              {l.label}
+            </span>
+          ))}
+        </div>
+      )}
+
       {/* ── Unresolved sidebar ────────────────────────────────────────────── */}
       {unresolved.length > 0 && !pinned && (
         <div class="og-unresolved">
@@ -533,6 +564,7 @@ export function OutcomeGraph({ onClose }) {
 
 // ─── Pinned node detail panel ────────────────────────────────────────────────
 function PinnedDetail({ pinned, expById, depById, expToDeps, depToExps, connections, typeColor, onClose }) {
+  const [tab, setTab] = useState('connections')  // 'connections' | 'sequence' | 'inputs'
   const isExp = expById.has(pinned)
   const node  = isExp ? expById.get(pinned) : depById.get(pinned)
   if (!node) return null
@@ -540,13 +572,26 @@ function PinnedDetail({ pinned, expById, depById, expToDeps, depToExps, connecti
   const connectedConns = connections.filter(c =>
     isExp ? c.from_exposure_id === pinned : c.to_dependency_id === pinned
   )
-
-  // Deduplicate by the other side's id
   const connectedIds = isExp
     ? [...(expToDeps.get(pinned) || [])]
     : [...(depToExps.get(pinned) || [])]
-
   const map = isExp ? depById : expById
+
+  // Extract source identity from details.
+  const details = node.details || {}
+  const endpointHints = [
+    details.database_table && `table: ${details.database_table}`,
+    details.data_query_table && `table: ${details.data_query_table}`,
+    details.defaultUrl && `url: ${details.defaultUrl}`,
+    details.baseUrl && `base: ${details.baseUrl}`,
+    details.event_publishing_topic && `topic: ${details.event_publishing_topic}`,
+    details.topic && `topic: ${details.topic}`,
+    details.queue_name && `queue: ${details.queue_name}`,
+  ].filter(Boolean)
+
+  // Build sequence from all paths of exposure connections.
+  const hasSequence = isExp && connectedConns.length > 0
+  const inputs = node.inputs || []
 
   return (
     <div class="og-detail-panel">
@@ -556,58 +601,218 @@ function PinnedDetail({ pinned, expById, depById, expToDeps, depToExps, connecti
             {typeLabel(node.type)}
           </span>
           <div class="og-detail-name">{node.name}</div>
+          {endpointHints.length > 0 && (
+            <div class="og-detail-endpoint">{endpointHints[0]}</div>
+          )}
         </div>
         <button class="og-detail-close" onClick={onClose}>✕</button>
       </div>
 
-      {node.summary && (
-        <div class="og-detail-summary">{node.summary}</div>
-      )}
+      {/* Tab bar */}
+      <div class="og-detail-tabs">
+        <button
+          class={'og-detail-tab' + (tab === 'connections' ? ' active' : '')}
+          onClick={() => setTab('connections')}
+        >
+          {isExp ? 'Dependencies' : 'Called by'} ({connectedIds.length})
+        </button>
+        {hasSequence && (
+          <button
+            class={'og-detail-tab' + (tab === 'sequence' ? ' active' : '')}
+            onClick={() => setTab('sequence')}
+          >
+            Sequence
+          </button>
+        )}
+        {inputs.length > 0 && (
+          <button
+            class={'og-detail-tab' + (tab === 'inputs' ? ' active' : '')}
+            onClick={() => setTab('inputs')}
+          >
+            Inputs ({inputs.length})
+          </button>
+        )}
+      </div>
 
-      {node.source_locations?.length > 0 && (
-        <div class="og-detail-section">
-          <div class="og-detail-section-title">Source</div>
-          {node.source_locations.slice(0, 2).map((loc, i) => (
-            <div key={i} class="og-detail-loc">
-              <code>{loc.file?.split('/').pop()}:{loc.start_line}</code>
-            </div>
-          ))}
-        </div>
-      )}
+      <div class="og-detail-body">
+        {node.summary && tab === 'connections' && (
+          <div class="og-detail-summary">{node.summary}</div>
+        )}
 
-      <div class="og-detail-section">
-        <div class="og-detail-section-title">
-          {isExp ? 'Connected to' : 'Called by'} ({connectedIds.length})
-        </div>
-        <div class="og-detail-conns">
-          {connectedIds.slice(0, 12).map(id => {
-            const other = map.get(id)
-            if (!other) return null
-            const relConns = connectedConns.filter(c =>
-              isExp ? c.to_dependency_id === id : c.from_exposure_id === id
-            )
-            const cond = relConns[0]?.paths?.find(p => p.condition?.kind)?.condition
-            const pathCount = relConns.reduce((s, c) => s + (c.paths?.length || 0), 0)
-            return (
-              <div key={id} class="og-detail-conn-item">
-                <span class="og-detail-conn-dot" style={{ background: typeColor(other.type) }} />
-                <span class="og-detail-conn-name">{other.name}</span>
-                {pathCount > 0 && (
-                  <span class="og-detail-conn-meta">{pathCount} path{pathCount !== 1 ? 's' : ''}</span>
-                )}
-                {cond && (
-                  <span class="og-detail-conn-cond">{cond.kind?.replace(/_/g, ' ')}</span>
+        {tab === 'connections' && (
+          <>
+            {node.source_locations?.length > 0 && (
+              <div class="og-detail-section">
+                <div class="og-detail-section-title">Source</div>
+                {node.source_locations.slice(0, 2).map((loc, i) => (
+                  <div key={i} class="og-detail-loc">
+                    <code>{loc.file?.split('/').pop()}:{loc.start_line}</code>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div class="og-detail-section">
+              <div class="og-detail-conns">
+                {connectedIds.slice(0, 15).map(id => {
+                  const other = map.get(id)
+                  if (!other) return null
+                  const relConns = connectedConns.filter(c =>
+                    isExp ? c.to_dependency_id === id : c.from_exposure_id === id
+                  )
+                  const cond = relConns[0]?.paths?.find(p => p.condition?.kind && p.condition.kind !== 'unconditional')?.condition
+                  const pathCount = relConns.reduce((s, c) => s + (c.paths?.length || 0), 0)
+                  return (
+                    <div key={id} class="og-detail-conn-item">
+                      <span class="og-detail-conn-dot" style={{ background: typeColor(other.type) }} />
+                      <span class="og-detail-conn-name">{other.name}</span>
+                      {pathCount > 0 && (
+                        <span class="og-detail-conn-meta">{pathCount}p</span>
+                      )}
+                      {cond && (
+                        <span class={'og-detail-conn-cond ' + cond.kind}>
+                          {condLabel(cond.kind)}
+                        </span>
+                      )}
+                    </div>
+                  )
+                })}
+                {connectedIds.length > 15 && (
+                  <div class="og-detail-more">+{connectedIds.length - 15} more</div>
                 )}
               </div>
-            )
-          })}
-          {connectedIds.length > 12 && (
-            <div class="og-detail-more">+{connectedIds.length - 12} more</div>
-          )}
-        </div>
+            </div>
+          </>
+        )}
+
+        {tab === 'sequence' && hasSequence && (
+          <SequencePanel connections={connectedConns} depById={depById} typeColor={typeColor} />
+        )}
+
+        {tab === 'inputs' && inputs.length > 0 && (
+          <div class="og-detail-section">
+            {inputs.map((inp, i) => (
+              <div key={i} class="og-detail-input-item">
+                <div class="og-detail-input-name">
+                  {inp.name}
+                  {inp.required && <span class="og-detail-input-required">required</span>}
+                  <span class="og-detail-input-type">{inp.type}</span>
+                </div>
+                {inp.description && (
+                  <div class="og-detail-input-desc">{inp.description}</div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )
+}
+
+// ─── Sequence panel ───────────────────────────────────────────────────────────
+
+function SequencePanel({ connections, depById, typeColor }) {
+  // Merge all paths across all connections into a sequence view.
+  // Each connection may have multiple paths; we show the most representative
+  // (shortest) path per dependency.
+  const items = []
+  const seenDeps = new Set()
+
+  for (const conn of connections) {
+    const dep = depById.get(conn.to_dependency_id)
+    if (!dep || seenDeps.has(conn.to_dependency_id)) continue
+    seenDeps.add(conn.to_dependency_id)
+
+    // Pick the shortest path (fewest hops).
+    const paths = conn.paths || []
+    const shortest = paths.slice().sort((a, b) =>
+      (a.steps?.length || 0) - (b.steps?.length || 0)
+    )[0]
+
+    const cond = conn.condition || {}
+    const isConditional = cond.kind && cond.kind !== 'unconditional'
+
+    items.push({ dep, conn, path: shortest, isConditional, cond })
+  }
+
+  // Sort: unconditional first, then by dep name.
+  items.sort((a, b) => {
+    if (a.isConditional !== b.isConditional) return a.isConditional ? 1 : -1
+    return (a.dep.name || '').localeCompare(b.dep.name || '')
+  })
+
+  return (
+    <div class="og-sequence">
+      {items.map(({ dep, conn, path, isConditional, cond }, i) => (
+        <div key={i} class={'og-seq-item' + (isConditional ? ' conditional' : '')}>
+          <div class="og-seq-dep">
+            <span class="og-seq-bullet" style={{ background: typeColor(dep.type) }} />
+            <span class="og-seq-dep-name">{dep.name}</span>
+            {isConditional && (
+              <span class={'og-seq-cond-badge ' + cond.kind}>
+                {condLabel(cond.kind)}
+                {cond.expression && <span class="og-seq-expr"> {cond.expression.slice(0, 40)}</span>}
+              </span>
+            )}
+          </div>
+          {path?.steps && path.steps.length > 0 && (
+            <div class="og-seq-steps">
+              {path.steps.map((step, si) => {
+                const sc = step.condition || {}
+                const hasStepCond = sc.kind && sc.kind !== 'unconditional'
+                const file = step.location?.file?.split('/').pop() || ''
+                const line = step.location?.start_line || ''
+                return (
+                  <div key={si} class="og-seq-step">
+                    <span class="og-seq-step-num">{si + 1}</span>
+                    <span class="og-seq-step-callee">{lastIdent(step.to || '')}</span>
+                    {hasStepCond && (
+                      <span class={'og-seq-step-cond ' + sc.kind}>{condLabel(sc.kind)}</span>
+                    )}
+                    {file && (
+                      <span class="og-seq-step-loc">{file}:{line}</span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      ))}
+      {items.length === 0 && (
+        <div class="og-seq-empty">No sequence data available</div>
+      )}
+    </div>
+  )
+}
+
+function lastIdent(sym) {
+  const i = sym.lastIndexOf('.')
+  const j = sym.lastIndexOf('#')
+  const k = sym.lastIndexOf('/')
+  const cut = Math.max(i, j, k)
+  return cut >= 0 ? sym.slice(cut + 1) : sym
+}
+
+function condLabel(kind) {
+  const labels = {
+    if_guard: '⚠ if',
+    loop: '⟲ loop',
+    catch_block: '⚠ on error',
+    finally_block: 'always',
+    try_block: '↩ try',
+    goroutine: '⟲ async',
+    async_block: '⟲ await',
+    closure: '⟲ fn',
+    fan_out: '⟲ fan-out',
+    batch: '⟲ batch',
+    null_check: '? null',
+    ternary: '? ternary',
+    match_arm: '⇒ match',
+    auth_gate: '🔒 auth',
+    feature_flag: '⚑ flag',
+  }
+  return labels[kind] || kind?.replace(/_/g, ' ') || ''
 }
 
 // ─── Shell (overlay + close button) ─────────────────────────────────────────
