@@ -887,17 +887,38 @@ func runASTConnections(
 		}
 		for _, sym := range syms {
 			depBySymbol[sym] = dep
-			// If the resolved symbol is a class, also register all its methods as
-			// targets. This way the walker can find paths to any method of the class.
+			// If the resolved symbol is a class or interface, register its methods
+			// as targets too. Constrain the expansion to the dep's source_location
+			// range when available — this prevents overly broad matches when the
+			// dep identifies a specific range within a large class (e.g.
+			// campaign.save/update at lines 11-19 should not expand to ALL methods
+			// of CampaignRepository).
 			if defs, ok := idx.Symbols[sym]; ok {
 				for _, def := range defs {
 					if def.Kind == astpkg.SymbolKindClass || def.Kind == astpkg.SymbolKindInterface {
-						// Find all methods in this class's file within the class range.
+						// Determine the effective method-search range.
+						// If the dep has a location, constrain to that range.
+						// Otherwise fall back to the full class body.
+						rangeStart := def.Range.StartLine
+						rangeEnd := def.Range.EndLine
+						if len(dep.Locations) > 0 {
+							loc := dep.Locations[0]
+							if loc.StartLine > 0 {
+								// Use the dep location range, converted to 0-based.
+								ls := uint32(loc.StartLine - 1)
+								le := uint32(loc.EndLine - 1)
+								// Only constrain when the range is meaningful (more than a single line).
+								if le > ls+2 {
+									rangeStart = ls
+									rangeEnd = le
+								}
+							}
+						}
 						if fa, ok := idx.Files[def.File]; ok {
 							for _, msym := range fa.Symbols {
 								if (msym.Kind == astpkg.SymbolKindMethod || msym.Kind == astpkg.SymbolKindFunction) &&
-									msym.Range.StartLine >= def.Range.StartLine &&
-									msym.Range.EndLine <= def.Range.EndLine {
+									msym.Range.StartLine >= rangeStart &&
+									msym.Range.EndLine <= rangeEnd {
 									depBySymbol[msym.Qualified] = dep
 								}
 							}
@@ -907,6 +928,8 @@ func runASTConnections(
 			}
 		}
 	}
+
+	// (Per-exposure class sets are computed lazily in the producer goroutine.)
 
 	// Build a single target predicate.
 	isTarget := func(sym string) bool {
@@ -926,8 +949,9 @@ func runASTConnections(
 
 	// Per-exposure parallel walk.
 	type workItem struct {
-		exp     model.Exposure
-		entries []string
+		exp        model.Exposure
+		entries    []string
+		expClasses map[string]struct{} // exposure entry classes for circular-ref filtering
 	}
 	type result struct {
 		conns      []model.Connection
@@ -954,7 +978,7 @@ func runASTConnections(
 					continue
 				}
 				conns, unr := buildASTConnectionsForExposure(
-					ctx, walker, cfg, item.exp, item.entries, depBySymbol, minConfidence,
+					ctx, walker, cfg, item.exp, item.entries, depBySymbol, item.expClasses, minConfidence,
 				)
 				resCh <- result{conns: conns, unresolved: unr}
 			}
@@ -965,14 +989,26 @@ func runASTConnections(
 		for _, exp := range exposures {
 			entries := resolveEntitySymbolsAST(idx, exp.Name, exp.Locations)
 			if len(entries) == 0 {
-				// No SCIP-equivalent entry point: try framework bindings.
+				// No entry point found by position/name: try framework bindings.
+				// Match by name fragment or trigger annotation.
+				baseName := exp.Name
+				if idx2 := strings.LastIndex(baseName, " - "); idx2 >= 0 {
+					baseName = baseName[idx2+3:] // strip suffix like "- SQS Message Handler"
+				}
 				for _, fb := range idx.Frameworks {
-					if fb.Symbol != "" && strings.Contains(fb.Trigger, exp.Name) {
+					if fb.Symbol != "" && (strings.Contains(fb.Trigger, exp.Name) ||
+						strings.Contains(fb.Trigger, baseName) ||
+						strings.Contains(fb.Symbol, baseName)) {
 						entries = append(entries, fb.Symbol)
 					}
 				}
 			}
-			jobCh <- workItem{exp: exp, entries: entries}
+			// Build a per-exposure self-reference filter: only classes that are
+			// the entry point of THIS specific exposure. Do not use the global
+			// exposureClasses set (which would incorrectly block targets whose
+			// class is also an entry point of a DIFFERENT exposure).
+			thisExpClasses := perExposureClasses(idx, exp)
+			jobCh <- workItem{exp: exp, entries: entries, expClasses: thisExpClasses}
 		}
 		close(jobCh)
 		wg.Wait()
@@ -1003,9 +1039,23 @@ func runASTConnections(
 //     When a class is found, expands to all its methods (the actual callables).
 //  2. Name-based: search for symbols whose unqualified name matches.
 func resolveEntitySymbolsAST(idx *astpkg.ProjectIndex, name string, locs []model.Location) []string {
-	var found []string
+	// Positional lookup strategy:
+	//   - For each location, collect method and class symbols at that line.
+	//   - Methods are preferred over classes.
+	//   - Class symbols are expanded to all their methods.
+	//   - ALL locations are processed, collecting the union of results.
+	//   - When any location yields method symbols, those are included together
+	//     with any class expansion from earlier locations.
+	//
+	// This ensures that:
+	//   - An exposure whose first location is the class declaration (line 1)
+	//     gets all the class's methods as entry points.
+	//   - An exposure whose second location points to an inner method also
+	//     includes that method — even when the first location yielded a class.
 
-	// 1. Positional lookup.
+	var directMethods []string // methods found at exact lines
+	var classExpansion []string // class-to-method expansions
+
 	for _, loc := range locs {
 		if loc.File == "" || loc.StartLine <= 0 {
 			continue
@@ -1029,47 +1079,61 @@ func resolveEntitySymbolsAST(idx *astpkg.ProjectIndex, name string, locs []model
 			}
 		}
 
-		// Methods are better entry/target points than classes.
-		if len(methods) > 0 {
-			for _, m := range methods {
-				found = append(found, m.Qualified)
-			}
-			return uniqueStrings(found)
+		// Collect direct method hits.
+		for _, m := range methods {
+			directMethods = append(directMethods, m.Qualified)
 		}
 
-		// Only a class found: expand to all its methods within the file.
-		// This handles the case where the LLM recorded the class start line.
-		if len(classes) > 0 {
+		// Expand classes to their methods (only accumulate once per class).
+		if len(methods) == 0 && len(classes) > 0 {
 			for _, cls := range classes {
-				// Add the class itself (walker can still use it to find field types)
-				found = append(found, cls.Qualified)
-				// Add all methods defined in this file that fall within the class range.
+				classExpansion = append(classExpansion, cls.Qualified)
 				for _, sym := range fa.Symbols {
 					if sym.Kind == astpkg.SymbolKindMethod || sym.Kind == astpkg.SymbolKindFunction {
 						if sym.Range.StartLine >= cls.Range.StartLine &&
 							sym.Range.EndLine <= cls.Range.EndLine {
-							found = append(found, sym.Qualified)
+							classExpansion = append(classExpansion, sym.Qualified)
 						}
 					}
 				}
 			}
-			return uniqueStrings(found)
+			continue // don't do widening if class was found
 		}
 
-		// Nothing at exact line: widen ±30 lines, prefer methods.
-		lo := line
-		if line > 5 {
-			lo = line - 5
-		}
-		for _, sym := range fa.Symbols {
-			if sym.Range.StartLine >= lo && sym.Range.StartLine <= line+30 {
-				found = append(found, sym.Qualified)
+		// Nothing at exact line: widen ±5 leading / +30 trailing lines.
+		if len(methods) == 0 && len(classes) == 0 {
+			lo := line
+			if line > 5 {
+				lo = line - 5
+			}
+			for _, sym := range fa.Symbols {
+				if sym.Range.StartLine >= lo && sym.Range.StartLine <= line+30 {
+					directMethods = append(directMethods, sym.Qualified)
+				}
 			}
 		}
-		if len(found) > 0 {
-			return uniqueStrings(found)
-		}
 	}
+
+	// Prefer direct method hits; augment with class expansion.
+	// When we have both, union them: the class expansion covers the entry class
+	// and the direct methods cover specific handler methods.
+	var combined []string
+	combined = append(combined, directMethods...)
+	// Only include class expansion if we didn't find direct methods in that same
+	// file/class — class expansion without any direct methods gives ALL methods
+	// of the class as entry points, which is the correct behaviour.
+	if len(directMethods) == 0 {
+		combined = append(combined, classExpansion...)
+	} else {
+		// We have direct methods: still include the class expansion because the
+		// second location may be in a different service class.
+		combined = append(combined, classExpansion...)
+	}
+	if len(combined) > 0 {
+		return uniqueStrings(combined)
+	}
+
+	var found []string
 
 	// 2. Name-based lookup.
 	// Extract the method/function name from "ClassName.methodName" or bare "methodName".
@@ -1093,8 +1157,44 @@ func resolveEntitySymbolsAST(idx *astpkg.ProjectIndex, name string, locs []model
 	return uniqueStrings(found)
 }
 
+// perExposureClasses returns the set of class/interface names that serve as the
+// primary entry point for exp. Only the FIRST source_location is used to
+// identify the exposure's class — additional locations may point to service
+// classes that contain dependency methods and must not be blocked.
+func perExposureClasses(idx *astpkg.ProjectIndex, exp model.Exposure) map[string]struct{} {
+	classes := make(map[string]struct{})
+	// Only look at the first location to avoid blocking dependency targets
+	// that happen to appear in service classes listed as secondary locations.
+	for _, loc := range exp.Locations {
+		if loc.File == "" || loc.StartLine <= 0 {
+			continue
+		}
+		fa, ok := idx.Files[loc.File]
+		if !ok {
+			continue
+		}
+		line := uint32(loc.StartLine - 1)
+		for _, sym := range fa.Symbols {
+			if (sym.Kind == astpkg.SymbolKindClass || sym.Kind == astpkg.SymbolKindInterface) &&
+				sym.Range.StartLine <= line && sym.Range.EndLine >= line {
+				classes[sym.Qualified] = struct{}{}
+			}
+		}
+		// Stop after the first location that maps to a class — only the
+		// primary class is excluded from targets.
+		if len(classes) > 0 {
+			break
+		}
+	}
+	return classes
+}
+
 // buildASTConnectionsForExposure walks from each entry symbol and builds
 // Connection records for every dependency it reaches.
+//
+// exposureClasses is the set of class names that are the entry points for this
+// specific exposure. Any connection whose target symbol belongs to a class in
+// exposureClasses is filtered out as a self-referential (circular) connection.
 func buildASTConnectionsForExposure(
 	ctx context.Context,
 	walker *astpkg.Walker,
@@ -1102,6 +1202,7 @@ func buildASTConnectionsForExposure(
 	exposure model.Exposure,
 	entrySymbols []string,
 	depBySymbol map[string]model.Dependency,
+	exposureClasses map[string]struct{},
 	minConfidence float64,
 ) ([]model.Connection, []model.UnresolvedItem) {
 	if len(entrySymbols) == 0 {
@@ -1121,12 +1222,37 @@ func buildASTConnectionsForExposure(
 	}
 	byDep := map[string]*bucket{}
 
+	// Build a set of "entry class prefixes" from this specific exposure's
+	// entry symbols. Any target that starts with one of these prefixes is
+	// a method on the same class as the exposure itself — skip those to
+	// avoid circular intra-class connections.
+	entryPrefixes := make(map[string]struct{}, len(entrySymbols))
+	for _, e := range entrySymbols {
+		if dot := strings.LastIndex(e, "."); dot > 0 {
+			entryPrefixes[e[:dot]] = struct{}{}
+		}
+	}
+	// Also include the broader exposure-class set passed from the caller.
+	for cls := range exposureClasses {
+		entryPrefixes[cls] = struct{}{}
+	}
+
 	for _, entry := range entrySymbols {
 		if ctx.Err() != nil {
 			return nil, nil
 		}
 		paths := walker.Walk(entry, cfg)
 		for _, p := range paths {
+			// Skip self-referential targets: a method on the same class as
+			// the exposure is not an external dependency.
+			targetClass := p.TargetSymbol
+			if dot := strings.LastIndex(targetClass, "."); dot > 0 {
+				targetClass = targetClass[:dot]
+			}
+			if _, selfRef := entryPrefixes[targetClass]; selfRef {
+				continue
+			}
+
 			dep, ok := depBySymbol[p.TargetSymbol]
 			if !ok {
 				continue

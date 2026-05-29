@@ -401,6 +401,8 @@ func extractCalls(root *sitter.Node, src []byte, lang string, sitterLang *sitter
 	for m, ok := cursor.NextMatch(); ok; m, ok = cursor.NextMatch() {
 		var calleeRaw, argsText string
 		var callNode *sitter.Node
+		var isMethodRef bool
+		var methodRefNode *sitter.Node
 
 		for _, c := range m.Captures {
 			capName := query.CaptureNameForId(c.Index)
@@ -411,12 +413,25 @@ func extractCalls(root *sitter.Node, src []byte, lang string, sitterLang *sitter
 				callNode = c.Node
 			case "args":
 				argsText = text
+			case "method_ref":
+				// Java/Kotlin method reference: extract the method name after "::"
+				isMethodRef = true
+				methodRefNode = c.Node
+				full := text // e.g. "service::processItem" or "CampaignMapper::map"
+				if idx := strings.LastIndex(full, "::"); idx >= 0 {
+					calleeRaw = full[idx+2:]
+				} else {
+					calleeRaw = full
+				}
+				callNode = c.Node
 			}
 		}
 
 		if calleeRaw == "" || callNode == nil {
 			continue
 		}
+		_ = isMethodRef
+		_ = methodRefNode
 
 		r := nodeRange(callNode)
 
@@ -446,7 +461,69 @@ func extractCalls(root *sitter.Node, src []byte, lang string, sitterLang *sitter
 			EnclosingPath: enclosing,
 		})
 	}
+
+	// Post-process: scan all calls for lambda arguments that contain method
+	// references (`obj::method` in the source text). This handles cases like:
+	//   list.forEach(service::processItem)
+	//   list.stream().map(Mapper::convert)
+	// where the tree-sitter query captures `forEach`/`map` as the callee but
+	// the actual callable passed as an argument is `service::processItem`.
+	// We synthesise a CallSite for the method reference so the walker can
+	// follow that edge.
+	out = appendMethodRefArgCalls(out, src, relPath, symbolsInFile, seen, deupKey)
+
 	return out
+}
+
+// appendMethodRefArgCalls scans the already-extracted calls for arguments that
+// look like method references ("Class::method" or "obj::method") and emits
+// synthetic CallSites for the referenced method. This handles:
+//
+//	list.forEach(service::processItem)  →  synthetic call to processItem
+//	stream.map(Mapper::convert)         →  synthetic call to convert
+//
+// The synthetic site has the same caller/enclosing context as the surrounding
+// forEach/map/filter call, so conditions and repetitions are correctly attributed.
+func appendMethodRefArgCalls(
+	calls []CallSite,
+	src []byte, relPath string,
+	symbolsInFile []SymbolDef,
+	seen map[uint64]struct{},
+	deupKey func(string, uint32) uint64,
+) []CallSite {
+	var extra []CallSite
+	for _, cs := range calls {
+		for _, arg := range cs.Arguments {
+			s := strings.TrimSpace(arg.Source)
+			if !strings.Contains(s, "::") {
+				continue
+			}
+			// Extract the method name after "::".
+			idx := strings.LastIndex(s, "::")
+			if idx < 0 || idx+2 >= len(s) {
+				continue
+			}
+			methodName := strings.TrimSpace(s[idx+2:])
+			if methodName == "" || methodName == "new" {
+				continue
+			}
+			key := deupKey(methodName, cs.Range.StartByte+uint32(arg.Index)+0xdeadbeef)
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			extra = append(extra, CallSite{
+				Caller:        cs.Caller,
+				CalleeRaw:     methodName,
+				File:          relPath,
+				Range:         cs.Range,
+				Arguments:     nil,
+				EnclosingPath: cs.EnclosingPath,
+				IsImplicit:    true,
+			})
+		}
+	}
+	return append(calls, extra...)
 }
 
 // buildEnclosingPath walks from the call node up to the enclosing function
