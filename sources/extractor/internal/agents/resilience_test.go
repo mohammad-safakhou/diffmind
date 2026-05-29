@@ -172,7 +172,6 @@ func TestRunNoLongerHaltsOnConnectionLLMFailure(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.Workers = 4
 	cfg.Quality.MinConfidence = 0.7
-	cfg.Indexer.Disabled = true // skip the indexer stage; we don't have Docker in unit tests
 	exposureID := util.StableID("exposure", "http_route", "GET /users/{id}", "api.go", "10:30")
 	f := &fakeFlaky{failConnectionID: exposureID}
 	res, err := Run(context.Background(), cfg, t.TempDir(), f)

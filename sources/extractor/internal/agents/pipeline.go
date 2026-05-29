@@ -19,7 +19,6 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	"github.com/mohammad-safakhou/diffmind/internal/opencode"
 	"github.com/mohammad-safakhou/diffmind/internal/reconcile"
-	"github.com/mohammad-safakhou/diffmind/internal/scip"
 	"github.com/mohammad-safakhou/diffmind/internal/snapshot"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
@@ -60,31 +59,12 @@ type orchestrator struct {
 	// Read-only after the ast_index stage completes.
 	astIndex *astpkg.ProjectIndex
 
-	// scipIndex is retained as a fallback when the AST index is empty.
-	// Deprecated: will be removed after the SCIP packages are retired.
-	scipIndex *scip.Index
-
 	// pipelineCancel cancels the orchestrator-wide context. Retained
 	// because some error-handling paths still invoke it.
 	pipelineCancel context.CancelFunc
 
 	sessionMu       sync.Mutex
 	sharedSessionID string
-}
-
-// buildOutcome is what runImageBuild reports back to the rest of
-// the orchestrator. Image is the composite tag we eventually
-// shipped (empty on failure); Err is non-nil if the build failed
-// outright. Skipped means we deliberately bypassed the build
-// (e.g. indexer disabled via config); the index stage treats this
-// as a no-op success and degrades to the shallow matcher.
-type buildOutcome struct {
-	Image   string
-	Err     error
-	Skipped bool
-	// Plan is the resolved recipe we built. Captured for the
-	// index_status.json + dashboard event payloads.
-	PlanResolved string
 }
 
 // emit is the convenience wrapper used by every stage to publish a single
@@ -503,14 +483,6 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	}
 	state.RepoFacts = rf
 
-	// Kick off the parallel indexer image build NOW, before
-	// Stage 1-3 LLM work starts. The build runs in a goroutine
-	// and writes its outcome to o.buildResult; runIndexStage
-	// later blocks on `<-o.buildDone` to consume it.
-	//
-	// Docker-based SCIP indexer image build has been retired.
-	// Tree-sitter AST index runs in Stage 0b below.
-
 	// --- Stage 0b: AST index (tree-sitter) ---
 	// Runs in parallel with discovery/reexamination/detail LLM stages.
 	// The result is consumed by the connections stage.
@@ -759,13 +731,6 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	}
 	state.DetailExposures = append([]model.Exposure(nil), exposures...)
 	state.DetailDependency = append([]model.Dependency(nil), dependencies...)
-
-	// --- Stage 3.5: SCIP indexing ---
-	// Produces an index.scip on disk and loads it into o.scipIndex for
-	// the connections stage to query. The image build is FAIL-FAST
-	// per the Sprint 4 retro: without the SCIP index, the connections
-	// The AST index stage already ran above (Stage 0b); no second index
-	// stage needed. The SCIP/Docker path has been retired.
 
 	// --- Stage 4: connection mapping ---
 	progress.StartPhase("connections", len(exposures), 70, 90, "Mapping conditional exposure-to-dependency paths per exposure.")

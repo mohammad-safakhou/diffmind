@@ -301,13 +301,4 @@ type detailResult struct {
 	PeerCancelled bool
 }
 
-// connectionResult was the per-exposure envelope returned by the
-// LLM-based connections worker. It is no longer used by the
-// deterministic SCIP path — kept here only because some test helpers
-// still reference its shape. The Items field has been removed since
-// the deterministic stage emits model.Connection directly.
-type connectionResult struct {
-	ExposureID    string
-	Err           error
-	PeerCancelled bool
-}
+

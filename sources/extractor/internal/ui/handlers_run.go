@@ -52,22 +52,6 @@ type startRunRequest struct {
 		MinConfidence float64 `json:"min_confidence"`
 	} `json:"quality"`
 
-	// Indexer covers the SCIP indexer (the new deterministic
-	// connections stage). All fields are optional; zero values mean
-	// "use the server's config.Default() value". The dashboard's
-	// advanced section exposes these so a user can:
-	//   - disable indexing for a quick run (Disabled = true)
-	//   - point at a custom image tag the operator pre-built
-	//     (Image = "myregistry/diffmind-indexer:custom")
-	//   - force a rebuild after a Dockerfile.indexer edit
-	//     (AutoBuild = "always")
-	//   - turn auto-build off in an air-gapped environment
-	//     (AutoBuild = "never")
-	Indexer struct {
-		Disabled  bool   `json:"disabled"`
-		Image     string `json:"image"`
-		AutoBuild string `json:"auto_build"`
-	} `json:"indexer"`
 }
 
 // buildConfigFromRequest translates a startRunRequest into a
@@ -118,18 +102,6 @@ func buildConfigFromRequest(req startRunRequest) config.Config {
 	}
 	if req.Quality.MinConfidence > 0 {
 		cfg.Quality.MinConfidence = req.Quality.MinConfidence
-	}
-	// Indexer overrides. Each falls back to the default when empty /
-	// false, matching the "0 means use server default" convention
-	// used elsewhere in this function.
-	if req.Indexer.Disabled {
-		cfg.Indexer.Disabled = true
-	}
-	if strings.TrimSpace(req.Indexer.Image) != "" {
-		cfg.Indexer.Image = req.Indexer.Image
-	}
-	if strings.TrimSpace(req.Indexer.AutoBuild) != "" {
-		cfg.Indexer.AutoBuild = req.Indexer.AutoBuild
 	}
 	return cfg
 }
@@ -210,11 +182,8 @@ func (s *Server) handleRunCreate(w http.ResponseWriter, r *http.Request) {
 		"liveness_poll_sec":              cfg.Runtime.LivenessPollSec,
 		"workers":                        cfg.Runtime.Workers,
 		"max_catalog_items":              cfg.Runtime.MaxCatalogItems,
-		"skip_reexamination":             cfg.Runtime.SkipReexamination,
-		"reuse_session":                  cfg.Runtime.ReuseOpenCodeSession,
-		"indexer_disabled":               cfg.Indexer.Disabled,
-		"indexer_image":                  cfg.Indexer.Image,
-		"indexer_auto_build":             cfg.Indexer.AutoBuild,
+		"skip_reexamination": cfg.Runtime.SkipReexamination,
+		"reuse_session":      cfg.Runtime.ReuseOpenCodeSession,
 	})
 
 	runID, err := s.runner.Start(context.Background(), runner.StartParams{

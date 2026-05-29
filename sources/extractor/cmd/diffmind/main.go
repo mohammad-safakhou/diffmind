@@ -64,9 +64,6 @@ func run(args []string) {
 	promptRetryCount := fs.Int("prompt-retry-count", -1, "retry a prompt this many times after the liveness watchdog declares it stuck (-1 = use config default 3; 0 = disable)")
 	maxCallSeconds := fs.Int("max-call-seconds", 0, "hard ceiling on a single LLM call's duration in seconds (0 = use config default 1800s)")
 	livenessPollSeconds := fs.Int("liveness-poll-seconds", 0, "how often the liveness watchdog polls OpenCode for progress (0 = use config default 5s)")
-	indexerImage := fs.String("indexer-image", "", "container image for the SCIP indexer (default diffmind-indexer:dev; built from embedded context on first run)")
-	indexerAutoBuild := fs.String("indexer-auto-build", "", "when to build the indexer image: 'missing' (default), 'always', or 'never'")
-	indexerDisabled := fs.Bool("no-index", false, "skip the SCIP indexing stage entirely; connections will degrade to the shallow matcher")
 	verbose := fs.Bool("verbose", false, "enable debug logs")
 	trace := fs.Bool("trace", false, "enable trace logs (very noisy)")
 	logFile := fs.String("log-file", "", "optional log file path")
@@ -137,15 +134,6 @@ func run(args []string) {
 	}
 	if *minConfidence >= 0 {
 		cfg.Quality.MinConfidence = *minConfidence
-	}
-	if strings.TrimSpace(*indexerImage) != "" {
-		cfg.Indexer.Image = *indexerImage
-	}
-	if strings.TrimSpace(*indexerAutoBuild) != "" {
-		cfg.Indexer.AutoBuild = *indexerAutoBuild
-	}
-	if *indexerDisabled {
-		cfg.Indexer.Disabled = true
 	}
 	if cfg.OpenCode.Password == "" {
 		cfg.OpenCode.Password = os.Getenv("OPENCODE_SERVER_PASSWORD")

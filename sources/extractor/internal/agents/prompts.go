@@ -43,7 +43,7 @@ func buildRepoFactsPrompt(subDir string) string {
 	sb.WriteString(`STEPS:
 1. Read build files that exist (pom.xml, build.gradle, package.json, go.mod, pyproject.toml, requirements.txt, setup.py, Cargo.toml).
 2. Read application config (application.yml, application.properties, application-*.yml) if present.
-3. Read deployment/infrastructure config (.example/config/values.yaml, .example/config/production/values.yaml, .example/config/stage/values.yaml, Chart.yaml, helm values, serverless.yml, template.yaml).
+3. Read deployment/infrastructure config (helm values, Chart.yaml, serverless.yml, template.yaml, any *values.yaml or config/*.yaml in the repo).
 4. Identify declared languages, frameworks, main module layout, and service name.
 5. List environment-specific URLs, queue names, DB config you observe for downstream agents.
 
@@ -52,7 +52,7 @@ RULES:
 - Return an empty array for any category that is not present.
 - Keep every list short (max 25 items). Prefer the most representative entries.
 - "probable_tech_hints" should capture cues like: "Spring Boot", "@SqsListener present", "Retrofit interface used", "DynamoDBMapper usage", "Redis via Jedis", "AWS Lambda handler".
-- "deployment_hints" captures things like "ingress host X", "SQS queue example-foo-prod", "DB host X", "Feature flag X".
+- "deployment_hints" captures things like "ingress host X", "SQS queue my-service-prod", "DB host X", "Feature flag X".
 
 OUTPUT: Return a single JSON object matching the provided schema.`)
 	return sb.String()

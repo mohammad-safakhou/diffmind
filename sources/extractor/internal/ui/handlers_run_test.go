@@ -120,73 +120,7 @@ func TestBuildConfigFromRequest_ZeroPromptRetryCountDisablesRetries(t *testing.T
 	}
 }
 
-// Indexer overrides from the dashboard form must propagate into the
-// resulting config, and ZERO/empty fields must not clobber defaults.
-// This is the equivalent of the OpenCode-timeout regression guard
-// above but for the indexer block introduced in Sprint 3's auto-build.
-func TestBuildConfigFromRequest_IndexerOverridesPropagate(t *testing.T) {
-	t.Run("empty_keeps_defaults", func(t *testing.T) {
-		var req startRunRequest
-		got := buildConfigFromRequest(req)
-		want := config.Default()
-		if got.Indexer.Disabled != want.Indexer.Disabled {
-			t.Errorf("Disabled changed: got %v, want %v", got.Indexer.Disabled, want.Indexer.Disabled)
-		}
-		if got.Indexer.Image != want.Indexer.Image {
-			t.Errorf("Image changed: got %q, want %q", got.Indexer.Image, want.Indexer.Image)
-		}
-		if got.Indexer.AutoBuild != want.Indexer.AutoBuild {
-			t.Errorf("AutoBuild changed: got %q, want %q", got.Indexer.AutoBuild, want.Indexer.AutoBuild)
-		}
-	})
 
-	t.Run("explicit_overrides", func(t *testing.T) {
-		body := []byte(`{
-            "opencode": {"base_url": "http://x"},
-            "indexer": {
-                "disabled": true,
-                "image": "custom-registry/diffmind-indexer:v9",
-                "auto_build": "always"
-            }
-        }`)
-		var req startRunRequest
-		if err := json.Unmarshal(body, &req); err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		got := buildConfigFromRequest(req)
-		if !got.Indexer.Disabled {
-			t.Error("Disabled override lost")
-		}
-		if got.Indexer.Image != "custom-registry/diffmind-indexer:v9" {
-			t.Errorf("Image = %q", got.Indexer.Image)
-		}
-		if got.Indexer.AutoBuild != "always" {
-			t.Errorf("AutoBuild = %q", got.Indexer.AutoBuild)
-		}
-	})
-
-	t.Run("whitespace_only_image_ignored", func(t *testing.T) {
-		// The SPA may send "   " from an empty input box; we should
-		// treat that as "use the default" rather than overwriting
-		// the default with an empty/whitespace string.
-		body := []byte(`{
-            "opencode": {"base_url": "http://x"},
-            "indexer": {"image": "   ", "auto_build": ""}
-        }`)
-		var req startRunRequest
-		_ = json.Unmarshal(body, &req)
-		got := buildConfigFromRequest(req)
-		want := config.Default()
-		if got.Indexer.Image != want.Indexer.Image {
-			t.Errorf("whitespace image clobbered default: got %q, want %q",
-				got.Indexer.Image, want.Indexer.Image)
-		}
-		if got.Indexer.AutoBuild != want.Indexer.AutoBuild {
-			t.Errorf("empty auto_build clobbered default: got %q, want %q",
-				got.Indexer.AutoBuild, want.Indexer.AutoBuild)
-		}
-	})
-}
 
 // The exact failing payload from the cautionary run, distilled.
 // timeout_seconds=300 MUST be honoured as a user-explicit override

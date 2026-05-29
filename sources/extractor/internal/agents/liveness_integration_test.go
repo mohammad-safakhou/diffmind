@@ -231,7 +231,6 @@ func TestPromptRetriesStuckDiscoveryAndCompletes(t *testing.T) {
 	cfg.Runtime.MaxCallSeconds = 60
 	cfg.Runtime.LivenessPollSec = 1
 	cfg.Runtime.PromptRetryCount = 3
-	cfg.Indexer.Disabled = true
 
 	f := newStuckFake("exposure.http_route")
 	f.stuckAttempts = 1
