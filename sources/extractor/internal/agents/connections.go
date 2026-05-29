@@ -887,6 +887,24 @@ func runASTConnections(
 		}
 		for _, sym := range syms {
 			depBySymbol[sym] = dep
+			// If the resolved symbol is a class, also register all its methods as
+			// targets. This way the walker can find paths to any method of the class.
+			if defs, ok := idx.Symbols[sym]; ok {
+				for _, def := range defs {
+					if def.Kind == astpkg.SymbolKindClass || def.Kind == astpkg.SymbolKindInterface {
+						// Find all methods in this class's file within the class range.
+						if fa, ok := idx.Files[def.File]; ok {
+							for _, msym := range fa.Symbols {
+								if (msym.Kind == astpkg.SymbolKindMethod || msym.Kind == astpkg.SymbolKindFunction) &&
+									msym.Range.StartLine >= def.Range.StartLine &&
+									msym.Range.EndLine <= def.Range.EndLine {
+									depBySymbol[msym.Qualified] = dep
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 
@@ -975,10 +993,15 @@ func runASTConnections(
 	return allConns, allUnresolved
 }
 
-// resolveEntitySymbolsAST looks up the SCIP-like qualified symbol for an entity
-// using the AST index. It tries:
-//  1. Positional: look up symbols at the entity's source_locations line/file.
-//  2. Name-based: search for symbols matching the entity's name.
+// resolveEntitySymbolsAST looks up callable symbols for an entity using the
+// AST index. For exposures it returns the method entry points to walk FROM.
+// For dependencies it returns the methods to use as walk TARGETS.
+//
+// Strategy (in priority order):
+//  1. Positional: symbols at the entity's source_locations line/file.
+//     Prefers method/function symbols over class symbols.
+//     When a class is found, expands to all its methods (the actual callables).
+//  2. Name-based: search for symbols whose unqualified name matches.
 func resolveEntitySymbolsAST(idx *astpkg.ProjectIndex, name string, locs []model.Location) []string {
 	var found []string
 
@@ -987,26 +1010,58 @@ func resolveEntitySymbolsAST(idx *astpkg.ProjectIndex, name string, locs []model
 		if loc.File == "" || loc.StartLine <= 0 {
 			continue
 		}
-		// Find symbols defined near this line in this file.
 		fa, ok := idx.Files[loc.File]
 		if !ok {
 			continue
 		}
-		line := uint32(loc.StartLine - 1) // convert to 0-based
+		line := uint32(loc.StartLine - 1) // 1-based → 0-based
+
+		// Collect all symbols that contain this line.
+		var methods, classes []astpkg.SymbolDef
 		for _, sym := range fa.Symbols {
 			if sym.Range.StartLine <= line && sym.Range.EndLine >= line {
-				found = append(found, sym.Qualified)
+				switch sym.Kind {
+				case astpkg.SymbolKindMethod, astpkg.SymbolKindFunction, astpkg.SymbolKindConstructor:
+					methods = append(methods, sym)
+				case astpkg.SymbolKindClass, astpkg.SymbolKindInterface:
+					classes = append(classes, sym)
+				}
 			}
 		}
-		if len(found) > 0 {
+
+		// Methods are better entry/target points than classes.
+		if len(methods) > 0 {
+			for _, m := range methods {
+				found = append(found, m.Qualified)
+			}
 			return uniqueStrings(found)
 		}
-		// Widen: look ±10 lines.
-		for _, sym := range fa.Symbols {
-			lo := line - 10
-			if line < 10 {
-				lo = 0
+
+		// Only a class found: expand to all its methods within the file.
+		// This handles the case where the LLM recorded the class start line.
+		if len(classes) > 0 {
+			for _, cls := range classes {
+				// Add the class itself (walker can still use it to find field types)
+				found = append(found, cls.Qualified)
+				// Add all methods defined in this file that fall within the class range.
+				for _, sym := range fa.Symbols {
+					if sym.Kind == astpkg.SymbolKindMethod || sym.Kind == astpkg.SymbolKindFunction {
+						if sym.Range.StartLine >= cls.Range.StartLine &&
+							sym.Range.EndLine <= cls.Range.EndLine {
+							found = append(found, sym.Qualified)
+						}
+					}
+				}
 			}
+			return uniqueStrings(found)
+		}
+
+		// Nothing at exact line: widen ±30 lines, prefer methods.
+		lo := line
+		if line > 5 {
+			lo = line - 5
+		}
+		for _, sym := range fa.Symbols {
 			if sym.Range.StartLine >= lo && sym.Range.StartLine <= line+30 {
 				found = append(found, sym.Qualified)
 			}
@@ -1016,13 +1071,12 @@ func resolveEntitySymbolsAST(idx *astpkg.ProjectIndex, name string, locs []model
 		}
 	}
 
-	// 2. Name-based lookup across the whole project.
-	// Split "ClassName.methodName" → method search.
+	// 2. Name-based lookup.
+	// Extract the method/function name from "ClassName.methodName" or bare "methodName".
 	searchName := name
 	if dot := strings.LastIndexAny(name, ".#/"); dot >= 0 {
 		searchName = name[dot+1:]
 	}
-	// Strip argument lists "findById(Long id)" → "findById".
 	if paren := strings.Index(searchName, "("); paren > 0 {
 		searchName = searchName[:paren]
 	}
