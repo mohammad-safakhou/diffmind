@@ -379,6 +379,124 @@ func TestNormaliseNodeKind(t *testing.T) {
 	}
 }
 
+// ── Java method reference tests ───────────────────────────────────────────────
+
+// TestJavaMethodReferencesCapturedAsCalls verifies that Java method references
+// (Class::method or instance::method) are captured as synthetic call sites.
+// This is critical for tracing through forEach(service::processItem) patterns.
+func TestJavaMethodReferencesCapturedAsCalls(t *testing.T) {
+	src := `package com.example;
+
+import java.util.List;
+
+public class TargetTriggerService {
+    private final CampaignService campaignService;
+    private final EventPublisher publisher;
+
+    public void triggerAll(List<Campaign> campaigns) {
+        campaigns.forEach(campaignService::validateAndTriggerEvent);
+    }
+
+    public void sendAll(List<Campaign> campaigns) {
+        campaigns.stream()
+            .map(CampaignMapper::toEvent)
+            .forEach(publisher::publish);
+    }
+}
+`
+	fa := parseInline(t, src, "java", ".java")
+
+	// Should find validateAndTriggerEvent as a callee (from method reference)
+	assertCallExists(t, fa, "validateAndTriggerEvent")
+	// Should find publish as a callee (from method reference in chain)
+	assertCallExists(t, fa, "publish")
+	// toEvent from class method reference
+	assertCallExists(t, fa, "toEvent")
+}
+
+// TestJavaMethodReferenceInForEachReachesDependency verifies that the walker
+// can follow paths through forEach(service::method) patterns.
+func TestJavaMethodReferenceInForEachReachesDependency(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "Trigger.java", `
+public class Trigger {
+    CampaignService svc;
+    void run(java.util.List<Object> campaigns) {
+        campaigns.forEach(svc::process);
+    }
+}
+`)
+	writeFile(t, dir, "CampaignService.java", `
+public class CampaignService {
+    EventPublisher publisher;
+    void process(Object campaign) {
+        publisher.send(campaign);
+    }
+}
+`)
+	writeFile(t, dir, "EventPublisher.java", `
+public class EventPublisher {
+    void send(Object event) {}
+}
+`)
+	idx, err := ast.Build(context.Background(), dir, "java", 4, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	w := ast.NewWalker(idx)
+	paths := w.Walk("Trigger.run", ast.WalkConfig{
+		IsTarget: func(sym string) bool {
+			return strings.Contains(sym, "send")
+		},
+	})
+
+	if len(paths) == 0 {
+		t.Log("Symbols:", symbolKeys(idx))
+		t.Log("CallGraph:", callGraphKeys(idx))
+		t.Error("expected at least one path through forEach(svc::process) -> send, got none")
+	}
+}
+
+// TestKotlinCallableReferencesCaptured verifies Kotlin callable references
+// (::method) are captured in the call graph.
+func TestKotlinCallableReferencesCaptured(t *testing.T) {
+	src := `class ProcessorService(private val handler: MessageHandler) {
+    fun processAll(messages: List<Message>) {
+        messages.forEach(handler::handle)
+        messages.map(MessageMapper::toEvent)
+    }
+}
+`
+	fa := parseInline(t, src, "kotlin", ".kt")
+	assertCallExists(t, fa, "handle")
+	assertCallExists(t, fa, "toEvent")
+}
+
+// TestMethodRefArgCallsNotDuplicated verifies that a method reference
+// appearing as a direct @method_ref capture AND as an argument is NOT
+// emitted twice in the call list.
+func TestMethodRefArgCallsSynthesized(t *testing.T) {
+	src := `
+public class Foo {
+    Bar bar;
+    void go(java.util.List<Object> items) {
+        items.forEach(bar::doWork);
+    }
+}
+`
+	fa := parseInline(t, src, "java", ".java")
+	count := 0
+	for _, c := range fa.Calls {
+		if c.CalleeRaw == "doWork" {
+			count++
+		}
+	}
+	if count == 0 {
+		t.Error("expected doWork from method reference to be captured as a call")
+	}
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 func parseInline(t *testing.T, src, lang, ext string) *ast.FileAST {

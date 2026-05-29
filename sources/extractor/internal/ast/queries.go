@@ -178,6 +178,8 @@ var javaQueries = &languageQueries{
 (object_creation_expression
   type: (type_identifier) @callee
   arguments: (argument_list) @args) @call
+
+(method_reference) @method_ref
 `),
 
 	annotations: []byte(`
@@ -214,11 +216,13 @@ var kotlinQueries = &languageQueries{
   (navigation_expression
     (navigation_suffix
       (simple_identifier) @callee))
-  (value_arguments) @args) @call
+  (call_suffix (value_arguments) @args)) @call
 
 (call_expression
   (simple_identifier) @callee
-  (value_arguments) @args) @call
+  (call_suffix (value_arguments) @args)) @call
+
+(callable_reference) @method_ref
 `),
 
 	annotations: []byte(`
@@ -320,7 +324,7 @@ var typescriptQueries = &languageQueries{
 
 (variable_declarator
   name: (identifier) @name
-  value: (function) @def)
+  value: (function_expression) @def)
 `),
 
 	calls: []byte(`
@@ -390,8 +394,12 @@ var phpQueries = &languageQueries{
   arguments: (arguments) @args) @call
 
 (object_creation_expression
-  class: (name) @callee
-  arguments: (arguments)? @args) @call
+  (name) @callee
+  (arguments)? @args) @call
+
+(object_creation_expression
+  (qualified_name) @callee
+  (arguments)? @args) @call
 `),
 
 	annotations: []byte(`
@@ -399,8 +407,7 @@ var phpQueries = &languageQueries{
   (attribute_group
     (attribute
       (name) @name
-      (arguments)? @args)))
-`),
+      (arguments)? @args)))`),
 }
 
 // ── Ruby ─────────────────────────────────────────────────────────────────────
