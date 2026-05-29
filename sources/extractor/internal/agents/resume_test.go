@@ -136,7 +136,6 @@ func TestResumeAfterDetailFailure(t *testing.T) {
 	cfg.Runtime.Workers = 4
 	cfg.Quality.MinConfidence = 0.7
 	cfg.Runtime.SkipReexamination = true
-	cfg.Indexer.Disabled = true // unit tests don't have Docker; skip SCIP
 	tmp := t.TempDir()
 	runDir := filepath.Join(tmp, "20260101T000000Z")
 	repoDir := filepath.Join(tmp, "repo")

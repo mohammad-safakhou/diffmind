@@ -54,7 +54,6 @@ func TestEndToEndPipelineAgainstSampleRepo(t *testing.T) {
 	// Unit-test environments don't have Docker (or the indexer image).
 	// Disable the SCIP index stage explicitly so the test isn't slowed
 	// down by a doomed `docker pull` and so log noise stays minimal.
-	cfg.Indexer.Disabled = true
 
 	start := time.Now()
 	// Pass an explicit, test-unique RunID so parallel test

@@ -39,7 +39,7 @@ ALSO CHECK:
 - Actuator/health/management endpoints (Spring Boot /actuator/*, /app/health)
 - Swagger/OpenAPI documentation endpoints
 - Debug/admin endpoints
-- Infrastructure configuration files (.example/config/values.yaml) for ingress definitions that reveal exposed routes
+- Infrastructure configuration files (helm values, *values.yaml, config/*.yaml) for ingress definitions that reveal exposed routes
 
 Do NOT include webhook callback endpoints (those are a separate objective).
 Include route path, HTTP method, handler symbol, request inputs, and validation entry points.`,
@@ -120,14 +120,14 @@ FRAMEWORK-SPECIFIC PATTERNS TO CHECK:
 - Python: boto3 sqs client polling, Lambda handler for SQS events
 
 FOR EACH CONSUMER EXTRACT:
-- Queue/topic/stream name (check application.yml/properties AND .example/config/*/values.yaml for the actual queue name or ARN)
+- Queue/topic/stream name (check application.yml/properties AND any *values.yaml / config/*.yaml for the actual queue name or ARN)
 - Consumer handler class/function name
 - Message/payload type being consumed
 - Concurrency/batch settings
 - Error handling (DLQ, retry policy)
 - The environment variables or config properties that define the queue URL/name
 
-IMPORTANT: Check infrastructure configuration files (.example/config/values.yaml, application.yml, application.properties) for queue name bindings and ARNs.`,
+IMPORTANT: Check infrastructure configuration files (helm values, *values.yaml, application.yml, application.properties) for queue name bindings and ARNs.`,
 			DetailPrompt: `For this consumer, extract:
 1. Queue/topic/stream name and how it's configured (env var, property, hardcoded)
 2. Payload contract (message type, deserialization)
@@ -225,7 +225,7 @@ FOR EACH DB OPERATION EXTRACT:
 
 IMPORTANT:
 - Check application.yml/properties for datasource configuration to identify database type and connection details
-- Check .example/config/*/values.yaml for database connection environment variables
+- Check any *values.yaml / config/*.yaml for database connection environment variables
 - DO NOT collapse multiple repository methods into one item - list each distinct operation
 - Redis GET/SET/DEL operations count as db_operations
 - In-memory caches (EhCache, Caffeine) with NO external backing store are NOT db_operations`,
@@ -257,7 +257,7 @@ FRAMEWORK-SPECIFIC PATTERNS TO CHECK:
 - Python: requests, httpx, urllib3, aiohttp, boto3 (for AWS API calls)
 
 FOR EACH OUTBOUND CALL EXTRACT:
-- Target service name or host (check application.yml/properties AND .example/config/values.yaml for the actual URL)
+- Target service name or host (check application.yml/properties AND any *values.yaml / config/*.yaml for the actual URL)
 - HTTP method and path
 - Client class/interface name
 - Resilience patterns (circuit breaker, retry, timeout - check @CircuitBreaker, @Retry, Resilience4j config)
@@ -265,7 +265,7 @@ FOR EACH OUTBOUND CALL EXTRACT:
 
 CRITICAL: Check infrastructure configuration files for the ACTUAL base URLs:
 - application.yml/properties for service.*.url or *.baseUrl properties
-- .example/config/production/values.yaml for environment-specific URLs
+- any *values.yaml / config/production/*.yaml for environment-specific URLs
 - These URLs often reveal the target service name (e.g., http://gateway-service.lead2cash.svc.cluster.local/)
 
 DO NOT miss Retrofit interfaces - they define HTTP calls via annotated Java interfaces.`,
@@ -306,13 +306,13 @@ FRAMEWORK-SPECIFIC PATTERNS TO CHECK:
 - EventBridge: AmazonEventBridge.putEvents, EventBridgeClient.putEvents
 
 FOR EACH PUBLISH OPERATION EXTRACT:
-- Destination queue/topic/ARN name (check application.yml AND .example/config/values.yaml for the actual queue/topic name)
+- Destination queue/topic/ARN name (check application.yml AND any *values.yaml / config/*.yaml for the actual queue/topic name)
 - Message/payload type being published
 - Publisher class/method
 - Sync vs async publishing
 - The config property or environment variable that defines the destination
 
-IMPORTANT: Check infrastructure configuration files (.example/config/values.yaml) for queue URLs, topic ARNs, and queue names. Also check application.yml/properties.`,
+IMPORTANT: Check infrastructure configuration files (helm values, *values.yaml, application.yml, application.properties) for queue URLs, topic ARNs, and queue names.`,
 			DetailPrompt: `For this publish operation, extract:
 1. Destination queue/topic/ARN and how it's configured
 2. Message type and payload structure

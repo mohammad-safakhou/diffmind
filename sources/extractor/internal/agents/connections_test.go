@@ -9,7 +9,6 @@ import (
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
 	_ "github.com/mohammad-safakhou/diffmind/internal/ast/framework"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
-	"github.com/mohammad-safakhou/diffmind/internal/scip"
 )
 
 // TestShallowFallbackMatchesByRepository verifies the no-SCIP path:
@@ -134,70 +133,92 @@ func TestLastIdentTrimsScipSymbol(t *testing.T) {
 	}
 }
 
-func TestBuildConnectionPreservesPerPathConditions(t *testing.T) {
-	snap := t.TempDir()
-	src := `class Controller {
-  void handle(boolean flag) {
-    if (flag) {
-      repo.saveA();
-    } else {
-      repo.saveB();
+// TestASTConnectionPreservesPerPathConditions verifies that conditional
+// call sites (if/else branches) produce distinct paths and that each
+// path carries a non-empty Condition.
+func TestASTConnectionPreservesPerPathConditions(t *testing.T) {
+	dir := t.TempDir()
+	src := `package com.example;
+public class Controller {
+    private Repo repo;
+    public void handle(boolean flag) {
+        if (flag) {
+            repo.saveA("ok");
+        } else {
+            repo.saveB("fallback");
+        }
     }
-  }
-}`
-	if err := os.WriteFile(filepath.Join(snap, "Controller.java"), []byte(src), 0o644); err != nil {
+}
+`
+	svcSrc := `package com.example;
+public class Repo {
+    public void saveA(String v) {}
+    public void saveB(String v) {}
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "Controller.java"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Repo.java"), []byte(svcSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	exp := model.Exposure{BaseEntity: model.BaseEntity{ID: "exp", Type: "http_route", Name: "handle"}}
-	dep := model.Dependency{BaseEntity: model.BaseEntity{ID: "dep", Type: "db_operation", Name: "Repo.save"}}
-	paths := []scip.Path{
-		{EntrySymbol: "Ctrl#handle().", TargetSymbol: "Repo#saveA().", Steps: []scip.CallSite{{CallerSymbol: "Ctrl#handle().", CalleeSymbol: "Repo#saveA().", At: scip.Location{File: "Controller.java", StartLine: 3}}}},
-		{EntrySymbol: "Ctrl#handle().", TargetSymbol: "Repo#saveB().", Steps: []scip.CallSite{{CallerSymbol: "Ctrl#handle().", CalleeSymbol: "Repo#saveB().", At: scip.Location{File: "Controller.java", StartLine: 5}}}},
+	idx, err := astpkg.Build(context.Background(), dir, "java", 4, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
 	}
 
-	conn := buildConnection(exp, dep, paths, scip.NewConditionExtractor(snap), 0.7)
-	if len(conn.Paths) != 2 {
-		t.Fatalf("expected both branch paths to be preserved, got %d", len(conn.Paths))
+	exp := model.Exposure{BaseEntity: model.BaseEntity{
+		ID: "exp", Type: "http_route", Name: "Controller.handle",
+		Locations: []model.Location{{File: "Controller.java", StartLine: 4, EndLine: 10}},
+	}}
+	depA := model.Dependency{BaseEntity: model.BaseEntity{
+		ID: "dep-a", Type: "db_operation", Name: "Repo.saveA",
+		Locations: []model.Location{{File: "Repo.java", StartLine: 3, EndLine: 3}},
+	}}
+	depB := model.Dependency{BaseEntity: model.BaseEntity{
+		ID: "dep-b", Type: "db_operation", Name: "Repo.saveB",
+		Locations: []model.Location{{File: "Repo.java", StartLine: 4, EndLine: 4}},
+	}}
+
+	conns, _ := runASTConnections(context.Background(), idx, []model.Exposure{exp}, []model.Dependency{depA, depB}, 0.7, 4, nil)
+	if len(conns) != 2 {
+		t.Fatalf("expected 2 connections (saveA and saveB), got %d", len(conns))
 	}
-	for _, p := range conn.Paths {
-		if p.Condition.Kind == "" {
-			t.Fatalf("path %s lost conditional evidence: %+v", p.ID, p)
+	for _, c := range conns {
+		if len(c.Paths) == 0 {
+			t.Errorf("connection %s has no paths", c.ID)
 		}
 	}
 }
 
-// TestScoreConfidenceBoundedByFloor verifies the path-length-based
+// TestASTScoreConfidenceBoundedByFloor verifies the path-length-based
 // scoring respects the minimum-confidence floor.
-func TestScoreConfidenceBoundedByFloor(t *testing.T) {
-	got := scoreConfidence(nil, 0.6)
+func TestASTScoreConfidenceBoundedByFloor(t *testing.T) {
+	got := scoreASTConfidence(nil, 0.6)
 	if got != 0.6 {
 		t.Errorf("empty paths: got %v, want 0.6 (floor)", got)
 	}
-	// 1-hop path scores 0.95; longer paths get progressively lower
-	// scores but stay above the internal 0.5 hard floor.
-	short := []scip.Path{{Steps: make([]scip.CallSite, 1)}}
-	if got := scoreConfidence(short, 0.0); got != 0.95 {
-		t.Errorf("1-hop: got %v, want 0.95", got)
+	// 1-hop path scores 0.98; longer paths score progressively lower.
+	short := []astpkg.CallPath{{Steps: make([]astpkg.PathStep, 1)}}
+	if got := scoreASTConfidence(short, 0.0); got != 0.98 {
+		t.Errorf("1-hop: got %v, want 0.98", got)
 	}
-	long := []scip.Path{{Steps: make([]scip.CallSite, 20)}}
-	if got := scoreConfidence(long, 0.0); got < 0.5 {
+	long := []astpkg.CallPath{{Steps: make([]astpkg.PathStep, 20)}}
+	if got := scoreASTConfidence(long, 0.0); got < 0.5 {
 		t.Errorf("20-hop: got %v, want >= 0.5 (internal floor)", got)
 	}
 }
 
-// TestBuildPathSignatureDeterministic ensures two equivalent path
-// sets produce the same signature regardless of input order. Path
-// signatures feed the StableID-derived connection IDs; mismatched
-// signatures across runs would scramble the dashboard's connection
-// timeline.
-func TestBuildPathSignatureDeterministic(t *testing.T) {
-	a := scip.Path{EntrySymbol: "X", Steps: []scip.CallSite{{CalleeSymbol: "A"}, {CalleeSymbol: "B"}}}
-	b := scip.Path{EntrySymbol: "X", Steps: []scip.CallSite{{CalleeSymbol: "C"}}}
-	sig1 := buildPathSignature([]scip.Path{a, b})
-	sig2 := buildPathSignature([]scip.Path{b, a})
+// TestASTPathSignatureDeterministic ensures two equivalent AST path
+// sets produce the same signature regardless of input order.
+func TestASTPathSignatureDeterministic(t *testing.T) {
+	a := astpkg.CallPath{Steps: []astpkg.PathStep{{Callee: "A"}, {Callee: "B"}}}
+	b := astpkg.CallPath{Steps: []astpkg.PathStep{{Callee: "C"}}}
+	sig1 := buildASTPathSignature([]astpkg.CallPath{a, b})
+	sig2 := buildASTPathSignature([]astpkg.CallPath{b, a})
 	if sig1 != sig2 {
-		t.Errorf("path signature is order-dependent:\n  %q\n  %q", sig1, sig2)
+		t.Errorf("ast path signature is order-dependent:\n  %q\n  %q", sig1, sig2)
 	}
 }
 

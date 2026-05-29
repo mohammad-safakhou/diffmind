@@ -140,12 +140,11 @@ var defaultSkipDirs = map[string]struct{}{
 	"target.rust": {}, // unusual but harmless
 
 	// Infra / cache
-	".terraform":    {},
-	".serverless":   {},
-	".aws-sam":      {},
-	".cache":        {},
-	".diffmind":     {},
-	".example-cache": {},
+	".terraform": {},
+	".serverless": {},
+	".aws-sam":    {},
+	".cache":      {},
+	".diffmind":   {},
 
 	// macOS / misc
 	".DS_Store": {},

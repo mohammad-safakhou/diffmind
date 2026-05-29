@@ -11,10 +11,11 @@ It produces JSON artifacts for:
 
 The extractor is a deterministic multi-agent orchestrator with a fixed objective map:
 1. A static objective registry defines exact extraction objectives and prompts (exposure + dependency classes).
-2. Objective extractor agents run all objectives in parallel, even if some return no items.
-3. Detail extractor agents run per discovered item in parallel for deep, source-backed enrichment.
-4. Connection extractor agents run per exposure and map conditional exposure -> dependency paths with ordered steps.
-5. Results are confidence-gated, deduplicated, and emitted as artifacts plus unresolved/warning outputs.
+2. A tree-sitter AST index is built from the source snapshot — symbols, call graph, framework bindings — with no Docker, no compiler required.
+3. Objective extractor agents run all objectives in parallel, even if some return no items.
+4. Detail extractor agents run per discovered item in parallel for deep, source-backed enrichment.
+5. Connections are built **deterministically** by BFS over the AST call graph from each exposure's entry symbol to dependency targets. No LLM calls; conditions come from tree-sitter enclosing-node context.
+6. Results are confidence-gated, deduplicated, and emitted as artifacts plus unresolved/warning outputs.
 
 There is no planner/verifier loop.
 

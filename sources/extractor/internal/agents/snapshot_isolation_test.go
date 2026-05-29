@@ -27,7 +27,6 @@ func TestRunPointsOpenCodeAtSnapshotNotRepo(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.Workers = 4
 	cfg.Quality.MinConfidence = 0.7
-	cfg.Indexer.Disabled = true
 	fake := newFakeOpenCode()
 
 	if _, err := Run(context.Background(), cfg, repo, fake); err != nil {
@@ -75,7 +74,6 @@ func TestRunDoesNotMutateUserRepo(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.Workers = 4
 	cfg.Quality.MinConfidence = 0.7
-	cfg.Indexer.Disabled = true
 	fake := newFakeOpenCode()
 	if _, err := Run(context.Background(), cfg, repo, fake); err != nil {
 		t.Fatalf("run failed: %v", err)
