@@ -280,12 +280,28 @@ func Reattach(source, snapshotPath string) (*Snapshot, error) {
 // Close removes the snapshot from disk. It is safe to call multiple times
 // and safe to call on a nil receiver. When the snapshot has been marked
 // for retention via Retain() the call is a no-op.
+//
+// Safety guard: Close refuses to delete any path that is NOT under the
+// standard DiffMind snapshot parent (~/.diffmind/snapshots). This prevents
+// accidental deletion of user source trees when a caller mistakenly passes
+// a live repository path as a SnapshotPath.
 func (s *Snapshot) Close() error {
 	if s == nil || s.Path == "" {
 		return nil
 	}
 	if s.retained {
 		util.Info("snapshot", "snapshot retained for retry", map[string]any{"path": s.Path})
+		return nil
+	}
+	// Safety: refuse to delete any path that looks like a user's source
+	// repository (contains a .git directory at the top level or a known
+	// source-tree marker). DiffMind snapshots are content-addressable
+	// directories WITHOUT a .git directory — any directory with a .git
+	// is almost certainly a real repository, not a snapshot.
+	if isLikelySourceRepo(s.Path) {
+		util.Warn("snapshot", "refusing to delete — path looks like a source repository (contains .git)", map[string]any{
+			"path": s.Path,
+		})
 		return nil
 	}
 	if err := forceRemove(s.Path); err != nil {
@@ -296,6 +312,31 @@ func (s *Snapshot) Close() error {
 	}
 	util.Info("snapshot", "snapshot removed", map[string]any{"path": s.Path})
 	return nil
+}
+
+// isLikelySourceRepo reports whether path looks like a user's source
+// repository rather than an ephemeral snapshot. We check for the presence
+// of a .git directory or other version-control markers at the root.
+// DiffMind snapshots are plain content-copy directories without VCS metadata.
+func isLikelySourceRepo(path string) bool {
+	for _, marker := range []string{".git", ".hg", ".svn"} {
+		if _, err := os.Stat(filepath.Join(path, marker)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// isUnder reports whether path is strictly under parent (both absolute).
+func isUnder(path, parent string) bool {
+	if path == parent {
+		return false // exact match is not "under"
+	}
+	rel, err := filepath.Rel(parent, path)
+	if err != nil {
+		return false
+	}
+	return !strings.HasPrefix(rel, "..")
 }
 
 // MapToSource translates a path that lives inside the snapshot back to the
