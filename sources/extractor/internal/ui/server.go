@@ -639,7 +639,7 @@ func normalizeGraphEntities(items []map[string]any) {
 			item["details"] = details
 		}
 		platform := firstGraphValue(item, details, "platform", "database_type", "database", "aws_service", "cache_type")
-		instance := firstGraphValue(item, details, "instance", "target_service", "service", "base_url", "target_url", "default_url", "production_url", "database", "table", "queue", "queue_name", "destination", "topic", "stream")
+		instance := firstGraphValue(item, details, "instance", "target_service", "service", "base_url", "target_url", "default_url", "production_url", "database_name", "database", "table_or_entity", "table", "entity", "queue", "queue_name", "destination", "topic", "stream")
 		operation := firstGraphValue(item, details, "operation", "operation_normalized", "method", "http_method", "path", "endpoint")
 		kind := firstGraphValue(item, details, "operation_kind")
 		if platform == "" {

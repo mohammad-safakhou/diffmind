@@ -155,12 +155,19 @@ func extractFieldTypes(src []byte, symbols []SymbolDef) map[string]string {
 		if cls.Kind != SymbolKindClass && cls.Kind != SymbolKindInterface {
 			continue
 		}
+		statement := ""
 		for lineNo := int(cls.Range.StartLine); lineNo <= int(cls.Range.EndLine) && lineNo < len(lines); lineNo++ {
 			line := strings.TrimSpace(lines[lineNo])
-			if line == "" || !strings.Contains(line, ";") {
+			if line == "" || strings.HasPrefix(line, "@") || strings.HasPrefix(line, "//") {
 				continue
 			}
-			name, typ, ok := declaredVariable(line)
+			statement = strings.TrimSpace(statement + " " + line)
+			if !strings.Contains(line, ";") {
+				continue
+			}
+			candidate := statement
+			statement = ""
+			name, typ, ok := declaredVariable(candidate)
 			if !ok {
 				continue
 			}

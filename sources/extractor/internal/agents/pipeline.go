@@ -730,6 +730,12 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	}
 	state.DetailExposures = append([]model.Exposure(nil), exposures...)
 	state.DetailDependency = append([]model.Dependency(nil), dependencies...)
+	if o.astIndex != nil {
+		dependencies = augmentDependenciesFromAST(o.astIndex, exposures, dependencies, o.cfg.Quality.MinConfidence)
+		dependencies = reconcile.DedupeDependencies(dependencies)
+		state.DetailDependency = append([]model.Dependency(nil), dependencies...)
+		o.persistStageState("detail_dependencies.json", state.DetailDependency)
+	}
 
 	// --- Stage 4: connection mapping ---
 	progress.StartPhase("connections", len(exposures), 70, 90, "Mapping conditional exposure-to-dependency paths per exposure.")
