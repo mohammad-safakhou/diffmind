@@ -402,6 +402,112 @@ public class Event {}
 	}
 }
 
+func TestASTConnectionsResolveMultilineInjectedRepositoryField(t *testing.T) {
+	dir := t.TempDir()
+	controller := `package com.example;
+public class SubTargetHistoryController {
+    private final TrafficConfigurationSubTargetHistoryService service = null;
+    public void getTargetHistory() {
+        service.getTargetHistory();
+    }
+}
+`
+	service := `package com.example;
+public class TrafficConfigurationSubTargetHistoryService {
+    private final TrafficConfigurationSubTargetHistoryRepository
+            trafficConfigurationSubTargetHistoryRepository = null;
+    public void getTargetHistory() {
+        trafficConfigurationSubTargetHistoryRepository.findTargetHistoryByCampaignAndCampaignItem();
+    }
+}
+`
+	repo := `package com.example;
+public interface TrafficConfigurationSubTargetHistoryRepository {
+    void findTargetHistoryByCampaignAndCampaignItem();
+}
+`
+	files := map[string]string{"SubTargetHistoryController.java": controller, "TrafficConfigurationSubTargetHistoryService.java": service, "TrafficConfigurationSubTargetHistoryRepository.java": repo}
+	for name, src := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx, err := astpkg.Build(context.Background(), dir, "java", 4, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if got := idx.FieldTypes["TrafficConfigurationSubTargetHistoryService.trafficConfigurationSubTargetHistoryRepository"]; got != "TrafficConfigurationSubTargetHistoryRepository" {
+		t.Fatalf("multiline field type = %q", got)
+	}
+	exp := model.Exposure{BaseEntity: model.BaseEntity{ID: "exp", Type: "http_route", Name: "GET /sub-target-history", Locations: []model.Location{{File: "SubTargetHistoryController.java", StartLine: 4, EndLine: 6}}}}
+	dep := model.Dependency{BaseEntity: model.BaseEntity{ID: "dep", Type: "db_operation", Name: "TrafficConfigurationSubTargetHistoryRepository.findTargetHistoryByCampaignAndCampaignItem", Locations: []model.Location{{File: "TrafficConfigurationSubTargetHistoryRepository.java", StartLine: 3, EndLine: 3}}}}
+
+	conns, _ := runASTConnections(context.Background(), idx, []model.Exposure{exp}, []model.Dependency{dep}, 0.7, 4, nil)
+	if len(conns) != 1 {
+		t.Fatalf("expected multiline repository field connection, got %d", len(conns))
+	}
+}
+
+func TestAugmentDependenciesFromASTAddsMissingRepositoryDependency(t *testing.T) {
+	dir := t.TempDir()
+	controller := `package com.example;
+public class TrafficConfigurationController {
+    private final TrafficConfigurationHistoryService service = null;
+    public void getTargetHistory() {
+        service.getTargetHistory();
+    }
+}
+`
+	service := `package com.example;
+public class TrafficConfigurationHistoryService {
+    private final TrafficConfigurationHistoryRepository repository = null;
+    public void getTargetHistory() {
+        repository.findTargetHistoryByCampaignId();
+    }
+}
+`
+	repo := `package com.example;
+public interface TrafficConfigurationHistoryRepository {
+    void findTargetHistoryByCampaignId();
+}
+`
+	files := map[string]string{"TrafficConfigurationController.java": controller, "TrafficConfigurationHistoryService.java": service, "TrafficConfigurationHistoryRepository.java": repo}
+	for name, src := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx, err := astpkg.Build(context.Background(), dir, "java", 4, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	exp := model.Exposure{BaseEntity: model.BaseEntity{ID: "exp", Type: "http_route", Name: "GET /target-history", Locations: []model.Location{{File: "TrafficConfigurationController.java", StartLine: 4, EndLine: 6}}}}
+	existing := []model.Dependency{{BaseEntity: model.BaseEntity{ID: "existing", Type: "db_operation", Name: "OtherRepository.findAll", Platform: "postgres", Instance: "routing_db", Details: map[string]any{"database_type": "PostgreSQL", "database_name": "routing_db"}}}}
+	deps := augmentDependenciesFromAST(idx, []model.Exposure{exp}, existing, 0.7)
+	if len(deps) != 2 {
+		t.Fatalf("expected existing plus one AST-derived dependency, got %d", len(deps))
+	}
+	var dep model.Dependency
+	for _, candidate := range deps {
+		if candidate.Name == "TrafficConfigurationHistoryRepository.findTargetHistoryByCampaignId" {
+			dep = candidate
+		}
+	}
+	if dep.Name != "TrafficConfigurationHistoryRepository.findTargetHistoryByCampaignId" {
+		t.Fatalf("dependency name = %q", dep.Name)
+	}
+	if dep.Platform != "postgres" || dep.Instance != "routing_db" {
+		t.Fatalf("dependency grouping platform/instance = %q/%q", dep.Platform, dep.Instance)
+	}
+	if dep.Details["table"] != "traffic_configuration_history" || dep.Details["entity"] != "TrafficConfigurationHistory" {
+		t.Fatalf("dependency table/entity = %#v/%#v", dep.Details["table"], dep.Details["entity"])
+	}
+	conns, _ := runASTConnections(context.Background(), idx, []model.Exposure{exp}, deps, 0.7, 4, nil)
+	if len(conns) != 1 {
+		t.Fatalf("expected connection to AST-derived dependency, got %d", len(conns))
+	}
+}
+
 func TestASTConnectionsExcludeTestPaths(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "src", "main", "java"), 0o755); err != nil {
