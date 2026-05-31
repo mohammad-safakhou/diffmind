@@ -320,11 +320,11 @@ func runASTConnections(
 	}
 
 	// Build the dependency symbol set.
-	depBySymbol := map[string]model.Dependency{} // resolved symbol → dep
+	depBySymbol := map[string][]model.Dependency{} // resolved symbol → candidate deps
 	var unresolvedDeps []model.UnresolvedItem
 
 	for _, dep := range dependencies {
-		syms := resolveEntitySymbolsAST(idx, dep.Name, dep.Locations)
+		syms := resolveEntitySymbolsAST(idx, dep.Name, dependencyTargetLocations(dep))
 		if len(syms) == 0 {
 			unresolvedDeps = append(unresolvedDeps, model.UnresolvedItem{
 				Kind:       model.KindDependency,
@@ -337,7 +337,7 @@ func runASTConnections(
 			continue
 		}
 		for _, sym := range syms {
-			depBySymbol[sym] = dep
+			depBySymbol[sym] = appendDependencyTarget(depBySymbol[sym], dep)
 			// If the resolved symbol is a class or interface, register its methods
 			// as targets too. Constrain the expansion to the dep's source_location
 			// range when available — this prevents overly broad matches when the
@@ -370,7 +370,7 @@ func runASTConnections(
 								if (msym.Kind == astpkg.SymbolKindMethod || msym.Kind == astpkg.SymbolKindFunction) &&
 									msym.Range.StartLine >= rangeStart &&
 									msym.Range.EndLine <= rangeEnd {
-									depBySymbol[msym.Qualified] = dep
+									depBySymbol[msym.Qualified] = appendDependencyTarget(depBySymbol[msym.Qualified], dep)
 								}
 							}
 						}
@@ -384,8 +384,7 @@ func runASTConnections(
 
 	// Build a single target predicate.
 	isTarget := func(sym string) bool {
-		_, ok := depBySymbol[sym]
-		return ok
+		return len(depBySymbol[sym]) > 0
 	}
 
 	walker := astpkg.NewWalker(idx)
@@ -438,7 +437,7 @@ func runASTConnections(
 
 	go func() {
 		for _, exp := range exposures {
-			entries := resolveEntitySymbolsAST(idx, exp.Name, exp.Locations)
+			entries := resolveExposureEntrySymbolsAST(idx, exp)
 			if len(entries) == 0 {
 				// No entry point found by position/name: try framework bindings.
 				// Match by name fragment or trigger annotation.
@@ -480,6 +479,34 @@ func runASTConnections(
 	return allConns, allUnresolved
 }
 
+func resolveExposureEntrySymbolsAST(idx *astpkg.ProjectIndex, exp model.Exposure) []string {
+	if idx == nil {
+		return nil
+	}
+	for _, key := range []string{"handler", "entry_method", "service_method"} {
+		if raw, ok := exp.Details[key].(string); ok && raw != "" {
+			if syms := resolveExactEntitySymbolAST(idx, raw); len(syms) > 0 {
+				return syms
+			}
+		}
+	}
+	if entrypoint, ok := exp.Details["entrypoint"].(map[string]any); ok {
+		if raw, ok := entrypoint["method"].(string); ok && raw != "" {
+			if syms := resolveExactEntitySymbolAST(idx, raw); len(syms) > 0 {
+				return syms
+			}
+		}
+	}
+
+	for _, loc := range exp.Locations {
+		if loc.File == "" || isTestLikeArtifactPath(loc.File) || isConfigLikeArtifactPath(loc.File) || isLowSignalArtifactPath(loc.File) {
+			continue
+		}
+		return resolveEntitySymbolsAST(idx, exp.Name, []model.Location{loc})
+	}
+	return resolveEntitySymbolsAST(idx, exp.Name, nil)
+}
+
 // resolveEntitySymbolsAST looks up callable symbols for an entity using the
 // AST index. For exposures it returns the method entry points to walk FROM.
 // For dependencies it returns the methods to use as walk TARGETS.
@@ -490,6 +517,11 @@ func runASTConnections(
 //     When a class is found, expands to all its methods (the actual callables).
 //  2. Name-based: search for symbols whose unqualified name matches.
 func resolveEntitySymbolsAST(idx *astpkg.ProjectIndex, name string, locs []model.Location) []string {
+	if looksMethodLikeName(name) {
+		if exact := resolveExactEntitySymbolAST(idx, name); len(exact) > 0 {
+			return exact
+		}
+	}
 	// Positional lookup strategy:
 	//   - For each location, collect method and class symbols at that line.
 	//   - Methods are preferred over classes.
@@ -504,7 +536,7 @@ func resolveEntitySymbolsAST(idx *astpkg.ProjectIndex, name string, locs []model
 	//   - An exposure whose second location points to an inner method also
 	//     includes that method — even when the first location yielded a class.
 
-	var directMethods []string // methods found at exact lines
+	var directMethods []string  // methods found at exact lines
 	var classExpansion []string // class-to-method expansions
 
 	for _, loc := range locs {
@@ -608,6 +640,66 @@ func resolveEntitySymbolsAST(idx *astpkg.ProjectIndex, name string, locs []model
 	return uniqueStrings(found)
 }
 
+func resolveExactEntitySymbolAST(idx *astpkg.ProjectIndex, name string) []string {
+	name = strings.TrimSpace(name)
+	if name == "" || idx == nil {
+		return nil
+	}
+	if _, ok := idx.Symbols[name]; ok {
+		return []string{name}
+	}
+	needle := name
+	if paren := strings.Index(needle, "("); paren > 0 {
+		needle = needle[:paren]
+	}
+	if synthetic := syntheticTypedMethodSymbol(idx, needle); synthetic != "" {
+		return []string{synthetic}
+	}
+	var out []string
+	for qualified := range idx.Symbols {
+		if qualified == needle || strings.HasSuffix(qualified, "."+needle) || strings.HasSuffix(needle, "."+lastIdent(qualified)) {
+			if lastIdent(qualified) == lastIdent(needle) || strings.Contains(needle, ".") {
+				out = append(out, qualified)
+			}
+		}
+	}
+	sort.Strings(out)
+	return uniqueStrings(out)
+}
+
+func syntheticTypedMethodSymbol(idx *astpkg.ProjectIndex, name string) string {
+	owner, method, ok := splitOwnerMethod(name)
+	if !ok || owner == "" || method == "" {
+		return ""
+	}
+	for qualified, defs := range idx.Symbols {
+		for _, def := range defs {
+			if def.Kind != astpkg.SymbolKindClass && def.Kind != astpkg.SymbolKindInterface {
+				continue
+			}
+			if qualified == owner || strings.HasSuffix(qualified, "."+owner) || lastIdent(qualified) == owner {
+				return def.Qualified + "." + method
+			}
+		}
+	}
+	return ""
+}
+
+func splitOwnerMethod(name string) (string, string, bool) {
+	name = strings.TrimSpace(name)
+	if dot := strings.LastIndex(name, "."); dot > 0 && dot+1 < len(name) {
+		return name[:dot], name[dot+1:], true
+	}
+	if hash := strings.LastIndex(name, "#"); hash > 0 && hash+1 < len(name) {
+		return name[:hash], name[hash+1:], true
+	}
+	return "", "", false
+}
+
+func looksMethodLikeName(name string) bool {
+	return strings.ContainsAny(name, ".#/") || strings.Contains(name, "(")
+}
+
 // perExposureClasses returns the set of class/interface names that serve as the
 // primary entry point for exp. Only the FIRST source_location is used to
 // identify the exposure's class — additional locations may point to service
@@ -652,7 +744,7 @@ func buildASTConnectionsForExposure(
 	cfg astpkg.WalkConfig,
 	exposure model.Exposure,
 	entrySymbols []string,
-	depBySymbol map[string]model.Dependency,
+	depBySymbol map[string][]model.Dependency,
 	exposureClasses map[string]struct{},
 	minConfidence float64,
 ) ([]model.Connection, []model.UnresolvedItem) {
@@ -694,6 +786,9 @@ func buildASTConnectionsForExposure(
 		}
 		paths := walker.Walk(entry, cfg)
 		for _, p := range paths {
+			if !isProductionCallPath(p) || isLowSignalTargetSymbol(p.TargetSymbol) {
+				continue
+			}
 			// Skip self-referential targets: a method on the same class as
 			// the exposure is not an external dependency.
 			targetClass := p.TargetSymbol
@@ -704,16 +799,18 @@ func buildASTConnectionsForExposure(
 				continue
 			}
 
-			dep, ok := depBySymbol[p.TargetSymbol]
-			if !ok {
+			deps := chooseDepsForSymbol(p.TargetSymbol, depBySymbol[p.TargetSymbol])
+			if len(deps) == 0 {
 				continue
 			}
-			b, exists := byDep[dep.ID]
-			if !exists {
-				b = &bucket{dep: dep}
-				byDep[dep.ID] = b
+			for _, dep := range deps {
+				b, exists := byDep[dep.ID]
+				if !exists {
+					b = &bucket{dep: dep}
+					byDep[dep.ID] = b
+				}
+				b.paths = append(b.paths, p)
 			}
-			b.paths = append(b.paths, p)
 		}
 	}
 
@@ -723,6 +820,124 @@ func buildASTConnectionsForExposure(
 		conns = append(conns, c)
 	}
 	return conns, nil
+}
+
+func dependencyTargetLocations(dep model.Dependency) []model.Location {
+	if len(dep.Locations) == 0 {
+		return nil
+	}
+	filtered := make([]model.Location, 0, len(dep.Locations))
+	for _, loc := range dep.Locations {
+		if loc.File == "" || isTestLikeArtifactPath(loc.File) || isConfigLikeArtifactPath(loc.File) || isLowSignalArtifactPath(loc.File) {
+			continue
+		}
+		if dep.Type == "db_operation" && !looksLikeDatabaseTargetPath(loc.File, dep.Name) {
+			continue
+		}
+		filtered = append(filtered, loc)
+	}
+	if len(filtered) > 0 {
+		return filtered
+	}
+	// Fall back to original locations only when filtering would otherwise make a
+	// dependency unreachable; exact name resolution still runs before locations.
+	return dep.Locations
+}
+
+func looksLikeDatabaseTargetPath(path, depName string) bool {
+	lowerPath := strings.ToLower(filepathSlash(path))
+	lowerName := strings.ToLower(depName)
+	if strings.Contains(lowerPath, "/repository/") || strings.Contains(lowerPath, "/repositories/") || strings.Contains(lowerPath, "/dao/") {
+		return true
+	}
+	if strings.Contains(lowerName, "repository.") || strings.Contains(lowerName, "dao.") || strings.Contains(lowerName, "entitymanager.") {
+		return true
+	}
+	return false
+}
+
+func isProductionCallPath(p astpkg.CallPath) bool {
+	if isLowSignalTargetSymbol(p.TargetSymbol) {
+		return false
+	}
+	for _, step := range p.Steps {
+		if isTestLikeArtifactPath(step.File) || isLowSignalTargetSymbol(step.Callee) {
+			return false
+		}
+	}
+	return true
+}
+
+func isLowSignalTargetSymbol(sym string) bool {
+	name := strings.ToLower(lastIdent(sym))
+	switch name {
+	case "equals", "hashcode", "tostring", "build", "builder", "copy", "clone", "valueof", "fromstring":
+		return true
+	}
+	if strings.Contains(strings.ToLower(sym), "exception") {
+		return true
+	}
+	return false
+}
+
+func isTestLikeArtifactPath(path string) bool {
+	path = strings.ToLower(filepathSlash(path))
+	base := path
+	if slash := strings.LastIndex(base, "/"); slash >= 0 {
+		base = base[slash+1:]
+	}
+	return strings.Contains(path, "/src/test/") || strings.Contains(path, "/test/") || strings.Contains(path, "/tests/") || strings.Contains(path, "/__tests__/") || strings.Contains(path, "/fixtures/") || strings.Contains(path, "/fixture/") || strings.Contains(base, "_test.") || strings.Contains(base, ".test.") || strings.Contains(base, ".spec.") || strings.HasSuffix(base, "test.java") || strings.HasSuffix(base, "tests.java")
+}
+
+func isConfigLikeArtifactPath(path string) bool {
+	path = strings.ToLower(filepathSlash(path))
+	return strings.HasSuffix(path, ".yml") || strings.HasSuffix(path, ".yaml") || strings.HasSuffix(path, ".json") || strings.HasSuffix(path, ".toml") || strings.HasSuffix(path, ".properties") || strings.Contains(path, "/.github/") || strings.Contains(path, "/.example/config/")
+}
+
+func isLowSignalArtifactPath(path string) bool {
+	path = strings.ToLower(filepathSlash(path))
+	return strings.Contains(path, "/entity/") || strings.Contains(path, "/entities/") || strings.Contains(path, "/dto/") || strings.Contains(path, "/model/") || strings.Contains(path, "/exception/") || strings.Contains(path, "/mapper/")
+}
+
+func filepathSlash(path string) string {
+	return strings.ReplaceAll(path, "\\", "/")
+}
+
+func appendDependencyTarget(in []model.Dependency, dep model.Dependency) []model.Dependency {
+	for _, existing := range in {
+		if existing.ID == dep.ID {
+			return in
+		}
+	}
+	return append(in, dep)
+}
+
+func chooseDepsForSymbol(sym string, deps []model.Dependency) []model.Dependency {
+	if len(deps) <= 1 {
+		return deps
+	}
+	symLast := strings.ToLower(lastIdent(sym))
+	var exact []model.Dependency
+	for _, dep := range deps {
+		depName := strings.TrimSpace(dep.Name)
+		depBase := depName
+		if paren := strings.Index(depBase, "("); paren > 0 {
+			depBase = depBase[:paren]
+		}
+		if depBase == sym || strings.HasSuffix(sym, "."+depBase) || strings.EqualFold(lastIdent(depBase), symLast) && strings.Contains(depBase, ".") {
+			exact = append(exact, dep)
+		}
+	}
+	if len(exact) > 0 {
+		return exact
+	}
+	sort.SliceStable(deps, func(i, j int) bool {
+		if len(deps[i].Name) != len(deps[j].Name) {
+			return len(deps[i].Name) > len(deps[j].Name)
+		}
+		return deps[i].ID < deps[j].ID
+	})
+	return []model.Dependency{deps[0]}
 }
 
 // buildASTConnection assembles a model.Connection from tree-sitter paths.

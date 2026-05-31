@@ -277,7 +277,7 @@ func (o *orchestrator) checkpointDetailResult(r detailResult) {
 	// that matches what the assembler would produce. We do this here
 	// (eagerly) so the checkpoint already holds the assembled value;
 	// on resume we can hand it back without re-running toBase().
-	base, ur := toBase(o.repoPath, r.Objective.Kind, *r.Item, o.cfg.Quality.MinConfidence)
+	base, ur := toBase(o.repoPath, r.Objective, *r.Item, o.cfg.Quality.MinConfidence)
 	if ur != nil {
 		// The result didn't survive validation (low confidence, no
 		// source_location, etc.). Don't checkpoint as a success;
@@ -358,7 +358,7 @@ func (o *orchestrator) runDetailBatchOne(ctx context.Context, batch []detailJob,
 	}
 
 	prompt := buildDetailBatchPrompt(obj, seeds, rf, o.subDir)
-	schema := entityListSchema()
+	schema := entityListSchemaForObjective(obj)
 	payload, err := o.promptAgent(ctx, batchJobID, prompt, schema)
 	dur := time.Since(started)
 	if err != nil {
@@ -417,9 +417,7 @@ func (o *orchestrator) runDetailBatchOne(ctx context.Context, batch []detailJob,
 			// Guard against the LLM rewriting the entity into
 			// something of a different type. Same logic as the
 			// single-entity path.
-			if strings.TrimSpace(it.Type) == "" {
-				it.Type = j.Seed.Type
-			}
+			forceObjectiveType(j.Objective, &it)
 			if strings.TrimSpace(it.Name) == "" {
 				it.Name = j.Seed.Name
 			}
@@ -596,7 +594,7 @@ func entityFromBase(b model.BaseEntity) *llmEntity {
 // preserved. Unchanged from the single-entity path.
 func mergeEnrichment(seed, enriched llmEntity) llmEntity {
 	out := enriched
-	out.Type = preferNonEmpty(enriched.Type, seed.Type)
+	out.Type = seed.Type
 	out.Name = preferNonEmpty(enriched.Name, seed.Name)
 	out.Summary = preferNonEmpty(enriched.Summary, seed.Summary)
 	if len(out.Actions) == 0 {

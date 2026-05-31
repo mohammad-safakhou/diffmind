@@ -192,6 +192,258 @@ public class Repo {
 	}
 }
 
+func TestASTConnectionsPreferExactDependencyOverBroadInterfaceLocation(t *testing.T) {
+	dir := t.TempDir()
+	controller := `package com.example;
+public class CampaignPlacementController {
+    private final CampaignPlacementService campaignPlacementService = new CampaignPlacementService();
+    public void listByCampaign(String campaignId) {
+        campaignPlacementService.listByCampaignId(campaignId);
+    }
+}
+`
+	service := `package com.example;
+public class CampaignPlacementService {
+    private final CampaignPlacementRepository campaignPlacementRepository = null;
+    public void listByCampaignId(String campaignId) {
+        campaignPlacementRepository.findByCampaignId(campaignId);
+    }
+}
+`
+	repo := `package com.example;
+public interface CampaignPlacementRepository {
+    java.util.List<String> findByCampaignId(String campaignId);
+}
+`
+	files := map[string]string{"CampaignPlacementController.java": controller, "CampaignPlacementService.java": service, "CampaignPlacementRepository.java": repo}
+	for name, src := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx, err := astpkg.Build(context.Background(), dir, "java", 4, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	exp := model.Exposure{BaseEntity: model.BaseEntity{ID: "exp", Type: "http_route", Name: "GET /campaign-placements/campaign/{campaignId}", Locations: []model.Location{{File: "CampaignPlacementController.java", StartLine: 4, EndLine: 6}}}}
+	findByCampaignID := model.Dependency{BaseEntity: model.BaseEntity{ID: "dep-find", Type: "db_operation", Name: "CampaignPlacementRepository.findByCampaignId", Locations: []model.Location{{File: "CampaignPlacementRepository.java", StartLine: 3, EndLine: 3}}}}
+	findAllByID := model.Dependency{BaseEntity: model.BaseEntity{ID: "dep-find-all", Type: "db_operation", Name: "CampaignPlacementRepository.findAllById", Locations: []model.Location{{File: "CampaignPlacementRepository.java", StartLine: 2, EndLine: 3}}}}
+
+	conns, _ := runASTConnections(context.Background(), idx, []model.Exposure{exp}, []model.Dependency{findByCampaignID, findAllByID}, 0.7, 4, nil)
+	if len(conns) != 1 {
+		t.Logf("field types: %#v", idx.FieldTypes)
+		t.Logf("call graph: %#v", idx.CallGraph)
+		t.Fatalf("expected only exact findByCampaignId connection, got %d", len(conns))
+	}
+	if conns[0].ToDependencyID != "dep-find" {
+		t.Fatalf("connection target = %s, want dep-find", conns[0].ToDependencyID)
+	}
+}
+
+func TestASTConnectionsDoNotFanOutUnresolvedReceiverCalls(t *testing.T) {
+	dir := t.TempDir()
+	controller := `package com.example;
+public class Controller {
+    private final UserRepository userRepository = null;
+    public void handle(String id) {
+        userRepository.findById(id);
+    }
+}
+`
+	userRepo := `package com.example;
+public interface UserRepository {
+    String findById(String id);
+}
+`
+	accountRepo := `package com.example;
+public interface AccountRepository {
+    String findById(String id);
+}
+`
+	files := map[string]string{"Controller.java": controller, "UserRepository.java": userRepo, "AccountRepository.java": accountRepo}
+	for name, src := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx, err := astpkg.Build(context.Background(), dir, "java", 4, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	exp := model.Exposure{BaseEntity: model.BaseEntity{ID: "exp", Type: "http_route", Name: "Controller.handle", Locations: []model.Location{{File: "Controller.java", StartLine: 4, EndLine: 6}}}}
+	userDep := model.Dependency{BaseEntity: model.BaseEntity{ID: "user", Type: "db_operation", Name: "UserRepository.findById", Locations: []model.Location{{File: "UserRepository.java", StartLine: 3, EndLine: 3}}}}
+	accountDep := model.Dependency{BaseEntity: model.BaseEntity{ID: "account", Type: "db_operation", Name: "AccountRepository.findById", Locations: []model.Location{{File: "AccountRepository.java", StartLine: 3, EndLine: 3}}}}
+
+	conns, _ := runASTConnections(context.Background(), idx, []model.Exposure{exp}, []model.Dependency{userDep, accountDep}, 0.7, 4, nil)
+	if len(conns) != 1 {
+		t.Fatalf("expected only the receiver-typed repository connection, got %d", len(conns))
+	}
+	if conns[0].ToDependencyID != "user" {
+		t.Fatalf("connection target = %s, want user", conns[0].ToDependencyID)
+	}
+}
+
+func TestASTConnectionsUsePrimaryExposureEntryAndInheritedRepositoryMethod(t *testing.T) {
+	dir := t.TempDir()
+	controller := `package com.example;
+public class CampaignController {
+    private final CampaignService campaignService = null;
+    public void list() {
+        campaignService.findCampaigns();
+    }
+}
+`
+	service := `package com.example;
+public class CampaignService {
+    private final CampaignRepository campaignRepository = null;
+    public void findCampaigns() {
+        campaignRepository.findAll();
+    }
+}
+`
+	repo := `package com.example;
+public interface CampaignRepository extends JpaRepository<Campaign, String> {
+}
+`
+	files := map[string]string{"CampaignController.java": controller, "CampaignService.java": service, "CampaignRepository.java": repo}
+	for name, src := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx, err := astpkg.Build(context.Background(), dir, "java", 4, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	exp := model.Exposure{BaseEntity: model.BaseEntity{
+		ID:   "exp",
+		Type: "http_route",
+		Name: "GET /campaigns",
+		Locations: []model.Location{
+			{File: "CampaignController.java", StartLine: 4, EndLine: 6},
+			{File: "CampaignService.java", StartLine: 4, EndLine: 6},
+			{File: "CampaignRepository.java", StartLine: 2, EndLine: 3},
+		},
+		Details: map[string]any{"handler": "com.example.CampaignController#list"},
+	}}
+	dep := model.Dependency{BaseEntity: model.BaseEntity{
+		ID:        "dep",
+		Type:      "db_operation",
+		Name:      "CampaignRepository.findAll",
+		Locations: []model.Location{{File: "CampaignService.java", StartLine: 4, EndLine: 6}},
+	}}
+
+	conns, _ := runASTConnections(context.Background(), idx, []model.Exposure{exp}, []model.Dependency{dep}, 0.7, 4, nil)
+	if len(conns) != 1 {
+		t.Fatalf("expected inherited repository connection from primary handler, got %d", len(conns))
+	}
+	if conns[0].ToDependencyID != "dep" {
+		t.Fatalf("connection target = %s, want dep", conns[0].ToDependencyID)
+	}
+}
+
+func TestASTConnectionsExpandTypedInterfaceLocalToImplementations(t *testing.T) {
+	dir := t.TempDir()
+	listener := `package com.example;
+public class Listener {
+    public void onMessage(Event event) {
+        Processor<Event> processor = null;
+        processor.processMessage(event);
+    }
+}
+`
+	iface := `package com.example;
+public interface Processor<E> {
+    void processMessage(E event);
+}
+`
+	impl := `package com.example;
+public class CampaignProcessor implements Processor<Event> {
+    private final CampaignRepository campaignRepository = null;
+    public void processMessage(Event event) {
+        campaignRepository.save(event);
+    }
+}
+`
+	repo := `package com.example;
+public interface CampaignRepository {
+    void save(Event event);
+}
+`
+	event := `package com.example;
+public class Event {}
+`
+	files := map[string]string{"Listener.java": listener, "Processor.java": iface, "CampaignProcessor.java": impl, "CampaignRepository.java": repo, "Event.java": event}
+	for name, src := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx, err := astpkg.Build(context.Background(), dir, "java", 4, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	exp := model.Exposure{BaseEntity: model.BaseEntity{
+		ID:        "exp",
+		Type:      "queue_consumer",
+		Name:      "Listener.onMessage",
+		Locations: []model.Location{{File: "Listener.java", StartLine: 3, EndLine: 6}},
+	}}
+	dep := model.Dependency{BaseEntity: model.BaseEntity{
+		ID:        "dep",
+		Type:      "db_operation",
+		Name:      "CampaignRepository.save",
+		Locations: []model.Location{{File: "CampaignRepository.java", StartLine: 3, EndLine: 3}},
+	}}
+
+	conns, _ := runASTConnections(context.Background(), idx, []model.Exposure{exp}, []model.Dependency{dep}, 0.7, 4, nil)
+	if len(conns) != 1 {
+		t.Fatalf("expected interface implementation path to repository, got %d", len(conns))
+	}
+}
+
+func TestASTConnectionsExcludeTestPaths(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "src", "main", "java"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "src", "test", "java"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mainSrc := `package com.example;
+public class Controller {
+    public void handle() {}
+}
+`
+	testSrc := `package com.example;
+public class ControllerTest {
+    public void helper() { new Repo().save(); }
+}
+`
+	repoSrc := `package com.example;
+public class Repo {
+    public void save() {}
+}
+`
+	files := map[string]string{
+		"src/main/java/Controller.java":     mainSrc,
+		"src/main/java/Repo.java":           repoSrc,
+		"src/test/java/ControllerTest.java": testSrc,
+	}
+	for name, src := range files {
+		if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(name)), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx, err := astpkg.Build(context.Background(), dir, "java", 4, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if _, ok := idx.Files["src/test/java/ControllerTest.java"]; ok {
+		t.Fatal("test source should not be indexed for production graph traversal")
+	}
+}
+
 // TestASTScoreConfidenceBoundedByFloor verifies the path-length-based
 // scoring respects the minimum-confidence floor.
 func TestASTScoreConfidenceBoundedByFloor(t *testing.T) {

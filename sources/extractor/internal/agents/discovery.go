@@ -178,7 +178,7 @@ func (o *orchestrator) runDiscoveryOne(ctx context.Context, obj objectives.Objec
 		Payload: map[string]any{"objective_id": obj.ID, "kind": string(obj.Kind), "type": obj.Type},
 	})
 	prompt := buildDiscoveryPrompt(obj, rf, o.subDir)
-	schema := entityListSchema()
+	schema := entityListSchemaForObjective(obj)
 	payload, err := o.promptAgent(ctx, jobID, prompt, schema)
 	if err != nil {
 		o.emit(events.Event{
@@ -189,7 +189,15 @@ func (o *orchestrator) runDiscoveryOne(ctx context.Context, obj objectives.Objec
 		return nil, err
 	}
 	items := parseEntities(payload["items"])
+	kept := items[:0]
+	for i := range items {
+		if forceObjectiveType(obj, &items[i]) {
+			kept = append(kept, items[i])
+		}
+	}
+	items = kept
 	o.pathMapper().applyToEntities(items)
+	sortLLMEntities(items)
 	util.Info("agents.discovery", "objective discovery completed", map[string]any{
 		"objective": obj.ID, "items": len(items),
 	})

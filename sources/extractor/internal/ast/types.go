@@ -44,6 +44,13 @@ type ProjectIndex struct {
 	// Used for DI resolution: FieldTypes["UserController.repo"] = "UserRepository".
 	FieldTypes map[string]string
 
+	// LocalTypes maps a caller-qualified local variable to its declared type.
+	// Used for local receiver resolution: LocalTypes["Listener.onMessage.processor"] = "Processor".
+	LocalTypes map[string]string
+
+	// Implements maps an interface/simple type name to classes that explicitly implement it.
+	Implements map[string][]string
+
 	// Frameworks is the list of framework patterns detected in this project.
 	// Each binding captures an implicit invocation (e.g. @Scheduled triggers
 	// a method that has no syntactic caller in user code).
@@ -64,6 +71,13 @@ type FileAST struct {
 	Imports  []ImportDecl
 	Symbols  []SymbolDef
 	Calls    []CallSite
+	// FieldTypes maps class-qualified field names to declared types found in
+	// source files, for example "UserController.repo" -> "UserRepository".
+	FieldTypes map[string]string
+	// LocalTypes maps method-qualified local variable names to declared types.
+	LocalTypes map[string]string
+	// Implements maps interfaces to class names declared with implements clauses.
+	Implements map[string][]string
 }
 
 // SymbolDef is a function, method, class, or interface definition.
@@ -82,6 +96,7 @@ type SymbolDef struct {
 type CallSite struct {
 	Caller         string
 	CalleeRaw      string
+	ReceiverRaw    string
 	CalleeResolved []string
 	File           string
 	Range          Range
@@ -164,7 +179,7 @@ type Range struct {
 type SymbolKind int
 
 const (
-	SymbolKindFunction    SymbolKind = iota
+	SymbolKindFunction SymbolKind = iota
 	SymbolKindMethod
 	SymbolKindClass
 	SymbolKindInterface
@@ -202,53 +217,53 @@ func (k SymbolKind) String() string {
 // C#, PHP grammars). Language-unique names are added where they differ.
 var normaliseNodeKindMap = map[string]string{
 	// ── Conditionals ──────────────────────────────────────────────────────
-	"if_statement":             "if_guard",
-	"if_expression":            "if_guard",    // Rust
-	"if_let_expression":        "if_guard",    // Rust
-	"elif_clause":              "if_guard",    // Python
-	"else_clause":              "else_branch",
-	"unless":                   "if_guard",    // Ruby
-	"switch_statement":         "match_arm",
-	"switch_expression":        "match_arm",
-	"match_statement":          "match_arm",   // Python 3.10+
-	"match_expression":         "match_arm",   // Rust, PHP
-	"when_expression":          "match_arm",   // Kotlin
-	"case_clause":              "match_arm",
-	"ternary_expression":       "ternary",
-	"conditional_expression":   "ternary",     // C#, TypeScript
-	"optional_chain":           "optional_chain",
-	"select_statement":         "if_guard",    // Go select
+	"if_statement":           "if_guard",
+	"if_expression":          "if_guard", // Rust
+	"if_let_expression":      "if_guard", // Rust
+	"elif_clause":            "if_guard", // Python
+	"else_clause":            "else_branch",
+	"unless":                 "if_guard", // Ruby
+	"switch_statement":       "match_arm",
+	"switch_expression":      "match_arm",
+	"match_statement":        "match_arm", // Python 3.10+
+	"match_expression":       "match_arm", // Rust, PHP
+	"when_expression":        "match_arm", // Kotlin
+	"case_clause":            "match_arm",
+	"ternary_expression":     "ternary",
+	"conditional_expression": "ternary", // C#, TypeScript
+	"optional_chain":         "optional_chain",
+	"select_statement":       "if_guard", // Go select
 
 	// ── Loops ─────────────────────────────────────────────────────────────
 	"for_statement":            "loop",
-	"for_expression":           "loop",        // Rust, Kotlin
-	"enhanced_for_statement":   "loop",        // Java
-	"foreach_statement":        "loop",        // C#, PHP
-	"for_in_statement":         "loop",        // JS/TS
-	"for_of_statement":         "loop",        // JS/TS
+	"for_expression":           "loop", // Rust, Kotlin
+	"enhanced_for_statement":   "loop", // Java
+	"foreach_statement":        "loop", // C#, PHP
+	"for_in_statement":         "loop", // JS/TS
+	"for_of_statement":         "loop", // JS/TS
 	"while_statement":          "loop",
-	"while_expression":         "loop",        // Rust
+	"while_expression":         "loop", // Rust
 	"do_statement":             "loop",
-	"loop_expression":          "loop",        // Rust `loop`
-	"list_comprehension":       "loop",        // Python
-	"set_comprehension":        "loop",        // Python
-	"dictionary_comprehension": "loop",        // Python
-	"generator_expression":     "loop",        // Python
-	"range_clause":             "loop",        // Go `range`
+	"loop_expression":          "loop", // Rust `loop`
+	"list_comprehension":       "loop", // Python
+	"set_comprehension":        "loop", // Python
+	"dictionary_comprehension": "loop", // Python
+	"generator_expression":     "loop", // Python
+	"range_clause":             "loop", // Go `range`
 
 	// ── Try/Except ────────────────────────────────────────────────────────
-	"try_statement":            "try_block",
-	"try_expression":           "try_block",
-	"catch_clause":             "catch_block",
-	"except_clause":            "catch_block", // Python
-	"rescue":                   "catch_block", // Ruby
-	"finally_clause":           "finally_block",
-	"ensure":                   "finally_block", // Ruby
+	"try_statement":  "try_block",
+	"try_expression": "try_block",
+	"catch_clause":   "catch_block",
+	"except_clause":  "catch_block", // Python
+	"rescue":         "catch_block", // Ruby
+	"finally_clause": "finally_block",
+	"ensure":         "finally_block", // Ruby
 
 	// ── Async / concurrent dispatch ────────────────────────────────────────
-	"go_statement":             "goroutine",   // Go
-	"await_expression":         "async_block",
-	"spawn_expression":         "goroutine",
+	"go_statement":     "goroutine", // Go
+	"await_expression": "async_block",
+	"spawn_expression": "goroutine",
 }
 
 // NormaliseNodeKind converts a tree-sitter node type to the canonical

@@ -40,19 +40,23 @@ type Condition struct {
 }
 
 type BaseEntity struct {
-	ID           string         `json:"id"`
-	Type         string         `json:"type"`
-	Name         string         `json:"name"`
-	Service      string         `json:"service"`
-	Inputs       []InputSpec    `json:"inputs,omitempty"`
-	Summary      string         `json:"summary"`
-	KeyActions   []string       `json:"key_actions,omitempty"`
-	Locations    []Location     `json:"source_locations"`
-	Evidence     []Evidence     `json:"evidence"`
-	Confidence   float64        `json:"confidence"`
-	Tags         []string       `json:"tags,omitempty"`
-	Details      map[string]any `json:"details,omitempty"`
-	PluginSource string         `json:"plugin_source,omitempty"`
+	ID            string         `json:"id"`
+	Type          string         `json:"type"`
+	Name          string         `json:"name"`
+	Service       string         `json:"service"`
+	Platform      string         `json:"platform,omitempty"`
+	Instance      string         `json:"instance,omitempty"`
+	Operation     string         `json:"operation,omitempty"`
+	OperationKind string         `json:"operation_kind,omitempty"`
+	Inputs        []InputSpec    `json:"inputs,omitempty"`
+	Summary       string         `json:"summary"`
+	KeyActions    []string       `json:"key_actions,omitempty"`
+	Locations     []Location     `json:"source_locations"`
+	Evidence      []Evidence     `json:"evidence"`
+	Confidence    float64        `json:"confidence"`
+	Tags          []string       `json:"tags,omitempty"`
+	Details       map[string]any `json:"details,omitempty"`
+	PluginSource  string         `json:"plugin_source,omitempty"`
 }
 
 type Exposure struct {

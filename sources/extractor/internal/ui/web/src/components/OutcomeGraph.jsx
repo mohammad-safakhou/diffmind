@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
-import { getRunArtifacts } from '../lib/api.js'
+import { getRunGraph } from '../lib/api.js'
 import { runMeta } from '../lib/store.js'
 
 // Edge legend items — shown at the bottom of the graph.
@@ -13,9 +13,19 @@ const EDGE_LEGEND = [
 // ─── color palette per dependency type ──────────────────────────────────────
 const TYPE_COLOR = {
   db_operation:           '#4f8cff',
+  database:               '#4f8cff',
+  postgres:               '#4f8cff',
+  mysql:                  '#60a5fa',
+  athena:                 '#f59e0b',
+  redis:                  '#ef4444',
   outbound_http:          '#a78bfa',
+  http:                   '#a78bfa',
   outbound_rpc:           '#fb923c',
   queue_publish:          '#22c55e',
+  queue:                  '#22c55e',
+  sqs:                    '#22c55e',
+  sns:                    '#16a34a',
+  kafka:                  '#10b981',
   cache_operation:        '#06b6d4',
   aws_sdk_client:         '#f59e0b',
   external_service:       '#ec4899',
@@ -34,9 +44,18 @@ const TYPE_LABEL = {
   webhook_consumer:       'Webhook Consumers',
   scheduler_configuration:'Scheduler Config',
   db_operation:           'Database',
+  database:               'Database',
+  postgres:               'PostgreSQL',
+  athena:                 'Athena',
+  redis:                  'Redis',
   outbound_http:          'Outbound HTTP',
+  http:                   'HTTP Services',
   outbound_rpc:           'RPC / Service Calls',
   queue_publish:          'Queue / SNS',
+  queue:                  'Queues',
+  sqs:                    'SQS',
+  sns:                    'SNS',
+  kafka:                  'Kafka',
   cache_operation:        'Cache',
   aws_sdk_client:         'AWS SDK',
   external_service:       'External Services',
@@ -44,6 +63,18 @@ const TYPE_LABEL = {
   http_remote_schema_loading: 'Remote Schema',
 }
 function typeLabel(type) { return TYPE_LABEL[type] || type }
+function groupKey(item, side) {
+  if (side === 'dep') {
+    return `${item.platform || item.type || 'unknown'}::${item.instance || item.name || 'unknown'}`
+  }
+  return item.platform || item.type || 'unknown'
+}
+function groupLabel(key) {
+  const [platform, instance] = String(key).split('::')
+  if (!instance) return typeLabel(platform)
+  return `${typeLabel(platform)} / ${instance}`
+}
+function groupColor(key) { return typeColor(String(key).split('::')[0]) }
 
 // ─── layout constants ────────────────────────────────────────────────────────
 const NODE_H      = 28   // node box height
@@ -66,6 +97,7 @@ function groupBy(arr, key) {
 
 function flattenArtifact(obj) {
   if (!obj) return []
+  if (Array.isArray(obj)) return obj
   return Object.values(obj).flat()
 }
 
@@ -118,7 +150,7 @@ export function OutcomeGraph({ onClose }) {
   useEffect(() => {
     if (!runId) { setLoading(false); setError('No active run.'); return }
     setLoading(true)
-    getRunArtifacts(runId)
+    getRunGraph(runId)
       .then(d => { setData(d); setLoading(false) })
       .catch(e => { setError(e.message); setLoading(false) })
   }, [runId])
@@ -142,7 +174,7 @@ export function OutcomeGraph({ onClose }) {
   // ── Prepare data ──────────────────────────────────────────────────────────
   const exposures    = flattenArtifact(data.exposures)
   const dependencies = flattenArtifact(data.dependencies)
-  const connections  = flattenArtifact(data.connections)
+  const connections  = flattenArtifact(data.edges || data.connections)
   const unresolved   = flattenArtifact(data.unresolved)
 
   const expById = new Map(exposures.map(e => [e.id, e]))
@@ -159,8 +191,8 @@ export function OutcomeGraph({ onClose }) {
   }
 
   // ── Group + layout ────────────────────────────────────────────────────────
-  const expGroups = sortGroups(groupBy(exposures, 'type'), EXP_ORDER)
-  const depGroups = sortGroups(groupBy(dependencies, 'type'), DEP_ORDER)
+  const expGroups = sortGroups(groupBy(exposures.map(e => ({ ...e, _group: groupKey(e, 'exp') })), '_group'), EXP_ORDER)
+  const depGroups = sortGroups(groupBy(dependencies.map(d => ({ ...d, _group: groupKey(d, 'dep') })), '_group'), DEP_ORDER)
 
   const { nodeY: expY, totalH: expTotalH } = computeLayout(new Map(expGroups))
   const { nodeY: depY, totalH: depTotalH } = computeLayout(new Map(depGroups))
@@ -280,7 +312,7 @@ export function OutcomeGraph({ onClose }) {
       key,
       fromId: c.from_exposure_id,
       toId:   c.to_dependency_id,
-      depType: dep.type,
+      depType: dep.platform || dep.type,
       y1: PAD_TOP + ey + NODE_H / 2,
       y2: PAD_TOP + dy + NODE_H / 2,
       paths: c.paths?.length || 0,
@@ -307,10 +339,10 @@ export function OutcomeGraph({ onClose }) {
           )}
         </div>
         <div class="og-legend">
-          {DEP_ORDER.filter(t => depGroups.some(([k]) => k === t)).map(t => (
+          {depGroups.map(([t]) => (
             <span key={t} class="og-legend-item">
-              <span class="og-legend-dot" style={{ background: typeColor(t) }} />
-              {typeLabel(t)}
+              <span class="og-legend-dot" style={{ background: groupColor(t) }} />
+              {groupLabel(t)}
             </span>
           ))}
         </div>
@@ -436,7 +468,7 @@ export function OutcomeGraph({ onClose }) {
           <g class="og-nodes-dep">
             {depGroups.map(([type, nodes]) => {
               const firstY = depY.get(nodes[0].id)
-              const color = typeColor(type)
+              const color = groupColor(type)
               return (
                 <g key={type}>
                   {/* Group label with color stripe */}
@@ -455,7 +487,7 @@ export function OutcomeGraph({ onClose }) {
                     class="og-group-label"
                     style={{ fill: color }}
                   >
-                    {typeLabel(type).toUpperCase()}
+                    {groupLabel(type).toUpperCase()}
                   </text>
                   {nodes.map(node => {
                     const y = PAD_TOP + depY.get(node.id)

@@ -156,7 +156,6 @@ type RunOptions struct {
 	RunID         string
 	ResumeFromDir string
 	SnapshotPath  string
-
 }
 
 // Run is the public entrypoint used by internal/app. It returns an aggregated
@@ -706,7 +705,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 			if d.Item == nil {
 				continue
 			}
-			base, ur := toBase(o.repoPath, d.Objective.Kind, *d.Item, o.cfg.Quality.MinConfidence)
+			base, ur := toBase(o.repoPath, d.Objective, *d.Item, o.cfg.Quality.MinConfidence)
 			if ur != nil {
 				unresolved = append(unresolved, *ur)
 				continue
