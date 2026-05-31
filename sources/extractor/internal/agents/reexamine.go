@@ -40,6 +40,9 @@ func shouldReexamine(obj objectives.Objective, e *llmEntity, minConfidence float
 	if strings.TrimSpace(e.Name) == "" || strings.TrimSpace(e.Type) == "" {
 		return "missing_name_or_type", "Candidate is missing name or type fields.", true
 	}
+	if _, ok := canonicalObjectiveType(obj, e.Type); !ok {
+		return "wrong_objective_type", "Candidate type does not match the objective type.", true
+	}
 	if len(e.Locations) == 0 {
 		return "no_source_location", "Candidate has no source_locations entry; confirm the file and line range.", true
 	}
@@ -542,7 +545,7 @@ func (o *orchestrator) runReexamination(
 
 func (o *orchestrator) runReexamineOne(ctx context.Context, t reexamineTrigger, rf *repoFacts) (*llmEntity, error) {
 	prompt := buildReexaminePrompt(t.Obj, t.Seed, t.ReasonID+": "+t.Reason, rf, o.subDir)
-	schema := entityListSchema()
+	schema := entityListSchemaForObjective(t.Obj)
 	jobID := "reexamine." + t.Obj.ID + "." + safeJobID(t.Seed.Name)
 	started := time.Now()
 	o.emit(events.Event{
@@ -559,6 +562,13 @@ func (o *orchestrator) runReexamineOne(ctx context.Context, t reexamineTrigger, 
 		return nil, err
 	}
 	items := parseEntities(payload["items"])
+	kept := items[:0]
+	for i := range items {
+		if forceObjectiveType(t.Obj, &items[i]) {
+			kept = append(kept, items[i])
+		}
+	}
+	items = kept
 	o.pathMapper().applyToEntities(items)
 	resolution := "rejected"
 	if len(items) > 0 {

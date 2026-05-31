@@ -601,18 +601,20 @@ func buildGraphExport(runID string, data RunData, infra map[string]any) map[stri
 	exposures := flattenObjArrayMap(data.Exposures)
 	deps := flattenObjArrayMap(data.Dependencies)
 	conns := flattenObjArrayMap(data.Connections)
+	normalizeGraphEntities(exposures)
+	normalizeGraphEntities(deps)
 
 	// Build edges: one per connection, with steps and conditions.
 	edges := make([]map[string]any, 0, len(conns))
 	for _, c := range conns {
 		guarantee := deriveGuarantee(c)
 		edge := map[string]any{
-			"from_exposure_id":  c["from_exposure_id"],
-			"to_dependency_id":  c["to_dependency_id"],
-			"path_signature":    c["path_signature"],
-			"guarantee":         guarantee,
-			"condition":         c["condition"],
-			"paths":             c["paths"],
+			"from_exposure_id": c["from_exposure_id"],
+			"to_dependency_id": c["to_dependency_id"],
+			"path_signature":   c["path_signature"],
+			"guarantee":        guarantee,
+			"condition":        c["condition"],
+			"paths":            c["paths"],
 		}
 		edges = append(edges, edge)
 	}
@@ -626,6 +628,103 @@ func buildGraphExport(runID string, data RunData, infra map[string]any) map[stri
 		"infrastructure": infra,
 		"unresolved":     flattenObjArrayMap(data.Unresolved),
 	}
+}
+
+func normalizeGraphEntities(items []map[string]any) {
+	for _, item := range items {
+		typ := stringValue(item["type"])
+		details, _ := item["details"].(map[string]any)
+		if details == nil {
+			details = map[string]any{}
+			item["details"] = details
+		}
+		platform := firstGraphValue(item, details, "platform", "database_type", "database", "aws_service", "cache_type")
+		instance := firstGraphValue(item, details, "instance", "target_service", "service", "base_url", "target_url", "default_url", "production_url", "database", "table", "queue", "queue_name", "destination", "topic", "stream")
+		operation := firstGraphValue(item, details, "operation", "operation_normalized", "method", "http_method", "path", "endpoint")
+		kind := firstGraphValue(item, details, "operation_kind")
+		if platform == "" {
+			platform = fallbackPlatform(typ, stringValue(item["name"]), details)
+		}
+		if instance == "" {
+			instance = stringValue(item["name"])
+		}
+		if operation == "" {
+			operation = stringValue(item["name"])
+		}
+		if kind == "" {
+			kind = fallbackOperationKind(operation)
+		}
+		item["platform"] = platform
+		item["instance"] = instance
+		item["operation"] = operation
+		item["operation_kind"] = kind
+	}
+}
+
+func firstGraphValue(item, details map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if v := stringValue(item[k]); v != "" {
+			return v
+		}
+		if v := stringValue(details[k]); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func stringValue(v any) string {
+	if v == nil {
+		return ""
+	}
+	s := strings.TrimSpace(fmt.Sprint(v))
+	if s == "<nil>" {
+		return ""
+	}
+	return s
+}
+
+func fallbackPlatform(typ, name string, details map[string]any) string {
+	text := strings.ToLower(typ + " " + name + " " + fmt.Sprint(details))
+	switch {
+	case strings.Contains(text, "athena"):
+		return "athena"
+	case strings.Contains(text, "postgres"):
+		return "postgres"
+	case strings.Contains(text, "redis"):
+		return "redis"
+	case strings.Contains(text, "sqs"):
+		return "sqs"
+	case strings.Contains(text, "sns"):
+		return "sns"
+	case strings.Contains(text, "kafka"):
+		return "kafka"
+	case strings.Contains(text, "http") || strings.Contains(text, "feign") || strings.Contains(text, "api"):
+		return "http"
+	}
+	switch typ {
+	case "db_operation", "cache_operation":
+		return "database"
+	case "queue_consumer", "queue_publish", "stream_consume":
+		return "queue"
+	case "scheduled_job":
+		return "scheduler"
+	case "command_exec", "cli_command":
+		return "process"
+	}
+	return typ
+}
+
+func fallbackOperationKind(operation string) string {
+	fields := strings.Fields(strings.ToLower(operation))
+	if len(fields) == 0 {
+		return "use"
+	}
+	switch fields[0] {
+	case "get", "post", "put", "patch", "delete", "publish", "consume", "select", "insert", "update", "save":
+		return fields[0]
+	}
+	return "use"
 }
 
 // deriveGuarantee infers the top-level calling guarantee from a connection's paths.

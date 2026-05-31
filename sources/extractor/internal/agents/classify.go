@@ -1,0 +1,270 @@
+package agents
+
+import (
+	"fmt"
+	"net/url"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+
+	"github.com/mohammad-safakhou/diffmind/internal/model"
+	"github.com/mohammad-safakhou/diffmind/internal/objectives"
+)
+
+var typeAliases = map[model.EntityKind]map[string]string{
+	model.KindExposure: {
+		"http_endpoint": "http_route", "api_route": "http_route", "rest_endpoint": "http_route",
+		"sqs_listener": "queue_consumer", "message_listener": "queue_consumer", "event_listener": "queue_consumer",
+		"cron_job": "scheduled_job", "scheduler": "scheduled_job", "lambda_handler": "cli_command",
+	},
+	model.KindDependency: {
+		"outbound_http_service": "outbound_http", "external_service": "outbound_http", "http_client": "outbound_http", "api_client": "outbound_http",
+		"sqs_publish": "queue_publish", "queue_send": "queue_publish", "topic_publish": "queue_publish",
+		"stream_consumer": "stream_consume", "sqs_consumer": "stream_consume",
+		"database": "db_operation", "sql_query": "db_operation", "repository_operation": "db_operation",
+		"shell_command": "command_exec", "process_exec": "command_exec",
+	},
+}
+
+func canonicalObjectiveType(obj objectives.Objective, typ string) (string, bool) {
+	t := normalizeType(typ)
+	if t == "" || t == obj.Type {
+		return obj.Type, true
+	}
+	if aliases := typeAliases[obj.Kind]; aliases != nil {
+		if c := aliases[t]; c == obj.Type {
+			return obj.Type, true
+		}
+	}
+	return obj.Type, false
+}
+
+func normalizeType(s string) string {
+	s = strings.TrimSpace(strings.ToLower(s))
+	s = strings.ReplaceAll(s, " ", "_")
+	s = strings.ReplaceAll(s, "-", "_")
+	return s
+}
+
+func forceObjectiveType(obj objectives.Objective, e *llmEntity) bool {
+	if e == nil {
+		return true
+	}
+	canonical, ok := canonicalObjectiveType(obj, e.Type)
+	e.Type = canonical
+	return ok
+}
+
+func entitySchemaForObjective(obj objectives.Objective) map[string]any {
+	s := entitySchema()
+	props, _ := s["properties"].(map[string]any)
+	if props != nil {
+		props["type"] = map[string]any{"type": "string", "enum": []string{obj.Type}}
+	}
+	return s
+}
+
+func entityListSchemaForObjective(obj objectives.Objective) map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"items": map[string]any{"type": "array", "items": entitySchemaForObjective(obj)},
+		},
+		"required": []string{"items"},
+	}
+}
+
+func enrichEntityGrouping(b *model.BaseEntity) {
+	if b == nil {
+		return
+	}
+	d := b.Details
+	if d == nil {
+		d = map[string]any{}
+		b.Details = d
+	}
+	platform, instance, operation, opKind := deriveGrouping(*b)
+	b.Platform, b.Instance, b.Operation, b.OperationKind = platform, instance, operation, opKind
+	d["platform"] = platform
+	d["instance"] = instance
+	d["operation_normalized"] = operation
+	d["operation_kind"] = opKind
+}
+
+func deriveGrouping(b model.BaseEntity) (platform, instance, operation, opKind string) {
+	d := b.Details
+	nameLower := strings.ToLower(b.Name + " " + strings.Join(b.Tags, " ") + " " + b.Summary)
+	get := func(keys ...string) string {
+		for _, k := range keys {
+			if v, ok := d[k]; ok {
+				if s := strings.TrimSpace(fmt.Sprint(v)); s != "" && s != "<nil>" {
+					return s
+				}
+			}
+		}
+		return ""
+	}
+
+	switch b.Type {
+	case "http_route", "webhook":
+		platform = "http"
+		instance = "inbound-http"
+		operation = strings.TrimSpace(get("method") + " " + get("path"))
+		if operation == "" {
+			operation = b.Name
+		}
+		opKind = strings.ToLower(strings.Fields(operation)[0])
+	case "queue_consumer", "stream_consume":
+		platform = queuePlatform(nameLower, get("queue", "stream", "topic", "queue_url", "queue_url_property"))
+		instance = firstNonEmpty(get("queue", "stream", "topic", "queue_name", "queue_url", "destination"), b.Name)
+		operation = "consume " + instance
+		opKind = "consume"
+	case "scheduled_job":
+		platform = "scheduler"
+		instance = firstNonEmpty(get("schedule"), "scheduler")
+		operation = b.Name
+		opKind = "run"
+	case "cli_command":
+		platform = "process"
+		instance = firstNonEmpty(get("command"), b.Name)
+		operation = b.Name
+		opKind = "execute"
+	case "db_operation", "cache_operation":
+		platform = dbPlatform(nameLower, get("database", "database_type", "aws_service", "cache_type", "client_class"))
+		instance = firstNonEmpty(get("database", "database_name", "datasource", "connection_string", "table", "entity", "cache_name", "namespace"), platform)
+		operation = firstNonEmpty(get("operation", "sql_equivalent", "query", "method", "service_method"), b.Name)
+		opKind = normalizeOperationKind(operation)
+	case "outbound_http", "outbound_rpc":
+		platform = map[bool]string{true: "rpc", false: "http"}[b.Type == "outbound_rpc"]
+		instance = outboundInstance(get("target_service", "service", "host", "target_host", "base_url", "target_url", "default_url", "production_url", "base_url_property", "client_class"), b.Name)
+		operation = strings.TrimSpace(get("http_method", "method") + " " + get("path", "endpoint"))
+		if operation == "" || strings.TrimSpace(operation) == "" {
+			operation = b.Name
+		}
+		opKind = normalizeOperationKind(operation)
+	case "queue_publish":
+		platform = queuePlatform(nameLower, get("destination", "queue", "topic", "queue_url"))
+		instance = firstNonEmpty(get("destination", "queue", "topic", "queue_name", "queue_url", "destination_queue"), b.Name)
+		operation = "publish " + instance
+		opKind = "publish"
+	case "command_exec":
+		platform = "process"
+		instance = firstNonEmpty(get("command"), b.Name)
+		operation = b.Name
+		opKind = "execute"
+	default:
+		platform = b.Type
+		instance = b.Name
+		operation = b.Name
+		opKind = "use"
+	}
+	return sanitizeGroup(platform), sanitizeGroup(instance), strings.TrimSpace(operation), sanitizeGroup(opKind)
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return "unknown"
+}
+
+func dbPlatform(text, hint string) string {
+	t := strings.ToLower(text + " " + hint)
+	switch {
+	case strings.Contains(t, "athena"):
+		return "athena"
+	case strings.Contains(t, "postgres") || strings.Contains(t, "jdbc:postgresql"):
+		return "postgres"
+	case strings.Contains(t, "mysql"):
+		return "mysql"
+	case strings.Contains(t, "redis"):
+		return "redis"
+	case strings.Contains(t, "dynamodb"):
+		return "dynamodb"
+	case strings.Contains(t, "mongo"):
+		return "mongodb"
+	case strings.Contains(t, "elastic"):
+		return "elasticsearch"
+	}
+	return "database"
+}
+
+func queuePlatform(text, hint string) string {
+	t := strings.ToLower(text + " " + hint)
+	switch {
+	case strings.Contains(t, "sqs"):
+		return "sqs"
+	case strings.Contains(t, "sns"):
+		return "sns"
+	case strings.Contains(t, "kafka"):
+		return "kafka"
+	case strings.Contains(t, "rabbit"):
+		return "rabbitmq"
+	case strings.Contains(t, "kinesis"):
+		return "kinesis"
+	}
+	return "queue"
+}
+
+func outboundInstance(raw, fallback string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fallback
+	}
+	if strings.HasPrefix(raw, "${") && strings.Contains(raw, ":") {
+		raw = strings.TrimSuffix(strings.SplitN(raw[2:], ":", 2)[1], "}")
+	}
+	if u, err := url.Parse(raw); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return raw
+}
+
+func normalizeOperationKind(op string) string {
+	f := strings.Fields(strings.ToLower(op))
+	if len(f) == 0 {
+		return "use"
+	}
+	switch f[0] {
+	case "get", "post", "put", "patch", "delete", "head", "options":
+		return f[0]
+	case "select", "find", "read", "getqueryresults":
+		return "read"
+	case "insert", "update", "upsert", "save", "write", "putitem":
+		return "write"
+	case "publish", "send":
+		return "publish"
+	}
+	return f[0]
+}
+
+var nonGroupChars = regexp.MustCompile(`\s+`)
+
+func sanitizeGroup(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "unknown"
+	}
+	return nonGroupChars.ReplaceAllString(s, " ")
+}
+
+func semanticEntityKey(b model.BaseEntity) string {
+	loc := ""
+	if len(b.Locations) > 0 {
+		loc = filepath.ToSlash(b.Locations[0].File)
+	}
+	return strings.Join([]string{b.Type, strings.ToLower(b.Platform), strings.ToLower(b.Instance), strings.ToLower(b.Operation), loc, containingName(b.Name)}, "|")
+}
+
+func containingName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	name = strings.ReplaceAll(name, " ", "")
+	return name
+}
+
+func sortLLMEntities(in []llmEntity) {
+	sort.SliceStable(in, func(i, j int) bool { return in[i].Name < in[j].Name })
+}

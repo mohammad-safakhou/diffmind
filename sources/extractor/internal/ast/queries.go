@@ -74,6 +74,7 @@ var goQueries = &languageQueries{
   function: [
     (identifier) @callee
     (selector_expression
+      operand: (_) @receiver
       field: (field_identifier) @callee)
   ]
   arguments: (argument_list) @args) @call
@@ -114,6 +115,7 @@ var pythonQueries = &languageQueries{
   function: [
     (identifier) @callee
     (attribute
+      object: (_) @receiver
       attribute: (identifier) @callee)
   ]
   arguments: (argument_list)? @args) @call
@@ -270,6 +272,7 @@ var csharpQueries = &languageQueries{
   function: [
     (identifier) @callee
     (member_access_expression
+      expression: (_) @receiver
       name: (identifier) @callee)
   ]
   arguments: (argument_list) @args) @call
@@ -332,6 +335,7 @@ var typescriptQueries = &languageQueries{
   function: [
     (identifier) @callee
     (member_expression
+      object: (_) @receiver
       property: (property_identifier) @callee)
   ]
   arguments: (arguments) @args) @call

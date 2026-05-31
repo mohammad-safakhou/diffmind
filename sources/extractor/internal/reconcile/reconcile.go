@@ -15,6 +15,7 @@ import (
 // Dedupe collapses entities by ID, keeping the highest-confidence version
 // and merging non-empty fields from duplicates.
 func DedupeExposures(in []model.Exposure) []model.Exposure {
+	in = dedupeExposuresSemantic(in)
 	byID := map[string]model.Exposure{}
 	for _, e := range in {
 		if existing, ok := byID[e.ID]; ok {
@@ -32,6 +33,8 @@ func DedupeExposures(in []model.Exposure) []model.Exposure {
 }
 
 func DedupeDependencies(in []model.Dependency) []model.Dependency {
+	in = dropTransportDuplicates(in)
+	in = dedupeDependenciesSemantic(in)
 	byID := map[string]model.Dependency{}
 	for _, e := range in {
 		if existing, ok := byID[e.ID]; ok {
@@ -46,6 +49,138 @@ func DedupeDependencies(in []model.Dependency) []model.Dependency {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+func dedupeExposuresSemantic(in []model.Exposure) []model.Exposure {
+	byKey := map[string]model.Exposure{}
+	for _, e := range in {
+		key := semanticKey(e.BaseEntity)
+		if existing, ok := byKey[key]; ok {
+			byKey[key] = chooseExposure(existing, e)
+			continue
+		}
+		byKey[key] = e
+	}
+	out := make([]model.Exposure, 0, len(byKey))
+	for _, e := range byKey {
+		out = append(out, e)
+	}
+	return out
+}
+
+func dedupeDependenciesSemantic(in []model.Dependency) []model.Dependency {
+	byKey := map[string]model.Dependency{}
+	for _, d := range in {
+		key := semanticKey(d.BaseEntity)
+		if existing, ok := byKey[key]; ok {
+			byKey[key] = chooseDependency(existing, d)
+			continue
+		}
+		byKey[key] = d
+	}
+	out := make([]model.Dependency, 0, len(byKey))
+	for _, d := range byKey {
+		out = append(out, d)
+	}
+	return out
+}
+
+func semanticKey(b model.BaseEntity) string {
+	loc := ""
+	if len(b.Locations) > 0 {
+		loc = b.Locations[0].File
+	}
+	if b.Type == "scheduled_job" || (b.Type == "cli_command" && !strings.EqualFold(b.Platform, "sqs")) {
+		name := strings.ToLower(strings.TrimSpace(b.Name))
+		if name != "" {
+			return "exposure-job|" + name + "|" + loc
+		}
+	}
+	instance := strings.ToLower(strings.TrimSpace(b.Instance))
+	operation := strings.ToLower(strings.TrimSpace(b.Operation))
+	if operation == "" {
+		operation = strings.ToLower(strings.TrimSpace(b.Name))
+	}
+	return strings.Join([]string{strings.ToLower(b.Platform), instance, operation, loc}, "|")
+}
+
+func dropTransportDuplicates(in []model.Dependency) []model.Dependency {
+	hasQueuePublish := false
+	hasAthenaDB := false
+	for _, d := range in {
+		if d.Type == "queue_publish" && strings.EqualFold(d.Platform, "sqs") {
+			hasQueuePublish = true
+		}
+		if d.Type == "db_operation" && (strings.EqualFold(d.Platform, "athena") || containsFold(d.Name, "athena")) {
+			hasAthenaDB = true
+		}
+	}
+	if !hasQueuePublish && !hasAthenaDB {
+		return in
+	}
+	out := make([]model.Dependency, 0, len(in))
+	for _, d := range in {
+		if d.Type == "outbound_http" && hasQueuePublish && (strings.EqualFold(d.Platform, "sqs") || containsFold(d.Name, "sqs") || containsFold(d.Operation, "sendmessage")) {
+			continue
+		}
+		if d.Type == "outbound_http" && hasAthenaDB && (strings.EqualFold(d.Platform, "athena") || containsFold(d.Name, "athena") || containsFold(d.Operation, "athena")) {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+func containsFold(s, substr string) bool {
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
+}
+
+func chooseExposure(a, b model.Exposure) model.Exposure {
+	pa, pb := exposurePriority(a.Type), exposurePriority(b.Type)
+	if pb > pa || (pb == pa && b.Confidence > a.Confidence) {
+		b.BaseEntity = mergeBase(b.BaseEntity, a.BaseEntity)
+		return b
+	}
+	a.BaseEntity = mergeBase(a.BaseEntity, b.BaseEntity)
+	return a
+}
+
+func chooseDependency(a, b model.Dependency) model.Dependency {
+	pa, pb := dependencyPriority(a.Type), dependencyPriority(b.Type)
+	if pb > pa || (pb == pa && b.Confidence > a.Confidence) {
+		b.BaseEntity = mergeBase(b.BaseEntity, a.BaseEntity)
+		return b
+	}
+	a.BaseEntity = mergeBase(a.BaseEntity, b.BaseEntity)
+	return a
+}
+
+func exposurePriority(t string) int {
+	switch t {
+	case "queue_consumer", "scheduled_job", "webhook", "rpc_endpoint":
+		return 30
+	case "http_route":
+		return 20
+	case "cli_command":
+		return 10
+	default:
+		return 1
+	}
+}
+
+func dependencyPriority(t string) int {
+	switch t {
+	case "queue_publish":
+		return 40
+	case "outbound_http", "outbound_rpc", "db_operation", "cache_operation":
+		return 30
+	case "stream_consume":
+		return 20
+	case "command_exec":
+		return 10
+	default:
+		return 1
+	}
 }
 
 // FilterConnections drops connections whose from/to IDs do not resolve to a
@@ -164,6 +299,18 @@ func mergeDependency(a, b model.Dependency) model.Dependency {
 func mergeBase(base, other model.BaseEntity) model.BaseEntity {
 	if strings.TrimSpace(base.Summary) == "" {
 		base.Summary = other.Summary
+	}
+	if strings.TrimSpace(base.Platform) == "" {
+		base.Platform = other.Platform
+	}
+	if strings.TrimSpace(base.Instance) == "" {
+		base.Instance = other.Instance
+	}
+	if strings.TrimSpace(base.Operation) == "" {
+		base.Operation = other.Operation
+	}
+	if strings.TrimSpace(base.OperationKind) == "" {
+		base.OperationKind = other.OperationKind
 	}
 	if len(base.KeyActions) == 0 {
 		base.KeyActions = other.KeyActions

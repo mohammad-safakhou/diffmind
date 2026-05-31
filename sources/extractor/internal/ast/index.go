@@ -47,6 +47,9 @@ func Build(ctx context.Context, repoRoot, primaryLanguage string, workers int, p
 		ext := strings.ToLower(filepath.Ext(rel))
 
 		if LanguageForExtension(ext) != "" {
+			if isTestLikePath(rel) {
+				return nil
+			}
 			sourceFiles = append(sourceFiles, rel)
 		} else if ConfigFormatForExtension(ext) != "" {
 			configFiles = append(configFiles, rel)
@@ -76,6 +79,8 @@ func Build(ctx context.Context, repoRoot, primaryLanguage string, workers int, p
 		CallGraph:  make(map[string][]CallSite),
 		TypeMap:    make(map[string][]string),
 		FieldTypes: make(map[string]string),
+		LocalTypes: make(map[string]string),
+		Implements: make(map[string][]string),
 		Configs:    make(map[string]*ConfigFile),
 		Language:   primaryLanguage,
 	}
@@ -137,6 +142,15 @@ func Build(ctx context.Context, repoRoot, primaryLanguage string, workers int, p
 		for _, sym := range fa.Symbols {
 			idx.Symbols[sym.Qualified] = append(idx.Symbols[sym.Qualified], sym)
 		}
+		for key, typ := range fa.FieldTypes {
+			idx.FieldTypes[key] = typ
+		}
+		for key, typ := range fa.LocalTypes {
+			idx.LocalTypes[key] = typ
+		}
+		for iface, impls := range fa.Implements {
+			idx.Implements[iface] = append(idx.Implements[iface], impls...)
+		}
 	}
 
 	// ── Step 5: build call graph ──────────────────────────────────────────
@@ -148,20 +162,20 @@ func Build(ctx context.Context, repoRoot, primaryLanguage string, workers int, p
 		}
 	}
 
-	// ── Step 6: cross-file symbol resolution ─────────────────────────────
-	resolveCallees(idx)
-
-	// ── Step 7: build type map (interface → implementations) ──────────────
+	// ── Step 6: build type map (interface → implementations) ──────────────
 	buildTypeMap(idx)
+
+	// ── Step 7: cross-file symbol resolution ─────────────────────────────
+	resolveCallees(idx)
 
 	// ── Step 8: detect framework bindings ────────────────────────────────
 	idx.Frameworks = detectFrameworks(idx)
 
 	util.Info("ast.index", "project index built", map[string]any{
-		"files":     len(idx.Files),
-		"symbols":   len(idx.Symbols),
-		"callgraph": len(idx.CallGraph),
-		"configs":   len(idx.Configs),
+		"files":      len(idx.Files),
+		"symbols":    len(idx.Symbols),
+		"callgraph":  len(idx.CallGraph),
+		"configs":    len(idx.Configs),
 		"frameworks": len(idx.Frameworks),
 	})
 
@@ -180,7 +194,7 @@ func resolveCallees(idx *ProjectIndex) {
 
 		for i := range fa.Calls {
 			call := &fa.Calls[i]
-			resolved := resolveCallee(call.CalleeRaw, importMap, idx, fa)
+			resolved := resolveCallee(call, importMap, idx, fa)
 			call.CalleeResolved = resolved
 			// Update the call graph entry.
 			if call.Caller != "" {
@@ -208,7 +222,8 @@ func buildImportMap(fa *FileAST, idx *ProjectIndex) map[string]string {
 }
 
 // resolveCallee attempts to resolve a raw callee string to qualified symbols.
-func resolveCallee(raw string, importMap map[string]string, idx *ProjectIndex, fa *FileAST) []string {
+func resolveCallee(call *CallSite, importMap map[string]string, idx *ProjectIndex, fa *FileAST) []string {
+	raw := call.CalleeRaw
 	// 1. Exact match in the symbol table.
 	if syms, ok := idx.Symbols[raw]; ok {
 		out := make([]string, 0, len(syms))
@@ -223,6 +238,12 @@ func resolveCallee(raw string, importMap map[string]string, idx *ProjectIndex, f
 	parts := splitQualified(raw)
 	if len(parts) == 2 {
 		receiver, method := parts[0], parts[1]
+		if typ := receiverTypeForCall(call, receiver, idx); typ != "" {
+			if candidates := symbolsWithTypeAndMethod(idx, typ, method); len(candidates) > 0 {
+				return candidates
+			}
+			return []string{typ + "." + method}
+		}
 
 		// Try to find the receiver's type from field declarations.
 		// fieldKey: caller type + "." + field name.
@@ -237,11 +258,10 @@ func resolveCallee(raw string, importMap map[string]string, idx *ProjectIndex, f
 			}
 		}
 
-		// Fall back: return any symbol with this method name.
-		candidates := symbolsWithMethod(idx, method, "")
-		if len(candidates) > 0 {
-			return candidates
-		}
+		// Receiver calls without a known receiver type are intentionally not
+		// widened to every same-named method in the project. That creates false
+		// production edges between unrelated repositories/entities.
+		return []string{raw}
 	}
 
 	// 3. Simple method name match (last segment).
@@ -255,6 +275,68 @@ func resolveCallee(raw string, importMap map[string]string, idx *ProjectIndex, f
 
 	// Unresolved: return the raw name so the walker can still reference it.
 	return []string{raw}
+}
+
+func receiverTypeForCall(call *CallSite, receiver string, idx *ProjectIndex) string {
+	if call == nil || idx == nil || receiver == "" || call.Caller == "" {
+		return ""
+	}
+	className := call.Caller
+	if dot := strings.LastIndex(className, "."); dot > 0 {
+		className = className[:dot]
+	}
+	if typ := idx.FieldTypes[className+"."+receiver]; typ != "" {
+		return typ
+	}
+	if typ := idx.LocalTypes[call.Caller+"."+receiver]; typ != "" {
+		return typ
+	}
+	return ""
+}
+
+func symbolsWithTypeAndMethod(idx *ProjectIndex, typ, method string) []string {
+	typ = strings.TrimSpace(typ)
+	if typ == "" || method == "" {
+		return nil
+	}
+	var out []string
+	for qualified, defs := range idx.Symbols {
+		for _, def := range defs {
+			if def.Name != method && def.Qualified != method {
+				continue
+			}
+			owner := qualified
+			if dot := strings.LastIndex(owner, "."); dot > 0 {
+				owner = owner[:dot]
+			}
+			if owner == typ || strings.HasSuffix(owner, "."+typ) || lastSegment(owner) == typ {
+				out = append(out, qualified)
+				break
+			}
+		}
+	}
+	for _, impl := range idx.TypeMap[typ] {
+		for _, candidate := range symbolsWithTypeAndMethod(idx, impl, method) {
+			out = append(out, candidate)
+		}
+	}
+	return unique(out)
+}
+
+func lastSegment(s string) string {
+	if i := strings.LastIndexAny(s, ".#/"); i >= 0 {
+		return s[i+1:]
+	}
+	return s
+}
+
+func isTestLikePath(path string) bool {
+	path = filepath.ToSlash(strings.ToLower(path))
+	if strings.Contains(path, "/src/test/") || strings.Contains(path, "/test/") || strings.Contains(path, "/tests/") || strings.Contains(path, "/__tests__/") || strings.Contains(path, "/fixtures/") || strings.Contains(path, "/fixture/") {
+		return true
+	}
+	base := filepath.Base(path)
+	return strings.Contains(base, "_test.") || strings.Contains(base, ".test.") || strings.Contains(base, ".spec.") || strings.HasSuffix(base, "test.java") || strings.HasSuffix(base, "tests.java")
 }
 
 // symbolsWithMethod returns all qualified symbols whose unqualified name
@@ -291,6 +373,12 @@ func buildTypeMap(idx *ProjectIndex) {
 	// A more accurate approach requires per-language type analysis.
 	// For now we just collect type hierarchies from annotations.
 	for _, fa := range idx.Files {
+		for iface, impls := range fa.Implements {
+			idx.TypeMap[iface] = append(idx.TypeMap[iface], impls...)
+			for _, impl := range impls {
+				idx.TypeMap[lastSegment(iface)] = append(idx.TypeMap[lastSegment(iface)], impl)
+			}
+		}
 		for _, sym := range fa.Symbols {
 			if sym.Kind == SymbolKindClass || sym.Kind == SymbolKindInterface {
 				for _, ann := range sym.Annotations {

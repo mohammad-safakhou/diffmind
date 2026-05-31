@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/mohammad-safakhou/diffmind/internal/model"
+	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -13,21 +14,31 @@ import (
 // populated entity or an UnresolvedItem describing why the candidate was
 // dropped. It is the single gate where confidence + source-location rules are
 // enforced on converted results.
-func toBase(repoPath string, kind model.EntityKind, e llmEntity, minConfidence float64) (model.BaseEntity, *model.UnresolvedItem) {
+func toBase(repoPath string, obj objectives.Objective, e llmEntity, minConfidence float64) (model.BaseEntity, *model.UnresolvedItem) {
 	name := strings.TrimSpace(e.Name)
-	typ := strings.TrimSpace(e.Type)
+	typ, typeOK := canonicalObjectiveType(obj, e.Type)
 	if name == "" || typ == "" {
 		return model.BaseEntity{}, &model.UnresolvedItem{
-			Kind: kind, Type: typ, Name: name,
+			Kind: obj.Kind, Type: typ, Name: name,
 			ReasonCode: "invalid_entity", Reason: "Missing name/type",
 			Confidence: e.Confidence,
 			Evidence:   toEvidence(e.Evidence),
 		}
 	}
-	typ = strings.ToLower(strings.ReplaceAll(typ, " ", "_"))
+	if !typeOK {
+		return model.BaseEntity{}, &model.UnresolvedItem{
+			Kind:       obj.Kind,
+			Type:       normalizeType(e.Type),
+			Name:       name,
+			ReasonCode: "wrong_objective_type",
+			Reason:     fmt.Sprintf("Type %q does not match objective type %q", e.Type, obj.Type),
+			Confidence: e.Confidence,
+			Evidence:   toEvidence(e.Evidence),
+		}
+	}
 	if e.Confidence < minConfidence {
 		return model.BaseEntity{}, &model.UnresolvedItem{
-			Kind: kind, Type: typ, Name: name,
+			Kind: obj.Kind, Type: typ, Name: name,
 			ReasonCode: "low_confidence",
 			Reason:     fmt.Sprintf("Confidence %.2f below threshold %.2f", e.Confidence, minConfidence),
 			Confidence: e.Confidence,
@@ -37,7 +48,7 @@ func toBase(repoPath string, kind model.EntityKind, e llmEntity, minConfidence f
 	locations := toLocations(e.Locations)
 	if len(locations) == 0 {
 		return model.BaseEntity{}, &model.UnresolvedItem{
-			Kind: kind, Type: typ, Name: name,
+			Kind: obj.Kind, Type: typ, Name: name,
 			ReasonCode: "no_source_location",
 			Reason:     "No source location provided",
 			Confidence: e.Confidence,
@@ -59,8 +70,8 @@ func toBase(repoPath string, kind model.EntityKind, e llmEntity, minConfidence f
 			})
 		}
 	}
-	id := util.StableID(string(kind), typ, name, locations[0].File, fmt.Sprintf("%d:%d", locations[0].StartLine, locations[0].EndLine))
-	return model.BaseEntity{
+	id := util.StableID(string(obj.Kind), typ, name, locations[0].File, fmt.Sprintf("%d:%d", locations[0].StartLine, locations[0].EndLine))
+	base := model.BaseEntity{
 		ID:           id,
 		Type:         typ,
 		Name:         name,
@@ -74,7 +85,9 @@ func toBase(repoPath string, kind model.EntityKind, e llmEntity, minConfidence f
 		Tags:         e.Tags,
 		Details:      e.Details,
 		PluginSource: "opencode",
-	}, nil
+	}
+	enrichEntityGrouping(&base)
+	return base, nil
 }
 
 func toLocations(in []llmLocation) []model.Location {
