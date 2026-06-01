@@ -47,19 +47,23 @@ type Condition struct {
 }
 
 type BaseEntity struct {
-	ID           string         `json:"id"`
-	Type         string         `json:"type"`
-	Name         string         `json:"name"`
-	Service      string         `json:"service"`
-	Inputs       []InputSpec    `json:"inputs,omitempty"`
-	Summary      string         `json:"summary"`
-	KeyActions   []string       `json:"key_actions,omitempty"`
-	Locations    []Location     `json:"source_locations"`
-	Evidence     []Evidence     `json:"evidence"`
-	Confidence   float64        `json:"confidence"`
-	Tags         []string       `json:"tags,omitempty"`
-	Details      map[string]any `json:"details,omitempty"`
-	PluginSource string         `json:"plugin_source,omitempty"`
+	ID            string         `json:"id"`
+	Type          string         `json:"type"`
+	Name          string         `json:"name"`
+	Service       string         `json:"service"`
+	Platform      string         `json:"platform,omitempty"`
+	Instance      string         `json:"instance,omitempty"`
+	Operation     string         `json:"operation,omitempty"`
+	OperationKind string         `json:"operation_kind,omitempty"`
+	Inputs        []InputSpec    `json:"inputs,omitempty"`
+	Summary       string         `json:"summary"`
+	KeyActions    []string       `json:"key_actions,omitempty"`
+	Locations     []Location     `json:"source_locations"`
+	Evidence      []Evidence     `json:"evidence"`
+	Confidence    float64        `json:"confidence"`
+	Tags          []string       `json:"tags,omitempty"`
+	Details       map[string]any `json:"details,omitempty"`
+	PluginSource  string         `json:"plugin_source,omitempty"`
 }
 
 type Exposure struct {
@@ -114,16 +118,29 @@ type UnresolvedItem struct {
 }
 
 type RunManifest struct {
-	RunID             string            `json:"run_id"`
-	StartedAt         time.Time         `json:"started_at"`
-	FinishedAt        time.Time         `json:"finished_at"`
-	RepoPath          string            `json:"repo_path"`
-	SchemaVersion     string            `json:"schema_version"`
-	OpenCodeURL       string            `json:"opencode_url,omitempty"`
-	ConfidenceMinimum float64           `json:"confidence_minimum"`
-	Counts            map[string]int    `json:"counts"`
-	Warnings          []string          `json:"warnings,omitempty"`
-	Metadata          map[string]string `json:"metadata,omitempty"`
+	RunID             string                 `json:"run_id"`
+	StartedAt         time.Time              `json:"started_at"`
+	FinishedAt        time.Time              `json:"finished_at"`
+	RepoPath          string                 `json:"repo_path"`
+	SchemaVersion     string                 `json:"schema_version"`
+	OpenCodeURL       string                 `json:"opencode_url,omitempty"`
+	ConfidenceMinimum float64                `json:"confidence_minimum"`
+	Counts            map[string]int         `json:"counts"`
+	Warnings          []string               `json:"warnings,omitempty"`
+	Metadata          map[string]string      `json:"metadata,omitempty"`
+	StageFailures     map[string]int         `json:"stage_failures,omitempty"`
+	TokenTotals       map[string]TokenBucket `json:"token_totals,omitempty"`
+}
+
+type TokenBucket struct {
+	Calls      int     `json:"calls"`
+	Input      int     `json:"input"`
+	Output     int     `json:"output"`
+	Reasoning  int     `json:"reasoning"`
+	CacheRead  int     `json:"cache_read"`
+	CacheWrite int     `json:"cache_write"`
+	Total      int     `json:"total"`
+	Cost       float64 `json:"cost"`
 }
 
 // ---------------------------------------------------------------------------

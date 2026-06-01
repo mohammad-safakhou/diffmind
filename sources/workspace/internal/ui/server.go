@@ -240,8 +240,8 @@ func (s *Server) buildArchitectureGraph(runID string) (*ArchGraph, error) {
 		for _, item := range dependencies["db_operation"] {
 			d := getDetails(item)
 			dbType := strings.ToLower(firstNonEmpty(d["database_type"], d["type"], "database"))
-			// Use entity name as display name (most descriptive), fall back to database_name
-			dbName := firstNonEmpty(getString(item, "name"), d["database_name"], d["table"], d["entity"])
+			// Prefer concrete database/table names over repository method names.
+			dbName := firstNonEmpty(d["database_name"], d["table_or_entity"], d["table"], d["entity"], getString(item, "instance"), getString(item, "name"))
 			host := firstNonEmpty(d["host_production"], d["host"])
 			// Extract operations list for edge labels
 			op := extractOperations(item)

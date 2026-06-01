@@ -122,7 +122,7 @@ func ToIdentity(serviceName, repoPath string, results []ExtractionResult) model.
 		for mapsTo, val := range r.Values {
 			switch mapsTo {
 			case "service_name":
-				if s, ok := val.(string); ok && s != "" {
+				if s := firstString(val); s != "" {
 					id.ServiceName = s
 				}
 			case "dns_aliases":
@@ -142,7 +142,7 @@ func ToIdentity(serviceName, repoPath string, results []ExtractionResult) model.
 					}
 				}
 			case "iam_role":
-				if s, ok := val.(string); ok && s != "" {
+				if s := firstString(val); s != "" {
 					key := "iam_role:" + s
 					if !seen[key] {
 						seen[key] = true
@@ -150,7 +150,7 @@ func ToIdentity(serviceName, repoPath string, results []ExtractionResult) model.
 					}
 				}
 			case "database_connection":
-				if s, ok := val.(string); ok && s != "" {
+				for _, s := range toStringSlice(val) {
 					id.Resources = append(id.Resources, model.OwnedResource{Kind: "database", Identifier: s, Role: "owner"})
 				}
 			case "queue_identifiers":
@@ -161,7 +161,7 @@ func ToIdentity(serviceName, repoPath string, results []ExtractionResult) model.
 				// LLM-extracted: expect map[string]string of queue_name → service_name
 				// handled at a higher level
 			default:
-				if s, ok := val.(string); ok && s != "" {
+				if s := firstString(val); s != "" {
 					id.Metadata[mapsTo] = s
 				}
 			}
@@ -170,20 +170,47 @@ func ToIdentity(serviceName, repoPath string, results []ExtractionResult) model.
 	return id
 }
 
+func firstString(v any) string {
+	items := toStringSlice(v)
+	if len(items) == 0 {
+		return ""
+	}
+	return items[0]
+}
+
 func toStringSlice(v any) []string {
 	switch val := v.(type) {
 	case []string:
-		return val
+		return cleanStringSlice(val)
 	case string:
-		return []string{val}
+		val = strings.TrimSpace(val)
+		if strings.HasPrefix(val, "[") {
+			var arr []any
+			if err := json.Unmarshal([]byte(val), &arr); err == nil {
+				return toStringSlice(arr)
+			}
+		}
+		return cleanStringSlice([]string{val})
 	case []any:
 		var out []string
 		for _, item := range val {
-			if s, ok := item.(string); ok {
-				out = append(out, s)
-			}
+			out = append(out, toStringSlice(item)...)
 		}
-		return out
+		return cleanStringSlice(out)
 	}
 	return nil
+}
+
+func cleanStringSlice(items []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" || item == "[]" || item == "{}" || item == "null" || seen[item] {
+			continue
+		}
+		seen[item] = true
+		out = append(out, item)
+	}
+	return out
 }

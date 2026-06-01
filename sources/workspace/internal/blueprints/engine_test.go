@@ -185,6 +185,28 @@ func TestToIdentity(t *testing.T) {
 	}
 }
 
+func TestToIdentityParsesJSONStringArraysAndSkipsEmptyArrays(t *testing.T) {
+	results := []ExtractionResult{
+		{
+			BlueprintName:  "test",
+			ExtractionName: "identity",
+			Values: map[string]any{
+				"dns_aliases":         `["ranking-service.example.global"]`,
+				"queue_identifiers":   `[]`,
+				"database_connection": `["routingdb-rds.example.global:5432/routing"]`,
+			},
+		},
+	}
+
+	identity := ToIdentity("ranking-service", "/repos/ranking-service", results)
+	if len(identity.Aliases) != 1 || identity.Aliases[0].Value != "ranking-service.example.global" {
+		t.Fatalf("aliases = %#v", identity.Aliases)
+	}
+	if len(identity.Resources) != 1 || identity.Resources[0].Identifier != "routingdb-rds.example.global:5432/routing" {
+		t.Fatalf("resources = %#v", identity.Resources)
+	}
+}
+
 func TestResolveGlob(t *testing.T) {
 	td := testdataDir(t)
 	repoPath := filepath.Join(td, "sample_service_repos", "order-service")

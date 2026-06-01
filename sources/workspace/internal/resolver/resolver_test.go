@@ -160,6 +160,28 @@ func TestExtractTarget(t *testing.T) {
 			}},
 			expected: "https://some-api.example.global/v2",
 		},
+		{
+			name: "from top-level instance",
+			dep: model.Dependency{BaseEntity: model.BaseEntity{
+				Instance: "routing_db",
+				Details:  map[string]any{"database_name": "ignored"},
+			}},
+			expected: "routing_db",
+		},
+		{
+			name: "from new details target service",
+			dep: model.Dependency{BaseEntity: model.BaseEntity{
+				Details: map[string]any{"target_service": "routing-api"},
+			}},
+			expected: "routing-api",
+		},
+		{
+			name: "from new details table entity",
+			dep: model.Dependency{BaseEntity: model.BaseEntity{
+				Details: map[string]any{"table_or_entity": "traffic_configuration_history"},
+			}},
+			expected: "traffic_configuration_history",
+		},
 	}
 
 	for _, tt := range tests {

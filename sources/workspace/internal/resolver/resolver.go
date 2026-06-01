@@ -233,11 +233,21 @@ Return ONLY valid JSON array.`)
 
 // extractTarget tries to pull a meaningful target identifier from a dependency.
 func extractTarget(dep *model.Dependency) string {
+	for _, v := range []string{dep.Instance} {
+		if isUsefulTarget(v) {
+			return strings.TrimSpace(v)
+		}
+	}
 	// Check details map for common keys.
 	if dep.Details != nil {
-		for _, key := range []string{"url", "base_url", "host", "queue", "topic", "table", "database"} {
+		for _, key := range []string{
+			"url", "base_url", "target_url", "default_url", "production_url",
+			"host", "target_host", "target_service", "service",
+			"queue", "queue_name", "destination", "topic",
+			"database_name", "database", "table_or_entity", "table", "entity", "instance",
+		} {
 			if v, ok := dep.Details[key]; ok {
-				if s, ok := v.(string); ok && s != "" {
+				if s := detailString(v); isUsefulTarget(s) {
 					return s
 				}
 			}
@@ -262,6 +272,22 @@ func extractTarget(dep *model.Dependency) string {
 		}
 	}
 	return dep.Name
+}
+
+func detailString(v any) string {
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(s)
+}
+
+func isUsefulTarget(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "unknown", "http", "rpc", "database", "cache", "queue", "postgres", "postgresql", "mysql", "redis", "dynamodb", "mongodb":
+		return false
+	}
+	return true
 }
 
 func classifyMatchType(depType string) string {

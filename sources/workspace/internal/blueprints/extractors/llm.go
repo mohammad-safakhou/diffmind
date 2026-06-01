@@ -35,7 +35,13 @@ func ExtractWithLLM(client *opencode.Client, sessionID string, filePaths []strin
 	// Define a simple schema.
 	props := make(map[string]any)
 	for _, f := range extractFields {
-		props[f] = map[string]any{"type": "string"}
+		props[f] = map[string]any{
+			"anyOf": []map[string]any{
+				{"type": "string"},
+				{"type": "array", "items": map[string]any{"type": "string"}},
+				{"type": "object"},
+			},
+		}
 	}
 	schema := map[string]any{
 		"type":       "object",

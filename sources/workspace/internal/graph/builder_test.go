@@ -141,6 +141,78 @@ func TestBuild_SharedResources(t *testing.T) {
 	}
 }
 
+func TestBuild_SharedResourcesFromDiffMindDependencies(t *testing.T) {
+	reg := registry.New()
+	reg.AddArchitecture("svc-a", &model.ServiceArchitecture{
+		ServiceName: "svc-a",
+		RepoPath:    "/a",
+		Dependencies: []model.Dependency{{BaseEntity: model.BaseEntity{
+			ID:       "dep-a",
+			Type:     "db_operation",
+			Name:     "OrderRepository.findAll",
+			Instance: "orders-db",
+			Details:  map[string]any{"database_name": "orders-db", "table_or_entity": "orders"},
+		}}},
+	})
+	reg.AddArchitecture("svc-b", &model.ServiceArchitecture{
+		ServiceName: "svc-b",
+		RepoPath:    "/b",
+		Dependencies: []model.Dependency{{BaseEntity: model.BaseEntity{
+			ID:      "dep-b",
+			Type:    "db_operation",
+			Name:    "OrderReadRepository.findByID",
+			Details: map[string]any{"database_name": "orders-db"},
+		}}},
+	})
+
+	log := util.NewLogger(util.LevelInfo)
+	builder := NewBuilder(reg, log)
+	g := builder.Build(&resolver.Resolution{})
+
+	if len(g.SharedResources) != 1 {
+		t.Fatalf("expected 1 shared resource, got %d", len(g.SharedResources))
+	}
+	sr := g.SharedResources[0]
+	if sr.Kind != "database" || sr.Identifier != "orders-db" {
+		t.Fatalf("shared resource = %s/%s", sr.Kind, sr.Identifier)
+	}
+	if len(sr.Services) != 2 || sr.Services[0] != "svc-a" || sr.Services[1] != "svc-b" {
+		t.Fatalf("shared services = %#v", sr.Services)
+	}
+}
+
+func TestBuild_SharedQueueFromDiffMindPublishAndConsumer(t *testing.T) {
+	reg := registry.New()
+	reg.AddArchitecture("publisher", &model.ServiceArchitecture{
+		ServiceName: "publisher",
+		Dependencies: []model.Dependency{{BaseEntity: model.BaseEntity{
+			ID:      "dep-pub",
+			Type:    "queue_publish",
+			Details: map[string]any{"queue_name": "traffic-events"},
+		}}},
+	})
+	reg.AddArchitecture("consumer", &model.ServiceArchitecture{
+		ServiceName: "consumer",
+		Exposures: []model.Exposure{{BaseEntity: model.BaseEntity{
+			ID:      "exp-consume",
+			Type:    "queue_consumer",
+			Details: map[string]any{"queue_name": "traffic-events"},
+		}}},
+	})
+
+	log := util.NewLogger(util.LevelInfo)
+	builder := NewBuilder(reg, log)
+	g := builder.Build(&resolver.Resolution{})
+
+	if len(g.SharedResources) != 1 {
+		t.Fatalf("expected 1 shared resource, got %d", len(g.SharedResources))
+	}
+	sr := g.SharedResources[0]
+	if sr.Kind != "queue" || sr.Identifier != "traffic-events" {
+		t.Fatalf("shared resource = %s/%s", sr.Kind, sr.Identifier)
+	}
+}
+
 func TestBuild_EmptyResolution(t *testing.T) {
 	reg := registry.New()
 	reg.AddArchitecture("lonely-service", &model.ServiceArchitecture{
