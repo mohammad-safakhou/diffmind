@@ -177,7 +177,7 @@ func (o *orchestrator) runDiscoveryOne(ctx context.Context, obj objectives.Objec
 		Kind: events.KindJobStarted, Stage: "discovery", JobID: jobID, Status: events.StatusRunning,
 		Payload: map[string]any{"objective_id": obj.ID, "kind": string(obj.Kind), "type": obj.Type},
 	})
-	prompt := buildDiscoveryPrompt(obj, rf, o.subDir)
+	prompt := buildDiscoveryPrompt(obj, rf, o.subDir, o.hintsFor(obj, nil))
 	schema := entityListSchemaForObjective(obj)
 	payload, err := o.promptAgent(ctx, jobID, prompt, schema)
 	if err != nil {

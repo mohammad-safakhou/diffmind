@@ -357,7 +357,7 @@ func (o *orchestrator) runDetailBatchOne(ctx context.Context, batch []detailJob,
 		})
 	}
 
-	prompt := buildDetailBatchPrompt(obj, seeds, rf, o.subDir)
+	prompt := buildDetailBatchPrompt(obj, seeds, rf, o.subDir, o.hintsFor(obj, nil))
 	schema := entityListSchemaForObjective(obj)
 	payload, err := o.promptAgent(ctx, batchJobID, prompt, schema)
 	dur := time.Since(started)

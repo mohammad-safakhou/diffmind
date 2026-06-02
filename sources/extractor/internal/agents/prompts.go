@@ -78,9 +78,96 @@ func monorepoScopeLine(subDir string) string {
 	return fmt.Sprintf("IMPORTANT: This is a monorepo. ONLY analyze files under '%s/'. All source_locations MUST be relative to repo root and start with '%s/'.\n\n", subDir, subDir)
 }
 
+// ---- Shared AST_HINTS injection (grounding) ----
+
+// astHintsBlock renders the deterministic AST candidates for an objective as
+// an ADVISORY prompt section. Returns "" when there is nothing to show, so a
+// nil/empty index (or DiscoveryASTHints=false, which yields empty hints)
+// produces byte-identical prompts to the pre-grounding behaviour.
+//
+// The header is emphatic that the list is NOT a whitelist: the static index
+// misses reflection / dynamic registration / custom frameworks, so the model
+// MUST still search the code for anything not listed.
+func astHintsBlock(h objectiveHints) string {
+	if h.empty() {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("AST_HINTS (deterministic static-analysis candidates — these are HINTS, NOT a whitelist;\n")
+	sb.WriteString("the index can miss reflection, dynamic registration, and custom frameworks, so you MUST\n")
+	sb.WriteString("still search the code for anything not listed here, and you MUST drop any listed item you\n")
+	sb.WriteString("cannot confirm in source):\n")
+	if len(h.Symbols) > 0 {
+		sb.WriteString("  CANDIDATE_SYMBOLS (file:line  annotations):\n")
+		for _, s := range h.Symbols {
+			sb.WriteString("    ")
+			sb.WriteString(s.File)
+			sb.WriteString(":")
+			sb.WriteString(itoa(int(s.Line)))
+			sb.WriteString("  ")
+			sb.WriteString(s.Qualified)
+			if len(s.Annotations) > 0 {
+				sb.WriteString("  [")
+				sb.WriteString(strings.Join(s.Annotations, ","))
+				sb.WriteString("]")
+			}
+			sb.WriteString("\n")
+		}
+	}
+	if len(h.Bindings) > 0 {
+		sb.WriteString("  FRAMEWORK_BINDINGS (kind  symbol  trigger  file:line):\n")
+		for _, b := range h.Bindings {
+			sb.WriteString("    ")
+			sb.WriteString(b.Kind)
+			sb.WriteString("  ")
+			sb.WriteString(b.Symbol)
+			sb.WriteString("  ")
+			sb.WriteString(b.Trigger)
+			sb.WriteString("  ")
+			sb.WriteString(b.File)
+			sb.WriteString(":")
+			sb.WriteString(itoa(int(b.Line)))
+			sb.WriteString("\n")
+		}
+	}
+	if len(h.Configs) > 0 {
+		sb.WriteString("  CONFIG_ENTRIES (file  key=value):\n")
+		for _, c := range h.Configs {
+			sb.WriteString("    ")
+			sb.WriteString(c.File)
+			sb.WriteString("  ")
+			sb.WriteString(c.Key)
+			sb.WriteString("=")
+			sb.WriteString(c.Value)
+			sb.WriteString("\n")
+		}
+	}
+	if h.Truncated {
+		sb.WriteString("  [note: candidate list truncated; more exist — search beyond this list]\n")
+	}
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+// exampleBlock renders the objective's few-shot example, if any.
+func exampleBlock(obj objectives.Objective) string {
+	if strings.TrimSpace(obj.Example) == "" {
+		return ""
+	}
+	return "GOOD_EXAMPLE (one well-formed item; match this shape, not its specific values):\n" + obj.Example + "\n\n"
+}
+
+// detailKeysLine renders the required-detail-keys hint, if any.
+func detailKeysLine(obj objectives.Objective) string {
+	if len(obj.DetailKeys) == 0 {
+		return ""
+	}
+	return "REQUIRED_DETAIL_KEYS: populate details{} with at least these keys when determinable from code: " + strings.Join(obj.DetailKeys, ", ") + "\n\n"
+}
+
 // ---- Stage 1: per-objective discovery ----
 
-func buildDiscoveryPrompt(obj objectives.Objective, rf *repoFacts, subDir string) string {
+func buildDiscoveryPrompt(obj objectives.Objective, rf *repoFacts, subDir string, hints objectiveHints) string {
 	var sb strings.Builder
 	sb.WriteString("AGENT ROLE: objective-extractor\n")
 	sb.WriteString(readOnlyPreamble)
@@ -98,11 +185,14 @@ func buildDiscoveryPrompt(obj objectives.Objective, rf *repoFacts, subDir string
 	sb.WriteString("\n\n")
 	sb.WriteString(monorepoScopeLine(subDir))
 	sb.WriteString(repoFactsBlock(rf))
+	sb.WriteString(astHintsBlock(hints))
 	sb.WriteString("DISCOVERY INSTRUCTIONS:\n")
 	sb.WriteString(obj.DiscoveryPrompt)
 	sb.WriteString("\n\n")
+	sb.WriteString(exampleBlock(obj))
+	sb.WriteString(detailKeysLine(obj))
 	sb.WriteString(`HARD RULES:
-- Every item MUST have name, type, summary, confidence in [0,1], and at least one source_locations entry with file + start_line.
+- Every item MUST have name, type, summary, confidence in [0,1], and at least one source_locations entry with file + start_line. start_line MUST be the exact declaration line; do not approximate.
 - Every file path MUST be relative to repo root.
 - If nothing matches, return {"items": []}.
 - Do NOT include items from unrelated categories. This agent is scoped to the objective above.
@@ -114,7 +204,7 @@ OUTPUT: Return a single JSON object {"items": [...]} matching the provided schem
 
 // ---- Stage 2: re-examination ----
 
-func buildReexaminePrompt(obj objectives.Objective, seed llmEntity, triggerReason string, rf *repoFacts, subDir string) string {
+func buildReexaminePrompt(obj objectives.Objective, seed llmEntity, triggerReason string, rf *repoFacts, subDir string, hints objectiveHints) string {
 	seedJSON, _ := json.MarshalIndent(seed, "", "  ")
 	var sb strings.Builder
 	sb.WriteString("AGENT ROLE: reexaminer\n")
@@ -133,6 +223,7 @@ func buildReexaminePrompt(obj objectives.Objective, seed llmEntity, triggerReaso
 	sb.WriteString("\n\n")
 	sb.WriteString(monorepoScopeLine(subDir))
 	sb.WriteString(repoFactsBlock(rf))
+	sb.WriteString(astHintsBlock(hints))
 	sb.WriteString("CANDIDATE_ITEM:\n")
 	sb.Write(seedJSON)
 	sb.WriteString("\n\n")
@@ -155,7 +246,7 @@ OUTPUT: Return {"items": [correctedItem]} on confirmation, or {"items": []} on r
 
 // ---- Stage 3: detail enrichment ----
 
-func buildDetailPrompt(obj objectives.Objective, seed llmEntity, rf *repoFacts, subDir string) string {
+func buildDetailPrompt(obj objectives.Objective, seed llmEntity, rf *repoFacts, subDir string, hints objectiveHints) string {
 	seedJSON, _ := json.MarshalIndent(seed, "", "  ")
 	var sb strings.Builder
 	sb.WriteString("AGENT ROLE: detail-extractor\n")
@@ -171,6 +262,8 @@ func buildDetailPrompt(obj objectives.Objective, seed llmEntity, rf *repoFacts, 
 	sb.WriteString("\n\n")
 	sb.WriteString(monorepoScopeLine(subDir))
 	sb.WriteString(repoFactsBlock(rf))
+	sb.WriteString(astHintsBlock(hints))
+	sb.WriteString(detailKeysLine(obj))
 	sb.WriteString("SEED_ITEM:\n")
 	sb.Write(seedJSON)
 	sb.WriteString("\n\n")
@@ -210,7 +303,7 @@ OUTPUT: Return a single JSON object {"item": {...}} matching the provided schema
 // "model deliberately marked it incomplete" — the orchestrator
 // treats the former as an error (re-batch later) and the latter as
 // a normal "not enough info" outcome.
-func buildDetailBatchPrompt(obj objectives.Objective, seeds []llmEntity, rf *repoFacts, subDir string) string {
+func buildDetailBatchPrompt(obj objectives.Objective, seeds []llmEntity, rf *repoFacts, subDir string, hints objectiveHints) string {
 	var sb strings.Builder
 	sb.WriteString("AGENT ROLE: detail-extractor (BATCH)\n")
 	sb.WriteString(readOnlyPreamble)
@@ -225,6 +318,8 @@ func buildDetailBatchPrompt(obj objectives.Objective, seeds []llmEntity, rf *rep
 	sb.WriteString("\n\n")
 	sb.WriteString(monorepoScopeLine(subDir))
 	sb.WriteString(repoFactsBlock(rf))
+	sb.WriteString(astHintsBlock(hints))
+	sb.WriteString(detailKeysLine(obj))
 
 	// Collect the unique source files this batch points at. The
 	// affinity grouper picks seeds that share files, so this list
