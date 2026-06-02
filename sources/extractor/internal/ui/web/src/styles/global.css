@@ -1083,3 +1083,92 @@ a:hover { text-decoration: underline; }
 .og-edge-legend-line.dashed { background: repeating-linear-gradient(90deg, var(--text-dim) 0 4px, transparent 4px 8px); }
 .og-edge-legend-line.dotted { background: repeating-linear-gradient(90deg, var(--text-dim) 0 2px, transparent 2px 6px); }
 .og-edge-legend-line.thick  { height: 3px; }
+
+/* ============================================================
+   Runs dashboard (home) + detail header — added for the
+   multi-run dashboard (B4). Reuses the existing colour tokens.
+   ============================================================ */
+.home-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 18px 24px; border-bottom: 1px solid var(--border);
+}
+.home-header h1 { margin: 0; font-size: 20px; letter-spacing: 0.02em; }
+.home-sub { margin: 2px 0 0; font-size: 12px; color: var(--text-muted); }
+
+.home-toolbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 24px; border-bottom: 1px solid var(--border); flex-wrap: wrap;
+}
+.filter-input {
+  flex: 1 1 240px; min-width: 180px;
+  background: var(--bg-2); border: 1px solid var(--border); color: var(--text);
+  padding: 7px 10px; border-radius: 8px; font-size: 13px;
+}
+.filter-input:focus { outline: none; border-color: var(--accent); }
+.filter-select {
+  background: var(--bg-2); border: 1px solid var(--border); color: var(--text);
+  padding: 7px 10px; border-radius: 8px; font-size: 13px;
+}
+.home-count { margin-left: auto; font-size: 12px; color: var(--text-dim); }
+
+.runs-table-wrap { padding: 8px 24px 32px; overflow-x: auto; }
+.runs-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.runs-table th, .runs-table td {
+  text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.runs-table th {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--text-dim); font-weight: 600;
+}
+.runs-table th.sortable { cursor: pointer; user-select: none; }
+.runs-table th.sortable:hover { color: var(--text); }
+.runs-table .run-row { cursor: pointer; }
+.runs-table .run-row:hover { background: var(--bg-2); }
+.runs-table td.mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+.runs-table td.repo-cell {
+  max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-muted);
+}
+.runs-table td.muted { color: var(--text-muted); }
+.runs-table .empty-row { text-align: center; color: var(--text-dim); padding: 28px 12px; }
+.actions-col { white-space: nowrap; text-align: right; }
+.btn.tiny { padding: 4px 8px; font-size: 11px; margin-left: 6px; }
+
+/* Modal + confirmation dialog */
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(4, 8, 18, 0.66);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 48px 16px; z-index: 50; overflow: auto;
+}
+.modal {
+  background: var(--bg-1, #0d1424); border: 1px solid var(--border-strong);
+  border-radius: 12px; width: 100%; max-width: 720px; box-shadow: 0 24px 64px rgba(0,0,0,0.5);
+}
+.modal.confirm { max-width: 460px; }
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; border-bottom: 1px solid var(--border);
+}
+.modal-head h2 { margin: 0; font-size: 15px; }
+.modal-body { padding: 16px 18px; }
+.confirm-message { color: var(--text-muted); font-size: 13px; line-height: 1.5; margin: 0 0 16px; }
+
+/* Detail back-link header */
+.detail-topbar-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 16px 0;
+}
+.back-btn { padding: 5px 12px; font-size: 12px; }
+.detail-run-id { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text-muted); }
+/* The detail view drops the left sidebar/form column the dashboard had, so it
+   only renders two sections (graph + details). Override the 3-column workspace
+   grid with a 2-column one so the graph gets the wide 1fr track instead of the
+   narrow 340px sidebar slot. */
+.detail-workspace {
+  grid-template-columns: minmax(520px, 1fr) 360px;
+}
+.detail-workspace > .center-pane { width: 100%; }
+@media (max-width: 1100px) {
+  .detail-workspace { grid-template-columns: 1fr; }
+}

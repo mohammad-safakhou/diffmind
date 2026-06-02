@@ -106,22 +106,25 @@ func TestServerEndToEnd(t *testing.T) {
 		}
 	}
 
-	// 4. Wait for the runner to finalize and check state via the API.
+	// 4. Wait for the runner to finalize and check state via the per-run
+	// state endpoint.
 	uiServer.runner.Wait()
-	statusResp, err := http.Get(httpSrv.URL + "/api/runs/active")
+	statusResp, err := http.Get(httpSrv.URL + "/api/runs/" + startResp.RunID + "/state")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer statusResp.Body.Close()
-	var st struct {
-		Status string `json:"status"`
-		RunID  string `json:"run_id"`
+	var stateResp struct {
+		State struct {
+			Status string `json:"status"`
+			RunID  string `json:"run_id"`
+		} `json:"state"`
 	}
-	if err := json.NewDecoder(statusResp.Body).Decode(&st); err != nil {
+	if err := json.NewDecoder(statusResp.Body).Decode(&stateResp); err != nil {
 		t.Fatal(err)
 	}
-	if st.Status != "completed" {
-		t.Fatalf("expected status=completed, got %s", st.Status)
+	if stateResp.State.Status != "completed" {
+		t.Fatalf("expected status=completed, got %s", stateResp.State.Status)
 	}
 
 	// 5. Job detail endpoint should serve a captured prompt + response.

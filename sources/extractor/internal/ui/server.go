@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/runner"
@@ -22,7 +23,7 @@ import (
 
 // Server hosts the dashboard. It owns:
 //   - a single events.Bus shared by every run,
-//   - a runner.Runner enforcing one-active-run-at-a-time,
+//   - a runner.Runner managing any number of concurrent runs,
 //   - the HTTP API,
 //   - the embedded SPA bundle.
 //
@@ -68,7 +69,7 @@ type RunData struct {
 // don't need to wire them.
 func New(baseDir, host string, port int) *Server {
 	if strings.TrimSpace(baseDir) == "" {
-		baseDir = ".diffmind/runs"
+		baseDir = config.RunsDir()
 	}
 	if strings.TrimSpace(host) == "" {
 		host = "127.0.0.1"
@@ -84,7 +85,7 @@ func New(baseDir, host string, port int) *Server {
 // Addr returns "host:port".
 func (s *Server) Addr() string { return fmt.Sprintf("%s:%d", s.host, s.port) }
 
-// Runner exposes the singleton run controller (used in tests).
+// Runner exposes the multi-run controller (used in tests).
 func (s *Server) Runner() *runner.Runner { return s.runner }
 
 // Bus exposes the events bus (used in tests).
@@ -198,8 +199,14 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 	// Live run lifecycle.
 	mux.HandleFunc("/api/runs", s.handleRunsCollection)   // GET (list) | POST (create)
-	mux.HandleFunc("/api/runs/active", s.handleActiveRun) // GET status of singleton
-	mux.HandleFunc("/api/runs/", s.handleRunsItem)        // /{id}/(events|state|cancel|job/...)
+	mux.HandleFunc("/api/runs/active", s.handleActiveRun) // GET active run ids
+	mux.HandleFunc("/api/runs/", s.handleRunsItem)        // /{id}/(events|state|cancel|retry|job/...)
+
+	// Aggregate lifecycle SSE for the homepage dashboard.
+	mux.HandleFunc("/api/events", s.handleAggregateEvents)
+
+	// Form defaults for the New Run modal (prefill from ~/.diffmind/config.json).
+	mux.HandleFunc("/api/config", s.handleConfig)
 
 	// Preflight / System Status. GET returns the cached Report
 	// (refreshed every 30s by the background ticker); POST options
@@ -241,10 +248,10 @@ func (s *Server) handleRunsList(w http.ResponseWriter, _ *http.Request) {
 		summaries = append(summaries, s.summarizeRun(id))
 	}
 	writeJSON(w, map[string]any{
-		"runs":     summaries,
-		"run_ids":  ids, // kept for backwards compatibility with the legacy UI
-		"active":   s.runner.State(),
-		"base_dir": s.baseDir,
+		"runs":       summaries,
+		"run_ids":    ids, // kept for backwards compatibility with the legacy UI
+		"active_ids": s.runner.ActiveIDs(),
+		"base_dir":   s.baseDir,
 	})
 }
 
@@ -323,9 +330,33 @@ func (s *Server) summarizeRun(id string) map[string]any {
 		}
 	}
 
+	// run_state.json (written by the runner) is the only source that can
+	// report transient states like "running" / "cancelling", and it
+	// distinguishes cancelled from failed. When present it wins over the
+	// artifact-derived status. Errors (missing/corrupt) fall through to
+	// the artifact-based status computed above.
+	if st, err := runner.LoadState(s.baseDir, id); err == nil && st.Status != "" {
+		out["status"] = st.Status
+		if st.RepoPath != "" {
+			out["repo_path"] = st.RepoPath
+		}
+		if !st.StartedAt.IsZero() {
+			out["started_at"] = st.StartedAt
+		}
+		if !st.FinishedAt.IsZero() {
+			out["finished_at"] = st.FinishedAt
+		}
+		if st.Error != "" {
+			out["error"] = st.Error
+		}
+		if !st.FinishedAt.IsZero() && !st.StartedAt.IsZero() {
+			out["duration_ms"] = st.FinishedAt.Sub(st.StartedAt).Milliseconds()
+		}
+	}
+
 	// Fallback: directory exists but neither manifest nor failure
-	// report was readable. Treat as unknown — the sidebar will show
-	// the run id but won't claim it succeeded.
+	// report nor run_state was readable. Treat as unknown — the sidebar
+	// will show the run id but won't claim it succeeded.
 	if _, hasStatus := out["status"]; !hasStatus {
 		out["status"] = "unknown"
 	}
@@ -337,9 +368,25 @@ func (s *Server) hasEventsLog(id string) bool {
 	return err == nil
 }
 
-// handleActiveRun returns the singleton runner state.
+// handleActiveRun returns the ids and states of every currently-active run.
 func (s *Server) handleActiveRun(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, s.runner.State())
+	ids := s.runner.ActiveIDs()
+	states := make([]runner.State, 0, len(ids))
+	for _, id := range ids {
+		if st, ok := s.runner.State(id); ok {
+			states = append(states, st)
+		}
+	}
+	writeJSON(w, map[string]any{"active_ids": ids, "active": states})
+}
+
+// diskStatus returns the best-effort status of a run derived purely from its
+// on-disk artifacts. Used when the run is not tracked in memory.
+func (s *Server) diskStatus(id string) string {
+	if st, ok := s.summarizeRun(id)["status"].(string); ok {
+		return st
+	}
+	return "unknown"
 }
 
 // handleRunsItem dispatches /api/runs/{id}/* paths.
@@ -361,12 +408,23 @@ func (s *Server) handleRunsItem(w http.ResponseWriter, r *http.Request) {
 	}
 	switch tail {
 	case "":
-		// /api/runs/{id} → cancel on DELETE
+		// /api/runs/{id} → delete the run and its artifacts on DELETE.
 		if r.Method == http.MethodDelete {
-			s.handleRunCancel(w, r, runID)
+			s.handleRunDelete(w, r, runID)
+			return
+		}
+		if r.Method == http.MethodGet {
+			s.handleRunState(w, r, runID)
 			return
 		}
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	case "cancel":
+		// POST /api/runs/{id}/cancel → cancel a single run.
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleRunCancel(w, r, runID)
 	case "events":
 		s.handleRunEvents(w, r, runID)
 	case "state":

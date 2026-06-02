@@ -90,7 +90,7 @@ func TestRetryEndpoint_RegisteredAndAccepted(t *testing.T) {
 	// the eventual failure — we only assert the HTTP handshake.
 	// Cancel any background work the runner might still be doing
 	// so the test process can exit cleanly.
-	_ = uiServer.runner.Cancel()
+	uiServer.runner.CancelAll()
 	uiServer.runner.Wait()
 }
 
