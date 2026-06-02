@@ -2,6 +2,8 @@ package agents
 
 import (
 	"context"
+	"fmt"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -170,6 +172,10 @@ func (o *orchestrator) runDiscovery(ctx context.Context, objs []objectives.Objec
 	return out
 }
 
+// runDiscoveryOne discovers one objective. For a large objective it splits the
+// work into directory-scoped shards (orchestrator-driven sub-agents) run as
+// child jobs and merges the results; small objectives keep the single
+// whole-repo call. The parent job (discover.<obj.ID>) brackets either path.
 func (o *orchestrator) runDiscoveryOne(ctx context.Context, obj objectives.Objective, rf *repoFacts) ([]llmEntity, error) {
 	jobID := "discover." + obj.ID
 	started := time.Now()
@@ -177,9 +183,16 @@ func (o *orchestrator) runDiscoveryOne(ctx context.Context, obj objectives.Objec
 		Kind: events.KindJobStarted, Stage: "discovery", JobID: jobID, Status: events.StatusRunning,
 		Payload: map[string]any{"objective_id": obj.ID, "kind": string(obj.Kind), "type": obj.Type},
 	})
-	prompt := buildDiscoveryPrompt(obj, rf, o.subDir, o.hintsFor(obj, nil))
-	schema := entityListSchemaForObjective(obj)
-	payload, err := o.promptAgent(ctx, jobID, prompt, schema)
+
+	shards := planDiscoveryShards(o.astIndex, obj, o.subDir)
+
+	var items []llmEntity
+	var err error
+	if len(shards) == 0 {
+		items, err = o.runDiscoveryShard(ctx, obj, rf, nil, jobID)
+	} else {
+		items, err = o.runDiscoverySharded(ctx, obj, rf, shards)
+	}
 	if err != nil {
 		o.emit(events.Event{
 			Kind: events.KindJobFailed, Stage: "discovery", JobID: jobID, Status: events.StatusFailed,
@@ -188,18 +201,11 @@ func (o *orchestrator) runDiscoveryOne(ctx context.Context, obj objectives.Objec
 		})
 		return nil, err
 	}
-	items := parseEntities(payload["items"])
-	kept := items[:0]
-	for i := range items {
-		if forceObjectiveType(obj, &items[i]) {
-			kept = append(kept, items[i])
-		}
-	}
-	items = kept
+
 	o.pathMapper().applyToEntities(items)
 	sortLLMEntities(items)
 	util.Info("agents.discovery", "objective discovery completed", map[string]any{
-		"objective": obj.ID, "items": len(items),
+		"objective": obj.ID, "items": len(items), "shards": len(shards),
 	})
 	previewNames := make([]string, 0, len(items))
 	for _, it := range items {
@@ -213,8 +219,92 @@ func (o *orchestrator) runDiscoveryOne(ctx context.Context, obj objectives.Objec
 			"type":         obj.Type,
 			"items":        len(items),
 			"item_names":   previewNames,
+			"shards":       len(shards),
 			"duration_ms":  time.Since(started).Milliseconds(),
 		},
 	})
 	return items, nil
+}
+
+// runDiscoveryShard runs a single discovery LLM call and returns the parsed,
+// type-filtered entities. When shard is nil it is the whole-repo call (jobID
+// = discover.<obj.ID>, behaviour identical to the pre-sharding code). When
+// shard is non-nil the prompt carries a SCOPE directive and shard-scoped AST
+// hints, and jobID is the shard's child id.
+func (o *orchestrator) runDiscoveryShard(ctx context.Context, obj objectives.Objective, rf *repoFacts, shard *discoveryShard, jobID string) ([]llmEntity, error) {
+	hints := o.hintsFor(obj, nil)
+	var scope []string
+	if shard != nil {
+		hints = shard.Hints
+		if !o.cfg.Runtime.DiscoveryASTHints {
+			hints = objectiveHints{}
+		}
+		scope = shard.Dirs
+	}
+	prompt := buildDiscoveryPrompt(obj, rf, o.subDir, hints, scope)
+	schema := entityListSchemaForObjective(obj)
+	payload, err := o.promptAgent(ctx, jobID, prompt, schema)
+	if err != nil {
+		return nil, err
+	}
+	items := parseEntities(payload["items"])
+	kept := items[:0]
+	for i := range items {
+		if forceObjectiveType(obj, &items[i]) {
+			kept = append(kept, items[i])
+		}
+	}
+	return kept, nil
+}
+
+// runDiscoverySharded runs an objective's shards as child jobs and merges the
+// results. Shards run SEQUENTIALLY so total discovery concurrency stays bounded
+// by the objective worker pool (runDiscovery) — adding parallel shard fan-out
+// on top of that pool would multiply in-flight OpenCode calls past the worker
+// budget. Smaller per-shard prompts already shorten each call; wall-clock for a
+// heavy objective grows, which is the accepted cost of higher recall.
+func (o *orchestrator) runDiscoverySharded(ctx context.Context, obj objectives.Objective, rf *repoFacts, shards []discoveryShard) ([]llmEntity, error) {
+	parentID := "discover." + obj.ID
+	// Resume: shards already checkpointed on a prior attempt are restored
+	// without an LLM call; only the missing shards re-run.
+	done := o.loadDiscoveryShardCheckpoint(filepath.Join(o.runDir, stateDir), obj.ID)
+	results := make([][]llmEntity, 0, len(shards))
+	for i := range shards {
+		shard := shards[i]
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		childID := fmt.Sprintf("%s.shard.%d", parentID, shard.Index)
+		if cached, ok := done[shard.Index]; ok {
+			o.emit(events.Event{
+				Kind: events.KindJobCompleted, Stage: "discovery", JobID: childID, ParentID: parentID, Status: events.StatusSkipped,
+				Payload: map[string]any{"objective_id": obj.ID, "shard": shard.Index, "items": len(cached), "resumed": true},
+			})
+			results = append(results, cached)
+			continue
+		}
+		shardStarted := time.Now()
+		o.emit(events.Event{
+			Kind: events.KindJobStarted, Stage: "discovery", JobID: childID, ParentID: parentID, Status: events.StatusRunning,
+			Payload: map[string]any{"objective_id": obj.ID, "shard": shard.Index, "dirs": shard.Dirs, "files": len(shard.Files)},
+		})
+		items, err := o.runDiscoveryShard(ctx, obj, rf, &shard, childID)
+		if err != nil {
+			o.emit(events.Event{
+				Kind: events.KindJobFailed, Stage: "discovery", JobID: childID, ParentID: parentID, Status: events.StatusFailed,
+				Message: err.Error(),
+				Payload: map[string]any{"objective_id": obj.ID, "shard": shard.Index, "duration_ms": time.Since(shardStarted).Milliseconds()},
+			})
+			return nil, err
+		}
+		// Checkpoint the shard immediately so a later shard's failure doesn't
+		// force this one to re-run on retry.
+		o.appendDiscoveryShard(obj.ID, shard.Index, items)
+		o.emit(events.Event{
+			Kind: events.KindJobCompleted, Stage: "discovery", JobID: childID, ParentID: parentID, Status: events.StatusSuccess,
+			Payload: map[string]any{"objective_id": obj.ID, "shard": shard.Index, "items": len(items), "duration_ms": time.Since(shardStarted).Milliseconds()},
+		})
+		results = append(results, items)
+	}
+	return mergeShardEntities(results), nil
 }
