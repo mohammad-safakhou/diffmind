@@ -10,33 +10,15 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 )
 
-// WriteGraph writes the cross-service graph to the artifacts directory.
+// WriteGraph writes the cross-service graph to a fresh timestamped run
+// directory under baseDir. Retained for the standalone CLI pipeline.
 func WriteGraph(baseDir string, graph *model.CrossServiceGraph) (string, error) {
 	runID := time.Now().UTC().Format("20060102T150405Z")
 	runDir := filepath.Join(baseDir, runID)
-
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		return "", fmt.Errorf("create run dir: %w", err)
-	}
-
-	// Write graph.
-	if err := writeJSON(filepath.Join(runDir, "graph.json"), graph); err != nil {
+	if err := WriteGraphTo(runDir, graph); err != nil {
 		return "", err
 	}
-
-	// Write individual service identities.
-	identDir := filepath.Join(runDir, "identities")
-	if err := os.MkdirAll(identDir, 0o755); err != nil {
-		return "", fmt.Errorf("create identities dir: %w", err)
-	}
-	for _, svc := range graph.Services {
-		fname := sanitizeFilename(svc.Name) + ".json"
-		if err := writeJSON(filepath.Join(identDir, fname), svc.Identity); err != nil {
-			return "", err
-		}
-	}
-
-	// Write manifest.
+	// Standalone runs also get a small manifest for the legacy viewer.
 	manifest := map[string]any{
 		"run_id":       runID,
 		"generated_at": graph.GeneratedAt,
@@ -51,8 +33,31 @@ func WriteGraph(baseDir string, graph *model.CrossServiceGraph) (string, error) 
 	if err := writeJSON(filepath.Join(runDir, "manifest.json"), manifest); err != nil {
 		return "", err
 	}
-
 	return runDir, nil
+}
+
+// WriteGraphTo writes graph.json and the per-service identities into the given
+// directory (no extra subdirectory). The DiffMind run manager uses this to land
+// graph output directly in a project's run directory, which already holds the
+// manifest.json that tracks run state.
+func WriteGraphTo(runDir string, graph *model.CrossServiceGraph) error {
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		return fmt.Errorf("create run dir: %w", err)
+	}
+	if err := writeJSON(filepath.Join(runDir, "graph.json"), graph); err != nil {
+		return err
+	}
+	identDir := filepath.Join(runDir, "identities")
+	if err := os.MkdirAll(identDir, 0o755); err != nil {
+		return fmt.Errorf("create identities dir: %w", err)
+	}
+	for _, svc := range graph.Services {
+		fname := sanitizeFilename(svc.Name) + ".json"
+		if err := writeJSON(filepath.Join(identDir, fname), svc.Identity); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeJSON(path string, v any) error {

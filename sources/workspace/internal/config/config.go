@@ -57,17 +57,29 @@ type ArtifactsConfig struct {
 	BaseDir string `json:"base_dir"`
 }
 
+// applyDefaults fills in OpenCode connection defaults and honours the
+// OPENCODE_SERVER_* environment variables for credentials.
+func (o *OpenCodeConfig) applyDefaults() {
+	if o.BaseURL == "" {
+		o.BaseURL = "http://localhost:3000"
+	}
+	if o.Timeout == 0 {
+		o.Timeout = 120
+	}
+	if o.Variant == "" {
+		o.Variant = "medium"
+	}
+	if u := os.Getenv("OPENCODE_SERVER_USERNAME"); u != "" {
+		o.Username = u
+	}
+	if p := os.Getenv("OPENCODE_SERVER_PASSWORD"); p != "" {
+		o.Password = p
+	}
+}
+
 // Defaults applies default values to the config.
 func (c *Config) Defaults() {
-	if c.OpenCode.BaseURL == "" {
-		c.OpenCode.BaseURL = "http://localhost:3000"
-	}
-	if c.OpenCode.Timeout == 0 {
-		c.OpenCode.Timeout = 120
-	}
-	if c.OpenCode.Variant == "" {
-		c.OpenCode.Variant = "medium"
-	}
+	c.OpenCode.applyDefaults()
 	if c.DiffMind.BinaryPath == "" {
 		c.DiffMind.BinaryPath = "diffmind"
 	}
@@ -76,14 +88,6 @@ func (c *Config) Defaults() {
 	}
 	if len(c.Blueprints.Dirs) == 0 {
 		c.Blueprints.Dirs = []string{".diffmind/blueprints", "blueprints"}
-	}
-
-	// Environment variable overrides for secrets.
-	if u := os.Getenv("OPENCODE_SERVER_USERNAME"); u != "" {
-		c.OpenCode.Username = u
-	}
-	if p := os.Getenv("OPENCODE_SERVER_PASSWORD"); p != "" {
-		c.OpenCode.Password = p
 	}
 }
 

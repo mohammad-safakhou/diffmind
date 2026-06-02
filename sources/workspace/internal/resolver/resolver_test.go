@@ -79,9 +79,9 @@ func setupTestRegistry() *registry.Registry {
 func TestDeterministicResolution(t *testing.T) {
 	reg := setupTestRegistry()
 	log := util.NewLogger(util.LevelInfo)
-	res := New(nil, reg, log) // no LLM client
+	res := New(reg, log)
 
-	resolution, err := res.Resolve("")
+	resolution, err := res.Resolve()
 	if err != nil {
 		t.Fatalf("resolve failed: %v", err)
 	}
@@ -111,9 +111,9 @@ func TestDeterministicResolution(t *testing.T) {
 func TestUnresolvedDependencies(t *testing.T) {
 	reg := setupTestRegistry()
 	log := util.NewLogger(util.LevelInfo)
-	res := New(nil, reg, log) // no LLM
+	res := New(reg, log)
 
-	resolution, err := res.Resolve("")
+	resolution, err := res.Resolve()
 	if err != nil {
 		t.Fatalf("resolve failed: %v", err)
 	}

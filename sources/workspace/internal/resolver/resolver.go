@@ -1,29 +1,33 @@
-// Package resolver implements the LLM-driven identity resolution phase.
-// It takes the service registry (with architecture + identity data) and
-// uses the LLM to match dependencies to service identities.
+// Package resolver implements deterministic cross-service identity resolution.
+// It takes the service registry (with architecture + identity data) and matches
+// each service's outbound dependencies to known service identities using
+// blueprint-derived aliases and resource identifiers.
+//
+// Resolution is intentionally deterministic only: there is no LLM fallback.
+// The same inputs always produce the same graph, and graph generation never
+// depends on OpenCode availability. (OpenCode is still used upstream during
+// blueprint extraction, where a failure surfaces as an extraction failure
+// rather than silently degrading the resolver.)
 package resolver
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/mohammad-safakhou/diffmind/internal/model"
-	"github.com/mohammad-safakhou/diffmind/internal/opencode"
 	"github.com/mohammad-safakhou/diffmind/internal/registry"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
 // Resolver performs cross-service identity resolution.
 type Resolver struct {
-	client   *opencode.Client
 	registry *registry.Registry
 	log      *util.Logger
 }
 
-// New creates a new resolver.
-func New(client *opencode.Client, reg *registry.Registry, log *util.Logger) *Resolver {
-	return &Resolver{client: client, registry: reg, log: log}
+// New creates a new deterministic resolver.
+func New(reg *registry.Registry, log *util.Logger) *Resolver {
+	return &Resolver{registry: reg, log: log}
 }
 
 // ResolvedMatch represents a single dependency → service match.
@@ -44,9 +48,10 @@ type Resolution struct {
 	Unresolved []model.UnresolvedEdge `json:"unresolved"`
 }
 
-// Resolve performs identity resolution across all services.
-// It first tries deterministic matching, then falls back to LLM for ambiguous cases.
-func (r *Resolver) Resolve(sessionID string) (*Resolution, error) {
+// Resolve performs deterministic identity resolution across all services.
+// Dependencies that do not match any known identity are returned as unresolved
+// edges (never guessed).
+func (r *Resolver) Resolve() (*Resolution, error) {
 	result := &Resolution{}
 
 	entries := r.registry.AllWithArchitecture()
@@ -77,13 +82,6 @@ func (r *Resolver) Resolve(sessionID string) (*Resolution, error) {
 				})
 			}
 		}
-	}
-
-	// Use LLM to resolve remaining unresolved edges if we have a client.
-	if r.client != nil && sessionID != "" && len(result.Unresolved) > 0 {
-		llmMatches, remaining := r.resolveWithLLM(sessionID, result.Unresolved, identityIndex)
-		result.Matches = append(result.Matches, llmMatches...)
-		result.Unresolved = remaining
 	}
 
 	return result, nil
@@ -144,91 +142,6 @@ func (r *Resolver) tryDeterministicMatch(fromService string, dep *model.Dependen
 		}
 	}
 	return nil
-}
-
-func (r *Resolver) resolveWithLLM(sessionID string, unresolved []model.UnresolvedEdge, index []identityEntry) ([]ResolvedMatch, []model.UnresolvedEdge) {
-	// Build a prompt describing all unresolved dependencies and all known identities.
-	var sb strings.Builder
-	sb.WriteString("You are resolving cross-service dependencies. Below are unresolved dependencies and known service identities.\n\n")
-
-	sb.WriteString("## Known Service Identities\n")
-	for _, entry := range index {
-		sb.WriteString(fmt.Sprintf("- Service: %s, %s: %s\n", entry.ServiceName, entry.Kind, entry.Value))
-	}
-
-	sb.WriteString("\n## Unresolved Dependencies\n")
-	for i, u := range unresolved {
-		sb.WriteString(fmt.Sprintf("%d. Service %q has dependency %q (type: %s, target: %s)\n", i+1, u.Service, u.DependencyName, u.Type, u.Target))
-	}
-
-	sb.WriteString(`
-For each unresolved dependency, determine if it matches any known service identity.
-Return a JSON array of matches. Each match should have:
-- "index": the 1-based index of the unresolved dependency
-- "to_service": the matched service name (or "" if no match)
-- "confidence": 0.0 to 1.0
-- "reasoning": brief explanation
-
-Return ONLY valid JSON array.`)
-
-	schema := json.RawMessage(`{
-		"type": "array",
-		"items": {
-			"type": "object",
-			"properties": {
-				"index": {"type": "integer"},
-				"to_service": {"type": "string"},
-				"confidence": {"type": "number"},
-				"reasoning": {"type": "string"}
-			}
-		}
-	}`)
-
-	raw, err := r.client.PromptStructured(sessionID, sb.String(), schema)
-	if err != nil {
-		r.log.Error("LLM resolution failed", "error", err.Error())
-		return nil, unresolved
-	}
-
-	var llmResults []struct {
-		Index      int     `json:"index"`
-		ToService  string  `json:"to_service"`
-		Confidence float64 `json:"confidence"`
-		Reasoning  string  `json:"reasoning"`
-	}
-	if err := json.Unmarshal(raw, &llmResults); err != nil {
-		r.log.Error("parse LLM resolution", "error", err.Error())
-		return nil, unresolved
-	}
-
-	resolvedSet := make(map[int]bool)
-	var matches []ResolvedMatch
-	for _, lr := range llmResults {
-		idx := lr.Index - 1 // convert to 0-based
-		if idx < 0 || idx >= len(unresolved) || lr.ToService == "" || lr.Confidence < 0.5 {
-			continue
-		}
-		u := unresolved[idx]
-		matches = append(matches, ResolvedMatch{
-			FromService:    u.Service,
-			DependencyID:   u.DependencyID,
-			DependencyName: u.DependencyName,
-			DependencyType: u.Type,
-			ToService:      lr.ToService,
-			MatchType:      classifyMatchType(u.Type),
-			Confidence:     lr.Confidence,
-			Reasoning:      "LLM: " + lr.Reasoning,
-		})
-		resolvedSet[idx] = true
-	}
-
-	var remaining []model.UnresolvedEdge
-	for i, u := range unresolved {
-		if !resolvedSet[i] {
-			remaining = append(remaining, u)
-		}
-	}
-	return matches, remaining
 }
 
 // extractTarget tries to pull a meaningful target identifier from a dependency.
