@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
@@ -191,10 +192,6 @@ func (s *Server) handleRunCreate(w http.ResponseWriter, r *http.Request) {
 		Config:   cfg,
 	})
 	if err != nil {
-		if errors.Is(err, runner.ErrBusy) {
-			writeErr(w, http.StatusConflict, err)
-			return
-		}
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -340,10 +337,6 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request, runID st
 		Config: cfg,
 	})
 	if err != nil {
-		if errors.Is(err, runner.ErrBusy) {
-			writeErr(w, http.StatusConflict, err)
-			return
-		}
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -351,24 +344,57 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request, runID st
 	writeJSON(w, map[string]any{"run_id": id, "status": runner.StatusRunning})
 }
 
-// handleRunCancel cancels the active run if its id matches.
+// handleRunCancel cancels a single run by id. Cancelling an unknown or
+// already-finished run is a no-op that still returns 200 so the UI can treat
+// the button as idempotent.
 func (s *Server) handleRunCancel(w http.ResponseWriter, _ *http.Request, runID string) {
-	st := s.runner.State()
-	if st.RunID != runID {
-		writeErr(w, http.StatusNotFound, fmt.Errorf("run %s is not active", runID))
-		return
-	}
-	if err := s.runner.Cancel(); err != nil {
+	if err := s.runner.Cancel(runID); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, map[string]any{"status": runner.StatusCancelling})
+	writeJSON(w, map[string]any{"run_id": runID, "status": runner.StatusCancelling})
+}
+
+// handleRunDelete removes a run and its artifacts from disk. If the run is
+// still active it is cancelled first. The UI is responsible for showing a
+// confirmation dialog before issuing this request.
+func (s *Server) handleRunDelete(w http.ResponseWriter, _ *http.Request, runID string) {
+	if strings.TrimSpace(runID) == "" || strings.Contains(runID, "/") || strings.Contains(runID, "..") {
+		writeErr(w, http.StatusBadRequest, errors.New("invalid run id"))
+		return
+	}
+	// Cancel any in-flight work, then wait for the goroutine to release the
+	// run directory before deleting it.
+	if st, ok := s.runner.State(runID); ok && (st.Status == runner.StatusRunning || st.Status == runner.StatusCancelling) {
+		_ = s.runner.Cancel(runID)
+		s.runner.WaitFor(runID)
+	}
+	runDir := filepath.Join(s.baseDir, runID)
+	if _, err := os.Stat(runDir); err != nil {
+		if os.IsNotExist(err) {
+			writeErr(w, http.StatusNotFound, fmt.Errorf("run %s not found", runID))
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := os.RemoveAll(runDir); err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("delete run: %w", err))
+		return
+	}
+	util.Info("ui.api", "run deleted", map[string]any{"run_id": runID, "run_dir": runDir})
+	writeJSON(w, map[string]any{"run_id": runID, "deleted": true})
 }
 
 // handleRunState returns the current state + buffered events. UI uses it for
 // cold loads (before opening the SSE stream).
 func (s *Server) handleRunState(w http.ResponseWriter, _ *http.Request, runID string) {
-	st := s.runner.State()
+	st, ok := s.runner.State(runID)
+	if !ok {
+		// Fall back to the on-disk summary so a finished run that predates
+		// this process still reports a meaningful status.
+		st = runner.State{RunID: runID, Status: s.diskStatus(runID)}
+	}
 	snapshot := s.bus.Snapshot(runID)
 	writeJSON(w, map[string]any{
 		"run_id": runID,
@@ -376,6 +402,49 @@ func (s *Server) handleRunState(w http.ResponseWriter, _ *http.Request, runID st
 		"events": snapshot,
 		"counts": map[string]int{"events": len(snapshot)},
 	})
+}
+
+// handleAggregateEvents streams run lifecycle events (created/started/finished)
+// over SSE for the homepage dashboard.
+func (s *Server) handleAggregateEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	ch, cancel := s.runner.SubscribeLifecycle()
+	defer cancel()
+
+	_, _ = fmt.Fprintf(w, ": connected\n\n")
+	flusher.Flush()
+
+	ctx := r.Context()
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_, _ = fmt.Fprintf(w, ": ping\n\n")
+			flusher.Flush()
+		case e, ok := <-ch:
+			if !ok {
+				return
+			}
+			b, err := json.Marshal(e)
+			if err != nil {
+				continue
+			}
+			_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", e.Type, b)
+			flusher.Flush()
+		}
+	}
 }
 
 // handleRunEvents serves a Server-Sent Events stream for the run. It honors

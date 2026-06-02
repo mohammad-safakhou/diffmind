@@ -82,8 +82,21 @@ export function getRunState(runID) {
   return api(`/api/runs/${encodeURIComponent(runID)}/state`)
 }
 
+// cancelRun stops a single in-flight run. The backend treats this as
+// idempotent (cancelling an unknown/finished run is a 200 no-op).
 export function cancelRun(runID) {
+  return api(`/api/runs/${encodeURIComponent(runID)}/cancel`, { method: 'POST' })
+}
+
+// deleteRun removes a run and its artifacts from disk. The caller MUST confirm
+// with the user first — this is irreversible.
+export function deleteRun(runID) {
   return api(`/api/runs/${encodeURIComponent(runID)}`, { method: 'DELETE' })
+}
+
+// getConfig returns the New Run form defaults sourced from ~/.diffmind/config.json.
+export function getConfig() {
+  return api('/api/config')
 }
 
 // retryRun resumes a previously-failed run. `overrides` is optional; the

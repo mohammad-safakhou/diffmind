@@ -105,7 +105,10 @@ func Default() Config {
 			MaxCallSeconds:  30 * 60,
 			LivenessPollSec: 5,
 		},
-		Artifacts: Artifacts{BaseDir: ".diffmind/runs"},
+		// Artifacts default to the central ~/.diffmind/runs directory so runs
+		// are discoverable independent of the scanned repository. Override
+		// with `diffmind run --out` or artifacts.base_dir in a config file.
+		Artifacts: Artifacts{BaseDir: RunsDir()},
 		Indexer: Indexer{
 			Languages: nil, // auto-detect from source tree
 		},

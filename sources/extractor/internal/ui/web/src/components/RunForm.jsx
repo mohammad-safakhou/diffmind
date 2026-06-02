@@ -99,35 +99,61 @@ function deepMerge(base, over) {
   return out
 }
 
-function load() {
-  // First, evict any legacy storage entries so the form never reads
-  // them again. We do this regardless of whether the current key is
-  // present.
+// load builds the initial form values with precedence:
+//   built-in DEFAULTS  <  server prefill (~/.diffmind/config.json)  <  saved
+// localStorage choices. Server prefill seeds first-time users with the
+// operator's configured OpenCode endpoint/model; a returning user's last form
+// still wins so their tweaks aren't clobbered on every visit.
+function load(prefill) {
   try {
     for (const legacy of LEGACY_STORAGE_KEYS) localStorage.removeItem(legacy)
   } catch {}
+  let base = JSON.parse(JSON.stringify(DEFAULTS))
+  if (prefill && typeof prefill === 'object') {
+    base = deepMerge(base, sanitizePrefill(prefill))
+  }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return JSON.parse(JSON.stringify(DEFAULTS))
-    const saved = JSON.parse(raw)
-    return deepMerge(JSON.parse(JSON.stringify(DEFAULTS)), saved)
+    if (!raw) return base
+    return deepMerge(base, JSON.parse(raw))
   } catch {
-    return JSON.parse(JSON.stringify(DEFAULTS))
+    return base
   }
+}
+
+// sanitizePrefill keeps only the fields the form understands and drops empty
+// strings / null so they don't overwrite real defaults via deepMerge.
+function sanitizePrefill(p) {
+  const out = {}
+  const pick = (src, keys) => {
+    const o = {}
+    for (const k of keys) {
+      const v = src?.[k]
+      if (v !== undefined && v !== null && v !== '') o[k] = v
+    }
+    return o
+  }
+  if (p.opencode) out.opencode = pick(p.opencode, ['base_url', 'username', 'provider_id', 'model_id', 'model_variant', 'timeout_seconds'])
+  if (p.runtime) out.runtime = pick(p.runtime, ['workers', 'max_catalog_items', 'idle_timeout_seconds', 'max_call_seconds', 'liveness_poll_seconds', 'prompt_retry_count', 'skip_reexamination', 'reuse_opencode_session'])
+  if (p.quality) out.quality = pick(p.quality, ['min_confidence'])
+  return out
 }
 
 function save(form) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(form)) } catch {}
 }
 
-export function RunForm({ onLaunched }) {
-  const [form, setForm] = useState(load)
+export function RunForm({ onLaunched, prefill, gateOnActiveRun = true }) {
+  const [form, setForm] = useState(() => load(prefill))
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [advanced, setAdvanced] = useState(false)
 
   const meta = runMeta.value
-  const running = meta?.status === 'running' || meta?.status === 'cancelling'
+  // When the form lives in the runs-dashboard modal we never gate on a
+  // global active run (multiple runs are allowed). The detail view still
+  // gates to avoid double-submitting the run it is watching.
+  const running = gateOnActiveRun && (meta?.status === 'running' || meta?.status === 'cancelling')
 
   // Preflight gate: any SeverityFail across the system-status
   // checks disables the Run button. The user can still type into
@@ -400,7 +426,7 @@ export function RunForm({ onLaunched }) {
                 ? 'Blocked by preflight'
                 : 'Run extraction'}
         </button>
-        <button class="btn secondary" onClick={() => { setForm(load()); }} disabled={running}>Reset</button>
+        <button class="btn secondary" onClick={() => { setForm(load(prefill)); }} disabled={running}>Reset</button>
       </div>
 
       {preflightBlocked && (

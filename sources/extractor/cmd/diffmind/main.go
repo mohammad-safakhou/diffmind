@@ -19,7 +19,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: diffmind <run|retry|batch|validate|list-runs|ui> ...")
+		fmt.Fprintln(os.Stderr, "usage: diffmind <run|retry|validate|list-runs|ui> ...")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -27,8 +27,6 @@ func main() {
 		run(os.Args[2:])
 	case "retry":
 		retry(os.Args[2:])
-	case "batch":
-		batchRun(os.Args[2:])
 	case "validate":
 		validate(os.Args[2:])
 	case "list-runs":
@@ -52,7 +50,7 @@ func run(args []string) {
 	providerID := fs.String("provider-id", "", "OpenCode provider ID")
 	modelID := fs.String("model-id", "", "OpenCode model ID")
 	modelVariant := fs.String("model-variant", "", "OpenCode model variant (for example: low, medium, high, max)")
-	outDir := fs.String("out", "", "artifact base directory (default .diffmind/runs)")
+	outDir := fs.String("out", "", "artifact base directory (default ~/.diffmind/runs)")
 	workers := fs.Int("workers", 0, "parallel worker count")
 	maxCatalogItems := fs.Int("max-catalog-items", 0, "maximum dependency catalog items sent per connection-mapping prompt batch")
 	cleanupOpenCodeSessions := fs.Bool("cleanup-opencode-sessions", false, "delete OpenCode sessions after prompts (can trigger server-side FK races)")
@@ -79,7 +77,7 @@ func run(args []string) {
 		fmt.Fprintln(os.Stderr, "--repo is required")
 		os.Exit(2)
 	}
-	cfg, err := config.Load(*cfgPath)
+	cfg, err := config.LoadCentral(*cfgPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "config load failed:", err)
 		os.Exit(1)
@@ -167,7 +165,7 @@ func retry(args []string) {
 	modelID := fs.String("model-id", "", "OpenCode model ID (overrides config)")
 	modelVariant := fs.String("model-variant", "", "OpenCode model variant")
 	promptRetryCount := fs.Int("prompt-retry-count", -1, "retry a prompt this many times after the liveness watchdog declares it stuck (-1 = use config default 3; 0 = disable)")
-	outDir := fs.String("out", "", "artifact base directory (default .diffmind/runs)")
+	outDir := fs.String("out", "", "artifact base directory (default ~/.diffmind/runs)")
 	runID := fs.String("run", "", "run id to resume")
 	verbose := fs.Bool("verbose", false, "enable debug logs")
 	trace := fs.Bool("trace", false, "enable trace logs (very noisy)")
@@ -179,7 +177,7 @@ func retry(args []string) {
 		fmt.Fprintln(os.Stderr, "--run is required")
 		os.Exit(2)
 	}
-	cfg, err := config.Load(*cfgPath)
+	cfg, err := config.LoadCentral(*cfgPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "config load failed:", err)
 		os.Exit(1)
@@ -233,98 +231,22 @@ func retry(args []string) {
 	fmt.Print(app.PrintSummary(out))
 }
 
-func batchRun(args []string) {
-	fs := flag.NewFlagSet("batch", flag.ExitOnError)
-	reposFlag := fs.String("repos", "", "comma-separated list of repo paths")
-	opencodeURL := fs.String("opencode-url", "", "OpenCode server base URL")
-	opencodeTimeoutSeconds := fs.Int("opencode-timeout-seconds", 0, "OpenCode HTTP transport timeout in seconds (0 = use config default 4h fail-safe; primary control is --idle-timeout-seconds)")
-	providerID := fs.String("provider-id", "", "OpenCode provider ID")
-	modelID := fs.String("model-id", "", "OpenCode model ID")
-	parallel := fs.Int("parallel", 3, "max parallel repo extractions")
-	verbose := fs.Bool("verbose", false, "enable debug logs")
-	trace := fs.Bool("trace", false, "enable trace logs")
-	logFile := fs.String("log-file", "", "optional log file path")
-	fs.Parse(args)
-	configureLogging(*verbose, *trace, *logFile)
-
-	if *reposFlag == "" {
-		fmt.Fprintln(os.Stderr, "--repos is required (comma-separated paths)")
-		os.Exit(2)
-	}
-	repos := strings.Split(*reposFlag, ",")
-	for i := range repos {
-		repos[i] = strings.TrimSpace(repos[i])
-	}
-
-	util.Info("cli.batch", "batch run starting", map[string]any{"repos": len(repos), "parallel": *parallel})
-
-	type batchResult struct {
-		repo string
-		out  app.RunOutput
-		err  error
-	}
-
-	sem := make(chan struct{}, *parallel)
-	results := make(chan batchResult, len(repos))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	for _, repo := range repos {
-		repo := repo
-		go func() {
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			cfg := config.Default()
-			cfg.OpenCode.BaseURL = *opencodeURL
-			cfg.OpenCode.TimeoutSec = *opencodeTimeoutSeconds
-			cfg.OpenCode.ProviderID = *providerID
-			cfg.OpenCode.ModelID = *modelID
-			cfg.Artifacts.BaseDir = filepath.Join(repo, ".diffmind", "runs")
-			if pw := os.Getenv("OPENCODE_SERVER_PASSWORD"); pw != "" {
-				cfg.OpenCode.Password = pw
-			}
-
-			out, err := app.Run(ctx, app.RunInput{RepoPath: repo, Config: cfg})
-			results <- batchResult{repo: repo, out: out, err: err}
-		}()
-	}
-
-	successes := 0
-	failures := 0
-	for i := 0; i < len(repos); i++ {
-		r := <-results
-		base := filepath.Base(r.repo)
-		if r.err != nil {
-			failures++
-			fmt.Fprintf(os.Stderr, "FAIL  %s: %v\n", base, r.err)
-		} else {
-			successes++
-			fmt.Printf("OK    %s -> %s\n", base, r.out.RunDir)
-		}
-	}
-	fmt.Printf("\nBatch complete: %d succeeded, %d failed out of %d repos\n", successes, failures, len(repos))
-	if failures > 0 {
-		os.Exit(1)
-	}
-}
-
 func validate(args []string) {
 	fs := flag.NewFlagSet("validate", flag.ExitOnError)
-	baseDir := fs.String("out", ".diffmind/runs", "artifact base directory")
+	baseDir := fs.String("out", "", "artifact base directory (default ~/.diffmind/runs)")
 	runID := fs.String("run", "", "run id")
 	verbose := fs.Bool("verbose", false, "enable debug logs")
 	trace := fs.Bool("trace", false, "enable trace logs (very noisy)")
 	logFile := fs.String("log-file", "", "optional log file path")
 	fs.Parse(args)
 	configureLogging(*verbose, *trace, *logFile)
-	util.Info("cli.validate", "validate command started", map[string]any{"run_id": *runID, "out": *baseDir})
+	base := resolveBaseDir(*baseDir)
+	util.Info("cli.validate", "validate command started", map[string]any{"run_id": *runID, "out": base})
 	if *runID == "" {
 		fmt.Fprintln(os.Stderr, "--run is required")
 		os.Exit(2)
 	}
-	if err := app.ValidateRun(*baseDir, *runID); err != nil {
+	if err := app.ValidateRun(base, *runID); err != nil {
 		util.Error("cli.validate", "validate command failed", map[string]any{"error": err})
 		fmt.Fprintln(os.Stderr, "validation failed:", err)
 		os.Exit(1)
@@ -335,14 +257,15 @@ func validate(args []string) {
 
 func listRuns(args []string) {
 	fs := flag.NewFlagSet("list-runs", flag.ExitOnError)
-	baseDir := fs.String("out", ".diffmind/runs", "artifact base directory")
+	baseDir := fs.String("out", "", "artifact base directory (default ~/.diffmind/runs)")
 	verbose := fs.Bool("verbose", false, "enable debug logs")
 	trace := fs.Bool("trace", false, "enable trace logs (very noisy)")
 	logFile := fs.String("log-file", "", "optional log file path")
 	fs.Parse(args)
 	configureLogging(*verbose, *trace, *logFile)
-	util.Info("cli.list_runs", "list-runs command started", map[string]any{"out": *baseDir})
-	runs, err := app.ListRuns(*baseDir)
+	base := resolveBaseDir(*baseDir)
+	util.Info("cli.list_runs", "list-runs command started", map[string]any{"out": base})
+	runs, err := app.ListRuns(base)
 	if err != nil {
 		util.Error("cli.list_runs", "list-runs command failed", map[string]any{"error": err})
 		fmt.Fprintln(os.Stderr, "list-runs failed:", err)
@@ -356,7 +279,7 @@ func listRuns(args []string) {
 
 func serveUI(args []string) {
 	fs := flag.NewFlagSet("ui", flag.ExitOnError)
-	baseDir := fs.String("out", ".diffmind/runs", "artifact base directory")
+	baseDir := fs.String("out", "", "artifact base directory (default ~/.diffmind/runs)")
 	host := fs.String("host", "127.0.0.1", "dashboard host")
 	port := fs.Int("port", 8080, "dashboard port")
 	uiToken := fs.String("ui-token", "", "optional shared-secret required by /api/* endpoints (set DIFFMIND_UI_TOKEN to override)")
@@ -382,12 +305,13 @@ func serveUI(args []string) {
 		token = os.Getenv("DIFFMIND_UI_TOKEN")
 	}
 
-	srv := ui.New(*baseDir, *host, *port)
+	base := resolveBaseDir(*baseDir)
+	srv := ui.New(base, *host, *port)
 	if token != "" {
 		srv.SetToken(token)
 	}
 	url := fmt.Sprintf("http://%s", srv.Addr())
-	util.Info("cli.ui", "starting dashboard", map[string]any{"url": url, "out": *baseDir, "auth": token != ""})
+	util.Info("cli.ui", "starting dashboard", map[string]any{"url": url, "out": base, "auth": token != ""})
 	fmt.Println("DiffMind dashboard:", url)
 	if token != "" {
 		fmt.Println("Auth token required for /api/* endpoints (X-DiffMind-Token, ?token=, or diffmind_token cookie).")
@@ -402,6 +326,15 @@ func serveUI(args []string) {
 		os.Exit(1)
 	}
 	util.Info("cli.ui", "dashboard stopped", nil)
+}
+
+// resolveBaseDir returns the explicit --out value when set, otherwise the
+// central ~/.diffmind/runs directory.
+func resolveBaseDir(out string) string {
+	if strings.TrimSpace(out) != "" {
+		return out
+	}
+	return config.RunsDir()
 }
 
 func configureLogging(verbose, trace bool, logFile string) {
