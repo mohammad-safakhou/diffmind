@@ -218,13 +218,24 @@ func (o *orchestrator) loadResumeState(dir string) (
 const discoverEntitiesJSONL = "discover_entities.jsonl"
 
 // discoveryCheckpointEntry is one row of state/discover_entities.jsonl.
+//
+// Two row shapes share the file:
+//   - whole-objective rows (Sharded=false): one per completed objective; the
+//     top-level discovery skip logic keys off these.
+//   - per-shard rows (Sharded=true): one per completed shard of a sharded
+//     objective, for fine-grained resume within a single objective.
+//
+// Sharded/ShardIndex are omitempty so legacy rows (written before sharding
+// existed) decode as whole-objective rows unchanged.
 type discoveryCheckpointEntry struct {
 	// ObjectiveID is the unique identifier of the completed objective.
-	ObjectiveID string      `json:"objective_id"`
-	// Items is the list of entities discovered for this objective.
-	// Empty slice (not nil) means the objective ran and found nothing.
-	Items       []llmEntity `json:"items"`
-	WrittenAt   time.Time   `json:"written_at"`
+	ObjectiveID string `json:"objective_id"`
+	// Items is the list of entities discovered for this objective (or shard).
+	// Empty slice (not nil) means it ran and found nothing.
+	Items      []llmEntity `json:"items"`
+	Sharded    bool        `json:"sharded,omitempty"`
+	ShardIndex int         `json:"shard_index,omitempty"`
+	WrittenAt  time.Time   `json:"written_at"`
 }
 
 // appendDiscoveryObjective appends one completed objective's result to the
@@ -271,10 +282,49 @@ func (o *orchestrator) loadDiscoveryCheckpoint(dir string) map[string]discoveryC
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			continue
 		}
-		if entry.ObjectiveID == "" {
+		if entry.ObjectiveID == "" || entry.Sharded {
+			// Per-shard rows are resume detail within an objective; only
+			// whole-objective rows drive the top-level skip decision.
 			continue
 		}
 		out[entry.ObjectiveID] = entry
+	}
+	return out
+}
+
+// appendDiscoveryShard records one completed shard of a sharded objective so a
+// retry resumes only the shards that did not finish.
+func (o *orchestrator) appendDiscoveryShard(objID string, shardIndex int, items []llmEntity) {
+	o.appendDiscoveryObjective(discoveryCheckpointEntry{
+		ObjectiveID: objID,
+		Items:       items,
+		Sharded:     true,
+		ShardIndex:  shardIndex,
+	})
+}
+
+// loadDiscoveryShardCheckpoint returns the completed shards for one objective,
+// keyed by shard index. Missing file / no shards → empty map.
+func (o *orchestrator) loadDiscoveryShardCheckpoint(dir, objID string) map[int][]llmEntity {
+	out := map[int][]llmEntity{}
+	if strings.TrimSpace(dir) == "" {
+		return out
+	}
+	b, err := os.ReadFile(filepath.Join(dir, discoverEntitiesJSONL))
+	if err != nil {
+		return out
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var entry discoveryCheckpointEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry.Sharded && entry.ObjectiveID == objID {
+			out[entry.ShardIndex] = entry.Items
+		}
 	}
 	return out
 }
@@ -298,17 +348,17 @@ const reexamEntitiesJSONL = "reexam_entities.jsonl"
 // reexamCheckpointEntry is one row of state/reexam_entities.jsonl.
 type reexamCheckpointEntry struct {
 	// Key is objective_id::safe_seed_name, same scheme as detail.
-	Key      string `json:"key"`
+	Key string `json:"key"`
 	// Outcome is "confirmed", "rejected", or "clean" (was never suspect).
 	// We only write "confirmed" and "rejected"; "clean" seeds never enter
 	// the suspect list and are always passed through.
-	Outcome  string            `json:"outcome"`
+	Outcome string `json:"outcome"`
 	// Seed is the (possibly corrected) seed after re-examination.
 	// Populated only for outcome=="confirmed".
-	Seed     *llmEntity        `json:"seed,omitempty"`
+	Seed *llmEntity `json:"seed,omitempty"`
 	// Unresolved is populated only for outcome=="rejected".
 	Unresolved *model.UnresolvedItem `json:"unresolved,omitempty"`
-	WrittenAt time.Time         `json:"written_at"`
+	WrittenAt  time.Time             `json:"written_at"`
 }
 
 func reexamKey(objectiveID, seedName string) string {

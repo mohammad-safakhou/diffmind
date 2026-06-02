@@ -19,7 +19,7 @@ func testObj() objectives.Objective {
 }
 
 func TestBuildDiscoveryPromptContainsRequiredMarkers(t *testing.T) {
-	p := buildDiscoveryPrompt(testObj(), nil, "services/foo", objectiveHints{})
+	p := buildDiscoveryPrompt(testObj(), nil, "services/foo", objectiveHints{}, nil)
 	mustContain(t, p, "AGENT ROLE: objective-extractor")
 	mustContain(t, p, "OBJECTIVE_ID: exposure.http_route")
 	mustContain(t, p, "OBJECTIVE_KIND: exposure")
@@ -49,7 +49,7 @@ func TestBuildReexaminePromptContainsTrigger(t *testing.T) {
 // DiscoveryASTHints=false path) leave the prompt byte-identical to the
 // pre-grounding behaviour — no AST_HINTS section at all.
 func TestEmptyHintsProduceNoBlock(t *testing.T) {
-	p := buildDiscoveryPrompt(testObj(), nil, "", objectiveHints{})
+	p := buildDiscoveryPrompt(testObj(), nil, "", objectiveHints{}, nil)
 	if strings.Contains(p, "AST_HINTS") {
 		t.Fatalf("empty hints must not render an AST_HINTS block:\n%s", p)
 	}
@@ -63,7 +63,7 @@ func TestDiscoveryPromptRendersHints(t *testing.T) {
 		Symbols:  []symbolHint{{Qualified: "OrderController.create", File: "src/api/OrderController.java", Line: 34, Annotations: []string{"RestController", "PostMapping"}}},
 		Bindings: []bindingHint{{Kind: "http_route", Symbol: "OrderController.create", Trigger: "@PostMapping", File: "src/api/OrderController.java", Line: 34}},
 	}
-	p := buildDiscoveryPrompt(obj, nil, "", hints)
+	p := buildDiscoveryPrompt(obj, nil, "", hints, nil)
 	mustContain(t, p, "AST_HINTS")
 	mustContain(t, p, "HINTS, NOT a whitelist")
 	mustContain(t, p, "src/api/OrderController.java:34  OrderController.create")
@@ -76,7 +76,7 @@ func TestDiscoveryPromptRendersHints(t *testing.T) {
 // TestHintsTruncationNote renders the truncation note only when set.
 func TestHintsTruncationNote(t *testing.T) {
 	hints := objectiveHints{Symbols: []symbolHint{{Qualified: "X.y", File: "a.go", Line: 1}}, Truncated: true}
-	p := buildDiscoveryPrompt(testObj(), nil, "", hints)
+	p := buildDiscoveryPrompt(testObj(), nil, "", hints, nil)
 	mustContain(t, p, "candidate list truncated")
 }
 

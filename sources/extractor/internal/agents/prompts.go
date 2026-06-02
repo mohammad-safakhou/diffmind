@@ -149,6 +149,25 @@ func astHintsBlock(h objectiveHints) string {
 	return sb.String()
 }
 
+// discoveryScopeBlock renders the shard SCOPE directive when discovery for an
+// objective has been split into directory-scoped sub-tasks (Phase B). It tells
+// the model to restrict its search to the listed directories so shards don't
+// re-scan the whole repo. Empty scope (single whole-repo call) → "".
+func discoveryScopeBlock(dirs []string) string {
+	if len(dirs) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("SCOPE: This is one shard of a larger discovery. Analyze ONLY files under these directories:\n")
+	for _, d := range dirs {
+		sb.WriteString("  - ")
+		sb.WriteString(d)
+		sb.WriteString("/\n")
+	}
+	sb.WriteString("Ignore files outside this scope; another shard covers them.\n\n")
+	return sb.String()
+}
+
 // exampleBlock renders the objective's few-shot example, if any.
 func exampleBlock(obj objectives.Objective) string {
 	if strings.TrimSpace(obj.Example) == "" {
@@ -167,7 +186,7 @@ func detailKeysLine(obj objectives.Objective) string {
 
 // ---- Stage 1: per-objective discovery ----
 
-func buildDiscoveryPrompt(obj objectives.Objective, rf *repoFacts, subDir string, hints objectiveHints) string {
+func buildDiscoveryPrompt(obj objectives.Objective, rf *repoFacts, subDir string, hints objectiveHints, scopeDirs []string) string {
 	var sb strings.Builder
 	sb.WriteString("AGENT ROLE: objective-extractor\n")
 	sb.WriteString(readOnlyPreamble)
@@ -184,6 +203,7 @@ func buildDiscoveryPrompt(obj objectives.Objective, rf *repoFacts, subDir string
 	sb.WriteString(obj.Description)
 	sb.WriteString("\n\n")
 	sb.WriteString(monorepoScopeLine(subDir))
+	sb.WriteString(discoveryScopeBlock(scopeDirs))
 	sb.WriteString(repoFactsBlock(rf))
 	sb.WriteString(astHintsBlock(hints))
 	sb.WriteString("DISCOVERY INSTRUCTIONS:\n")
