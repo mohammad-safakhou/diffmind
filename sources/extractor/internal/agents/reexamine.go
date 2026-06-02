@@ -544,7 +544,7 @@ func (o *orchestrator) runReexamination(
 }
 
 func (o *orchestrator) runReexamineOne(ctx context.Context, t reexamineTrigger, rf *repoFacts) (*llmEntity, error) {
-	prompt := buildReexaminePrompt(t.Obj, t.Seed, t.ReasonID+": "+t.Reason, rf, o.subDir)
+	prompt := buildReexaminePrompt(t.Obj, t.Seed, t.ReasonID+": "+t.Reason, rf, o.subDir, o.hintsFor(t.Obj, nil))
 	schema := entityListSchemaForObjective(t.Obj)
 	jobID := "reexamine." + t.Obj.ID + "." + safeJobID(t.Seed.Name)
 	started := time.Now()

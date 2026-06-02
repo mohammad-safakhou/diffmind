@@ -51,6 +51,15 @@ type Runtime struct {
 	// to 5 seconds; smaller values catch hangs faster at the cost of
 	// more HTTP traffic to localhost (the JSON payload is ~4 KB).
 	LivenessPollSec int `json:"liveness_poll_seconds"`
+
+	// DiscoveryASTHints controls whether the discovery/reexamine/detail
+	// prompts are augmented with deterministic AST candidate hints
+	// (symbols, framework bindings, datasource config). The hints are
+	// advisory only — the LLM is never constrained to them — but they
+	// raise recall on the mechanical majority. Default true; set false
+	// to A/B the anchoring-bias hypothesis (prompts then match the
+	// pre-grounding behaviour byte-for-byte).
+	DiscoveryASTHints bool `json:"discovery_ast_hints"`
 }
 
 type Artifacts struct {
@@ -101,9 +110,10 @@ func Default() Config {
 			ReuseOpenCodeSession:    false,
 			PromptRetryCount:        3,
 			// Liveness watchdog defaults. See the field docs on Runtime.
-			IdleTimeoutSec:  120,
-			MaxCallSeconds:  30 * 60,
-			LivenessPollSec: 5,
+			IdleTimeoutSec:    120,
+			MaxCallSeconds:    30 * 60,
+			LivenessPollSec:   5,
+			DiscoveryASTHints: true,
 		},
 		// Artifacts default to the central ~/.diffmind/runs directory so runs
 		// are discoverable independent of the scanned repository. Override
