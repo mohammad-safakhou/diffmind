@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 // REGRESSION: runs 20260518T113418Z and 20260518T115925Z both failed
 // at exactly 300s because the SPA's localStorage carried over an old
@@ -134,5 +137,57 @@ func TestSanitize_RespectsExplicitlyLargerTransportTimeout(t *testing.T) {
 	}
 	if c.OpenCode.TimeoutSec != 6*60*60 {
 		t.Errorf("user value clobbered: got %d", c.OpenCode.TimeoutSec)
+	}
+}
+
+func TestDeterministicDiscoveryMode(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", string(DeterministicDiscoveryObserve)},
+		{"observe", string(DeterministicDiscoveryObserve)},
+		{"shadow_compare", string(DeterministicDiscoveryShadowCompare)},
+		{"active", string(DeterministicDiscoveryActive)},
+		{"off", string(DeterministicDiscoveryOff)},
+		{"ACTIVE", string(DeterministicDiscoveryActive)},
+		{"bogus", string(DeterministicDiscoveryObserve)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			r := Runtime{DeterministicDiscovery: DeterministicDiscoverySetting(tc.in)}
+			if got := r.DeterministicDiscoveryMode(); got != tc.want {
+				t.Fatalf("DeterministicDiscoveryMode() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	if got := Default().Runtime.DeterministicDiscoveryMode(); got != string(DeterministicDiscoveryObserve) {
+		t.Fatalf("default mode = %q, want observe", got)
+	}
+}
+
+func TestLoadDeterministicDiscoveryAcceptsLegacyBoolean(t *testing.T) {
+	tmp := t.TempDir()
+	path := tmp + "/config.json"
+	if err := os.WriteFile(path, []byte(`{"runtime":{"deterministic_discovery":true}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Runtime.DeterministicDiscoveryMode(); got != string(DeterministicDiscoveryActive) {
+		t.Fatalf("mode = %q, want active", got)
+	}
+
+	if err := os.WriteFile(path, []byte(`{"runtime":{"deterministic_discovery":false}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load false: %v", err)
+	}
+	if got := cfg.Runtime.DeterministicDiscoveryMode(); got != string(DeterministicDiscoveryOff) {
+		t.Fatalf("mode = %q, want off", got)
 	}
 }

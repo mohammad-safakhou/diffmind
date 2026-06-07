@@ -2,8 +2,37 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"strings"
 )
+
+type DeterministicDiscoverySetting string
+
+const (
+	DeterministicDiscoveryOff           = DeterministicDiscoverySetting("off")
+	DeterministicDiscoveryObserve       = DeterministicDiscoverySetting("observe")
+	DeterministicDiscoveryShadowCompare = DeterministicDiscoverySetting("shadow_compare")
+	DeterministicDiscoveryActive        = DeterministicDiscoverySetting("active")
+)
+
+func (d *DeterministicDiscoverySetting) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		*d = DeterministicDiscoverySetting(s)
+		return nil
+	}
+	var enabled bool
+	if err := json.Unmarshal(b, &enabled); err == nil {
+		if enabled {
+			*d = DeterministicDiscoveryActive
+		} else {
+			*d = DeterministicDiscoveryOff
+		}
+		return nil
+	}
+	return fmt.Errorf("deterministic_discovery must be a string mode or boolean")
+}
 
 type OpenCode struct {
 	BaseURL      string `json:"base_url"`
@@ -60,6 +89,12 @@ type Runtime struct {
 	// to A/B the anchoring-bias hypothesis (prompts then match the
 	// pre-grounding behaviour byte-for-byte).
 	DiscoveryASTHints bool `json:"discovery_ast_hints"`
+
+	// DeterministicDiscovery controls whether exact framework/config facts
+	// are only observed, shadow-compared against LLM discovery, or promoted
+	// into the normal discovery pipeline. Allowed values: off, observe,
+	// shadow_compare, active. Default observe.
+	DeterministicDiscovery DeterministicDiscoverySetting `json:"deterministic_discovery"`
 }
 
 type Artifacts struct {
@@ -110,10 +145,11 @@ func Default() Config {
 			ReuseOpenCodeSession:    false,
 			PromptRetryCount:        3,
 			// Liveness watchdog defaults. See the field docs on Runtime.
-			IdleTimeoutSec:    120,
-			MaxCallSeconds:    30 * 60,
-			LivenessPollSec:   5,
-			DiscoveryASTHints: true,
+			IdleTimeoutSec:         120,
+			MaxCallSeconds:         30 * 60,
+			LivenessPollSec:        5,
+			DiscoveryASTHints:      true,
+			DeterministicDiscovery: DeterministicDiscoveryObserve,
 		},
 		// Artifacts default to the central ~/.diffmind/runs directory so runs
 		// are discoverable independent of the scanned repository. Override
@@ -138,6 +174,24 @@ func Load(path string) (Config, error) {
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+// DeterministicDiscoveryMode returns the normalized deterministic-discovery
+// rollout mode. Unknown values degrade to observe so a typo cannot silently
+// promote deterministic output into final artifacts.
+func (r Runtime) DeterministicDiscoveryMode() string {
+	switch DeterministicDiscoverySetting(strings.TrimSpace(strings.ToLower(string(r.DeterministicDiscovery)))) {
+	case DeterministicDiscoveryOff:
+		return string(DeterministicDiscoveryOff)
+	case DeterministicDiscoveryShadowCompare:
+		return string(DeterministicDiscoveryShadowCompare)
+	case DeterministicDiscoveryActive:
+		return string(DeterministicDiscoveryActive)
+	case DeterministicDiscoveryObserve, "":
+		return string(DeterministicDiscoveryObserve)
+	default:
+		return string(DeterministicDiscoveryObserve)
+	}
 }
 
 // Sanitization is the last line of defence against a stale or

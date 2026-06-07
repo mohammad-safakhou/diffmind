@@ -24,11 +24,12 @@ func (d *expressDetector) Name() string { return "express" }
 
 func (d *expressDetector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
 	var out []ast.FrameworkBinding
-	// Express routes appear as call expressions: app.get('/path', handler)
-	// or router.post('/path', handler). We detect them from the call graph.
-	for caller, calls := range idx.CallGraph {
-		for _, call := range calls {
-			b := expressCallToBinding(caller, call)
+	for _, fa := range idx.Files {
+		if fa.Language != "javascript" && fa.Language != "typescript" && fa.Language != "tsx" && fa.Language != "jsx" {
+			continue
+		}
+		for _, call := range fa.Calls {
+			b := expressCallToBinding(call)
 			if b != nil {
 				out = append(out, *b)
 			}
@@ -37,36 +38,34 @@ func (d *expressDetector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
 	return out
 }
 
-func expressCallToBinding(caller string, call ast.CallSite) *ast.FrameworkBinding {
+func expressCallToBinding(call ast.CallSite) *ast.FrameworkBinding {
 	raw := call.CalleeRaw
-	methods := []string{"app.get", "app.post", "app.put", "app.patch", "app.delete",
-		"router.get", "router.post", "router.put", "router.patch", "router.delete",
-		"app.use", "router.use"}
-	matched := ""
-	for _, m := range methods {
-		if raw == m || strings.HasSuffix(raw, "."+strings.SplitN(m, ".", 2)[1]) {
-			matched = m
-			break
-		}
-	}
-	if matched == "" {
+	parts := strings.Split(raw, ".")
+	if len(parts) != 2 {
 		return nil
 	}
-	parts := strings.SplitN(matched, ".", 2)
-	method := strings.ToUpper(parts[1])
-	path := ""
-	if len(call.Arguments) > 0 {
-		path = call.Arguments[0].Source
-		path = strings.Trim(path, `"'` + "`")
+	receiver, verb := parts[0], parts[1]
+	if receiver != "app" && receiver != "router" {
+		return nil
 	}
+	methods := map[string]string{
+		"get": "GET", "post": "POST", "put": "PUT", "patch": "PATCH", "delete": "DELETE",
+	}
+	method, ok := methods[verb]
+	if !ok || len(call.Arguments) < 2 || !isLiteralPathArg(call.Arguments, 0) {
+		return nil
+	}
+	path := literalPathArg(call.Arguments, 0)
 	return &ast.FrameworkBinding{
-		Framework:     "express",
-		Kind:          "http_handler",
-		Symbol:        caller,
-		Trigger:       method + " " + path,
-		TriggerSource: raw + "(" + path + ", ...)",
-		File:          call.File,
-		Range:         call.Range,
+		Framework:        "express",
+		Kind:             "http_handler",
+		Direction:        "inbound",
+		Symbol:           call.Caller,
+		Trigger:          method + " " + path,
+		TriggerSource:    raw + "(" + path + ", ...)",
+		File:             call.File,
+		Range:            call.Range,
+		ConfidenceReason: "express_receiver_literal_path_handler",
 	}
 }
 
@@ -262,9 +261,14 @@ func (d *aspnetDetector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
 		if fa.Language != "csharp" {
 			continue
 		}
+		classes := classesByName(fa)
 		for _, sym := range fa.Symbols {
+			if sym.Kind != ast.SymbolKindMethod && sym.Kind != ast.SymbolKindFunction {
+				continue
+			}
+			cls := enclosingClassForSymbol(fa, sym, classes)
 			for _, ann := range sym.Annotations {
-				b := aspnetAnnotationToBinding(sym, ann)
+				b := aspnetAnnotationToBinding(sym, cls, ann)
 				if b != nil {
 					out = append(out, *b)
 				}
@@ -274,25 +278,46 @@ func (d *aspnetDetector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
 	return out
 }
 
-func aspnetAnnotationToBinding(sym ast.SymbolDef, ann ast.Annotation) *ast.FrameworkBinding {
+func aspnetAnnotationToBinding(sym ast.SymbolDef, cls *ast.SymbolDef, ann ast.Annotation) *ast.FrameworkBinding {
 	methods := map[string]string{
 		"HttpGet": "GET", "HttpPost": "POST", "HttpPut": "PUT",
 		"HttpPatch": "PATCH", "HttpDelete": "DELETE",
-		"Route": "ANY",
 	}
 	if method, ok := methods[ann.Name]; ok {
-		path := extractFirstStringArg(ann.Arguments)
+		prefix := ""
+		controller := false
+		if cls != nil {
+			controller = strings.HasSuffix(cls.Name, "Controller") || hasAnyAnnotation(*cls, "ApiController", "Controller")
+			prefix = aspnetClassRoutePrefix(*cls)
+		}
+		path := joinPath(prefix, extractFirstStringArg(ann.Arguments))
+		rejection := ""
+		if !controller {
+			rejection = "aspnet_http_attribute_without_controller_context"
+		}
 		return &ast.FrameworkBinding{
-			Framework:     "aspnet",
-			Kind:          "http_handler",
-			Symbol:        sym.Qualified,
-			Trigger:       method + " " + path,
-			TriggerSource: "[" + ann.Name + "(" + ann.Arguments + ")]",
-			File:          sym.File,
-			Range:         sym.Range,
+			Framework:        "aspnet",
+			Kind:             "http_handler",
+			Direction:        "inbound",
+			Symbol:           sym.Qualified,
+			Trigger:          method + " " + path,
+			TriggerSource:    "[" + ann.Name + "(" + ann.Arguments + ")]",
+			File:             sym.File,
+			Range:            sym.Range,
+			ConfidenceReason: "aspnet_controller_http_attribute",
+			RejectionReason:  rejection,
 		}
 	}
 	return nil
+}
+
+func aspnetClassRoutePrefix(cls ast.SymbolDef) string {
+	for _, ann := range cls.Annotations {
+		if ann.Name == "Route" {
+			return extractFirstStringArg(ann.Arguments)
+		}
+	}
+	return ""
 }
 
 // ── Gin (Go) ──────────────────────────────────────────────────────────────────
@@ -303,9 +328,12 @@ func (d *ginDetector) Name() string { return "gin" }
 
 func (d *ginDetector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
 	var out []ast.FrameworkBinding
-	for caller, calls := range idx.CallGraph {
-		for _, call := range calls {
-			b := ginCallToBinding(caller, call)
+	for _, fa := range idx.Files {
+		if fa.Language != "go" {
+			continue
+		}
+		for _, call := range fa.Calls {
+			b := ginCallToBinding(call)
 			if b != nil {
 				out = append(out, *b)
 			}
@@ -314,28 +342,30 @@ func (d *ginDetector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
 	return out
 }
 
-func ginCallToBinding(caller string, call ast.CallSite) *ast.FrameworkBinding {
+func ginCallToBinding(call ast.CallSite) *ast.FrameworkBinding {
 	methods := map[string]string{
 		"GET": "GET", "POST": "POST", "PUT": "PUT",
 		"PATCH": "PATCH", "DELETE": "DELETE", "Handle": "ANY",
 	}
 	raw := call.CalleeRaw
-	method, ok := methods[raw]
-	if !ok {
+	verb := raw
+	if dot := strings.LastIndex(verb, "."); dot >= 0 {
+		verb = verb[dot+1:]
+	}
+	method, ok := methods[verb]
+	if !ok || len(call.Arguments) < 2 || !isLiteralPathArg(call.Arguments, 0) {
 		return nil
 	}
-	// Gin route calls: r.GET("/path", handler) or g.POST("/path", handler)
-	path := ""
-	if len(call.Arguments) > 0 {
-		path = strings.Trim(call.Arguments[0].Source, `"` + "`")
-	}
+	path := literalPathArg(call.Arguments, 0)
 	return &ast.FrameworkBinding{
-		Framework:     "gin",
-		Kind:          "http_handler",
-		Symbol:        caller,
-		Trigger:       method + " " + path,
-		TriggerSource: raw + "(" + path + ", ...)",
-		File:          call.File,
-		Range:         call.Range,
+		Framework:        "gin",
+		Kind:             "http_handler",
+		Direction:        "inbound",
+		Symbol:           call.Caller,
+		Trigger:          method + " " + path,
+		TriggerSource:    raw + "(" + path + ", ...)",
+		File:             call.File,
+		Range:            call.Range,
+		ConfidenceReason: "go_route_literal_path_handler",
 	}
 }

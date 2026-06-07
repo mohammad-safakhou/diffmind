@@ -49,6 +49,7 @@ const DEFAULTS = {
     cleanup_opencode_sessions: false,
     opencode_delete_delay_seconds: 5,
     skip_reexamination: false,
+    deterministic_discovery: 'observe',
     // Liveness watchdog: this is the real "wait at most N seconds
     // with no observable progress before aborting" control.
     idle_timeout_seconds: 120,
@@ -134,7 +135,7 @@ function sanitizePrefill(p) {
     return o
   }
   if (p.opencode) out.opencode = pick(p.opencode, ['base_url', 'username', 'provider_id', 'model_id', 'model_variant', 'timeout_seconds'])
-  if (p.runtime) out.runtime = pick(p.runtime, ['workers', 'max_catalog_items', 'idle_timeout_seconds', 'max_call_seconds', 'liveness_poll_seconds', 'prompt_retry_count', 'skip_reexamination', 'reuse_opencode_session'])
+  if (p.runtime) out.runtime = pick(p.runtime, ['workers', 'max_catalog_items', 'idle_timeout_seconds', 'max_call_seconds', 'liveness_poll_seconds', 'prompt_retry_count', 'deterministic_discovery', 'skip_reexamination', 'reuse_opencode_session'])
   if (p.quality) out.quality = pick(p.quality, ['min_confidence'])
   return out
 }
@@ -343,6 +344,23 @@ export function RunForm({ onLaunched, prefill, gateOnActiveRun = true }) {
               <input type="number" value={form.opencode.timeout_seconds} onInput={(e) => update('opencode.timeout_seconds', Number(e.target.value))} disabled={running} />
             </div>
           </div>
+          <div class="row-3">
+            <div class="field">
+              <label title="observe writes deterministic reports only; shadow_compare compares LLM baseline against deterministic candidate; active promotes deterministic facts; off disables the deterministic pass.">
+                Deterministic discovery
+              </label>
+              <select
+                value={form.runtime.deterministic_discovery}
+                onInput={(e) => update('runtime.deterministic_discovery', e.target.value)}
+                disabled={running}
+              >
+                <option value="observe">observe</option>
+                <option value="shadow_compare">shadow compare</option>
+                <option value="active">active</option>
+                <option value="off">off</option>
+              </select>
+            </div>
+          </div>
           <div class="toggle">
             <input type="checkbox" id="reuse" checked={form.runtime.reuse_opencode_session} onInput={(e) => update('runtime.reuse_opencode_session', e.target.checked)} disabled={running} />
             <label for="reuse">Reuse one OpenCode session per run</label>
@@ -460,6 +478,7 @@ function buildCLI(f) {
   if (f.runtime.prompt_retry_count !== undefined && f.runtime.prompt_retry_count !== null) parts.push(`  --prompt-retry-count ${f.runtime.prompt_retry_count}`)
   if (f.runtime.max_call_seconds) parts.push(`  --max-call-seconds ${f.runtime.max_call_seconds}`)
   if (f.runtime.liveness_poll_seconds) parts.push(`  --liveness-poll-seconds ${f.runtime.liveness_poll_seconds}`)
+  if (f.runtime.deterministic_discovery) parts.push(`  --deterministic-discovery ${f.runtime.deterministic_discovery}`)
   if (f.runtime.reuse_opencode_session) parts.push('  --reuse-opencode-session')
   if (f.runtime.cleanup_opencode_sessions) parts.push('  --cleanup-opencode-sessions')
   if (f.runtime.skip_reexamination) parts.push('  --skip-reexamination')

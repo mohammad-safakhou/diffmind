@@ -301,4 +301,32 @@ type detailResult struct {
 	PeerCancelled bool
 }
 
+type discoveryEvaluationReport struct {
+	Mode       string                     `json:"mode"`
+	Objectives []string                   `json:"objectives"`
+	Baseline   discoveryEvaluationSide    `json:"baseline"`
+	Candidate  discoveryEvaluationSide    `json:"candidate"`
+	Comparison discoveryEvaluationCompare `json:"comparison"`
+	Skipped    discoveryEvaluationSkipped `json:"skipped"`
+}
 
+type discoveryEvaluationSide struct {
+	Items              int            `json:"items"`
+	ItemsByObjective   map[string]int `json:"items_by_objective,omitempty"`
+	DeterministicItems int            `json:"deterministic_items,omitempty"`
+	LLMItems           int            `json:"llm_items,omitempty"`
+}
+
+type discoveryEvaluationCompare struct {
+	Matched                  int            `json:"matched"`
+	BaselineOnly             int            `json:"baseline_only"`
+	CandidateOnly            int            `json:"candidate_only"`
+	DuplicatesMerged         int            `json:"duplicates_merged"`
+	MatchedByObjective       map[string]int `json:"matched_by_objective,omitempty"`
+	BaselineOnlyByObjective  map[string]int `json:"baseline_only_by_objective,omitempty"`
+	CandidateOnlyByObjective map[string]int `json:"candidate_only_by_objective,omitempty"`
+}
+
+type discoveryEvaluationSkipped struct {
+	DetailDeterministicComplete int `json:"detail_deterministic_complete,omitempty"`
+}

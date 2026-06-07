@@ -56,6 +56,11 @@ type ProjectIndex struct {
 	// a method that has no syntactic caller in user code).
 	Frameworks []FrameworkBinding
 
+	// RejectedFrameworks holds near-miss framework candidates with explicit
+	// rejection reasons. These are for observability only and must not be used
+	// as deterministic facts or prompt hints.
+	RejectedFrameworks []FrameworkBinding
+
 	// Configs holds the parsed configuration files (YAML, JSON, TOML, .env,
 	// .properties). Used by the infrastructure inventory stage.
 	Configs map[string]*ConfigFile
@@ -136,17 +141,21 @@ type ImportDecl struct {
 type Annotation struct {
 	Name      string
 	Arguments string
+	Range     Range
 }
 
 // FrameworkBinding captures an implicit invocation triggered by a framework.
 type FrameworkBinding struct {
-	Framework     string
-	Kind          string
-	Symbol        string
-	Trigger       string
-	TriggerSource string
-	File          string
-	Range         Range
+	Framework        string
+	Kind             string
+	Direction        string
+	Symbol           string
+	Trigger          string
+	TriggerSource    string
+	File             string
+	Range            Range
+	ConfidenceReason string
+	RejectionReason  string
 }
 
 // ConfigFile holds key-value pairs from one configuration file.

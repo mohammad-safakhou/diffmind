@@ -302,6 +302,7 @@ func extractSymbols(root *sitter.Node, src []byte, lang string, sitterLang *sitt
 		var name, receiver string
 		var kind SymbolKind
 		var r Range
+		var nameLine uint32
 		var node *sitter.Node
 
 		// defRange stores the FULL range of the @def node (method body).
@@ -317,6 +318,7 @@ func extractSymbols(root *sitter.Node, src []byte, lang string, sitterLang *sitt
 				name = text
 				node = c.Node
 				r = nodeRange(c.Node)
+				nameLine = r.StartLine
 			case "receiver", "class", "type":
 				receiver = text
 			case "def":
@@ -347,13 +349,14 @@ func extractSymbols(root *sitter.Node, src []byte, lang string, sitterLang *sitt
 			continue
 		}
 
+		defR := r
 		// If we have the full @def node, use its EndLine so that
 		// enclosingSymbol() can correctly identify which method body
 		// a call site belongs to. Without this, methods whose identifier
 		// is on line N but body extends to line M would never match calls
 		// on lines N+1..M.
 		if defNode != nil {
-			defR := nodeRange(defNode)
+			defR = nodeRange(defNode)
 			r.EndLine = defR.EndLine
 			r.EndColumn = defR.EndColumn
 			r.EndByte = defR.EndByte
@@ -367,20 +370,7 @@ func extractSymbols(root *sitter.Node, src []byte, lang string, sitterLang *sitt
 
 		qualified := qualifiedName(receiver, name, lang)
 
-		// Collect annotations from the preceding lines (annotations/decorators
-		// appear above the function definition, not on the same line as the
-		// identifier). Search up to 10 lines above.
-		var annots []Annotation
-		for lineOff := uint32(1); lineOff <= 10 && r.StartLine >= lineOff; lineOff++ {
-			lineAnnots := annotsByLine[r.StartLine-lineOff]
-			if len(lineAnnots) > 0 {
-				annots = append(lineAnnots, annots...)
-			}
-		}
-		// Also include annotations on the same line (rare but valid).
-		if same := annotsByLine[r.StartLine]; len(same) > 0 {
-			annots = append(annots, same...)
-		}
+		annots := annotationsForSymbol(annotsByLine, src, defR, nameLine)
 
 		out = append(out, SymbolDef{
 			Name:        name,
@@ -481,21 +471,67 @@ func extractAnnotations(root *sitter.Node, src []byte, lang string, sitterLang *
 
 	for m, ok := cursor.NextMatch(); ok; m, ok = cursor.NextMatch() {
 		var annotName, args string
-		var line uint32
+		var r Range
 		for _, c := range m.Captures {
 			capName := query.CaptureNameForId(c.Index)
 			text := c.Node.Content(src)
 			switch capName {
 			case "name":
 				annotName = text
-				line = c.Node.StartPoint().Row
+				r = nodeRange(c.Node)
 			case "args":
 				args = trimOuterParens(text)
+				argRange := nodeRange(c.Node)
+				if r.StartLine == 0 && r.EndLine == 0 {
+					r = argRange
+				} else {
+					r.EndLine = argRange.EndLine
+					r.EndColumn = argRange.EndColumn
+					r.EndByte = argRange.EndByte
+				}
 			}
 		}
 		if annotName != "" {
-			out[line] = append(out[line], Annotation{Name: annotName, Arguments: args})
+			out[r.StartLine] = append(out[r.StartLine], Annotation{Name: annotName, Arguments: args, Range: r})
 		}
+	}
+	return out
+}
+
+func annotationsForSymbol(annotsByLine map[uint32][]Annotation, src []byte, defR Range, nameLine uint32) []Annotation {
+	var out []Annotation
+	seen := map[string]struct{}{}
+	add := func(anns []Annotation) {
+		for _, ann := range anns {
+			key := ann.Name + "\x00" + ann.Arguments + "\x00" + fmt.Sprint(ann.Range.StartLine)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, ann)
+		}
+	}
+
+	// Prefer annotations that tree-sitter includes in the declaration node. This
+	// keeps class annotations attached to classes and method annotations attached
+	// only to the method they decorate.
+	for line := defR.StartLine; line <= nameLine; line++ {
+		add(annotsByLine[line])
+	}
+	if len(out) > 0 {
+		return out
+	}
+
+	// Fallback for grammars whose declaration node starts at the identifier:
+	// walk upward only through immediately adjacent annotation lines. Stop at
+	// blanks or code so class-level annotations cannot leak into methods.
+	lines := strings.Split(string(src), "\n")
+	for line := int(nameLine) - 1; line >= 0 && line < len(lines); line-- {
+		if anns := annotsByLine[uint32(line)]; len(anns) > 0 {
+			out = append(append([]Annotation(nil), anns...), out...)
+			continue
+		}
+		break
 	}
 	return out
 }

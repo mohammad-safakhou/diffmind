@@ -4,6 +4,7 @@ import (
 	"context"
 	"io/fs"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -169,14 +170,15 @@ func Build(ctx context.Context, repoRoot, primaryLanguage string, workers int, p
 	resolveCallees(idx)
 
 	// ── Step 8: detect framework bindings ────────────────────────────────
-	idx.Frameworks = detectFrameworks(idx)
+	idx.Frameworks, idx.RejectedFrameworks = detectFrameworks(idx)
 
 	util.Info("ast.index", "project index built", map[string]any{
-		"files":      len(idx.Files),
-		"symbols":    len(idx.Symbols),
-		"callgraph":  len(idx.CallGraph),
-		"configs":    len(idx.Configs),
-		"frameworks": len(idx.Frameworks),
+		"files":               len(idx.Files),
+		"symbols":             len(idx.Symbols),
+		"callgraph":           len(idx.CallGraph),
+		"configs":             len(idx.Configs),
+		"frameworks":          len(idx.Frameworks),
+		"rejected_frameworks": len(idx.RejectedFrameworks),
 	})
 
 	return idx, nil
@@ -422,12 +424,49 @@ func RegisterFrameworkDetector(d FrameworkDetector) {
 }
 
 // detectFrameworks runs all framework detectors and returns the bindings.
-func detectFrameworks(idx *ProjectIndex) []FrameworkBinding {
-	var all []FrameworkBinding
+func detectFrameworks(idx *ProjectIndex) ([]FrameworkBinding, []FrameworkBinding) {
+	var accepted []FrameworkBinding
+	var rejected []FrameworkBinding
 	for _, detector := range registeredDetectors {
-		all = append(all, detector.Detect(idx)...)
+		for _, binding := range detector.Detect(idx) {
+			if binding.RejectionReason != "" {
+				rejected = append(rejected, binding)
+				continue
+			}
+			accepted = append(accepted, binding)
+		}
 	}
-	return all
+	sortFrameworkBindings(accepted)
+	sortFrameworkBindings(rejected)
+	return accepted, rejected
+}
+
+func sortFrameworkBindings(bindings []FrameworkBinding) {
+	sort.Slice(bindings, func(i, j int) bool {
+		a, b := bindings[i], bindings[j]
+		if a.Framework != b.Framework {
+			return a.Framework < b.Framework
+		}
+		if a.Kind != b.Kind {
+			return a.Kind < b.Kind
+		}
+		if a.Direction != b.Direction {
+			return a.Direction < b.Direction
+		}
+		if a.File != b.File {
+			return a.File < b.File
+		}
+		if a.Range.StartLine != b.Range.StartLine {
+			return a.Range.StartLine < b.Range.StartLine
+		}
+		if a.Symbol != b.Symbol {
+			return a.Symbol < b.Symbol
+		}
+		if a.Trigger != b.Trigger {
+			return a.Trigger < b.Trigger
+		}
+		return a.RejectionReason < b.RejectionReason
+	})
 }
 
 // isSkippedDir reports whether a directory should be skipped when walking.

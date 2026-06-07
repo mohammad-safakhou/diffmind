@@ -41,7 +41,7 @@ func (s *UserService) CreateUser(u *User) error {
 `
 	fa := parseInline(t, src, "go", ".go")
 	// Go methods are qualified as "Receiver.MethodName"
-	assertSymbol(t, fa, "GetUser")      // method name only (receiver from query)
+	assertSymbol(t, fa, "GetUser") // method name only (receiver from query)
 	assertSymbol(t, fa, "CreateUser")
 	// Calls are captured as the field/method name (selector expression).
 	assertCallExists(t, fa, "FindByID")
@@ -122,6 +122,41 @@ public class UserController {
 	}
 	if !hasAnnotation(getUser, "GetMapping") {
 		t.Errorf("expected @GetMapping annotation on getUser; annotations: %v", getUser.Annotations)
+	}
+}
+
+func TestJavaAnnotationOwnershipDoesNotLeak(t *testing.T) {
+	src := `package com.example;
+
+@RestController
+@RequestMapping("/users")
+public class UserController {
+    @PostMapping("/one")
+    public String one() { return "one"; }
+
+    @PostMapping("/two")
+    public String two() { return "two"; }
+}
+`
+	fa := parseInline(t, src, "java", ".java")
+	one := findSymbol(fa, "one")
+	two := findSymbol(fa, "two")
+	cls := findSymbol(fa, "UserController")
+	if one == nil || two == nil || cls == nil {
+		t.Fatalf("expected class and methods, got symbols: %+v", fa.Symbols)
+	}
+	if hasAnnotation(one, "RequestMapping") {
+		t.Fatalf("class @RequestMapping leaked onto first method: %+v", one.Annotations)
+	}
+	if hasAnnotation(two, "PostMapping") {
+		for _, ann := range two.Annotations {
+			if ann.Name == "PostMapping" && strings.Contains(ann.Arguments, "/one") {
+				t.Fatalf("previous method annotation leaked onto second method: %+v", two.Annotations)
+			}
+		}
+	}
+	if !hasAnnotation(cls, "RequestMapping") {
+		t.Fatalf("expected class to own @RequestMapping, got %+v", cls.Annotations)
 	}
 }
 
@@ -358,18 +393,18 @@ func TestDeriveConditionLoop(t *testing.T) {
 
 func TestNormaliseNodeKind(t *testing.T) {
 	cases := map[string]string{
-		"if_statement":             "if_guard",
-		"for_statement":            "loop",
-		"foreach_statement":        "loop",
-		"while_statement":          "loop",
-		"try_statement":            "try_block",
-		"catch_clause":             "catch_block",
-		"match_expression":         "match_arm",
-		"go_statement":             "goroutine",
-		"await_expression":         "async_block",
-		"arrow_function":           "closure",
-		"anonymous_function":       "closure",
-		"unknown_node":             "",
+		"if_statement":       "if_guard",
+		"for_statement":      "loop",
+		"foreach_statement":  "loop",
+		"while_statement":    "loop",
+		"try_statement":      "try_block",
+		"catch_clause":       "catch_block",
+		"match_expression":   "match_arm",
+		"go_statement":       "goroutine",
+		"await_expression":   "async_block",
+		"arrow_function":     "closure",
+		"anonymous_function": "closure",
+		"unknown_node":       "",
 	}
 	for raw, want := range cases {
 		got := ast.NormaliseNodeKind(raw)

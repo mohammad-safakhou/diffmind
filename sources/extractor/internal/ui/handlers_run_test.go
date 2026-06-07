@@ -59,6 +59,7 @@ func TestBuildConfigFromRequest_PositiveValuesOverrideDefaults(t *testing.T) {
             "max_call_seconds": 3600,
             "liveness_poll_seconds": 10,
             "opencode_delete_delay_seconds": 20,
+            "deterministic_discovery": "shadow_compare",
             "skip_reexamination": true,
             "reuse_opencode_session": true,
             "cleanup_opencode_sessions": true
@@ -91,6 +92,9 @@ func TestBuildConfigFromRequest_PositiveValuesOverrideDefaults(t *testing.T) {
 	if got.Runtime.MaxCatalogItems != 50 {
 		t.Errorf("MaxCatalogItems = %d, want 50", got.Runtime.MaxCatalogItems)
 	}
+	if got.Runtime.DeterministicDiscoveryMode() != string(config.DeterministicDiscoveryShadowCompare) {
+		t.Errorf("DeterministicDiscovery = %q, want shadow_compare", got.Runtime.DeterministicDiscoveryMode())
+	}
 	if !got.Runtime.ReuseOpenCodeSession {
 		t.Errorf("ReuseOpenCodeSession not honoured")
 	}
@@ -119,8 +123,6 @@ func TestBuildConfigFromRequest_ZeroPromptRetryCountDisablesRetries(t *testing.T
 		t.Fatalf("PromptRetryCount = %d, want 0", got.Runtime.PromptRetryCount)
 	}
 }
-
-
 
 // The exact failing payload from the cautionary run, distilled.
 // timeout_seconds=300 MUST be honoured as a user-explicit override

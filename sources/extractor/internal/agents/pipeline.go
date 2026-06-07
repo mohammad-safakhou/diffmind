@@ -63,6 +63,9 @@ type orchestrator struct {
 	// because some error-handling paths still invoke it.
 	pipelineCancel context.CancelFunc
 
+	deterministicEvaluation *discoveryEvaluationReport
+	discoveryConfirmed      map[string][]llmEntity
+
 	sessionMu       sync.Mutex
 	sharedSessionID string
 }
@@ -303,6 +306,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		"repo": repoPath, "source_session_dir": sourceSessionDir, "snapshot": snap.Path, "sub_dir": subDir,
 		"workers": cfg.Runtime.Workers, "max_catalog_items": cfg.Runtime.MaxCatalogItems,
 		"reuse_session": cfg.Runtime.ReuseOpenCodeSession, "min_confidence": cfg.Quality.MinConfidence,
+		"deterministic_discovery": cfg.Runtime.DeterministicDiscoveryMode(),
 		// Log the EFFECTIVE timeouts. Future debugging starts here:
 		// if any of these is too small, the watchdog can't do its job.
 		"opencode_transport_timeout_sec": cfg.OpenCode.TimeoutSec,
@@ -315,13 +319,14 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		Kind:    events.KindRunStarted,
 		Message: "extraction pipeline started",
 		Payload: map[string]any{
-			"repo":               repoPath,
-			"snapshot":           snap.Path,
-			"sub_dir":            subDir,
-			"workers":            cfg.Runtime.Workers,
-			"max_catalog_items":  cfg.Runtime.MaxCatalogItems,
-			"min_confidence":     cfg.Quality.MinConfidence,
-			"skip_reexamination": cfg.Runtime.SkipReexamination,
+			"repo":                    repoPath,
+			"snapshot":                snap.Path,
+			"sub_dir":                 subDir,
+			"workers":                 cfg.Runtime.Workers,
+			"max_catalog_items":       cfg.Runtime.MaxCatalogItems,
+			"min_confidence":          cfg.Quality.MinConfidence,
+			"skip_reexamination":      cfg.Runtime.SkipReexamination,
+			"deterministic_discovery": cfg.Runtime.DeterministicDiscoveryMode(),
 			// Effective timeout settings; shown in the run_started event
 			// so the dashboard's timeline shows the resolved values.
 			// If you ever see a run fail with timeout=300 again you can
@@ -529,6 +534,14 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		}
 	} else {
 		allObjectives := objectives.Default()
+		deterministicMode := cfg.Runtime.DeterministicDiscoveryMode()
+		var deterministic []discoveryResult
+		if deterministicModeEnabled(deterministicMode) {
+			deterministic = o.runDeterministicDiscovery(ctx, allObjectives, deterministicMode)
+		}
+		if deterministicModePromotes(deterministicMode) {
+			o.discoveryConfirmed = deterministicByObjective(deterministic)
+		}
 		progress.StartPhase("discovery", len(allObjectives), 10, 35, "Discovering exposures and dependencies per objective in parallel.")
 		o.emit(events.Event{Kind: events.KindStageStarted, Stage: "discovery", Status: events.StatusRunning, Payload: map[string]any{"total": len(allObjectives), "tip": "Discovering exposures and dependencies per objective in parallel."}})
 		for _, obj := range allObjectives {
@@ -539,6 +552,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 			})
 		}
 		discovery := o.runDiscovery(ctx, allObjectives, rf, progress.Advance)
+		o.discoveryConfirmed = nil
 		progress.CompletePhase()
 
 		var firstDiscoveryErr error
@@ -567,6 +581,27 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		if firstDiscoveryErr != nil {
 			o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "discovery", Status: events.StatusFailed})
 			return haltFailure("discovery", "discover."+firstDiscoveryObj.ID, firstDiscoveryObj.ID, firstDiscoveryObj.Description, firstDiscoveryErr, nil)
+		}
+		candidate := discovery
+		if deterministicModeEnabled(deterministicMode) {
+			candidate = mergeDiscoveryResults(discovery, deterministic)
+			o.deterministicEvaluation = buildDiscoveryEvaluation(deterministicMode, discovery, deterministic, candidate)
+			o.persistStageState("discovery_evaluation.json", o.deterministicEvaluation)
+			o.emit(events.Event{
+				Kind: events.KindJobCompleted, Stage: "deterministic_discovery", JobID: "deterministic.compare", Status: events.StatusSuccess,
+				Payload: map[string]any{
+					"mode":              deterministicMode,
+					"baseline_items":    o.deterministicEvaluation.Baseline.Items,
+					"candidate_items":   o.deterministicEvaluation.Candidate.Items,
+					"matched":           o.deterministicEvaluation.Comparison.Matched,
+					"baseline_only":     o.deterministicEvaluation.Comparison.BaselineOnly,
+					"candidate_only":    o.deterministicEvaluation.Comparison.CandidateOnly,
+					"duplicates_merged": o.deterministicEvaluation.Comparison.DuplicatesMerged,
+				},
+			})
+		}
+		if deterministicModePromotes(deterministicMode) {
+			discovery = candidate
 		}
 		o.emitStageCompleted("discovery", events.StatusSuccess, nil)
 
@@ -657,6 +692,17 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 				}
 				previewPending = filtered
 			}
+		}
+		if len(previewPending) > 0 {
+			filtered := make([]detailJob, 0, len(previewPending))
+			for _, j := range previewPending {
+				seed := j.Seed
+				if isCompleteDeterministicSeed(j.Objective, &seed) {
+					continue
+				}
+				filtered = append(filtered, j)
+			}
+			previewPending = filtered
 		}
 		previewBatches := detailGroups(previewPending)
 		o.emit(events.Event{
