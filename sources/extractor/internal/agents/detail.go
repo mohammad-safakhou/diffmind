@@ -52,16 +52,27 @@ func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []detailJob, rf 
 		checkpoint = o.loadDetailCheckpoint(o.runDir + "/" + stateDir)
 	}
 
-	// Partition jobs into "already done" (from the checkpoint, ready
-	// to merge into the final result without an LLM call) and
-	// "pending" (will be batched + sent to the LLM).
+	// Partition jobs into "already done" (from the checkpoint, or complete
+	// deterministic seeds ready to use without an LLM call) and "pending"
+	// (will be batched + sent to the LLM).
 	var pending []detailJob
 	carriedResults := make([]detailResult, 0, len(checkpoint))
+	carriedMessages := map[string]string{}
 	for _, j := range jobs {
 		key := detailEntityKey(j.Objective.ID, j.Seed.Name)
 		entry, ok := checkpoint[key]
 		if !ok {
-			pending = append(pending, j)
+			if isCompleteDeterministicSeed(j.Objective, &j.Seed) {
+				seed := j.Seed
+				carriedResults = append(carriedResults, detailResult{Objective: j.Objective, SeedName: j.Seed.Name, Item: &seed})
+				carriedMessages[key] = "complete deterministic seed"
+				if checkpointEntry, ok := o.detailCheckpointForSeed(j); ok {
+					o.appendDetailEntity(checkpointEntry)
+				}
+				o.recordDeterministicDetailSkip(1)
+			} else {
+				pending = append(pending, j)
+			}
 			continue
 		}
 		// Reconstruct the detailResult from the checkpoint.
@@ -80,6 +91,7 @@ func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []detailJob, rf 
 			continue
 		}
 		carriedResults = append(carriedResults, res)
+		carriedMessages[key] = "resumed from per-entity checkpoint"
 	}
 	if len(checkpoint) > 0 {
 		util.Info("agents.detail", "loaded detail checkpoint", map[string]any{
@@ -94,14 +106,20 @@ func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []detailJob, rf 
 	// so the dashboard's pipeline strip shows progress.
 	for _, r := range carriedResults {
 		jobID := "detail." + r.Objective.ID + "." + safeJobID(r.SeedName)
+		key := detailEntityKey(r.Objective.ID, r.SeedName)
+		message := carriedMessages[key]
+		if message == "" {
+			message = "resumed from per-entity checkpoint"
+		}
 		o.emit(events.Event{
 			Kind: events.KindJobCompleted, Stage: "detail", JobID: jobID, Status: events.StatusSkipped,
-			Message:  "resumed from per-entity checkpoint",
+			Message:  message,
 			ParentID: "discover." + r.Objective.ID,
 			Payload: map[string]any{
-				"objective_id": r.Objective.ID,
-				"name":         r.SeedName,
-				"resumed":      true,
+				"objective_id":  r.Objective.ID,
+				"name":          r.SeedName,
+				"resumed":       message == "resumed from per-entity checkpoint",
+				"deterministic": message == "complete deterministic seed",
 			},
 		})
 		if onResult != nil {

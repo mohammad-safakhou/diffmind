@@ -142,6 +142,7 @@ export function OutcomeGraph({ onClose }) {
   const [hovered, setHovered] = useState(null)   // node id
   const [pinned, setPinned]   = useState(null)   // node id (clicked)
   const [tooltip, setTooltip] = useState(null)   // { x, y, node }
+  const [showDeterministic, setShowDeterministic] = useState(false)
   const svgRef = useRef(null)
 
   const runId = runMeta.value?.id
@@ -176,6 +177,16 @@ export function OutcomeGraph({ onClose }) {
   const dependencies = flattenArtifact(data.dependencies)
   const connections  = flattenArtifact(data.edges || data.connections)
   const unresolved   = flattenArtifact(data.unresolved)
+  const deterministic = data.deterministic || null
+  const deterministicFrameworks = deterministic?.frameworks || {}
+  const deterministicEvaluation = deterministic?.evaluation || null
+  const deterministicAccepted = Array.isArray(deterministicFrameworks.accepted) ? deterministicFrameworks.accepted : []
+  const deterministicRejected = Array.isArray(deterministicFrameworks.rejected) ? deterministicFrameworks.rejected : []
+  const routeManifest = Array.isArray(deterministicFrameworks.route_manifest) ? deterministicFrameworks.route_manifest : []
+  const hasDeterministicReport = Boolean(
+    deterministic &&
+    (deterministicAccepted.length || deterministicRejected.length || routeManifest.length || deterministicEvaluation)
+  )
 
   const expById = new Map(exposures.map(e => [e.id, e]))
   const depById = new Map(dependencies.map(d => [d.id, d]))
@@ -336,6 +347,15 @@ export function OutcomeGraph({ onClose }) {
           <span class="og-count-chip dep">{dependencies.length} dependencies</span>
           {unresolved.length > 0 && (
             <span class="og-count-chip unres">{unresolved.length} unresolved</span>
+          )}
+          {hasDeterministicReport && (
+            <button
+              class={'og-count-chip det' + (showDeterministic ? ' active' : '')}
+              type="button"
+              onClick={() => setShowDeterministic((v) => !v)}
+            >
+              {routeManifest.length} deterministic routes
+            </button>
           )}
         </div>
         <div class="og-legend">
@@ -577,7 +597,7 @@ export function OutcomeGraph({ onClose }) {
 
       {/* ── Unresolved sidebar ────────────────────────────────────────────── */}
       {unresolved.length > 0 && !pinned && (
-        <div class="og-unresolved">
+        <div class={'og-unresolved' + (showDeterministic ? ' hidden' : '')}>
           <div class="og-unresolved-header">Unresolved ({unresolved.length})</div>
           {unresolved.map((u, i) => (
             <div key={i} class="og-unresolved-item">
@@ -590,8 +610,87 @@ export function OutcomeGraph({ onClose }) {
           ))}
         </div>
       )}
+
+      {hasDeterministicReport && showDeterministic && !pinned && (
+        <DeterministicPanel
+          accepted={deterministicAccepted}
+          rejected={deterministicRejected}
+          manifest={routeManifest}
+          evaluation={deterministicEvaluation}
+          onClose={() => setShowDeterministic(false)}
+        />
+      )}
     </GraphShell>
   )
+}
+
+function DeterministicPanel({ accepted, rejected, manifest, evaluation, onClose }) {
+  const comparison = evaluation?.comparison || {}
+  const reasons = reasonCounts(rejected)
+  return (
+    <div class="og-deterministic">
+      <div class="og-deterministic-header">
+        <div>
+          <div class="og-deterministic-title">Deterministic Discovery</div>
+          <div class="og-deterministic-sub">
+            {accepted.length} accepted / {rejected.length} rejected
+          </div>
+        </div>
+        <button class="og-detail-close" onClick={onClose}>x</button>
+      </div>
+
+      {evaluation && (
+        <div class="og-deterministic-metrics">
+          <span>mode {evaluation.mode || 'observe'}</span>
+          <span>matched {comparison.matched ?? 0}</span>
+          <span>candidate only {comparison.candidate_only ?? 0}</span>
+          <span>baseline only {comparison.baseline_only ?? 0}</span>
+        </div>
+      )}
+
+      {reasons.length > 0 && (
+        <div class="og-deterministic-section">
+          <div class="og-deterministic-section-title">Rejected Candidates</div>
+          {reasons.slice(0, 8).map(([reason, count]) => (
+            <div class="og-deterministic-reason" key={reason}>
+              <span>{reason.replace(/_/g, ' ')}</span>
+              <b>{count}</b>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div class="og-deterministic-section">
+        <div class="og-deterministic-section-title">Route Handler Manifest</div>
+        {manifest.length === 0 ? (
+          <div class="og-deterministic-empty">No accepted inbound HTTP handlers.</div>
+        ) : (
+          manifest.slice(0, 80).map((r, i) => (
+            <div class="og-route-row" key={`${r.method}:${r.path}:${i}`}>
+              <div class="og-route-main">
+                <span class="og-route-method">{r.method || 'ANY'}</span>
+                <span class="og-route-path">{r.path}</span>
+              </div>
+              <div class="og-route-handler">{r.handler || 'handler unknown'}</div>
+              <div class="og-route-location">{r.file}:{r.line}</div>
+            </div>
+          ))
+        )}
+        {manifest.length > 80 && (
+          <div class="og-deterministic-empty">+{manifest.length - 80} more in state/deterministic_frameworks.json</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function reasonCounts(items) {
+  const counts = new Map()
+  for (const item of items || []) {
+    const reason = item.rejection_reason || item.reason || 'unknown'
+    counts.set(reason, (counts.get(reason) || 0) + 1)
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
 }
 
 // ─── Pinned node detail panel ────────────────────────────────────────────────

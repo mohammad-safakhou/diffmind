@@ -35,13 +35,14 @@ type startRunRequest struct {
 	} `json:"opencode"`
 
 	Runtime struct {
-		Workers                 int  `json:"workers"`
-		MaxCatalogItems         int  `json:"max_catalog_items"`
-		ReuseOpenCodeSession    bool `json:"reuse_opencode_session"`
-		CleanupOpenCodeSessions bool `json:"cleanup_opencode_sessions"`
-		OpenCodeDeleteDelaySec  int  `json:"opencode_delete_delay_seconds"`
-		SkipReexamination       bool `json:"skip_reexamination"`
-		PromptRetryCount        *int `json:"prompt_retry_count"`
+		Workers                 int    `json:"workers"`
+		MaxCatalogItems         int    `json:"max_catalog_items"`
+		ReuseOpenCodeSession    bool   `json:"reuse_opencode_session"`
+		CleanupOpenCodeSessions bool   `json:"cleanup_opencode_sessions"`
+		OpenCodeDeleteDelaySec  int    `json:"opencode_delete_delay_seconds"`
+		SkipReexamination       bool   `json:"skip_reexamination"`
+		PromptRetryCount        *int   `json:"prompt_retry_count"`
+		DeterministicDiscovery  string `json:"deterministic_discovery"`
 		// Liveness watchdog knobs. 0 = use config default. See
 		// config.Runtime for field semantics.
 		IdleTimeoutSec  int `json:"idle_timeout_seconds"`
@@ -52,7 +53,6 @@ type startRunRequest struct {
 	Quality struct {
 		MinConfidence float64 `json:"min_confidence"`
 	} `json:"quality"`
-
 }
 
 // buildConfigFromRequest translates a startRunRequest into a
@@ -91,6 +91,9 @@ func buildConfigFromRequest(req startRunRequest) config.Config {
 	cfg.Runtime.SkipReexamination = req.Runtime.SkipReexamination
 	if req.Runtime.PromptRetryCount != nil {
 		cfg.Runtime.PromptRetryCount = *req.Runtime.PromptRetryCount
+	}
+	if mode := strings.TrimSpace(req.Runtime.DeterministicDiscovery); mode != "" {
+		cfg.Runtime.DeterministicDiscovery = config.DeterministicDiscoverySetting(mode)
 	}
 	if req.Runtime.IdleTimeoutSec > 0 {
 		cfg.Runtime.IdleTimeoutSec = req.Runtime.IdleTimeoutSec
@@ -183,8 +186,9 @@ func (s *Server) handleRunCreate(w http.ResponseWriter, r *http.Request) {
 		"liveness_poll_sec":              cfg.Runtime.LivenessPollSec,
 		"workers":                        cfg.Runtime.Workers,
 		"max_catalog_items":              cfg.Runtime.MaxCatalogItems,
-		"skip_reexamination": cfg.Runtime.SkipReexamination,
-		"reuse_session":      cfg.Runtime.ReuseOpenCodeSession,
+		"deterministic_discovery":        cfg.Runtime.DeterministicDiscoveryMode(),
+		"skip_reexamination":             cfg.Runtime.SkipReexamination,
+		"reuse_session":                  cfg.Runtime.ReuseOpenCodeSession,
 	})
 
 	runID, err := s.runner.Start(context.Background(), runner.StartParams{
@@ -217,14 +221,15 @@ type retryRequest struct {
 		TimeoutSec   int    `json:"timeout_seconds"`
 	} `json:"opencode"`
 	Runtime struct {
-		Workers              int  `json:"workers"`
-		MaxCatalogItems      int  `json:"max_catalog_items"`
-		IdleTimeoutSec       int  `json:"idle_timeout_seconds"`
-		PromptRetryCount     *int `json:"prompt_retry_count"`
-		MaxCallSeconds       int  `json:"max_call_seconds"`
-		LivenessPollSec      int  `json:"liveness_poll_seconds"`
-		ReuseOpenCodeSession bool `json:"reuse_opencode_session"`
-		SkipReexamination    bool `json:"skip_reexamination"`
+		Workers                int    `json:"workers"`
+		MaxCatalogItems        int    `json:"max_catalog_items"`
+		IdleTimeoutSec         int    `json:"idle_timeout_seconds"`
+		PromptRetryCount       *int   `json:"prompt_retry_count"`
+		MaxCallSeconds         int    `json:"max_call_seconds"`
+		LivenessPollSec        int    `json:"liveness_poll_seconds"`
+		ReuseOpenCodeSession   bool   `json:"reuse_opencode_session"`
+		SkipReexamination      bool   `json:"skip_reexamination"`
+		DeterministicDiscovery string `json:"deterministic_discovery"`
 	} `json:"runtime"`
 }
 
@@ -290,6 +295,9 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request, runID st
 	if req.Runtime.LivenessPollSec > 0 {
 		cfg.Runtime.LivenessPollSec = req.Runtime.LivenessPollSec
 	}
+	if mode := strings.TrimSpace(req.Runtime.DeterministicDiscovery); mode != "" {
+		cfg.Runtime.DeterministicDiscovery = config.DeterministicDiscoverySetting(mode)
+	}
 	cfg.Runtime.ReuseOpenCodeSession = req.Runtime.ReuseOpenCodeSession
 	cfg.Runtime.SkipReexamination = req.Runtime.SkipReexamination
 	cfg.Artifacts.BaseDir = s.baseDir
@@ -330,6 +338,7 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request, runID st
 		"prompt_retry_count":             cfg.Runtime.PromptRetryCount,
 		"max_call_sec":                   cfg.Runtime.MaxCallSeconds,
 		"liveness_poll_sec":              cfg.Runtime.LivenessPollSec,
+		"deterministic_discovery":        cfg.Runtime.DeterministicDiscoveryMode(),
 	})
 
 	id, err := s.runner.Retry(context.Background(), runner.RetryParams{

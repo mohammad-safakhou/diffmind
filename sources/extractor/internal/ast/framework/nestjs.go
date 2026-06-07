@@ -19,12 +19,14 @@ func (d *nestjsDetector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
 		if fa.Language != "typescript" && fa.Language != "javascript" && fa.Language != "tsx" {
 			continue
 		}
+		classes := classesByName(fa)
 		for _, sym := range fa.Symbols {
 			if sym.Kind != ast.SymbolKindMethod && sym.Kind != ast.SymbolKindFunction {
 				continue
 			}
+			cls := enclosingClassForSymbol(fa, sym, classes)
 			for _, ann := range sym.Annotations {
-				b := nestAnnotationToBinding(sym, ann)
+				b := nestAnnotationToBinding(sym, cls, ann)
 				if b != nil {
 					out = append(out, *b)
 				}
@@ -34,7 +36,7 @@ func (d *nestjsDetector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
 	return out
 }
 
-func nestAnnotationToBinding(sym ast.SymbolDef, ann ast.Annotation) *ast.FrameworkBinding {
+func nestAnnotationToBinding(sym ast.SymbolDef, cls *ast.SymbolDef, ann ast.Annotation) *ast.FrameworkBinding {
 	name := ann.Name
 	args := ann.Arguments
 
@@ -46,15 +48,28 @@ func nestAnnotationToBinding(sym ast.SymbolDef, ann ast.Annotation) *ast.Framewo
 		"Delete": "DELETE",
 	}
 	if method, ok := httpMap[name]; ok {
-		path := extractFirstStringArg(strings.TrimSpace(args))
+		prefix := ""
+		controller := false
+		if cls != nil {
+			controller = hasAnyAnnotation(*cls, "Controller")
+			prefix = nestControllerPrefix(*cls)
+		}
+		path := joinPath(prefix, extractFirstStringArg(strings.TrimSpace(args)))
+		rejection := ""
+		if !controller {
+			rejection = "nestjs_http_decorator_without_controller_context"
+		}
 		return &ast.FrameworkBinding{
-			Framework:     "nestjs",
-			Kind:          "http_handler",
-			Symbol:        sym.Qualified,
-			Trigger:       method + " " + path,
-			TriggerSource: "@" + name + "(" + args + ")",
-			File:          sym.File,
-			Range:         sym.Range,
+			Framework:        "nestjs",
+			Kind:             "http_handler",
+			Direction:        "inbound",
+			Symbol:           sym.Qualified,
+			Trigger:          method + " " + path,
+			TriggerSource:    "@" + name + "(" + args + ")",
+			File:             sym.File,
+			Range:            sym.Range,
+			ConfidenceReason: "nestjs_controller_http_decorator",
+			RejectionReason:  rejection,
 		}
 	}
 
@@ -62,6 +77,7 @@ func nestAnnotationToBinding(sym ast.SymbolDef, ann ast.Annotation) *ast.Framewo
 		return &ast.FrameworkBinding{
 			Framework:     "nestjs",
 			Kind:          "scheduler",
+			Direction:     "inbound",
 			Symbol:        sym.Qualified,
 			Trigger:       "cron: " + extractFirstStringArg(args),
 			TriggerSource: "@Cron(" + args + ")",
@@ -74,6 +90,7 @@ func nestAnnotationToBinding(sym ast.SymbolDef, ann ast.Annotation) *ast.Framewo
 		return &ast.FrameworkBinding{
 			Framework:     "nestjs",
 			Kind:          "queue_consumer",
+			Direction:     "inbound",
 			Symbol:        sym.Qualified,
 			Trigger:       "message: " + extractFirstStringArg(args),
 			TriggerSource: "@" + name + "(" + args + ")",
@@ -83,4 +100,13 @@ func nestAnnotationToBinding(sym ast.SymbolDef, ann ast.Annotation) *ast.Framewo
 	}
 
 	return nil
+}
+
+func nestControllerPrefix(cls ast.SymbolDef) string {
+	for _, ann := range cls.Annotations {
+		if ann.Name == "Controller" {
+			return extractFirstStringArg(ann.Arguments)
+		}
+	}
+	return ""
 }

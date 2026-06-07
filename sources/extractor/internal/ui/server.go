@@ -626,6 +626,10 @@ func (s *Server) handleRunGraph(w http.ResponseWriter, r *http.Request, runID st
 	// Try a pre-built graph.v1.json first (written by the pipeline at run time).
 	graphPath := filepath.Join(runDir, "state", "graph.v1.json")
 	if b, err := os.ReadFile(graphPath); err == nil {
+		if graph := attachDeterministicReport(b, runDir); graph != nil {
+			writeJSON(w, graph)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(b)
 		return
@@ -650,7 +654,50 @@ func (s *Server) handleRunGraph(w http.ResponseWriter, r *http.Request, runID st
 	}
 
 	graph := buildGraphExport(runID, data, infra)
+	if det := loadRunDeterministicReport(runDir); det != nil {
+		graph["deterministic"] = det
+	}
 	writeJSON(w, graph)
+}
+
+func attachDeterministicReport(graphBytes []byte, runDir string) map[string]any {
+	var graph map[string]any
+	if err := json.Unmarshal(graphBytes, &graph); err != nil {
+		return nil
+	}
+	if _, exists := graph["deterministic"]; exists {
+		return graph
+	}
+	if det := loadRunDeterministicReport(runDir); det != nil {
+		graph["deterministic"] = det
+	}
+	return graph
+}
+
+func loadRunDeterministicReport(runDir string) map[string]any {
+	out := map[string]any{}
+	if v := readOptionalJSON(filepath.Join(runDir, "state", "deterministic_frameworks.json")); v != nil {
+		out["frameworks"] = v
+	}
+	if v := readOptionalJSON(filepath.Join(runDir, "state", "discovery_evaluation.json")); v != nil {
+		out["evaluation"] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func readOptionalJSON(path string) any {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var v any
+	if err := json.Unmarshal(b, &v); err != nil {
+		return nil
+	}
+	return v
 }
 
 // buildGraphExport assembles the graph.v1 export from run artifacts.

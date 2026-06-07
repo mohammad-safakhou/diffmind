@@ -241,7 +241,7 @@ func (o *orchestrator) runDiscoveryShard(ctx context.Context, obj objectives.Obj
 		}
 		scope = shard.Dirs
 	}
-	prompt := buildDiscoveryPrompt(obj, rf, o.subDir, hints, scope)
+	prompt := buildDiscoveryPrompt(obj, rf, o.subDir, hints, scope, o.discoveryConfirmed[obj.ID])
 	schema := entityListSchemaForObjective(obj)
 	payload, err := o.promptAgent(ctx, jobID, prompt, schema)
 	if err != nil {

@@ -186,7 +186,7 @@ func detailKeysLine(obj objectives.Objective) string {
 
 // ---- Stage 1: per-objective discovery ----
 
-func buildDiscoveryPrompt(obj objectives.Objective, rf *repoFacts, subDir string, hints objectiveHints, scopeDirs []string) string {
+func buildDiscoveryPrompt(obj objectives.Objective, rf *repoFacts, subDir string, hints objectiveHints, scopeDirs []string, confirmed []llmEntity) string {
 	var sb strings.Builder
 	sb.WriteString("AGENT ROLE: objective-extractor\n")
 	sb.WriteString(readOnlyPreamble)
@@ -206,6 +206,7 @@ func buildDiscoveryPrompt(obj objectives.Objective, rf *repoFacts, subDir string
 	sb.WriteString(discoveryScopeBlock(scopeDirs))
 	sb.WriteString(repoFactsBlock(rf))
 	sb.WriteString(astHintsBlock(hints))
+	sb.WriteString(confirmedDiscoveryBlock(confirmed))
 	sb.WriteString("DISCOVERY INSTRUCTIONS:\n")
 	sb.WriteString(obj.DiscoveryPrompt)
 	sb.WriteString("\n\n")
@@ -219,6 +220,37 @@ func buildDiscoveryPrompt(obj objectives.Objective, rf *repoFacts, subDir string
 - Confidence reflects your certainty the item is real and of this objective's type.
 
 OUTPUT: Return a single JSON object {"items": [...]} matching the provided schema.`)
+	return sb.String()
+}
+
+func confirmedDiscoveryBlock(items []llmEntity) string {
+	if len(items) == 0 {
+		return ""
+	}
+	const max = 80
+	var sb strings.Builder
+	sb.WriteString("KNOWN_CONFIRMED_ITEMS:\n")
+	limit := len(items)
+	if limit > max {
+		limit = max
+	}
+	for i := 0; i < limit; i++ {
+		it := items[i]
+		loc := ""
+		if len(it.Locations) > 0 {
+			loc = fmt.Sprintf(" at %s:%d", it.Locations[0].File, it.Locations[0].StartLine)
+		}
+		sb.WriteString("- ")
+		sb.WriteString(strings.TrimSpace(it.Name))
+		sb.WriteString(loc)
+		sb.WriteString("\n")
+	}
+	if len(items) > limit {
+		sb.WriteString("- ... ")
+		sb.WriteString(itoa(len(items) - limit))
+		sb.WriteString(" more confirmed items omitted\n")
+	}
+	sb.WriteString("\nDo not rediscover known confirmed items above. Search for additional custom, dynamic, or non-standard items not covered by the confirmed list.\n\n")
 	return sb.String()
 }
 
