@@ -63,8 +63,7 @@ type orchestrator struct {
 	// because some error-handling paths still invoke it.
 	pipelineCancel context.CancelFunc
 
-	deterministicEvaluation *discoveryEvaluationReport
-	discoveryConfirmed      map[string][]llmEntity
+	discoveryConfirmed map[string][]llmEntity
 
 	sessionMu       sync.Mutex
 	sharedSessionID string
@@ -306,7 +305,6 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		"repo": repoPath, "source_session_dir": sourceSessionDir, "snapshot": snap.Path, "sub_dir": subDir,
 		"workers": cfg.Runtime.Workers, "max_catalog_items": cfg.Runtime.MaxCatalogItems,
 		"reuse_session": cfg.Runtime.ReuseOpenCodeSession, "min_confidence": cfg.Quality.MinConfidence,
-		"deterministic_discovery": cfg.Runtime.DeterministicDiscoveryMode(),
 		// Log the EFFECTIVE timeouts. Future debugging starts here:
 		// if any of these is too small, the watchdog can't do its job.
 		"opencode_transport_timeout_sec": cfg.OpenCode.TimeoutSec,
@@ -324,9 +322,8 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 			"sub_dir":                 subDir,
 			"workers":                 cfg.Runtime.Workers,
 			"max_catalog_items":       cfg.Runtime.MaxCatalogItems,
-			"min_confidence":          cfg.Quality.MinConfidence,
-			"skip_reexamination":      cfg.Runtime.SkipReexamination,
-			"deterministic_discovery": cfg.Runtime.DeterministicDiscoveryMode(),
+			"min_confidence":     cfg.Quality.MinConfidence,
+			"skip_reexamination": cfg.Runtime.SkipReexamination,
 			// Effective timeout settings; shown in the run_started event
 			// so the dashboard's timeline shows the resolved values.
 			// If you ever see a run fail with timeout=300 again you can
@@ -534,14 +531,12 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		}
 	} else {
 		allObjectives := objectives.Default()
-		deterministicMode := cfg.Runtime.DeterministicDiscoveryMode()
-		var deterministic []discoveryResult
-		if deterministicModeEnabled(deterministicMode) {
-			deterministic = o.runDeterministicDiscovery(ctx, allObjectives, deterministicMode)
-		}
-		if deterministicModePromotes(deterministicMode) {
-			o.discoveryConfirmed = deterministicByObjective(deterministic)
-		}
+		// Deterministic discovery always runs first. Its high-precision findings
+		// (a) seed the LLM's KNOWN_CONFIRMED_ITEMS so the model stops
+		// re-enumerating the mechanical bulk, and (b) are merged into the final
+		// discovery set below. Safe no-op when the AST index is unavailable.
+		deterministic := o.runDeterministicDiscovery(ctx, allObjectives)
+		o.discoveryConfirmed = deterministicByObjective(deterministic)
 		progress.StartPhase("discovery", len(allObjectives), 10, 35, "Discovering exposures and dependencies per objective in parallel.")
 		o.emit(events.Event{Kind: events.KindStageStarted, Stage: "discovery", Status: events.StatusRunning, Payload: map[string]any{"total": len(allObjectives), "tip": "Discovering exposures and dependencies per objective in parallel."}})
 		for _, obj := range allObjectives {
@@ -582,27 +577,9 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 			o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "discovery", Status: events.StatusFailed})
 			return haltFailure("discovery", "discover."+firstDiscoveryObj.ID, firstDiscoveryObj.ID, firstDiscoveryObj.Description, firstDiscoveryErr, nil)
 		}
-		candidate := discovery
-		if deterministicModeEnabled(deterministicMode) {
-			candidate = mergeDiscoveryResults(discovery, deterministic)
-			o.deterministicEvaluation = buildDiscoveryEvaluation(deterministicMode, discovery, deterministic, candidate)
-			o.persistStageState("discovery_evaluation.json", o.deterministicEvaluation)
-			o.emit(events.Event{
-				Kind: events.KindJobCompleted, Stage: "deterministic_discovery", JobID: "deterministic.compare", Status: events.StatusSuccess,
-				Payload: map[string]any{
-					"mode":              deterministicMode,
-					"baseline_items":    o.deterministicEvaluation.Baseline.Items,
-					"candidate_items":   o.deterministicEvaluation.Candidate.Items,
-					"matched":           o.deterministicEvaluation.Comparison.Matched,
-					"baseline_only":     o.deterministicEvaluation.Comparison.BaselineOnly,
-					"candidate_only":    o.deterministicEvaluation.Comparison.CandidateOnly,
-					"duplicates_merged": o.deterministicEvaluation.Comparison.DuplicatesMerged,
-				},
-			})
-		}
-		if deterministicModePromotes(deterministicMode) {
-			discovery = candidate
-		}
+		// Merge the deterministic floor into the LLM's findings (semantic
+		// dedup per objective) to form the final discovery set.
+		discovery = mergeDiscoveryResults(discovery, deterministic)
 		o.emitStageCompleted("discovery", events.StatusSuccess, nil)
 
 		for _, d := range discovery {

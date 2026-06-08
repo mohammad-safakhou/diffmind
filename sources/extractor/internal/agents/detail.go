@@ -69,7 +69,6 @@ func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []detailJob, rf 
 				if checkpointEntry, ok := o.detailCheckpointForSeed(j); ok {
 					o.appendDetailEntity(checkpointEntry)
 				}
-				o.recordDeterministicDetailSkip(1)
 			} else {
 				pending = append(pending, j)
 			}
