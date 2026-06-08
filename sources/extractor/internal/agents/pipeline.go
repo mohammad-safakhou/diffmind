@@ -747,11 +747,34 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		}
 		o.emitStageCompleted("detail", events.StatusSuccess, nil)
 
+		// Detail is an ENRICHMENT stage, not a gatekeeper. Discovery (+
+		// reexamination) already decided WHAT exists; detail only adds
+		// method/path, table, evidence, etc. So it must never silently drop
+		// or re-identify an entity: a seed the model failed to enrich falls
+		// back to its discovered form, and the discovered type/name are always
+		// preserved over whatever detail returned. This keeps the count and
+		// identity stable across runs regardless of detail-stage variance.
+		seedByKey := make(map[string]llmEntity, len(reexamined))
+		for _, j := range reexamined {
+			seedByKey[detailEntityKey(j.Objective.ID, j.Seed.Name)] = j.Seed
+		}
 		for _, d := range details {
-			if d.Item == nil {
-				continue
+			seed, hasSeed := seedByKey[detailEntityKey(d.Objective.ID, d.SeedName)]
+			item := d.Item
+			if item == nil {
+				if !hasSeed {
+					continue
+				}
+				s := seed
+				item = &s
+			} else if hasSeed {
+				// Preserve the discovered identity; keep detail's enrichment.
+				item.Type = seed.Type
+				if strings.TrimSpace(seed.Name) != "" {
+					item.Name = seed.Name
+				}
 			}
-			base, ur := toBase(o.repoPath, d.Objective, *d.Item, o.cfg.Quality.MinConfidence)
+			base, ur := toBase(o.repoPath, d.Objective, *item, o.cfg.Quality.MinConfidence)
 			if ur != nil {
 				unresolved = append(unresolved, *ur)
 				continue
