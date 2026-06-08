@@ -70,8 +70,15 @@ func dedupeExposuresSemantic(in []model.Exposure) []model.Exposure {
 }
 
 func dedupeDependenciesSemantic(in []model.Dependency) []model.Dependency {
+	// db/cache deps with a resolvable resource go through datastore-aware
+	// grouping (below); everything else uses the generic semantic key.
+	var data []model.Dependency
 	byKey := map[string]model.Dependency{}
 	for _, d := range in {
+		if (d.Type == "db_operation" || d.Type == "cache_operation") && dataResource(d.BaseEntity) != "" {
+			data = append(data, d)
+			continue
+		}
 		key := semanticKey(d.BaseEntity)
 		if existing, ok := byKey[key]; ok {
 			byKey[key] = chooseDependency(existing, d)
@@ -79,11 +86,130 @@ func dedupeDependenciesSemantic(in []model.Dependency) []model.Dependency {
 		}
 		byKey[key] = d
 	}
-	out := make([]model.Dependency, 0, len(byKey))
+	out := make([]model.Dependency, 0, len(byKey)+len(data))
 	for _, d := range byKey {
 		out = append(out, d)
 	}
+	out = append(out, dedupeDataDependencies(data)...)
 	return out
+}
+
+// dedupeDataDependencies collapses db/cache operations by (resource, operation)
+// — the high-level data dependency — while PRESERVING genuinely distinct
+// datastores. Within a (resource, operation) group it splits into one row per
+// distinct *specific* platform (postgres vs mysql vs dynamodb), so a service
+// that reads the same table name from two real databases keeps both. Rows whose
+// platform is generic/unreliable ("database", "unknown", a free-text config
+// dump → normalised to "") are NOT treated as a separate datastore: they merge
+// into the single specific platform when there is exactly one, and only stand
+// alone when no specific platform is known. This removes the earlier single-DB
+// assumption (which silently merged across distinct databases) without letting
+// the LLM's noisy platform/instance text re-fragment one logical store.
+func dedupeDataDependencies(in []model.Dependency) []model.Dependency {
+	groups := map[string][]model.Dependency{}
+	var order []string
+	for _, d := range in {
+		k := d.Type + "|" + dataResource(d.BaseEntity) + "|" + dataOperation(d.BaseEntity)
+		if _, ok := groups[k]; !ok {
+			order = append(order, k)
+		}
+		groups[k] = append(groups[k], d)
+	}
+	var out []model.Dependency
+	for _, k := range order {
+		rows := groups[k]
+		bySpec := map[string][]model.Dependency{}
+		var specs []string
+		var generic []model.Dependency
+		for _, d := range rows {
+			p := depPlatformClass(d)
+			if p == "" {
+				generic = append(generic, d)
+				continue
+			}
+			if _, ok := bySpec[p]; !ok {
+				specs = append(specs, p)
+			}
+			bySpec[p] = append(bySpec[p], d)
+		}
+		switch len(specs) {
+		case 0:
+			out = append(out, reduceDeps(generic))
+		case 1:
+			out = append(out, reduceDeps(append(bySpec[specs[0]], generic...)))
+		default:
+			sort.Strings(specs)
+			for i, p := range specs {
+				grp := bySpec[p]
+				if i == 0 {
+					grp = append(grp, generic...)
+				}
+				out = append(out, reduceDeps(grp))
+			}
+		}
+	}
+	return out
+}
+
+func reduceDeps(rows []model.Dependency) model.Dependency {
+	out := rows[0]
+	for _, d := range rows[1:] {
+		out = chooseDependency(out, d)
+	}
+	return out
+}
+
+func dataResource(b model.BaseEntity) string {
+	return singularResource(firstDetail(b, "table", "table_or_entity", "entity", "cache", "collection", "index", "key"))
+}
+
+func dataOperation(b model.BaseEntity) string {
+	if op := normalizeDBOp(firstDetail(b, "operation", "operation_kind", "operation_type")); op != "" {
+		return op
+	}
+	return normalizeDBOp(b.Operation)
+}
+
+// depPlatformClass normalises a dependency's datastore platform to a coarse,
+// reliable class. Generic/placeholder values ("database", "jdbc", "unknown",
+// "") collapse to "" so they never masquerade as a distinct datastore; a real
+// engine name (postgres, mysql, dynamodb, ...) is preserved so multi-datastore
+// services keep their distinctions.
+func depPlatformClass(d model.Dependency) string {
+	p := strings.ToLower(strings.TrimSpace(d.Platform))
+	if p == "" {
+		p = firstDetail(d.BaseEntity, "platform", "database_type", "database")
+	}
+	switch {
+	case p == "":
+		return ""
+	case strings.Contains(p, "postgres"):
+		return "postgres"
+	case strings.Contains(p, "mysql"), strings.Contains(p, "mariadb"):
+		return "mysql"
+	case strings.Contains(p, "dynamo"):
+		return "dynamodb"
+	case strings.Contains(p, "mongo"):
+		return "mongodb"
+	case strings.Contains(p, "elastic"), strings.Contains(p, "opensearch"):
+		return "elasticsearch"
+	case strings.Contains(p, "redis"):
+		return "redis"
+	case strings.Contains(p, "memcache"):
+		return "memcached"
+	case strings.Contains(p, "cassandra"):
+		return "cassandra"
+	case strings.Contains(p, "athena"):
+		return "athena"
+	case strings.Contains(p, "snowflake"):
+		return "snowflake"
+	case strings.Contains(p, "bigquery"):
+		return "bigquery"
+	case p == "database" || p == "db" || p == "sql" || p == "rdbms" || p == "jdbc" || p == "relational" || p == "unknown":
+		return ""
+	default:
+		return p
+	}
 }
 
 func semanticKey(b model.BaseEntity) string {
@@ -97,28 +223,9 @@ func semanticKey(b model.BaseEntity) string {
 			return "exposure-job|" + name + "|" + loc
 		}
 	}
-	// High-level data dependencies dedupe by (resource, operation-kind) so the
-	// same logical operation — e.g. "read orders" — collapses regardless of
-	// which file or repository method surfaced it, and regardless of whether it
-	// came from the LLM, the deterministic floor, or AST augmentation. Location
-	// is intentionally EXCLUDED (it was fragmenting one logical dependency into
-	// many rows) and the operation is normalised to a read/write class so a
-	// SELECT and a "read" collapse.
-	if b.Type == "db_operation" || b.Type == "cache_operation" {
-		resource := singularResource(firstDetail(b, "table", "table_or_entity", "entity", "cache", "collection", "index", "key"))
-		op := normalizeDBOp(firstDetail(b, "operation", "operation_kind", "operation_type"))
-		if op == "" {
-			op = normalizeDBOp(b.Operation)
-		}
-		if resource != "" {
-			// Key on (resource, operation) ONLY. platform/instance are
-			// deliberately excluded: within one service a given table is one
-			// logical store, and those fields are filled with inconsistent
-			// free-text ("postgres" vs "database" vs a whole datasource-config
-			// dump) that otherwise fragments one dependency into many rows.
-			return strings.Join([]string{b.Type, resource, op}, "|")
-		}
-	}
+	// NOTE: db_operation/cache_operation with a resolvable resource are deduped
+	// by dedupeDataDependencies (datastore-aware (resource, operation) grouping),
+	// not here. This generic key only catches resource-less data deps.
 	instance := strings.ToLower(strings.TrimSpace(b.Instance))
 	operation := strings.ToLower(strings.TrimSpace(b.Operation))
 	if operation == "" {
@@ -146,22 +253,38 @@ func firstDetail(b model.BaseEntity, keys ...string) string {
 	return ""
 }
 
-// singularResource normalises a table/entity name to a singular form for
-// keying so plural/singular variants of the same table — the LLM's "orders"
-// vs the deterministic deriver's entity-derived "order" — collapse together.
-// Conservative: only the common English plural endings, and never touches a
-// double-s word ("address" stays "address").
+// uncountableResources are words that end in "s" but are not plurals; stripping
+// them would mangle the key (and could split, never merge). Best-effort English.
+var uncountableResources = map[string]bool{
+	"series": true, "species": true, "news": true, "data": true, "media": true,
+	"metadata": true, "schema": true, "status": true, "alias": true,
+	"analysis": true, "diagnosis": true, "basis": true, "index": true,
+}
+
+// singularResource normalises a table/entity name to a singular form for keying
+// so plural/singular variants of the same table — the LLM's "orders" vs the
+// deterministic deriver's entity-derived "order" — collapse. Deliberately
+// CONSERVATIVE: it is a best-effort English heuristic that errs toward leaving
+// a word unchanged (failure direction = "don't merge", never a wrong merge).
+// It skips short words, known uncountables, and Latin-ish endings (-ss, -us,
+// -is, -ous) that merely look plural ("status", "address", "analysis").
 func singularResource(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
-	switch {
-	case len(s) > 3 && strings.HasSuffix(s, "ies"):
-		return s[:len(s)-3] + "y" // categories -> category
-	case len(s) > 3 && strings.HasSuffix(s, "ses"):
-		return s[:len(s)-2] // addresses -> address, classes -> class
-	case len(s) > 1 && strings.HasSuffix(s, "s") && !strings.HasSuffix(s, "ss"):
-		return s[:len(s)-1] // orders -> order, users -> user
-	default:
+	if len(s) < 4 || !strings.HasSuffix(s, "s") || uncountableResources[s] {
 		return s
+	}
+	for _, suf := range []string{"ss", "us", "is", "ous"} {
+		if strings.HasSuffix(s, suf) {
+			return s // address, status, analysis, ambiguous — leave alone
+		}
+	}
+	switch {
+	case strings.HasSuffix(s, "ies") && len(s) > 4:
+		return s[:len(s)-3] + "y" // categories -> category
+	case strings.HasSuffix(s, "ses") && len(s) > 4:
+		return s[:len(s)-2] // addresses -> address, classes -> class
+	default:
+		return s[:len(s)-1] // orders -> order, users -> user
 	}
 }
 
