@@ -31,15 +31,35 @@ Artifacts + logs for every run land in `~/.diffmind/runs/<run_id>/`
 `state/`, `events.jsonl`, `prompts/`). Diffing successive runs there is the
 primary way to judge a behavior change.
 
+Measure accuracy against hand-labeled fixtures (no OpenCode needed for cheap
+mode — it scores the deterministic floor only):
+
+```bash
+go test ./internal/eval/...                                  # hermetic CI guardrail (cheap mode)
+go run ./cmd/diffmind eval --mode cheap --fixtures testdata/eval   # per-objective P/R/F1 table
+go run ./cmd/diffmind eval --mode score-run --run <run-id> --fixture testdata/eval/<name>  # grade a real run
+```
+
+`SemanticKey`/`SemanticKeyLoose` (reconcile) are the shared identity the matcher
+uses, so "correct" is judged exactly as the pipeline judges "duplicate". See
+`testdata/eval/README.md` for the label format.
+
 ## Code map
 
 - `internal/objectives/registry.go` — objective definitions + prompts.
 - `internal/agents/pipeline.go` — orchestrator / stage sequencing.
 - `internal/agents/{discovery,deterministic_discovery,sharding,grounding,detail,reexamine,connections}.go`
+- `internal/agents/deterministic_floor.go` — LLM-free projection of the pipeline
+  (deterministic discovery → reconcile → AST connections); powers cheap-mode eval.
+- `internal/agents/config_resolve.go` — `${...}` property-placeholder resolver
+  (queue/topic names) against the parsed config index.
 - `internal/ast/` + `internal/ast/framework/` — tree-sitter engine + framework detectors.
-- `internal/reconcile/` — final dedup / sort / orphan-drop.
+- `internal/reconcile/` — final dedup / sort / orphan-drop; `SemanticKey(Loose)`
+  is the exported identity the eval matcher reuses.
+- `internal/eval/` — golden-set accuracy harness (label loader, identity keying,
+  P/R/F1 scorer, cheap + score-run modes). Fixtures under `testdata/eval/`.
 - `internal/ui/` — dashboard (Go server + SPA under `web/`).
-- `cmd/diffmind/` — CLI (`run`, `retry`, `ui`).
+- `cmd/diffmind/` — CLI (`run`, `retry`, `validate`, `list-runs`, `eval`, `ui`).
 
 ## Invariants — do NOT regress these
 

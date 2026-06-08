@@ -40,6 +40,11 @@ memory** — it provides a stable recall floor, focuses the LLM, and verifies.
    fact** (e.g. db operations collapse to one row per `(table, operation)` while
    preserving genuinely distinct datastores), and emitted as artifacts plus
    unresolved/warning outputs.
+8. **Accuracy is measurable.** A golden-set harness (`internal/eval`,
+   `diffmind eval`) scores extraction against hand-labeled fixtures with
+   per-objective precision/recall/F1, matching on the same identity the pipeline
+   dedups with. Cheap mode scores the deterministic floor with no OpenCode (a
+   hermetic CI guardrail); `score-run` grades a real run directory.
 
 There is no planner/verifier loop. See `docs/PLATFORM.md` for the product
 vision, design rationale, and roadmap.
