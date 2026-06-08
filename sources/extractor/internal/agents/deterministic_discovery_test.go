@@ -207,7 +207,10 @@ func TestMergeDiscoveryResultsMatchesRouteByMethodAndPath(t *testing.T) {
 	}
 }
 
-func TestDiscoveryEvaluationCountsSemanticOverlap(t *testing.T) {
+// TestMergeDiscoveryResultsCollapsesSemanticDuplicate verifies the LLM and the
+// deterministic floor collapse to a single item when they describe the same
+// route, with the deterministic version preferred and metadata unioned.
+func TestMergeDiscoveryResultsCollapsesSemanticDuplicate(t *testing.T) {
 	obj := objectiveByType(t, "http_route")
 	llm := llmEntity{
 		Type:    "http_route",
@@ -223,12 +226,12 @@ func TestDiscoveryEvaluationCountsSemanticOverlap(t *testing.T) {
 	deterministic := []discoveryResult{{Objective: obj, Items: []llmEntity{det}}}
 	candidate := mergeDiscoveryResults(baseline, deterministic)
 
-	report := buildDiscoveryEvaluation("shadow_compare", baseline, deterministic, candidate)
-	if report.Comparison.Matched != 1 || report.Comparison.CandidateOnly != 0 {
-		t.Fatalf("unexpected comparison: %#v", report.Comparison)
+	total := 0
+	for _, r := range candidate {
+		total += len(r.Items)
 	}
-	if report.Comparison.DuplicatesMerged != 1 || report.Candidate.Items != 1 {
-		t.Fatalf("unexpected merge metrics: %#v", report)
+	if total != 1 {
+		t.Fatalf("expected the duplicate route to collapse to 1 item, got %d", total)
 	}
 }
 

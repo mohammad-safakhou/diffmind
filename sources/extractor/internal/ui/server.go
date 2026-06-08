@@ -679,9 +679,6 @@ func loadRunDeterministicReport(runDir string) map[string]any {
 	if v := readOptionalJSON(filepath.Join(runDir, "state", "deterministic_frameworks.json")); v != nil {
 		out["frameworks"] = v
 	}
-	if v := readOptionalJSON(filepath.Join(runDir, "state", "discovery_evaluation.json")); v != nil {
-		out["evaluation"] = v
-	}
 	if len(out) == 0 {
 		return nil
 	}

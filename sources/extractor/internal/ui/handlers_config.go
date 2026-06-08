@@ -39,10 +39,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			"idle_timeout_seconds":    cfg.Runtime.IdleTimeoutSec,
 			"max_call_seconds":        cfg.Runtime.MaxCallSeconds,
 			"liveness_poll_seconds":   cfg.Runtime.LivenessPollSec,
-			"prompt_retry_count":      cfg.Runtime.PromptRetryCount,
-			"deterministic_discovery": cfg.Runtime.DeterministicDiscoveryMode(),
-			"skip_reexamination":      cfg.Runtime.SkipReexamination,
-			"reuse_opencode_session":  cfg.Runtime.ReuseOpenCodeSession,
+			"prompt_retry_count":     cfg.Runtime.PromptRetryCount,
+			"skip_reexamination":     cfg.Runtime.SkipReexamination,
+			"reuse_opencode_session": cfg.Runtime.ReuseOpenCodeSession,
 		},
 		"quality": map[string]any{
 			"min_confidence": cfg.Quality.MinConfidence,

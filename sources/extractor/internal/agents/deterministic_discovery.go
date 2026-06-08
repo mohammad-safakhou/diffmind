@@ -8,22 +8,18 @@ import (
 	"time"
 
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
-	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
-func (o *orchestrator) runDeterministicDiscovery(ctx context.Context, objs []objectives.Objective, mode string) []discoveryResult {
+func (o *orchestrator) runDeterministicDiscovery(ctx context.Context, objs []objectives.Objective) []discoveryResult {
 	started := time.Now()
 	o.emit(events.Event{
 		Kind:   events.KindStageStarted,
 		Stage:  "deterministic_discovery",
 		Status: events.StatusRunning,
-		Payload: map[string]any{
-			"mode": mode,
-		},
 	})
 	if err := ctx.Err(); err != nil {
 		o.emit(events.Event{
@@ -36,7 +32,6 @@ func (o *orchestrator) runDeterministicDiscovery(ctx context.Context, objs []obj
 		o.emit(events.Event{
 			Kind: events.KindStageCompleted, Stage: "deterministic_discovery", Status: events.StatusSkipped,
 			Message: "AST index unavailable",
-			Payload: map[string]any{"mode": mode},
 		})
 		return nil
 	}
@@ -93,13 +88,12 @@ func (o *orchestrator) runDeterministicDiscovery(ctx context.Context, objs []obj
 	}
 	o.persistStageState("deterministic_discovery.json", results)
 	o.emitStageCompleted("deterministic_discovery", events.StatusSuccess, map[string]any{
-		"mode":        mode,
 		"items":       total,
 		"objectives":  len(results),
 		"duration_ms": time.Since(started).Milliseconds(),
 	})
 	util.Info("agents.deterministic_discovery", "deterministic discovery completed", map[string]any{
-		"mode": mode, "items": total, "objectives": len(results),
+		"items": total, "objectives": len(results),
 	})
 	return results
 }
@@ -586,104 +580,6 @@ func normalizePathForKey(path string) string {
 	return path
 }
 
-func buildDiscoveryEvaluation(mode string, baseline, deterministic, candidate []discoveryResult) *discoveryEvaluationReport {
-	report := &discoveryEvaluationReport{
-		Mode: mode,
-		Baseline: discoveryEvaluationSide{
-			ItemsByObjective: countItemsByObjective(baseline),
-			LLMItems:         countDiscoveryItems(baseline),
-		},
-		Candidate: discoveryEvaluationSide{
-			ItemsByObjective:   countItemsByObjective(candidate),
-			DeterministicItems: countDiscoveryItems(deterministic),
-			LLMItems:           countDiscoveryItems(baseline),
-		},
-		Comparison: discoveryEvaluationCompare{
-			MatchedByObjective:       map[string]int{},
-			BaselineOnlyByObjective:  map[string]int{},
-			CandidateOnlyByObjective: map[string]int{},
-		},
-	}
-	report.Baseline.Items = countDiscoveryItems(baseline)
-	report.Candidate.Items = countDiscoveryItems(candidate)
-	objIDs := map[string]struct{}{}
-	for _, batch := range [][]discoveryResult{baseline, deterministic, candidate} {
-		for _, r := range batch {
-			objIDs[r.Objective.ID] = struct{}{}
-		}
-	}
-	for id := range objIDs {
-		report.Objectives = append(report.Objectives, id)
-	}
-	sort.Strings(report.Objectives)
-
-	baselineKeys := keysByObjective(baseline)
-	candidateKeys := keysByObjective(candidate)
-	for objID, bkeys := range baselineKeys {
-		ckeys := candidateKeys[objID]
-		for k := range bkeys {
-			if _, ok := ckeys[k]; ok {
-				report.Comparison.Matched++
-				report.Comparison.MatchedByObjective[objID]++
-			} else {
-				report.Comparison.BaselineOnly++
-				report.Comparison.BaselineOnlyByObjective[objID]++
-			}
-		}
-	}
-	for objID, ckeys := range candidateKeys {
-		bkeys := baselineKeys[objID]
-		for k := range ckeys {
-			if _, ok := bkeys[k]; !ok {
-				report.Comparison.CandidateOnly++
-				report.Comparison.CandidateOnlyByObjective[objID]++
-			}
-		}
-	}
-	report.Comparison.DuplicatesMerged = countDiscoveryItems(baseline) + countDiscoveryItems(deterministic) - countDiscoveryItems(candidate)
-	if report.Comparison.DuplicatesMerged < 0 {
-		report.Comparison.DuplicatesMerged = 0
-	}
-	return report
-}
-
-func countItemsByObjective(in []discoveryResult) map[string]int {
-	out := map[string]int{}
-	for _, r := range in {
-		out[r.Objective.ID] += len(r.Items)
-	}
-	return out
-}
-
-func countDiscoveryItems(in []discoveryResult) int {
-	total := 0
-	for _, r := range in {
-		total += len(r.Items)
-	}
-	return total
-}
-
-func keysByObjective(in []discoveryResult) map[string]map[string]struct{} {
-	out := map[string]map[string]struct{}{}
-	for _, r := range in {
-		if out[r.Objective.ID] == nil {
-			out[r.Objective.ID] = map[string]struct{}{}
-		}
-		for _, e := range r.Items {
-			out[r.Objective.ID][discoverySemanticKey(r.Objective, e)] = struct{}{}
-		}
-	}
-	return out
-}
-
-func deterministicModeEnabled(mode string) bool {
-	return mode != string(config.DeterministicDiscoveryOff)
-}
-
-func deterministicModePromotes(mode string) bool {
-	return mode == string(config.DeterministicDiscoveryActive)
-}
-
 func isCompleteDeterministicSeed(obj objectives.Objective, e *llmEntity) bool {
 	if e == nil {
 		return false
@@ -747,12 +643,4 @@ func (o *orchestrator) detailCheckpointForSeed(j detailJob) (detailCheckpointEnt
 		entry.Dependency = &dep
 	}
 	return entry, true
-}
-
-func (o *orchestrator) recordDeterministicDetailSkip(n int) {
-	if n <= 0 || o.deterministicEvaluation == nil {
-		return
-	}
-	o.deterministicEvaluation.Skipped.DetailDeterministicComplete += n
-	o.persistStageState("discovery_evaluation.json", o.deterministicEvaluation)
 }

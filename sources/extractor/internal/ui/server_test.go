@@ -87,10 +87,6 @@ func TestHandleRunGraphAttachesDeterministicReport(t *testing.T) {
 			"method": "GET", "path": "/orders", "handler": "OrdersController.list", "file": "Orders.java", "line": 12,
 		}},
 	})
-	mustWriteJSON(t, filepath.Join(stateDir, "discovery_evaluation.json"), map[string]any{
-		"mode": "shadow_compare",
-	})
-
 	s := New(base, "127.0.0.1", 8080)
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/runs/"+runID+"/graph", nil)
@@ -105,10 +101,6 @@ func TestHandleRunGraphAttachesDeterministicReport(t *testing.T) {
 	det, _ := body["deterministic"].(map[string]any)
 	if det == nil {
 		t.Fatalf("deterministic report missing: %#v", body)
-	}
-	eval, _ := det["evaluation"].(map[string]any)
-	if eval["mode"] != "shadow_compare" {
-		t.Fatalf("evaluation mode = %v", eval["mode"])
 	}
 	frameworks, _ := det["frameworks"].(map[string]any)
 	manifest, _ := frameworks["route_manifest"].([]any)
