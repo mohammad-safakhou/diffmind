@@ -43,21 +43,28 @@ func TestDedupeDependenciesCollapsesDbOpsByResourceAndOperation(t *testing.T) {
 	}
 	in := []model.Dependency{
 		// Same logical (orders, read) reported four ways: different files,
-		// names, verb variants, singular/plural, and noisy platform/instance.
+		// names, verb variants, singular/plural, and noisy platform/instance —
+		// but all on the ONE postgres datastore. Must collapse to one row.
 		mk("1", "OrderRepository.findById", "a/Svc.java", "orders", "read", "postgres", "spring.datasource.url"),
-		mk("2", "read orders", "b/Repo.java", "order", "SELECT", "database", "unknown"),
-		mk("3", "OrderRepository.findByStatus", "c/X.java", "orders", "find", "athena", "PostgreSQL via spring.datasource.url in application.yml:53"),
-		// Distinct op on same table, and a distinct table — must stay separate.
+		mk("2", "read orders", "b/Repo.java", "order", "SELECT", "database", "unknown"), // generic platform merges in
+		mk("3", "OrderRepository.findByStatus", "c/X.java", "orders", "find", "postgres", "instance dump…"),
+		// Distinct op on same table.
 		mk("4", "OrderRepository.save", "a/Svc.java", "orders", "DELETE", "database", "unknown"),
+		// Distinct table.
 		mk("5", "find customers", "c/Cust.java", "customers", "read", "database", ""),
+		// MULTI-DATASTORE: the same table name read from two genuinely
+		// different engines must stay as two distinct dependencies.
+		mk("6", "read events from pg", "p/Pg.java", "events", "read", "postgres", ""),
+		mk("7", "read events from dynamo", "d/Dyn.java", "events", "read", "dynamodb", ""),
 	}
 	out := DedupeDependencies(in)
-	if len(out) != 3 {
-		names := make([]string, len(out))
+	// orders:read, orders:write, customers:read, events:read@postgres, events:read@dynamodb
+	if len(out) != 5 {
+		rows := make([]string, len(out))
 		for i, d := range out {
-			names[i] = d.Name
+			rows[i] = d.Details["table"].(string) + ":" + d.Details["operation"].(string) + "@" + d.Platform
 		}
-		t.Fatalf("expected 3 deduped db ops (order:read, order:write, customer:read), got %d: %v", len(out), names)
+		t.Fatalf("expected 5 deduped db ops, got %d: %v", len(out), rows)
 	}
 }
 
