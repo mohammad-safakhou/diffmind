@@ -60,6 +60,15 @@ func (o *orchestrator) runDeterministicDiscovery(ctx context.Context, objs []obj
 		outMap[obj.ID] = append(outMap[obj.ID], e)
 	}
 
+	// Call-graph-derived dependencies (not framework-binding based). These
+	// reuse the connections stage's proven repository-call predicates. Only
+	// emitted when the objective is in scope for this run.
+	if dbObj, ok := objectiveByTypeIn(objs, "db_operation"); ok {
+		for _, e := range deterministicDBOperations(o.astIndex) {
+			outMap[dbObj.ID] = append(outMap[dbObj.ID], e)
+		}
+	}
+
 	results := make([]discoveryResult, 0, len(outMap))
 	total := 0
 	for _, obj := range objs {
@@ -93,6 +102,121 @@ func (o *orchestrator) runDeterministicDiscovery(ctx context.Context, objs []obj
 		"mode": mode, "items": total, "objectives": len(results),
 	})
 	return results
+}
+
+// deterministicDBOperations derives database operations directly from the AST
+// call graph, independent of the LLM. It reuses the SAME repository-call
+// predicates the connections stage already trusts (isRepositoryOperationSymbol,
+// tableEntityFromRepository, inferDBOperationKind) so precision matches the
+// post-detail AST augmentation that has been in production.
+//
+// Granularity is HIGH-LEVEL: one entity per (table, operation-kind) — e.g.
+// "read orders", "write orders" — not one per repository method. That matches
+// the extractor's purpose and the (resource, operation) dedup key, and it is
+// what lets the deterministic floor stabilise db_operation, the worst LLM
+// offender. Each entity carries deterministic evidence/tags so the rest of the
+// pipeline treats it as a confirmed seed.
+func deterministicDBOperations(idx *astpkg.ProjectIndex) []llmEntity {
+	if idx == nil || len(idx.CallGraph) == 0 {
+		return nil
+	}
+	type agg struct {
+		table, opKind string
+		loc           llmLocation
+		owner         string
+		hits          int
+	}
+	seen := map[string]*agg{}
+	var order []string
+
+	consider := func(target string, cs astpkg.CallSite) {
+		if !isRepositoryOperationSymbol(target) {
+			return
+		}
+		owner, _, ok := splitOwnerMethod(normalizeRepositoryOperationName(target))
+		if !ok || owner == "" {
+			return
+		}
+		entity, table := tableEntityFromRepository(owner)
+		if table == "" {
+			table = entity
+		}
+		if table == "" {
+			return
+		}
+		opKind := inferDBOperationKind(target)
+		key := strings.ToLower(table + "|" + opKind)
+		a, ok := seen[key]
+		if !ok {
+			a = &agg{
+				table:  table,
+				opKind: opKind,
+				owner:  owner,
+				loc:    llmLocation{File: cs.File, StartLine: int(cs.Range.StartLine) + 1, EndLine: int(cs.Range.EndLine) + 1},
+			}
+			seen[key] = a
+			order = append(order, key)
+		}
+		a.hits++
+	}
+
+	for _, sites := range idx.CallGraph {
+		for _, cs := range sites {
+			if len(cs.CalleeResolved) > 0 {
+				for _, t := range cs.CalleeResolved {
+					consider(t, cs)
+				}
+				continue
+			}
+			// Fall back to the syntactic receiver.callee (catches the common
+			// `orderRepository.findById(...)` form even when resolution failed).
+			if r := strings.TrimSpace(cs.ReceiverRaw); r != "" && strings.TrimSpace(cs.CalleeRaw) != "" {
+				consider(r+"."+strings.TrimSpace(cs.CalleeRaw), cs)
+			}
+		}
+	}
+
+	out := make([]llmEntity, 0, len(order))
+	for _, key := range order {
+		a := seen[key]
+		loc := a.loc
+		if loc.File == "" {
+			continue
+		}
+		name := a.opKind + " " + a.table
+		out = append(out, llmEntity{
+			Type:       "db_operation",
+			Name:       name,
+			Summary:    fmt.Sprintf("AST-derived %s on %s (via %s)", a.opKind, a.table, a.owner),
+			Confidence: 1.0,
+			Tags:       []string{"deterministic", "framework:spring-data"},
+			Details: map[string]any{
+				"table":         a.table,
+				"operation":     a.opKind,
+				"repository":    a.owner,
+				"discovered_by": "ast_repository_call",
+			},
+			Locations: []llmLocation{loc},
+			Evidence: []llmEvidence{{
+				File:      loc.File,
+				StartLine: loc.StartLine,
+				EndLine:   loc.EndLine,
+				Snippet:   fmt.Sprintf("repository %s call resolved to %s table", a.owner, a.table),
+				Source:    "deterministic_ast_repository",
+			}},
+		})
+	}
+	return out
+}
+
+// objectiveByTypeIn finds the in-scope objective with the given type.
+func objectiveByTypeIn(objs []objectives.Objective, typ string) (objectives.Objective, bool) {
+	for _, o := range objs {
+		if o.Type == typ {
+			return o, true
+		}
+	}
+	return objectives.Objective{}, false
 }
 
 func supportedDeterministicObjectives(objs []objectives.Objective) map[string]objectives.Objective {
