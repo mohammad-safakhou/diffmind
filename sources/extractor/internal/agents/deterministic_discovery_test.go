@@ -37,6 +37,36 @@ func TestDiscoverySemanticKeyDbOperationCollapsesByResource(t *testing.T) {
 	}
 }
 
+// TestDeterministicDBOperations derives db ops from the call graph and
+// collapses repository methods to high-level (table, operation) entities.
+func TestDeterministicDBOperations(t *testing.T) {
+	rng := func(l uint32) astpkg.Range { return astpkg.Range{StartLine: l, EndLine: l} }
+	idx := &astpkg.ProjectIndex{
+		CallGraph: map[string][]astpkg.CallSite{
+			"com.x.OrderService.process": {
+				{Caller: "com.x.OrderService.process", CalleeResolved: []string{"com.x.OrderRepository.findById"}, File: "src/OrderService.java", Range: rng(10)},
+				{Caller: "com.x.OrderService.process", CalleeResolved: []string{"com.x.OrderRepository.findByStatus"}, File: "src/OrderService.java", Range: rng(11)},
+				{Caller: "com.x.OrderService.process", CalleeResolved: []string{"com.x.OrderRepository.save"}, File: "src/OrderService.java", Range: rng(12)},
+				// Non-repository call must be ignored.
+				{Caller: "com.x.OrderService.process", CalleeResolved: []string{"com.x.Mapper.toDto"}, File: "src/OrderService.java", Range: rng(13)},
+			},
+		},
+	}
+	ops := deterministicDBOperations(idx)
+	// Two reads on orders collapse to one; the write is separate => 2 ops.
+	if len(ops) != 2 {
+		t.Fatalf("expected 2 high-level db ops (read+write orders), got %d: %+v", len(ops), ops)
+	}
+	for _, e := range ops {
+		if e.Confidence != 1.0 || !hasDeterministicEvidence(e) {
+			t.Errorf("db op must be a confident deterministic seed: %+v", e)
+		}
+		if e.Details["table"] != "order" {
+			t.Errorf("expected table=order, got %v", e.Details["table"])
+		}
+	}
+}
+
 func TestEntityFromFrameworkBindingHTTPRoute(t *testing.T) {
 	obj := objectiveByType(t, "http_route")
 	got, ok := entityFromFrameworkBinding(obj, astpkg.FrameworkBinding{
