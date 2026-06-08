@@ -91,6 +91,58 @@ func TestBuildRepoFactsPromptReferencesMonorepo(t *testing.T) {
 	mustContain(t, p, "'apps/x/' subdirectory")
 }
 
+// TestScopeFrameworkPatternsDropsForeignLanguages verifies that, on a
+// Java-only repo, language-labelled bullets for other languages are removed
+// while framework-labelled and Java lines survive.
+func TestScopeFrameworkPatternsDropsForeignLanguages(t *testing.T) {
+	prompt := strings.Join([]string{
+		"Find ALL routes.",
+		"PATTERNS:",
+		"- Spring Boot: @RestController, @GetMapping",
+		"- JAX-RS: @Path, @GET",
+		"- Node.js: Express router.get",
+		"- Python: Flask @app.route",
+		"- Go: gin.GET",
+		"- Redis: RedisTemplate (cross-cutting)",
+		"Do NOT include webhooks.",
+	}, "\n")
+	rf := &repoFacts{Languages: []string{"Java", "XML", "YAML"}}
+	got := scopeFrameworkPatterns(prompt, detectedLanguageSet(rf))
+
+	for _, keep := range []string{"Spring Boot", "JAX-RS", "Redis", "Do NOT include webhooks", "Find ALL routes"} {
+		if !strings.Contains(got, keep) {
+			t.Errorf("expected scoped prompt to keep %q\n%s", keep, got)
+		}
+	}
+	for _, drop := range []string{"Node.js", "Python: Flask", "Go: gin"} {
+		if strings.Contains(got, drop) {
+			t.Errorf("expected scoped prompt to drop %q\n%s", drop, got)
+		}
+	}
+}
+
+// TestScopeFrameworkPatternsKeepsNodeForTS verifies a TypeScript repo keeps
+// Node.js-labelled lines, and that an unknown language set filters nothing.
+func TestScopeFrameworkPatternsLanguageGates(t *testing.T) {
+	prompt := "- Node.js: Express\n- Python: Flask\n- Spring Boot: @GetMapping"
+
+	ts := scopeFrameworkPatterns(prompt, detectedLanguageSet(&repoFacts{Languages: []string{"TypeScript"}}))
+	if !strings.Contains(ts, "Node.js") {
+		t.Errorf("TypeScript repo must keep Node.js line:\n%s", ts)
+	}
+	if strings.Contains(ts, "Python: Flask") {
+		t.Errorf("TypeScript repo must drop Python line:\n%s", ts)
+	}
+
+	// nil/unknown languages → no filtering at all.
+	if got := scopeFrameworkPatterns(prompt, detectedLanguageSet(nil)); got != prompt {
+		t.Errorf("nil repo_facts must leave prompt unchanged, got:\n%s", got)
+	}
+	if got := scopeFrameworkPatterns(prompt, detectedLanguageSet(&repoFacts{Languages: []string{"XML", "YAML"}})); got != prompt {
+		t.Errorf("non-language facts must leave prompt unchanged, got:\n%s", got)
+	}
+}
+
 func mustContain(t *testing.T, haystack, needle string) {
 	t.Helper()
 	if !strings.Contains(haystack, needle) {

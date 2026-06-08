@@ -184,6 +184,139 @@ func detailKeysLine(obj objectives.Objective) string {
 	return "REQUIRED_DETAIL_KEYS: populate details{} with at least these keys when determinable from code: " + strings.Join(obj.DetailKeys, ", ") + "\n\n"
 }
 
+// ---- Language scoping of discovery prompts ----
+//
+// Objective discovery prompts carry FRAMEWORK-SPECIFIC PATTERNS lists that
+// enumerate cues across many languages (Spring, Flask, Express, gin, ...).
+// On a single-language repo most of those lines are noise: they waste prompt
+// tokens and — worse for a smaller model — prime it to hunt for constructs
+// that cannot exist here, inviting misclassification. repo_facts already
+// tells us the languages in play, so we drop bullet lines that are explicitly
+// labelled with a language the repo does not use.
+//
+// Only lines whose leading label ("- <Label>: ...") names a PROGRAMMING
+// LANGUAGE are eligible for removal. Framework-labelled lines (Spring, Redis,
+// AWS SQS, ...) and prose are always kept — a framework can be cross-cutting
+// and we never want to over-trim. When the language set is unknown (nil/empty)
+// nothing is filtered, so behaviour is identical to the pre-scoping prompt.
+
+// promptLabelLanguages maps a discovery-prompt bullet label (the token before
+// the first colon, lower-cased) to the canonical language(s) that satisfy it.
+// A label absent from this map is treated as framework/agnostic and kept.
+var promptLabelLanguages = map[string][]string{
+	"python":  {"python"},
+	"node.js": {"javascript", "typescript"},
+	"nodejs":  {"javascript", "typescript"},
+	"node":    {"javascript", "typescript"},
+	"go":      {"go"},
+	"golang":  {"go"},
+	"java":    {"java", "kotlin"},
+}
+
+// detectedLanguageSet canonicalises the repo's languages (from both the LLM
+// repo_facts and the deterministic marker-file facts) into a lower-cased set.
+// Returns nil when nothing is known, signalling callers to skip filtering.
+func detectedLanguageSet(rf *repoFacts) map[string]bool {
+	if rf == nil {
+		return nil
+	}
+	set := map[string]bool{}
+	add := func(s string) {
+		c := canonicalLanguage(s)
+		if c != "" {
+			set[c] = true
+		}
+	}
+	for _, l := range rf.Languages {
+		add(l)
+	}
+	for _, f := range rf.LanguageFacts {
+		add(f.Language)
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return set
+}
+
+// canonicalLanguage normalises a free-form language name to a stable key.
+// Non-language entries (XML, YAML, JSON, ...) map to "" and are ignored, so
+// they never accidentally widen or narrow the detected set.
+func canonicalLanguage(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "java":
+		return "java"
+	case "kotlin", "kt":
+		return "kotlin"
+	case "python", "py":
+		return "python"
+	case "javascript", "js", "node", "node.js", "nodejs":
+		return "javascript"
+	case "typescript", "ts":
+		return "typescript"
+	case "go", "golang":
+		return "go"
+	case "ruby":
+		return "ruby"
+	case "c#", "csharp", ".net", "dotnet":
+		return "csharp"
+	case "php":
+		return "php"
+	case "rust":
+		return "rust"
+	default:
+		return ""
+	}
+}
+
+// scopeFrameworkPatterns drops language-labelled bullet lines for languages the
+// repo does not use. langs==nil (unknown) returns the prompt unchanged.
+func scopeFrameworkPatterns(prompt string, langs map[string]bool) string {
+	if len(langs) == 0 {
+		return prompt
+	}
+	lines := strings.Split(prompt, "\n")
+	out := lines[:0]
+	for _, line := range lines {
+		if want, ok := bulletLanguages(line); ok {
+			keep := false
+			for _, l := range want {
+				if langs[l] {
+					keep = true
+					break
+				}
+			}
+			if !keep {
+				continue
+			}
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
+// bulletLanguages inspects a line of the form "- <Label>: ..." and, when Label
+// names a programming language, returns the canonical languages that satisfy
+// it. ok=false means the line is not a language-labelled bullet and must be
+// kept verbatim.
+func bulletLanguages(line string) (langs []string, ok bool) {
+	t := strings.TrimSpace(line)
+	if !strings.HasPrefix(t, "- ") {
+		return nil, false
+	}
+	t = strings.TrimSpace(t[2:])
+	colon := strings.Index(t, ":")
+	if colon <= 0 {
+		return nil, false
+	}
+	label := strings.ToLower(strings.TrimSpace(t[:colon]))
+	got, found := promptLabelLanguages[label]
+	if !found {
+		return nil, false
+	}
+	return got, true
+}
+
 // ---- Stage 1: per-objective discovery ----
 
 func buildDiscoveryPrompt(obj objectives.Objective, rf *repoFacts, subDir string, hints objectiveHints, scopeDirs []string, confirmed []llmEntity) string {
@@ -208,7 +341,7 @@ func buildDiscoveryPrompt(obj objectives.Objective, rf *repoFacts, subDir string
 	sb.WriteString(astHintsBlock(hints))
 	sb.WriteString(confirmedDiscoveryBlock(confirmed))
 	sb.WriteString("DISCOVERY INSTRUCTIONS:\n")
-	sb.WriteString(obj.DiscoveryPrompt)
+	sb.WriteString(scopeFrameworkPatterns(obj.DiscoveryPrompt, detectedLanguageSet(rf)))
 	sb.WriteString("\n\n")
 	sb.WriteString(exampleBlock(obj))
 	sb.WriteString(detailKeysLine(obj))
