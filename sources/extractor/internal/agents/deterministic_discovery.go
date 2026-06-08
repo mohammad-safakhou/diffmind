@@ -48,7 +48,7 @@ func (o *orchestrator) runDeterministicDiscovery(ctx context.Context, objs []obj
 		if !ok {
 			continue
 		}
-		e, ok := entityFromFrameworkBinding(obj, b)
+		e, ok := entityFromFrameworkBinding(o.astIndex, obj, b)
 		if !ok {
 			continue
 		}
@@ -149,7 +149,13 @@ func deterministicDBOperations(idx *astpkg.ProjectIndex) []llmEntity {
 		if table == "" {
 			return
 		}
-		opKind := inferDBOperationKind(target)
+		// Precision guard: never emit a generic-handle / sequence table as a
+		// deterministic db_operation (see isJunkTableName). A wrong fact poisons
+		// downstream; the LLM recovers the real table from argument types.
+		if isJunkTableName(table) {
+			return
+		}
+		opKind := inferDBOperationKindAST(idx, target)
 		key := strings.ToLower(table + "|" + opKind)
 		a, ok := seen[key]
 		if !ok {
@@ -262,7 +268,7 @@ func objectiveForBinding(objs map[string]objectives.Objective, b astpkg.Framewor
 	}
 }
 
-func entityFromFrameworkBinding(obj objectives.Objective, b astpkg.FrameworkBinding) (llmEntity, bool) {
+func entityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objective, b astpkg.FrameworkBinding) (llmEntity, bool) {
 	file := strings.TrimSpace(b.File)
 	if file == "" {
 		return llmEntity{}, false
@@ -319,6 +325,10 @@ func entityFromFrameworkBinding(obj objectives.Objective, b astpkg.FrameworkBind
 		e.Details["path"] = path
 	case "queue_consumer":
 		platform, queue := parseQueueTrigger(trigger)
+		// Resolve ${...} property placeholders to the real queue name using the
+		// already-parsed config index, so the entity is named after the queue
+		// (e.g. catalogue-target-response-sqs) rather than the raw placeholder.
+		queue = resolveResourceName(idx, queue)
 		if queue == "" {
 			return llmEntity{}, false
 		}

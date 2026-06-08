@@ -512,6 +512,13 @@ func augmentDependenciesFromAST(idx *astpkg.ProjectIndex, exposures []model.Expo
 				if name == "" {
 					continue
 				}
+				// Drop junk tables (entity_manager, *_id_seq) on the
+				// deterministic path — a wrong table poisons the output.
+				if owner, _, ok := splitOwnerMethod(name); ok {
+					if _, table := tableEntityFromRepository(owner); isJunkTableName(table) {
+						continue
+					}
+				}
 				if _, exists := known[dependencyNameKey(name)]; exists {
 					continue
 				}
@@ -542,7 +549,7 @@ func buildASTDerivedDBDependency(idx *astpkg.ProjectIndex, name string, path ast
 			locs = append(locs, defLoc)
 		}
 	}
-	operationKind := inferDBOperationKind(name)
+	operationKind := inferDBOperationKindAST(idx, name)
 	conf := 0.97
 	if conf < minConfidence {
 		conf = minConfidence
@@ -730,6 +737,9 @@ func typeDefinitionLocation(idx *astpkg.ProjectIndex, owner string) model.Locati
 func isRepositoryOperationSymbol(sym string) bool {
 	owner, method, ok := splitOwnerMethod(normalizeRepositoryOperationName(sym))
 	if !ok || owner == "" || method == "" {
+		return false
+	}
+	if isLowSignalRepositoryOwner(owner) {
 		return false
 	}
 	lowerOwner := strings.ToLower(owner)
@@ -1179,6 +1189,126 @@ func isLowSignalTargetSymbol(sym string) bool {
 		return true
 	}
 	return false
+}
+
+// isLowSignalRepositoryOwner reports whether a repository/DAO owner name is a
+// generic persistence handle rather than a concrete, table-bearing repository.
+// EntityManager.persist(order) IS a real write, but the owner ("EntityManager")
+// carries no table information, so the deriver would mint the junk table
+// "entity_manager". Per invariant #6 ("prefer emit nothing over a guess") we
+// drop these on the deterministic path and let the LLM — which reads the
+// argument types — recover the real table. WHY a denylist: we keep accepting
+// arbitrary *Repository/*Dao names; only the handful of framework handles that
+// masquerade as repositories are rejected.
+func isLowSignalRepositoryOwner(owner string) bool {
+	switch strings.ToLower(strings.TrimSpace(lastIdent(owner))) {
+	case "entitymanager", "sessionfactory", "session", "transactionmanager",
+		"datasource", "jdbctemplate", "namedparameterjdbctemplate", "querydsl":
+		return true
+	}
+	return false
+}
+
+// isJunkTableName reports whether a derived table/resource name is a database
+// artifact rather than a real table: the generic "entity_manager" handle, and
+// sequences (*_seq, *_id_seq, *_sequence). These are low-signal precision nits
+// (see docs/PLATFORM.md roadmap #3); emitting one as a db_operation poisons the
+// output, so the deterministic deriver drops them. LLM-originated rows are NOT
+// touched here — the LLM is the authority on what exists.
+func isJunkTableName(table string) bool {
+	t := strings.ToLower(strings.TrimSpace(table))
+	if t == "" || t == "entity_manager" {
+		return true
+	}
+	return strings.HasSuffix(t, "_seq") || strings.HasSuffix(t, "_id_seq") || strings.HasSuffix(t, "_sequence")
+}
+
+// inferDBOperationKindAST infers read/write for a repository method using, in
+// priority order: (1) a @Modifying / write-shaped @Query annotation on the
+// method symbol → write, a read-shaped @Query → read; (2) the method-name
+// prefix (inferDBOperationKind); (3) the Spring-Data finder convention (a name
+// that reads but lacks a known prefix, e.g. "loadByStatus", "selectAll") →
+// read. It only returns "unknown" as a last resort. WHY default finders to
+// read: derived queries are overwhelmingly reads, and the precision rule is
+// "never guess WRITE when unsure" — READ is the safe high-precision default.
+func inferDBOperationKindAST(idx *astpkg.ProjectIndex, symbol string) string {
+	for _, def := range lookupMethodDefs(idx, symbol) {
+		for _, ann := range def.Annotations {
+			name := strings.ToLower(ann.Name)
+			args := strings.ToLower(ann.Arguments)
+			if strings.Contains(name, "modifying") {
+				return "write"
+			}
+			if strings.Contains(name, "query") && args != "" {
+				if hasAnyTokenPrefix(args, "insert", "update", "delete", "merge", "upsert") {
+					return "write"
+				}
+				if hasAnyTokenPrefix(args, "select", "with") {
+					return "read"
+				}
+			}
+		}
+	}
+	if kind := inferDBOperationKind(symbol); kind != "unknown" {
+		return kind
+	}
+	method := symbol
+	if _, m, ok := splitOwnerMethod(symbol); ok {
+		method = m
+	}
+	if looksLikeFinderMethod(method) {
+		return "read"
+	}
+	return "unknown"
+}
+
+// looksLikeFinderMethod recognises read-shaped repository method names that
+// inferDBOperationKind's prefix list misses (select/load/fetch/scan/stream, and
+// the Spring-Data "by..." derived-query form).
+func looksLikeFinderMethod(method string) bool {
+	m := strings.ToLower(strings.TrimSpace(method))
+	if m == "" {
+		return false
+	}
+	for _, p := range []string{"select", "load", "fetch", "scan", "stream", "by", "all", "page", "retrieve"} {
+		if strings.HasPrefix(m, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasAnyTokenPrefix reports whether the first whitespace-delimited token of s
+// (after trimming a leading quote/paren) starts with any of the prefixes. Used
+// to classify @Query SQL text without a full parser.
+func hasAnyTokenPrefix(s string, prefixes ...string) bool {
+	s = strings.TrimLeft(strings.TrimSpace(s), "(\"'` \t")
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// lookupMethodDefs returns the symbol definitions for a qualified name,
+// matching exactly or by qualified suffix (".Owner.method"). Suffix matching is
+// constrained to the full owner.method tail, so it cannot bind to an unrelated
+// method that merely shares the leaf name.
+func lookupMethodDefs(idx *astpkg.ProjectIndex, symbol string) []astpkg.SymbolDef {
+	if idx == nil || strings.TrimSpace(symbol) == "" {
+		return nil
+	}
+	if defs, ok := idx.Symbols[symbol]; ok {
+		return defs
+	}
+	var out []astpkg.SymbolDef
+	for q, defs := range idx.Symbols {
+		if q == symbol || strings.HasSuffix(q, "."+symbol) {
+			out = append(out, defs...)
+		}
+	}
+	return out
 }
 
 func isTestLikeArtifactPath(path string) bool {

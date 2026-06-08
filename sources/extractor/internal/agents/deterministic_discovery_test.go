@@ -69,7 +69,7 @@ func TestDeterministicDBOperations(t *testing.T) {
 
 func TestEntityFromFrameworkBindingHTTPRoute(t *testing.T) {
 	obj := objectiveByType(t, "http_route")
-	got, ok := entityFromFrameworkBinding(obj, astpkg.FrameworkBinding{
+	got, ok := entityFromFrameworkBinding(nil, obj, astpkg.FrameworkBinding{
 		Framework:     "spring",
 		Kind:          "http_handler",
 		Symbol:        "com.example.OrderController.list",
@@ -103,7 +103,7 @@ func TestEntityFromFrameworkBindingHTTPRoute(t *testing.T) {
 
 func TestEntityFromFrameworkBindingQueueAndSchedule(t *testing.T) {
 	queueObj := objectiveByType(t, "queue_consumer")
-	queue, ok := entityFromFrameworkBinding(queueObj, astpkg.FrameworkBinding{
+	queue, ok := entityFromFrameworkBinding(nil, queueObj, astpkg.FrameworkBinding{
 		Framework:     "spring",
 		Kind:          "queue_consumer",
 		Symbol:        "com.example.OrderListener.handle",
@@ -123,7 +123,7 @@ func TestEntityFromFrameworkBindingQueueAndSchedule(t *testing.T) {
 	}
 
 	scheduleObj := objectiveByType(t, "scheduled_job")
-	job, ok := entityFromFrameworkBinding(scheduleObj, astpkg.FrameworkBinding{
+	job, ok := entityFromFrameworkBinding(nil, scheduleObj, astpkg.FrameworkBinding{
 		Framework:     "nestjs",
 		Kind:          "scheduler",
 		Symbol:        "CleanupTasks.removeExpired",
