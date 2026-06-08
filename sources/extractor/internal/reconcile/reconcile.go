@@ -105,13 +105,18 @@ func semanticKey(b model.BaseEntity) string {
 	// many rows) and the operation is normalised to a read/write class so a
 	// SELECT and a "read" collapse.
 	if b.Type == "db_operation" || b.Type == "cache_operation" {
-		resource := firstDetail(b, "table", "table_or_entity", "entity", "cache", "collection", "index", "key")
+		resource := singularResource(firstDetail(b, "table", "table_or_entity", "entity", "cache", "collection", "index", "key"))
 		op := normalizeDBOp(firstDetail(b, "operation", "operation_kind", "operation_type"))
 		if op == "" {
 			op = normalizeDBOp(b.Operation)
 		}
 		if resource != "" {
-			return strings.Join([]string{b.Type, strings.ToLower(strings.TrimSpace(b.Platform)), strings.ToLower(strings.TrimSpace(b.Instance)), resource, op}, "|")
+			// Key on (resource, operation) ONLY. platform/instance are
+			// deliberately excluded: within one service a given table is one
+			// logical store, and those fields are filled with inconsistent
+			// free-text ("postgres" vs "database" vs a whole datasource-config
+			// dump) that otherwise fragments one dependency into many rows.
+			return strings.Join([]string{b.Type, resource, op}, "|")
 		}
 	}
 	instance := strings.ToLower(strings.TrimSpace(b.Instance))
@@ -139,6 +144,25 @@ func firstDetail(b model.BaseEntity, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+// singularResource normalises a table/entity name to a singular form for
+// keying so plural/singular variants of the same table — the LLM's "orders"
+// vs the deterministic deriver's entity-derived "order" — collapse together.
+// Conservative: only the common English plural endings, and never touches a
+// double-s word ("address" stays "address").
+func singularResource(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	switch {
+	case len(s) > 3 && strings.HasSuffix(s, "ies"):
+		return s[:len(s)-3] + "y" // categories -> category
+	case len(s) > 3 && strings.HasSuffix(s, "ses"):
+		return s[:len(s)-2] // addresses -> address, classes -> class
+	case len(s) > 1 && strings.HasSuffix(s, "s") && !strings.HasSuffix(s, "ss"):
+		return s[:len(s)-1] // orders -> order, users -> user
+	default:
+		return s
+	}
 }
 
 // normalizeDBOp folds operation verbs into read/write classes so equivalent
