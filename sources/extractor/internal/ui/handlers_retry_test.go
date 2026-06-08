@@ -53,16 +53,31 @@ func TestRetryEndpoint_RegisteredAndAccepted(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	// POST /api/runs/{id}/retry with credentials so the preflight
-	// gate doesn't reject the request. Real users supply these via
-	// the dashboard's Retry-with-fresh-creds panel. Empty bodies
-	// are still ACCEPTED at the protocol layer (the handler treats
-	// missing fields as "use server defaults"), but the new
-	// preflight gate added in Sprint 4 requires provider+model to
-	// be set somewhere; the server falls back to config.Default()
-	// values which leave them blank.
-	reqBody := bytes.NewReader([]byte(`{"opencode":{"provider_id":"anthropic","model_id":"claude-sonnet-4-5","base_url":"http://127.0.0.1:4096"}}`))
-	resp, err := http.Post(srv.URL+"/api/runs/"+runID+"/retry", "application/json", reqBody)
+	// The retry handler runs the SAME synchronous preflight gate as a fresh
+	// run before queuing the goroutine: any SeverityFail check → 422. One of
+	// those checks probes OpenCode reachability (GET /global/health), so the
+	// retry body must point at a LIVE server or the gate rejects the request
+	// before the runner is ever reached. Stand up the shared stub (which
+	// answers /global/health 200) and target it, exactly like the run-create
+	// e2e test does.
+	ocSrv := httptest.NewServer(http.HandlerFunc(stubOpencodeHandler))
+	defer ocSrv.Close()
+
+	// POST /api/runs/{id}/retry with credentials + a reachable base_url so the
+	// preflight gate (provider+model for CredentialsCheck, reachable URL for
+	// OpenCodeCheck) passes. Real users supply these via the dashboard's
+	// Retry-with-fresh-creds panel.
+	reqBody, err := json.Marshal(map[string]any{
+		"opencode": map[string]any{
+			"provider_id": "anthropic",
+			"model_id":    "claude-sonnet-4-5",
+			"base_url":    ocSrv.URL,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(srv.URL+"/api/runs/"+runID+"/retry", "application/json", bytes.NewReader(reqBody))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
