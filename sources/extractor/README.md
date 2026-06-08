@@ -9,15 +9,40 @@ It produces JSON artifacts for:
 
 ## What Is Implemented
 
-The extractor is a deterministic multi-agent orchestrator with a fixed objective map:
-1. A static objective registry defines exact extraction objectives and prompts (exposure + dependency classes).
-2. A tree-sitter AST index is built from the source snapshot — symbols, call graph, framework bindings — with no Docker, no compiler required.
-3. Objective extractor agents run all objectives in parallel, even if some return no items.
-4. Detail extractor agents run per discovered item in parallel for deep, source-backed enrichment.
-5. Connections are built **deterministically** by BFS over the AST call graph from each exposure's entry symbol to dependency targets. No LLM calls; conditions come from tree-sitter enclosing-node context.
-6. Results are confidence-gated, deduplicated, and emitted as artifacts plus unresolved/warning outputs.
+The extractor is a multi-agent orchestrator with a fixed objective map. The
+design principle: **the LLM is the brain (cross-language semantic understanding
+of custom/dynamic code); deterministic static analysis is the skeleton and the
+memory** — it provides a stable recall floor, focuses the LLM, and verifies.
 
-There is no planner/verifier loop.
+1. A static objective registry defines exact extraction objectives and prompts
+   (exposure + dependency classes). Discovery prompts are **scoped to the
+   detected languages** (`repo_facts`) so a Java repo is not told to hunt for
+   Flask/Express/gin patterns.
+2. A tree-sitter AST index is built from the source snapshot — symbols, call
+   graph, framework bindings, config — with no Docker, no compiler required.
+3. **Deterministic discovery runs first** (always; one pipeline, no modes). It
+   derives high-precision exposures/dependencies straight from the AST
+   (framework bindings for HTTP routes / consumers / schedulers / Feign
+   clients, and repository call-sites for `db_operation`). These seed the LLM's
+   `KNOWN_CONFIRMED_ITEMS` so it stops re-enumerating the mechanical bulk.
+4. **LLM objective agents** run all objectives in parallel, grounded in advisory
+   AST hints. Large objectives are split into **evidence-gated, candidate-
+   clustered shards** (only directories that actually contain candidates;
+   objectives with no static evidence get one cheap whole-repo call instead of
+   N empty scans). LLM and deterministic results are merged with a per-objective
+   semantic dedup key.
+5. **Detail enrichment** adds method/path, table, evidence, etc. It is
+   strictly additive — it never drops or re-identifies a discovered entity.
+6. Connections are built **deterministically** by BFS over the AST call graph
+   from each exposure's entry symbol to dependency targets. No LLM calls;
+   conditions come from tree-sitter enclosing-node context.
+7. Results are confidence-gated, **deduplicated to the high-level architectural
+   fact** (e.g. db operations collapse to one row per `(table, operation)` while
+   preserving genuinely distinct datastores), and emitted as artifacts plus
+   unresolved/warning outputs.
+
+There is no planner/verifier loop. See `docs/PLATFORM.md` for the product
+vision, design rationale, and roadmap.
 
 ## OpenCode Setup (Required)
 
