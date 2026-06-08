@@ -110,6 +110,17 @@ func (o *orchestrator) runDeterministicDiscovery(ctx context.Context, objs []obj
 // what lets the deterministic floor stabilise db_operation, the worst LLM
 // offender. Each entity carries deterministic evidence/tags so the rest of the
 // pipeline treats it as a confirmed seed.
+//
+// SCOPE / KNOWN LIMITATIONS (intentional, documented — see docs/PLATFORM.md):
+//   - JVM-ONLY. The repository-call predicates recognise Spring Data / JPA /
+//     MyBatis conventions (*Repository, *Dao, EntityManager). On non-JVM stacks
+//     (Django ORM, ActiveRecord, GORM, Sequelize, ...) this yields ZERO rows —
+//     SAFE (db_operation falls back to LLM-only discovery) but NOT yet stable
+//     there. Extending deterministic db coverage to other ORMs is a milestone.
+//   - Table names are derived from the repository/entity symbol name; they can
+//     be slightly off (e.g. "entity_manager" from a raw EntityManager call, or
+//     a "*_id_seq" sequence). These are low-signal precision nits, not
+//     duplicates; reconcile collapses by (resource, operation) regardless.
 func deterministicDBOperations(idx *astpkg.ProjectIndex) []llmEntity {
 	if idx == nil || len(idx.CallGraph) == 0 {
 		return nil
