@@ -158,13 +158,18 @@ func discoveryScopeBlock(dirs []string) string {
 		return ""
 	}
 	var sb strings.Builder
-	sb.WriteString("SCOPE: This is one shard of a larger discovery. Analyze ONLY files under these directories:\n")
+	sb.WriteString("SCOPE: This is one shard of a larger discovery. The static index found this\n")
+	sb.WriteString("objective's candidate declarations concentrated in these directories:\n")
 	for _, d := range dirs {
 		sb.WriteString("  - ")
 		sb.WriteString(d)
 		sb.WriteString("/\n")
 	}
-	sb.WriteString("Ignore files outside this scope; another shard covers them.\n\n")
+	sb.WriteString("FOCUS your search here and report ONLY items whose declaration lives under\n")
+	sb.WriteString("these directories — another shard reports the rest. You MAY freely open and\n")
+	sb.WriteString("read code ANYWHERE in the repo (shared base classes, configuration, imported\n")
+	sb.WriteString("helpers) to understand those items; restrict only what you REPORT, never what\n")
+	sb.WriteString("you READ.\n\n")
 	return sb.String()
 }
 

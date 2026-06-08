@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"strings"
 	"testing"
 
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
@@ -92,10 +93,13 @@ func TestPlanShards_SplitsSingleFatDirectory(t *testing.T) {
 	}
 }
 
-func TestPlanShards_ShardsWithoutASTCandidates(t *testing.T) {
+func TestPlanShards_NilWithoutASTCandidates(t *testing.T) {
 	// Index has many FILES but the objective's matcher finds NO candidate
-	// symbols (files carry no relevant annotations). Sharding must still
-	// trigger off the file count, proving it's independent of parse quality.
+	// symbols (files carry no relevant annotations). Sharding is now
+	// EVIDENCE-GATED: with zero candidates it must NOT fan out — the caller
+	// makes a single cheap whole-repo call instead of N empty scans. This is
+	// the fix for empty objectives (e.g. RPC on a non-gRPC repo) being
+	// sharded 5-7 ways for zero recall.
 	idx := &astpkg.ProjectIndex{Symbols: map[string][]astpkg.SymbolDef{}, Files: map[string]*astpkg.FileAST{}}
 	modules := []string{"src/a", "src/b", "src/c", "src/d", "src/e"}
 	for _, m := range modules {
@@ -104,9 +108,38 @@ func TestPlanShards_ShardsWithoutASTCandidates(t *testing.T) {
 			idx.Files[f] = &astpkg.FileAST{Path: f}
 		}
 	}
-	shards := planDiscoveryShards(idx, objByType(t, "http_route"), "")
+	if shards := planDiscoveryShards(idx, objByType(t, "http_route"), ""); shards != nil {
+		t.Fatalf("expected nil (single call) when AST has no candidates, got %d shards", len(shards))
+	}
+}
+
+// TestPlanShards_OnlyClustersCandidateFiles proves shards cover candidate-
+// bearing files only — non-candidate files (controllers/enums/config for a
+// db objective) are never given dedicated shards, so cost tracks evidence.
+func TestPlanShards_OnlyClustersCandidateFiles(t *testing.T) {
+	idx := &astpkg.ProjectIndex{Symbols: map[string][]astpkg.SymbolDef{}, Files: map[string]*astpkg.FileAST{}}
+	// 100 repository candidate files (db_operation matches @Repository / *Repository).
+	for i := 0; i < 100; i++ {
+		f := "src/repository/Repo" + itoa(i) + ".java"
+		q := "repository.Repo" + itoa(i)
+		idx.Symbols[q] = []astpkg.SymbolDef{sym(q, "Repo"+itoa(i), "UserRepository", f, uint32(i+1), "Repository")}
+		idx.Files[f] = &astpkg.FileAST{Path: f}
+	}
+	// 200 unrelated files (no db candidates) that must NOT be sharded.
+	for i := 0; i < 200; i++ {
+		f := "src/controller/Ctrl" + itoa(i) + ".java"
+		idx.Files[f] = &astpkg.FileAST{Path: f}
+	}
+	shards := planDiscoveryShards(idx, objByType(t, "db_operation"), "")
 	if len(shards) < 2 {
-		t.Fatalf("expected sharding by file count when AST has no candidates, got %d", len(shards))
+		t.Fatalf("100 repository candidates must shard, got %d", len(shards))
+	}
+	for _, sh := range shards {
+		for _, f := range sh.Files {
+			if !strings.HasPrefix(f, "src/repository/") {
+				t.Fatalf("shard %d included non-candidate file %s", sh.Index, f)
+			}
+		}
 	}
 }
 

@@ -269,6 +269,53 @@ func buildObjectiveHints(idx *astpkg.ProjectIndex, obj objectives.Objective, sub
 	return h
 }
 
+// objectiveCandidateWeights returns the per-file count of this objective's
+// static-analysis candidates (matching symbols + framework bindings), UNCAPPED
+// — unlike buildObjectiveHints, which caps and dedups for prompt rendering.
+// Sharding uses these weights to decide both whether to split (total weight)
+// and how to cluster files (per-file weight). Files with no candidates are
+// absent from the map, so sharding naturally ignores them. subDir scoping is
+// honoured; fileScope is intentionally not applied (sharding works over the
+// whole in-scope tree).
+func objectiveCandidateWeights(idx *astpkg.ProjectIndex, obj objectives.Objective, subDir string) map[string]int {
+	out := map[string]int{}
+	if idx == nil {
+		return out
+	}
+	m, ok := objectiveMatchers[obj.Type]
+	if !ok {
+		return out
+	}
+	inScope := func(file string) bool {
+		if file == "" {
+			return false
+		}
+		if subDir != "" && !strings.HasPrefix(file, strings.TrimSuffix(subDir, "/")+"/") {
+			return false
+		}
+		return true
+	}
+	for _, defs := range idx.Symbols {
+		for _, def := range defs {
+			if !inScope(def.File) {
+				continue
+			}
+			if symbolMatches(def, annotationNames(def.Annotations), m) {
+				out[def.File]++
+			}
+		}
+	}
+	for _, b := range idx.Frameworks {
+		if !inScope(b.File) {
+			continue
+		}
+		if containsFold(m.bindingKinds, b.Kind) {
+			out[b.File]++
+		}
+	}
+	return out
+}
+
 func symbolMatches(def astpkg.SymbolDef, anns []string, m objectiveMatcher) bool {
 	for _, a := range anns {
 		if anyContainsFold(m.annPatterns, a) {
