@@ -306,5 +306,5 @@ func (o *orchestrator) runDiscoverySharded(ctx context.Context, obj objectives.O
 		})
 		results = append(results, items)
 	}
-	return mergeShardEntities(results), nil
+	return mergeShardEntities(obj, results), nil
 }

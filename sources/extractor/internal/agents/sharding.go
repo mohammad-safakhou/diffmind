@@ -180,20 +180,22 @@ func distinctDirs(files []string) []string {
 	return out
 }
 
-// mergeShardEntities concatenates per-shard results and collapses exact
-// shard-boundary duplicates (a directory can appear in one shard, but a symbol
-// referenced from two files in different shards could be reported twice). The
-// dedup key is type|name|firstLoc(file:line); on collision we keep the
+// mergeShardEntities concatenates per-shard results and collapses
+// shard-boundary duplicates (a symbol referenced from two files in different
+// shards, or the same high-level dependency reported by adjacent shards). The
+// dedup key is the objective's SEMANTIC key (e.g. method+path for routes,
+// resource+operation for db ops), falling back to type|name|firstLoc for
+// objectives without a semantic identity. On collision we keep the
 // higher-confidence item and union its locations/evidence.
 //
 // This is a cheap pre-convert merge only; the authoritative semantic dedup is
 // the later Stage-5 reconcile pass (which needs post-convert model.* types).
-func mergeShardEntities(in [][]llmEntity) []llmEntity {
+func mergeShardEntities(obj objectives.Objective, in [][]llmEntity) []llmEntity {
 	var out []llmEntity
 	index := map[string]int{} // key -> position in out
 	for _, batch := range in {
 		for _, e := range batch {
-			k := shardEntityKey(e)
+			k := discoverySemanticKey(obj, e)
 			if pos, ok := index[k]; ok {
 				if e.Confidence > out[pos].Confidence {
 					// Keep the higher-confidence base, but union locations/evidence.

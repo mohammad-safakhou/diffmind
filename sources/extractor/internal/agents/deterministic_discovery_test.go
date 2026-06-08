@@ -19,6 +19,24 @@ func objectiveByType(t *testing.T, typ string) objectives.Objective {
 	return objectives.Objective{}
 }
 
+// TestDiscoverySemanticKeyDbOperationCollapsesByResource proves the high-level
+// db dedup key: distinct repository methods on the same (table, operation)
+// collapse to one key, while a different operation on the same table does not.
+func TestDiscoverySemanticKeyDbOperationCollapsesByResource(t *testing.T) {
+	obj := objectiveByType(t, "db_operation")
+	readA := llmEntity{Type: "db_operation", Name: "OrderRepository.findById", Details: map[string]any{"table": "orders", "operation": "read"}}
+	readB := llmEntity{Type: "db_operation", Name: "OrderRepository.findByStatus", Details: map[string]any{"table": "Orders", "operation": "READ"}}
+	write := llmEntity{Type: "db_operation", Name: "OrderRepository.save", Details: map[string]any{"table": "orders", "operation": "write"}}
+
+	kA, kB, kW := discoverySemanticKey(obj, readA), discoverySemanticKey(obj, readB), discoverySemanticKey(obj, write)
+	if kA != kB {
+		t.Errorf("two reads on the same table must share a key: %q vs %q", kA, kB)
+	}
+	if kA == kW {
+		t.Errorf("read and write on the same table must differ: both %q", kA)
+	}
+}
+
 func TestEntityFromFrameworkBindingHTTPRoute(t *testing.T) {
 	obj := objectiveByType(t, "http_route")
 	got, ok := entityFromFrameworkBinding(obj, astpkg.FrameworkBinding{

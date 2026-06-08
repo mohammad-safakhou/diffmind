@@ -397,21 +397,52 @@ func discoverySemanticKey(obj objectives.Objective, e llmEntity) string {
 		}
 		return ""
 	}
+	first := func(keys ...string) string {
+		for _, k := range keys {
+			if v := get(k); v != "" {
+				return v
+			}
+		}
+		return ""
+	}
 	switch obj.Type {
-	case "http_route", "outbound_http":
+	case "http_route", "webhook", "outbound_http":
 		method, path := get("method"), normalizePathForKey(get("path"))
 		if method != "" || path != "" {
 			return strings.Join([]string{obj.ID, method, path}, "|")
 		}
-	case "queue_consumer":
-		platform, queue := get("platform"), get("queue")
-		if platform != "" || queue != "" {
-			return strings.Join([]string{obj.ID, platform, queue}, "|")
+	case "queue_consumer", "queue_publish", "stream_consume":
+		platform := get("platform")
+		dest := first("queue", "topic", "destination", "stream")
+		if platform != "" || dest != "" {
+			return strings.Join([]string{obj.ID, platform, dest}, "|")
 		}
 	case "scheduled_job":
 		schedule, handler := get("schedule"), get("handler")
 		if schedule != "" || handler != "" {
 			return strings.Join([]string{obj.ID, schedule, handler}, "|")
+		}
+	case "db_operation", "cache_operation":
+		// High-level identity: a dependency is "<operation> on <resource>"
+		// (e.g. read from orders), NOT one row per repository method. Keying
+		// on (resource, operation) collapses the LLM's per-method jitter into
+		// the architectural fact the extractor is after, which is also what
+		// stabilises the run-to-run count.
+		resource := first("table", "entity", "cache", "key", "collection", "index")
+		op := get("operation")
+		if resource != "" || op != "" {
+			return strings.Join([]string{obj.ID, resource, op}, "|")
+		}
+	case "rpc_endpoint", "outbound_rpc":
+		svc, meth := get("service"), get("method")
+		if svc != "" || meth != "" {
+			return strings.Join([]string{obj.ID, svc, meth}, "|")
+		}
+	case "cli_command", "command_exec":
+		cmd := first("command", "invocation")
+		handler := get("handler")
+		if cmd != "" || handler != "" {
+			return strings.Join([]string{obj.ID, cmd, handler}, "|")
 		}
 	}
 	return shardEntityKey(e)
