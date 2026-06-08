@@ -247,7 +247,11 @@ FOR EACH DB OPERATION EXTRACT:
 IMPORTANT:
 - Check application.yml/properties for datasource configuration to identify database type and connection details
 - Check any *values.yaml / config/*.yaml for database connection environment variables
-- DO NOT collapse multiple repository methods into one item - list each distinct operation
+- Report the HIGH-LEVEL data dependency, not a per-method inventory: emit ONE
+  item per distinct (table/entity, operation-type) pair. Five different SELECT
+  methods on the "orders" table are ONE read item; a read and a write on the
+  same table are two items. Always populate details.table and details.operation
+  (read/write/upsert/delete) so duplicates collapse cleanly.
 - Redis GET/SET/DEL operations count as db_operations
 - In-memory caches (EhCache, Caffeine) with NO external backing store are NOT db_operations`,
 			DetailPrompt: `For this DB operation, provide:

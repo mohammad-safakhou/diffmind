@@ -150,7 +150,7 @@ func TestMergeShardEntities_CollapsesBoundaryDupes(t *testing.T) {
 		{{Type: "http_route", Name: "GET /x", Confidence: 0.9, Locations: loc, Evidence: []llmEvidence{{}}}},
 		{{Type: "http_route", Name: "GET /y", Confidence: 0.8, Locations: []llmLocation{{File: "b.go", StartLine: 1}}}},
 	}
-	out := mergeShardEntities(in)
+	out := mergeShardEntities(objByType(t, "http_route"), in)
 	if len(out) != 2 {
 		t.Fatalf("expected 2 deduped entities, got %d: %+v", len(out), out)
 	}
