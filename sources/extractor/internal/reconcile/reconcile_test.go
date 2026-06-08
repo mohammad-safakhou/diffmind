@@ -33,18 +33,23 @@ func TestDedupeExposuresKeepsHighestConfidenceAndMergesFields(t *testing.T) {
 // they came from different files / methods / sources, while a different
 // operation on the same table stays separate.
 func TestDedupeDependenciesCollapsesDbOpsByResourceAndOperation(t *testing.T) {
-	mk := func(id, name, file, table, op string) model.Dependency {
+	mk := func(id, name, file, table, op, platform, instance string) model.Dependency {
 		return model.Dependency{BaseEntity: model.BaseEntity{
 			ID: id, Type: "db_operation", Name: name, Confidence: 0.9,
+			Platform: platform, Instance: instance,
 			Locations: []model.Location{{File: file, StartLine: 1}},
 			Details:   map[string]any{"table": table, "operation": op},
 		}}
 	}
 	in := []model.Dependency{
-		mk("1", "OrderRepository.findById", "a/Svc.java", "orders", "read"),   // LLM, file A
-		mk("2", "read orders", "b/Repo.java", "orders", "SELECT"),             // det floor, file B, verb variant
-		mk("3", "OrderRepository.save", "a/Svc.java", "orders", "write"),      // distinct op, same table
-		mk("4", "find customers", "c/Cust.java", "customers", "read"),         // distinct table
+		// Same logical (orders, read) reported four ways: different files,
+		// names, verb variants, singular/plural, and noisy platform/instance.
+		mk("1", "OrderRepository.findById", "a/Svc.java", "orders", "read", "postgres", "spring.datasource.url"),
+		mk("2", "read orders", "b/Repo.java", "order", "SELECT", "database", "unknown"),
+		mk("3", "OrderRepository.findByStatus", "c/X.java", "orders", "find", "athena", "PostgreSQL via spring.datasource.url in application.yml:53"),
+		// Distinct op on same table, and a distinct table — must stay separate.
+		mk("4", "OrderRepository.save", "a/Svc.java", "orders", "DELETE", "database", "unknown"),
+		mk("5", "find customers", "c/Cust.java", "customers", "read", "database", ""),
 	}
 	out := DedupeDependencies(in)
 	if len(out) != 3 {
@@ -52,7 +57,7 @@ func TestDedupeDependenciesCollapsesDbOpsByResourceAndOperation(t *testing.T) {
 		for i, d := range out {
 			names[i] = d.Name
 		}
-		t.Fatalf("expected 3 deduped db ops (orders:read, orders:write, customers:read), got %d: %v", len(out), names)
+		t.Fatalf("expected 3 deduped db ops (order:read, order:write, customer:read), got %d: %v", len(out), names)
 	}
 }
 
