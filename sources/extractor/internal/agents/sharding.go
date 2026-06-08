@@ -49,70 +49,77 @@ type discoveryShard struct {
 }
 
 // planDiscoveryShards decides whether and how to split obj's discovery.
-// Returns nil when the candidate space is small (caller falls back to a single
-// whole-repo call) or when there is no AST index to derive a file tree from
-// (single-call is then the safe, unchanged behaviour).
+// Returns nil — meaning the caller makes a single whole-repo call — unless the
+// objective has STRONG static evidence (many AST candidates) concentrated
+// enough to be worth fanning out.
 //
-// The unit of sharding is the FILE. Each in-scope file is weighted by the
-// number of this objective's AST candidates it contains (or 1 when the AST
-// found none — so a big repo still shards to search for things the parser
-// missed). Files are sorted by path (keeping same-directory files adjacent)
-// and greedily packed into shards of bounded weight. Because the partition is
-// over exact files, a single heavily-populated directory is split across
-// shards rather than collapsing into one oversized call.
+// Evidence-gated, candidate-clustered design:
+//
+//   - We shard ONLY the files that actually contain this objective's
+//     candidates (matching symbols / framework bindings). A repo with no
+//     candidates for an objective (e.g. an RPC objective on a repo with no
+//     gRPC) returns nil → ONE cheap whole-repo call. The previous behaviour
+//     weighted every file equally when the AST found nothing, so a 200-file
+//     repo fanned an empty objective into 4-7 whole-repo scans — pure cost,
+//     zero recall. Sharding now scales with evidence, not raw file count.
+//
+//   - Candidate files are sorted by path (same-directory files adjacent) and
+//     greedily packed by candidate weight, so a shard is a COHERENT CLUSTER
+//     (e.g. repository/ + entity/ for db_operation) rather than an arbitrary
+//     alphabetical slice spanning controllers, enums and config.
+//
+//   - Shards scope WHERE findings are reported, never what may be READ: the
+//     prompt lets each shard open shared base classes / config / helpers
+//     anywhere in the repo (see discoveryScopeBlock). Each candidate file
+//     belongs to exactly one shard, so declarations are partitioned and
+//     cross-shard double-reporting is avoided without blinding a shard to
+//     shared code.
+//
+// Tradeoff: a dynamic/reflection entity whose declaration sits in a file with
+// NO static candidates is not covered when an objective shards. That is the
+// accepted cost of evidence-gating — it only applies to high-evidence
+// objectives (whose reflection tail is small), and low-evidence objectives
+// still get a single whole-repo call that searches everything.
 func planDiscoveryShards(idx *astpkg.ProjectIndex, obj objectives.Objective, subDir string) []discoveryShard {
 	if idx == nil || len(idx.Files) == 0 {
 		return nil
 	}
 
-	hints := buildObjectiveHints(idx, obj, subDir, nil)
-	candidateCount := len(hints.Symbols) + len(hints.Bindings)
-	useCandidates := candidateCount > 0
-
-	// Per-file candidate weights.
-	fileCandidates := map[string]int{}
-	for _, s := range hints.Symbols {
-		fileCandidates[s.File]++
-	}
-	for _, b := range hints.Bindings {
-		fileCandidates[b.File]++
+	// Per-file candidate weights (uncapped). Files absent from the map have no
+	// candidates and are never sharded.
+	fileCandidates := objectiveCandidateWeights(idx, obj, subDir)
+	if len(fileCandidates) == 0 {
+		return nil // no evidence → single whole-repo call
 	}
 
-	// In-scope files, sorted for deterministic, directory-adjacent packing.
-	files := make([]string, 0, len(idx.Files))
-	for f := range idx.Files {
-		if fileInSubDir(f, subDir) {
-			files = append(files, f)
-		}
-	}
-	if len(files) == 0 {
-		return nil
+	// Candidate-bearing files only, sorted for deterministic, directory-
+	// adjacent packing.
+	files := make([]string, 0, len(fileCandidates))
+	total := 0
+	for f, w := range fileCandidates {
+		files = append(files, f)
+		total += w
 	}
 	sort.Strings(files)
 
-	weightOf := func(f string) int {
-		if useCandidates {
-			return fileCandidates[f] // 0 for files with no candidates
-		}
-		return 1
-	}
-
-	// Total weight gate: below the soft target, one whole-repo call.
-	total := 0
-	for _, f := range files {
-		total += weightOf(f)
-	}
+	// Total candidate weight gate: below the soft target, one whole-repo call.
 	if total <= discoveryShardSoftTarget {
 		return nil
 	}
 
-	// Greedily pack files into shards, AIMING for the soft target so the work
-	// actually splits (a total between soft and hard would otherwise fit in a
-	// single shard and defeat the purpose). The hard cap is the absolute
-	// ceiling. A file heavier than the soft target on its own still starts
-	// (and immediately closes) a shard — we never split below file
-	// granularity. Files with zero candidates add no weight but are still
-	// assigned, so dynamic/reflection code is searched.
+	weightOf := func(f string) int {
+		if w := fileCandidates[f]; w > 0 {
+			return w
+		}
+		return 1
+	}
+
+	// Greedily pack candidate files into shards, AIMING for the soft target so
+	// the work actually splits (a total between soft and hard would otherwise
+	// fit in a single shard and defeat the purpose). The hard cap is the
+	// absolute ceiling. A file heavier than the soft target on its own still
+	// starts (and immediately closes) a shard — we never split below file
+	// granularity.
 	var shards []discoveryShard
 	var cur []string
 	curWeight := 0
@@ -126,7 +133,7 @@ func planDiscoveryShards(idx *astpkg.ProjectIndex, obj objectives.Objective, sub
 	}
 	for _, f := range files {
 		w := weightOf(f)
-		overWeight := w > 0 && curWeight+w > discoveryShardSoftTarget
+		overWeight := curWeight+w > discoveryShardSoftTarget
 		overFiles := len(cur) >= maxShardFiles
 		if curWeight > 0 && (overWeight || overFiles) {
 			flush()
