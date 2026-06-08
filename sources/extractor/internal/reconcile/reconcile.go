@@ -6,6 +6,7 @@
 package reconcile
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -96,12 +97,74 @@ func semanticKey(b model.BaseEntity) string {
 			return "exposure-job|" + name + "|" + loc
 		}
 	}
+	// High-level data dependencies dedupe by (resource, operation-kind) so the
+	// same logical operation — e.g. "read orders" — collapses regardless of
+	// which file or repository method surfaced it, and regardless of whether it
+	// came from the LLM, the deterministic floor, or AST augmentation. Location
+	// is intentionally EXCLUDED (it was fragmenting one logical dependency into
+	// many rows) and the operation is normalised to a read/write class so a
+	// SELECT and a "read" collapse.
+	if b.Type == "db_operation" || b.Type == "cache_operation" {
+		resource := firstDetail(b, "table", "table_or_entity", "entity", "cache", "collection", "index", "key")
+		op := normalizeDBOp(firstDetail(b, "operation", "operation_kind", "operation_type"))
+		if op == "" {
+			op = normalizeDBOp(b.Operation)
+		}
+		if resource != "" {
+			return strings.Join([]string{b.Type, strings.ToLower(strings.TrimSpace(b.Platform)), strings.ToLower(strings.TrimSpace(b.Instance)), resource, op}, "|")
+		}
+	}
 	instance := strings.ToLower(strings.TrimSpace(b.Instance))
 	operation := strings.ToLower(strings.TrimSpace(b.Operation))
 	if operation == "" {
 		operation = strings.ToLower(strings.TrimSpace(b.Name))
 	}
 	return strings.Join([]string{strings.ToLower(b.Platform), instance, operation, loc}, "|")
+}
+
+// firstDetail returns the first non-empty Details value for the given keys,
+// lower-cased and trimmed.
+func firstDetail(b model.BaseEntity, keys ...string) string {
+	if b.Details == nil {
+		return ""
+	}
+	for _, k := range keys {
+		v, ok := b.Details[k]
+		if !ok || v == nil {
+			continue
+		}
+		s := strings.ToLower(strings.TrimSpace(fmt.Sprint(v)))
+		if s != "" && s != "<nil>" {
+			return s
+		}
+	}
+	return ""
+}
+
+// normalizeDBOp folds operation verbs into read/write classes so equivalent
+// operations from different sources (LLM "SELECT", AST "read") collapse. Verbs
+// it does not recognise (e.g. a cache "evict") pass through unchanged.
+func normalizeDBOp(op string) string {
+	op = strings.ToLower(strings.TrimSpace(op))
+	switch {
+	case op == "":
+		return ""
+	case hasAnyPrefix(op, "read", "select", "find", "get", "list", "query", "search", "exists", "count", "scan", "load", "fetch"):
+		return "read"
+	case hasAnyPrefix(op, "write", "insert", "update", "save", "upsert", "delete", "remove", "put", "merge", "persist", "store"):
+		return "write"
+	default:
+		return op
+	}
+}
+
+func hasAnyPrefix(s string, prefixes ...string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func dropTransportDuplicates(in []model.Dependency) []model.Dependency {

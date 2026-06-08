@@ -28,6 +28,34 @@ func TestDedupeExposuresKeepsHighestConfidenceAndMergesFields(t *testing.T) {
 	}
 }
 
+// TestDedupeDependenciesCollapsesDbOpsByResourceAndOperation verifies that db
+// operations on the same (table, operation-kind) collapse to one row even when
+// they came from different files / methods / sources, while a different
+// operation on the same table stays separate.
+func TestDedupeDependenciesCollapsesDbOpsByResourceAndOperation(t *testing.T) {
+	mk := func(id, name, file, table, op string) model.Dependency {
+		return model.Dependency{BaseEntity: model.BaseEntity{
+			ID: id, Type: "db_operation", Name: name, Confidence: 0.9,
+			Locations: []model.Location{{File: file, StartLine: 1}},
+			Details:   map[string]any{"table": table, "operation": op},
+		}}
+	}
+	in := []model.Dependency{
+		mk("1", "OrderRepository.findById", "a/Svc.java", "orders", "read"),   // LLM, file A
+		mk("2", "read orders", "b/Repo.java", "orders", "SELECT"),             // det floor, file B, verb variant
+		mk("3", "OrderRepository.save", "a/Svc.java", "orders", "write"),      // distinct op, same table
+		mk("4", "find customers", "c/Cust.java", "customers", "read"),         // distinct table
+	}
+	out := DedupeDependencies(in)
+	if len(out) != 3 {
+		names := make([]string, len(out))
+		for i, d := range out {
+			names[i] = d.Name
+		}
+		t.Fatalf("expected 3 deduped db ops (orders:read, orders:write, customers:read), got %d: %v", len(out), names)
+	}
+}
+
 func TestFilterConnectionsDropsOrphans(t *testing.T) {
 	exp := []model.Exposure{{BaseEntity: model.BaseEntity{ID: "e1"}}}
 	dep := []model.Dependency{{BaseEntity: model.BaseEntity{ID: "d1"}}}
