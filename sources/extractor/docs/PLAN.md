@@ -62,6 +62,7 @@ All emitted entries include source locations, bounded evidence snippets, and det
 - Precision-first: uncertain findings go to `unresolved/`.
 - Main artifacts require source-backed evidence.
 - Connections include normalised condition objects (`if_guard`, `loop`, `try_block`, etc.) and per-hop call paths with file:line.
+- Accuracy is measured, not assumed: `internal/eval` scores artifacts against hand-labeled fixtures (`testdata/eval/`) with per-objective precision/recall/F1, matching on `reconcile.SemanticKey(Loose)` so phrasing variance (orders/order, SELECT/read) does not count as a miss. Items the deterministic floor cannot recover are labeled `deterministic:false` and excluded from cheap-mode scoring.
 
 ## Performance Model
 - Fresh OpenCode sessions per prompt by default to avoid context-growth costs.
@@ -80,3 +81,5 @@ All emitted entries include source locations, bounded evidence snippets, and det
 - AST unit tests for each language grammar, walker BFS, condition derivation, method reference capture.
 - Agent integration tests for discovery checkpoints, detail checkpoints, retry skipping, and AST connection correctness.
 - Mock OpenCode server tests for HTTP contract handling, watchdog, and liveness.
+- Deterministic-precision tests for the junk-table filter, placeholder resolution, and operation-kind inference (`internal/agents/precision_test.go`).
+- Accuracy guardrail: `go test ./internal/eval/...` runs cheap-mode scoring (deterministic floor vs. labeled fixtures) hermetically in CI; synthetic scorer tests cover phrasing-collapse, FP/FN attribution, multi-platform datastores, and connection endpoint translation.

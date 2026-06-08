@@ -117,50 +117,107 @@ repo_facts → ast_index → deterministic_discovery → LLM discovery (merged)
   errs toward "don't merge", never a wrong merge.
 - **No cost/budget guard.** A run will spend whatever it spends; there is no
   token ceiling or abort-on-exhaustion (deliberately deferred).
-- **Minor precision nits** in deterministic db tables (e.g. `entity_manager`,
-  `*_id_seq`) — low-signal, collapsed by reconcile, not duplicates.
+- **LLM-only objectives are high-variance run-to-run.** Objectives with no
+  deterministic detector (`queue_publish`, `cache_operation`, `outbound_rpc`,
+  `stream_consume`, `command_exec`, `rpc_endpoint`, `webhook`, `cli_command`)
+  get a single whole-repo "find ALL X" call — the highest-variance prompt shape.
+  Measured on `routing-service` across two runs: `cli_command` 7→0,
+  `outbound_rpc` 14→10, `command_exec` 1→0, `stream_consume` 0→1, while the
+  deterministic-floored types (http_route, scheduled_job, db_operation) stayed
+  stable. This is the single biggest remaining accuracy lever — see roadmap.
+- **Connections have no LLM tail.** The connection stage is 100% deterministic
+  AST BFS, so exposures wired via DI / events / async-queue / dynamic dispatch /
+  deep chains (>`MaxDepth`) or on non-JVM stacks silently get no connections.
+
+Fixed June 2026 (previously listed here): deterministic db-table precision nits
+— `entity_manager` and `*_id_seq`/`*_seq` are now filtered out, and `${...}`
+config placeholders in queue-consumer names resolve to the real queue. A
+residual `unknown <table>` can still appear when the *LLM itself* names a db op
+that way (we never rewrite LLM-authored names); reconcile collapses it by
+`(resource, operation)`, so it is not a duplicate.
 
 ## 6. Roadmap / milestones
 
-Near-term (stability & coverage):
-1. **Extend deterministic discovery to the remaining types** — queue_publish
+DONE (June 2026):
+- ✅ **Accuracy eval harness** — `internal/eval` + `diffmind eval`. Scores
+  exposures/deps/connections against hand-labeled fixtures with per-objective
+  P/R/F1, matching on the same identity the pipeline dedups with. Cheap mode
+  (deterministic floor, hermetic, `go test ./internal/eval/...`) is the CI
+  guardrail; `score-run` grades a real run dir. (Partially covers the old
+  "stability regression harness" item — accuracy now; K-run variance pending.)
+- ✅ **Junk-table filter** for the deterministic db deriver (`entity_manager`,
+  `*_id_seq`/`*_seq`, generic JPA handles).
+- ✅ **Config placeholder resolution** — `${...}` queue/topic names in framework
+  bindings resolve to the real resource (`internal/agents/config_resolve.go`).
+
+Near-term (the highest-leverage gaps, in priority order):
+1. **LLM connection verify/repair pass** — add an LLM *tail* after the
+   deterministic AST connection walk for exposures it leaves unconnected
+   (DI / events / async-queue / dynamic dispatch / deep chains / non-JVM),
+   constrained to the known dependency catalog and AST-validated. Connections
+   are the hardest sub-problem and currently have zero LLM coverage — the
+   clearest violation of the "LLM is the brain" thesis. (`--max-catalog-items`
+   is still wired; the removed scaffolding is recoverable from git `3c59dee~1`.)
+2. **Stabilise LLM-only objectives** — keyword-seed candidate files (reuse the
+   `objectiveMatchers` keyword lists) so `queue_publish`, `cache_operation`,
+   `outbound_rpc`, `command_exec`, etc. get evidence-gated directory shards
+   instead of one whole-repo call. Directly attacks the run-to-run variance
+   documented in §5. Gate on the existing soft-target so no empty fan-out.
+3. **Promote detail-discovered dependencies** — the detail stage observes
+   downstream ops (Redis/SQS/HTTP/exec) it currently discards as text; route
+   genuinely-new ones back through verification (preserving "discovery is the
+   authority") instead of dropping them.
+4. **Extend deterministic discovery to the remaining types** — queue_publish
    (template `.send`), cache_operation (`@Cacheable` w/ external store),
    outbound_rpc — each gated on a precision check before promotion.
-2. **Deterministic db coverage beyond JVM** — Django ORM, ActiveRecord, GORM,
-   Sequelize/Prisma. This is the biggest lever for non-Java repos.
-3. **Junk-table filter** for the deterministic db deriver (`entity_manager`,
-   `*_id_seq`, sequences).
+5. **Deterministic db coverage beyond JVM** — Django ORM, ActiveRecord, GORM,
+   Sequelize/Prisma. The biggest lever for non-Java repos.
 
 Medium-term (quality & trust):
-4. **Pin LLM determinism** where the provider supports it (seed/temperature);
-   measure variance, don't assume.
-5. **Stability regression harness** — run discovery K times on a fixture repo,
-   report per-objective variance; gate changes on it.
-6. **Cost guardrail** — optional token budget that aborts and fails (not
+6. **Pin LLM determinism** where the provider supports it (seed/temperature);
+   measure variance with the eval harness's planned K-run/full mode, don't assume.
+7. **Cost guardrail** — optional token budget that aborts and fails (not
    silently completes).
 
 Longer-term (product):
-7. **Cross-service graph** — stitch many services' exposures↔dependencies into
+8. **Cross-service graph** — stitch many services' exposures↔dependencies into
    a fleet-wide architecture graph (e.g. service A's outbound_http → service B's
-   http_route).
-8. **Diff mode** — architecture delta between two commits/versions.
+   http_route). (Placeholder resolution above makes the instance names stable
+   enough to stitch on.)
+9. **Diff mode** — architecture delta between two commits/versions.
 
 ## 7. Where things live
 
 - `internal/objectives/registry.go` — the objective map + prompts.
 - `internal/agents/` — orchestrator (`pipeline.go`), discovery, sharding,
   grounding, deterministic discovery, detail, connections, watchdog, liveness.
+  `deterministic_floor.go` (LLM-free projection for eval), `config_resolve.go`
+  (placeholder resolver).
 - `internal/ast/` — tree-sitter engine; `framework/` — per-framework detectors.
-- `internal/reconcile/` — final dedup / sort / orphan-drop.
+- `internal/reconcile/` — final dedup / sort / orphan-drop; exports
+  `SemanticKey`/`SemanticKeyLoose` (the eval matcher's identity).
+- `internal/eval/` — golden-set accuracy harness; fixtures + label format under
+  `testdata/eval/` (see its `README.md`).
 - `internal/ui/` — dashboard server + SPA (`web/`).
-- `cmd/diffmind/` — CLI (`run`, `retry`, `ui`).
+- `cmd/diffmind/` — CLI (`run`, `retry`, `validate`, `list-runs`, `eval`, `ui`).
 - Artifacts: `~/.diffmind/runs/<run_id>/` (manifest, exposures, dependencies,
   connections, unresolved, prompts, events.jsonl, state/).
 
 ## 8. Validating a change
 
-`go build ./... && go test ./...` must stay green. For behavior changes, run a
-real extraction (see README) and compare the artifacts and per-objective counts
-against a prior run in `~/.diffmind/runs/` — watch for **stability** (counts not
-swinging run-to-run) and **no silent over-merge** (distinct datastores/tables
-preserved), not just a smaller number.
+`go build ./... && go test ./...` must stay green. Two complementary checks:
+
+1. **Eval harness (fast, objective, no OpenCode).** `go test ./internal/eval/...`
+   or `diffmind eval --mode cheap` scores the deterministic floor against
+   labeled fixtures (`testdata/eval/`) — a regression in any deterministic stage
+   drops a fixture's F1. Add/extend a fixture when you touch a detector or ORM
+   deriver. To grade a full LLM run, `diffmind eval --mode score-run --run <id>
+   --fixture <dir>`. The matcher keys on `reconcile.SemanticKey(Loose)`, so it
+   judges "correct" exactly as the pipeline judges "duplicate".
+2. **Real-run diff (behavioral).** Run a real extraction (see README) and compare
+   artifacts + per-objective counts against a prior run in `~/.diffmind/runs/` —
+   watch for **stability** (counts not swinging run-to-run), **no silent
+   over-merge** (distinct datastores/tables preserved), and resolved names (no
+   `${...}` placeholders, no `entity_manager`/`*_seq` junk), not just a smaller
+   number. Note that LLM-only objectives (§5) still swing run-to-run until the
+   roadmap-#2 sharding lands — judge those against a label, not a single run.
