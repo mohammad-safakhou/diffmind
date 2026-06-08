@@ -19,7 +19,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: diffmind <run|retry|validate|list-runs|ui> ...")
+		fmt.Fprintln(os.Stderr, "usage: diffmind <run|retry|validate|list-runs|eval|ui> ...")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -31,6 +31,8 @@ func main() {
 		validate(os.Args[2:])
 	case "list-runs":
 		listRuns(os.Args[2:])
+	case "eval":
+		evalCmd(os.Args[2:])
 	case "ui":
 		serveUI(os.Args[2:])
 	default:
