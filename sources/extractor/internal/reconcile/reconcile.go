@@ -213,8 +213,16 @@ func depPlatformClass(d model.Dependency) string {
 }
 
 func semanticKey(b model.BaseEntity) string {
+	return genericSemanticKey(b, true)
+}
+
+// genericSemanticKey is the resource-less identity key. withLoc toggles the
+// trailing source-file component: the dedup pass keeps it (two same-named items
+// in different files are distinct facts), but the exported loose variant drops
+// it so a hand-authored golden label needn't pin paths.
+func genericSemanticKey(b model.BaseEntity, withLoc bool) string {
 	loc := ""
-	if len(b.Locations) > 0 {
+	if withLoc && len(b.Locations) > 0 {
 		loc = b.Locations[0].File
 	}
 	if b.Type == "scheduled_job" || (b.Type == "cli_command" && !strings.EqualFold(b.Platform, "sqs")) {
@@ -232,6 +240,30 @@ func semanticKey(b model.BaseEntity) string {
 		operation = strings.ToLower(strings.TrimSpace(b.Name))
 	}
 	return strings.Join([]string{strings.ToLower(b.Platform), instance, operation, loc}, "|")
+}
+
+// SemanticKey returns the architectural-identity key the dedup pass uses to
+// decide two entities are the same fact. It is exported so external tools — the
+// eval harness in particular — can judge a "match" exactly the way the pipeline
+// judges a "duplicate", instead of inventing a parallel notion of identity that
+// could silently drift from the real dedup behaviour. For db/cache operations
+// with a resolvable resource it mirrors the datastore-aware
+// (type, resource, operation, platform-class) grouping of dedupeDataDependencies;
+// everything else uses the generic semantic key (including the source file).
+func SemanticKey(b model.BaseEntity) string { return semanticIdentity(b, true) }
+
+// SemanticKeyLoose is SemanticKey without the source-file component. Golden
+// labels should not have to pin file paths or line numbers to match an
+// extracted item, so the eval matcher keys on the loose form. For db/cache the
+// two are identical (the data key never includes a file).
+func SemanticKeyLoose(b model.BaseEntity) string { return semanticIdentity(b, false) }
+
+func semanticIdentity(b model.BaseEntity, withLoc bool) string {
+	if (b.Type == "db_operation" || b.Type == "cache_operation") && dataResource(b) != "" {
+		cls := depPlatformClass(model.Dependency{BaseEntity: b})
+		return strings.Join([]string{b.Type, dataResource(b), dataOperation(b), cls}, "|")
+	}
+	return genericSemanticKey(b, withLoc)
 }
 
 // firstDetail returns the first non-empty Details value for the given keys,
