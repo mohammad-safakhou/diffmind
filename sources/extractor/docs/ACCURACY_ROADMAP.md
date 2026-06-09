@@ -662,9 +662,9 @@ refuted (investigated, not a bug) / done. Update Status as work lands.
 | E3 | Finder-method op misclassification (all/scan/page → read) | `connections.go:1268` | MED | A | open |
 | E4 | `@Scheduled(cron=,zone=)` whole arg stored as schedule | `spring.go:57` | LOW | A | open |
 | E5 | `extractFirstStringArg` returns raw arg when unquoted | `spring.go` | LOW | A | open |
-| C1 | HTTP path params not canonicalized (`{id}`/`:id`/`<int:id>`) | `deterministic_discovery.go:590`, `eval/identity.go:90` | HIGH | A,V | open |
-| C2 | Detail re-identification — names already pinned (`pipeline.go:727`); only identity-details overwrite remains | `detail.go:635` | MED | A | partially stale |
-| C3 | Reexamination deletes true positives on one LLM "no" | `reexamine.go:509,583` | MED | A | open |
+| C1 | HTTP path params not canonicalized (`{id}`/`:id`/`<int:id>`) | `reconcile.CanonicalizeRoutePath` | HIGH | A,V | DONE (ae72d04) |
+| C2 | Detail could overwrite identity-bearing details | `detail.go pinIdentityDetails` | MED | A | DONE (747fa9b) |
+| C3 | Reexamination deleted true positives on one LLM "no" | `reexamine.go` | MED | A | DONE (75084f0) |
 | C4 | Schema-qualified resource false-split (`public.orders`) | `reconcile.go:303` | LOW | A | open |
 | C5 | DECIDED: canonical `operation_kind∈{read,write}` (identity) + raw `operation` verb (fidelity) | `reconcile.go:333`, `connections.go:784,1243` | MED | A | open (taxonomy settled) |
 | P1 | Enforce enum on `operation_kind` (NOT `operation`); `platform` open/`other`+`raw_platform`; ~17 op spellings today | `schemas.go:16`, `classify.go:59`, `registry.go:253,260` | HIGH | A,V | open (unblocked) |
@@ -694,7 +694,7 @@ refuted (investigated, not a bug) / done. Update Status as work lands.
 | V3a | Nondeterministic cross-file config resolution (map order) | `config_resolve.go:90` | HIGH | V,A | open |
 | V3b | YAML list-of-mappings mis-keyed/collapsed | `parser.go:994,1022` | HIGH | A | open |
 | V3c | YAML lists: inline `[a,b]` kept as one opaque string; block scalar seq dropped | `parser.go:994` | MED | A | open (corrected) |
-| V3d | Test-resource config files pollute the index | `index.go:51,55` | MED | A | open |
+| V3d | Test-resource config files pollute the index | `index.go` | MED | A | DONE (9d68a01) |
 | V3e | Mis-indented YAML re-parented silently | `parser.go:1008` | LOW | A | open |
 | V1/V2/V4 | Unmodeled types: GraphQL/WS/SSE/serverless triggers; storage/secrets/flags; auth/PII | `registry.go:36-420` | HIGH | A | open |
 | M* | Only one toy fixture; no real-repo/LLM/variance/floor-coverage measurement | `internal/eval/`, `testdata/eval/` | HIGH | A,V,C | partial (M4+M5 done; M1/M2/M3 open) |
