@@ -680,7 +680,7 @@ refuted (investigated, not a bug) / done. Update Status as work lands.
 | F3-schema | DECIDED: `resolution_status` + unresolved keyed by file+enclosing-symbol+call-ordinal (line fallback), else UnresolvedItem | `model`, `reconcile` | MED | A | open (decided) |
 | GATES | Per-bucket P&R individually (not F1); empty buckets N/A; benchmark-specific budget (manifest field, configurable, explicit-fail). Numbers provisional → FREEZE + version thresholds/min-label-support/budgets after first labeled calibration runs, before any green-release decision | `internal/eval/` | — | A,V,C | approved (provisional, freeze post-calibration) |
 | V3a-rule | Base authoritative only if no profile override OR active profile known; else (unknown active + profile disagrees) → unresolved, retain base + all candidates; never lexical | `config_resolve.go:90` | HIGH | V,A | approved |
-| A2 | Silent connection-walk truncation (no flag) | `scip/walker.go:190-206` | MED | A | open |
+| A2 | Connection-walk truncation now surfaced (WalkVerbose + unresolved item) | `ast/walker.go`, `connections.go` | MED | A | DONE |
 | F1 | cache_operation: Spring emits NO cache bindings — needs a DETECTOR, not wiring | `spring.go`, `deterministic_discovery.go:233,252` | MED | A,C | reworked (was wrong) |
 | F2–F6 | No deterministic floor for command_exec/queue_publish/gRPC; JVM-only DB + routes (Go stdlib, Django urls.py, Flask, JAX-RS) | `connections.go:737`, `web.go:128` | HIGH | A,V,C | open |
 | S1 | Sharding packs files alphabetically, not by cohesion | `sharding.go:83,103,134` | MED | A,C | open |

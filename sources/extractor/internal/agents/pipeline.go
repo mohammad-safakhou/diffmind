@@ -497,8 +497,10 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	}
 
 	// --- Stage 0c: infrastructure inventory ---
+	// Its output is consumed only by the UI (state/infrastructure.json), not by
+	// core extraction, so it can be skipped to save a full LLM call (X6).
 	var infra *InfrastructureInventory
-	if o.astIndex != nil && len(o.astIndex.Configs) > 0 {
+	if o.astIndex != nil && len(o.astIndex.Configs) > 0 && !o.cfg.Runtime.SkipInfrastructure {
 		inv, err := o.runInfrastructureStage(ctx, rf)
 		if err != nil {
 			util.Warn("agents.orchestrator", "infrastructure stage failed; continuing", map[string]any{"error": err.Error()})
