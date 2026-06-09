@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 	"text/tabwriter"
 )
 
@@ -40,6 +42,40 @@ func fpName(r ItemRef) string {
 
 // WriteJSON emits the machine-readable report.
 func WriteJSON(w io.Writer, rep Report) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(rep)
+}
+
+// RenderVariance writes a human-readable per-objective stability table for a
+// K-run variance report. core/union is the headline column (1.0 = perfectly
+// reproducible); counts exposes per-run count volatility.
+func RenderVariance(w io.Writer, rep VarianceReport) {
+	fmt.Fprintf(w, "VARIANCE over %d runs", rep.Runs)
+	if len(rep.RunIDs) > 0 {
+		fmt.Fprintf(w, " [%s]", strings.Join(rep.RunIDs, ", "))
+	}
+	fmt.Fprintln(w)
+	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(tw, "objective\tcounts\tmean\tstdev\tcore/union\tjaccard")
+	for _, o := range rep.Objectives {
+		fmt.Fprintf(tw, "%s\t%s\t%.1f\t%.2f\t%d/%d=%.2f\t%.2f\n",
+			o.Objective, formatCounts(o.Counts), o.Mean, o.Stdev,
+			o.CoreKeys, o.UnionKeys, o.CoreUnion, o.JaccardMean)
+	}
+	tw.Flush()
+}
+
+func formatCounts(xs []int) string {
+	parts := make([]string, len(xs))
+	for i, x := range xs {
+		parts[i] = strconv.Itoa(x)
+	}
+	return "[" + strings.Join(parts, ",") + "]"
+}
+
+// WriteVarianceJSON emits the machine-readable variance report.
+func WriteVarianceJSON(w io.Writer, rep VarianceReport) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(rep)
