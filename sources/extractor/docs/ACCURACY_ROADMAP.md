@@ -86,7 +86,13 @@ Python FastAPI/Celery; Node/Express), plus the no-code JVM quick wins
 M1's loop. Flag an item `deterministic:true` only once the floor actually
 recovers it, so the cheap-mode F1=1.0 gate ratchets honestly.
 
-### M4 — Variance harness (new `internal/eval/variance.go`)
+### M4 — Variance harness (new `internal/eval/variance.go`) — DONE (063b316)
+Shipped: `eval --mode variance --runs ...` with core/union + pairwise Jaccard +
+per-run count mean/stdev over entities AND connection pairs, using
+`identityKey`/`connectionPairKey`; `--min-core-union` CI gate; `--json`. Baseline
+on 3 real runs confirmed deterministic types stable (1.00) and LLM-only types
+unstable (cli_command 0/13, outbound_rpc 0/24); queue_consumer 0/6 surfaced the
+V3a config nondeterminism. Original spec below.
 K-run stability: report per-objective count mean/stdev and the **core/union
 ratio** (keys in ALL K runs ÷ keys in ANY run — 1.0 = perfectly reproducible).
 **Must cover connections too (reviewer, valid):** measure connection
