@@ -157,6 +157,84 @@ router.post(dynamicPath(), handler)
 	assertNoBinding(t, idx.Frameworks, "express", "http_handler", "POST /dynamic")
 }
 
+// E1: route paths must come only from the positional arg or value=/path=,
+// never from produces/consumes/headers/params — otherwise those string literals
+// are fabricated into phantom routes at confidence 1.0.
+func TestSpringRouteIgnoresProducesConsumesAttributes(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "OrderController.java", `package com.example;
+
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api")
+public class OrderController {
+    @PostMapping(value = "/orders", produces = "application/json")
+    public String create() { return "ok"; }
+
+    @GetMapping(produces = "application/json")
+    public String list() { return "ok"; }
+
+    @PutMapping(path = "/orders/{id}", consumes = "application/json")
+    public String update() { return "ok"; }
+}
+`)
+	idx := buildIndex(t, dir)
+	// Real routes.
+	assertBinding(t, idx.Frameworks, "spring", "http_handler", "POST /api/orders", "OrderController.create")
+	assertBinding(t, idx.Frameworks, "spring", "http_handler", "GET /api", "OrderController.list")
+	assertBinding(t, idx.Frameworks, "spring", "http_handler", "PUT /api/orders/{id}", "OrderController.update")
+	// No phantom routes fabricated from the media-type literal.
+	assertNoBinding(t, idx.Frameworks, "spring", "http_handler", "POST /api/application/json")
+	assertNoBinding(t, idx.Frameworks, "spring", "http_handler", "GET /api/application/json")
+	assertNoBinding(t, idx.Frameworks, "spring", "http_handler", "PUT /api/application/json")
+}
+
+// E1: a class-level @RequestMapping with a produces attribute must not turn the
+// media type into a second class prefix.
+func TestSpringClassMappingIgnoresProduces(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "V2Controller.java", `package com.example;
+
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping(value = "/v2", produces = "application/json")
+public class V2Controller {
+    @GetMapping("/ping")
+    public String ping() { return "ok"; }
+}
+`)
+	idx := buildIndex(t, dir)
+	assertBinding(t, idx.Frameworks, "spring", "http_handler", "GET /v2/ping", "V2Controller.ping")
+	assertNoBinding(t, idx.Frameworks, "spring", "http_handler", "GET /application/json/ping")
+}
+
+// E2: array-valued listener destinations must yield one consumer per
+// destination, not a single mangled `{"a` trigger with the rest dropped.
+func TestSpringListenerArrayDestinations(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "Listeners.java", `package com.example;
+
+import org.springframework.kafka.annotation.KafkaListener;
+import io.awspring.cloud.sqs.annotation.SqsListener;
+
+public class Listeners {
+    @KafkaListener(topics = {"orders", "shipments"}, groupId = "g1")
+    public void onKafka(String m) {}
+
+    @SqsListener(value = "single-queue")
+    public void onSqs(String m) {}
+}
+`)
+	idx := buildIndex(t, dir)
+	assertBinding(t, idx.Frameworks, "spring", "queue_consumer", "kafka: orders", "Listeners.onKafka")
+	assertBinding(t, idx.Frameworks, "spring", "queue_consumer", "kafka: shipments", "Listeners.onKafka")
+	assertBinding(t, idx.Frameworks, "spring", "queue_consumer", "sqs: single-queue", "Listeners.onSqs")
+	// The mangled single-topic form must not survive.
+	assertNoBinding(t, idx.Frameworks, "spring", "queue_consumer", `kafka: {"orders`)
+}
+
 func buildIndex(t *testing.T, dir string) *ast.ProjectIndex {
 	t.Helper()
 	idx, err := ast.Build(context.Background(), dir, "", 1, nil)

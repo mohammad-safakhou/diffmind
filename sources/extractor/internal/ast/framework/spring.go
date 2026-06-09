@@ -81,64 +81,22 @@ func springAnnotationToBindings(sym ast.SymbolDef, cls *ast.SymbolDef, ann ast.A
 		}}
 	}
 
-	// Kafka listener.
-	if name == "KafkaListener" {
-		topics := extractArgValue(args, "topics")
-		return []ast.FrameworkBinding{{
-			Framework:     "spring",
-			Kind:          "queue_consumer",
-			Direction:     "inbound",
-			Symbol:        sym.Qualified,
-			Trigger:       "kafka: " + topics,
-			TriggerSource: "@KafkaListener(" + args + ")",
-			File:          sym.File,
-			Range:         sym.Range,
-		}}
+	// Message-queue listeners. Each declares its destination(s) under a
+	// framework-specific attribute; the value may be a single literal or an
+	// array ({"a","b"}). We emit ONE consumer binding per destination so array
+	// forms aren't mangled or dropped (E2).
+	queueListeners := map[string]struct {
+		platform string
+		attr     string
+	}{
+		"KafkaListener":  {"kafka", "topics"},
+		"RabbitListener": {"rabbitmq", "queues"},
+		"SqsListener":    {"sqs", "value"},
+		"JmsListener":    {"jms", "destination"},
 	}
-
-	// RabbitMQ listener.
-	if name == "RabbitListener" {
-		queues := extractArgValue(args, "queues")
-		return []ast.FrameworkBinding{{
-			Framework:     "spring",
-			Kind:          "queue_consumer",
-			Direction:     "inbound",
-			Symbol:        sym.Qualified,
-			Trigger:       "rabbitmq: " + queues,
-			TriggerSource: "@RabbitListener(" + args + ")",
-			File:          sym.File,
-			Range:         sym.Range,
-		}}
-	}
-
-	// SQS listener.
-	if name == "SqsListener" {
-		queue := extractFirstStringArg(args)
-		return []ast.FrameworkBinding{{
-			Framework:     "spring",
-			Kind:          "queue_consumer",
-			Direction:     "inbound",
-			Symbol:        sym.Qualified,
-			Trigger:       "sqs: " + queue,
-			TriggerSource: "@SqsListener(" + args + ")",
-			File:          sym.File,
-			Range:         sym.Range,
-		}}
-	}
-
-	// JMS listener.
-	if name == "JmsListener" {
-		dest := extractArgValue(args, "destination")
-		return []ast.FrameworkBinding{{
-			Framework:     "spring",
-			Kind:          "queue_consumer",
-			Direction:     "inbound",
-			Symbol:        sym.Qualified,
-			Trigger:       "jms: " + dest,
-			TriggerSource: "@JmsListener(" + args + ")",
-			File:          sym.File,
-			Range:         sym.Range,
-		}}
+	if ql, ok := queueListeners[name]; ok {
+		dests := namedOrPositionalValues(args, ql.attr)
+		return queueConsumerBindings(sym, ql.platform, dests, "@"+name+"("+args+")")
 	}
 
 	// Async dispatch.
@@ -163,7 +121,7 @@ func springHTTPBindings(sym ast.SymbolDef, cls *ast.SymbolDef, ann ast.Annotatio
 	if ann.Name == "RequestMapping" {
 		method = springRequestMethod(ann.Arguments)
 	}
-	paths := extractStringArgs(ann.Arguments)
+	paths := extractRoutePaths(ann.Arguments)
 	if len(paths) == 0 {
 		paths = []string{""}
 	}
@@ -220,21 +178,173 @@ func extractFirstStringArg(args string) string {
 	return strings.TrimSpace(strings.Trim(args, "{}"))
 }
 
-// extractArgValue extracts a named argument value from annotation args text.
-// e.g. extractArgValue(`topics = "orders", groupId = "g1"`, "topics") → `"orders"`
-func extractArgValue(args, key string) string {
-	// Try "key = value" pattern.
-	search := key + " = "
-	if idx := strings.Index(args, search); idx >= 0 {
-		rest := strings.TrimSpace(args[idx+len(search):])
-		// Read until comma or end.
-		if comma := strings.Index(rest, ","); comma >= 0 {
-			rest = rest[:comma]
-		}
-		return strings.Trim(strings.TrimSpace(rest), `"'`)
+// queueConsumerBindings emits one queue_consumer binding per destination name.
+// When no destination resolves it still emits a single binding with an empty
+// name so the consumer is not lost (destination resolution happens downstream).
+func queueConsumerBindings(sym ast.SymbolDef, platform string, names []string, source string) []ast.FrameworkBinding {
+	if len(names) == 0 {
+		names = []string{""}
 	}
-	// Fall back to first string arg.
-	return extractFirstStringArg(args)
+	out := make([]ast.FrameworkBinding, 0, len(names))
+	for _, n := range names {
+		out = append(out, ast.FrameworkBinding{
+			Framework:     "spring",
+			Kind:          "queue_consumer",
+			Direction:     "inbound",
+			Symbol:        sym.Qualified,
+			Trigger:       platform + ": " + n,
+			TriggerSource: source,
+			File:          sym.File,
+			Range:         sym.Range,
+		})
+	}
+	return out
+}
+
+// extractRoutePaths returns ONLY the route path literal(s) from a Spring mapping
+// annotation's argument text: the `value=`/`path=` attribute, or the leading
+// positional argument. It deliberately ignores other string-valued attributes
+// (produces/consumes/headers/params/name) so they are never mistaken for routes
+// (E1). Handles both single (`"/x"`) and array (`{"/a","/b"}`) forms.
+func extractRoutePaths(args string) []string {
+	named, positional, hasPositional := parseAnnotationArgs(args)
+	if v, ok := named["value"]; ok {
+		return extractStringArgs(v)
+	}
+	if v, ok := named["path"]; ok {
+		return extractStringArgs(v)
+	}
+	if hasPositional {
+		return extractStringArgs(positional)
+	}
+	return nil
+}
+
+// namedOrPositionalValues returns the string literal(s) of a named annotation
+// attribute, falling back to the leading positional argument. Handles array
+// (`{"a","b"}`) forms so multi-value attributes aren't truncated (E2).
+func namedOrPositionalValues(args, key string) []string {
+	named, positional, hasPositional := parseAnnotationArgs(args)
+	if v, ok := named[strings.ToLower(key)]; ok {
+		return extractStringArgs(v)
+	}
+	if hasPositional {
+		return extractStringArgs(positional)
+	}
+	return nil
+}
+
+// parseAnnotationArgs splits annotation argument text into named attributes
+// (lower-cased key → raw value text) and the leading positional value. Splitting
+// is brace- and quote-aware so commas inside arrays or string literals do not
+// break a value apart.
+func parseAnnotationArgs(args string) (named map[string]string, positional string, hasPositional bool) {
+	named = map[string]string{}
+	for _, part := range splitTopLevelArgs(args) {
+		if strings.TrimSpace(part) == "" {
+			continue
+		}
+		if k, v, ok := splitNamedArg(part); ok {
+			named[strings.ToLower(k)] = v
+		} else if !hasPositional {
+			positional = strings.TrimSpace(part)
+			hasPositional = true
+		}
+	}
+	return named, positional, hasPositional
+}
+
+// splitTopLevelArgs splits annotation argument text on top-level commas only —
+// commas inside quotes or brace/paren/bracket groups are preserved.
+func splitTopLevelArgs(s string) []string {
+	var parts []string
+	depth := 0
+	var quote byte
+	start := 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if quote != 0 {
+			if c == '\\' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			quote = c
+		case '{', '(', '[':
+			depth++
+		case '}', ')', ']':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				parts = append(parts, s[start:i])
+				start = i + 1
+			}
+		}
+	}
+	parts = append(parts, s[start:])
+	return parts
+}
+
+// splitNamedArg splits a single argument segment into key/value when it is a
+// `key = value` named attribute (key being a bare identifier and the `=` at top
+// level). Otherwise it is positional.
+func splitNamedArg(part string) (key, value string, named bool) {
+	depth := 0
+	var quote byte
+	for i := 0; i < len(part); i++ {
+		c := part[i]
+		if quote != 0 {
+			if c == '\\' && i+1 < len(part) {
+				i++
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			quote = c
+		case '{', '(', '[':
+			depth++
+		case '}', ')', ']':
+			if depth > 0 {
+				depth--
+			}
+		case '=':
+			if depth == 0 {
+				k := strings.TrimSpace(part[:i])
+				if isAnnotationIdent(k) {
+					return k, strings.TrimSpace(part[i+1:]), true
+				}
+				return "", strings.TrimSpace(part), false
+			}
+		}
+	}
+	return "", strings.TrimSpace(part), false
+}
+
+// isAnnotationIdent reports whether s is a bare attribute identifier (so a
+// quoted positional value containing characters is never read as a key).
+func isAnnotationIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !(r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			return false
+		}
+	}
+	return true
 }
 
 func extractStringArgs(args string) []string {
@@ -283,7 +393,7 @@ func springRequestMethod(args string) string {
 func classRequestMappingPrefixes(cls ast.SymbolDef) []string {
 	for _, ann := range cls.Annotations {
 		if ann.Name == "RequestMapping" {
-			return extractStringArgs(ann.Arguments)
+			return extractRoutePaths(ann.Arguments)
 		}
 	}
 	return nil
