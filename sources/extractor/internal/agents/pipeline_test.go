@@ -291,6 +291,7 @@ type fakeLowConfidence struct {
 	rec            *promptRecorder
 	reject         bool // when true, re-exam returns empty items (rejection)
 	detailKeepsLow bool // when true, the detail agent returns a low-confidence item
+	noLocation     bool // when true, the discovered seed has no source location
 }
 
 func (f *fakeLowConfidence) Enabled() bool { return true }
@@ -316,11 +317,14 @@ func (f *fakeLowConfidence) PromptStructured(ctx context.Context, sessionID, dir
 	case role == "repo_facts":
 		return map[string]any{}, nil
 	case role == "discovery" && strings.Contains(prompt, "OBJECTIVE_ID: exposure.http_route"):
-		return map[string]any{"items": []any{map[string]any{
+		seed := map[string]any{
 			"type": "http_route", "name": "GET /foo", "summary": "foo", "confidence": 0.2,
-			"details":          map[string]any{"method": "GET", "path": "/foo"},
-			"source_locations": []any{map[string]any{"file": "api.go", "start_line": 1, "end_line": 2}},
-		}}}, nil
+			"details": map[string]any{"method": "GET", "path": "/foo"},
+		}
+		if !f.noLocation {
+			seed["source_locations"] = []any{map[string]any{"file": "api.go", "start_line": 1, "end_line": 2}}
+		}
+		return map[string]any{"items": []any{seed}}, nil
 	case role == "reexamination":
 		if f.reject {
 			return map[string]any{"items": []any{}}, nil
@@ -383,7 +387,10 @@ func TestRunReexaminationRescuesLowConfidenceSeed(t *testing.T) {
 
 // When Stage 2 rejects a suspect seed, it should appear as an unresolved item
 // with reason_code=rejected_on_reexamination, and no exposure should be emitted.
-func TestRunReexaminationRejectsSuspectSeed(t *testing.T) {
+// C3: a single LLM "no" must NOT delete an evidence-backed seed (it has a
+// source location). It is retained (downgraded + tagged) and flows through
+// detail to a real exposure, rather than vanishing.
+func TestRunReexaminationRetainsEvidenceBackedSeed(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.Workers = 2
 	cfg.Quality.MinConfidence = 0.7
@@ -393,8 +400,39 @@ func TestRunReexaminationRejectsSuspectSeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
+	if got := len(result.Exposures); got != 1 {
+		t.Fatalf("expected the evidence-backed seed to be retained (1 exposure), got %d (unresolved=%d)", got, len(result.Unresolved))
+	}
+	for _, u := range result.Unresolved {
+		if u.ReasonCode == "rejected_on_reexamination" {
+			t.Fatalf("evidence-backed seed must not be rejected on a single 'no': %+v", u)
+		}
+	}
+	tagged := false
+	for _, tag := range result.Exposures[0].Tags {
+		if tag == "reexamination_doubted" {
+			tagged = true
+		}
+	}
+	if !tagged {
+		t.Errorf("retained-but-doubted exposure should carry the reexamination_doubted tag; tags=%v", result.Exposures[0].Tags)
+	}
+}
+
+// C3: rejection IS honored when corroborated — a seed with no source location
+// is structurally unverifiable, so an LLM "no" deletes it.
+func TestRunReexaminationDropsUnverifiableSeed(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.Workers = 2
+	cfg.Quality.MinConfidence = 0.7
+	fake := &fakeLowConfidence{rec: newRecorder(), reject: true, noLocation: true}
+
+	result, err := Run(context.Background(), cfg, t.TempDir(), fake)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
 	if got := len(result.Exposures); got != 0 {
-		t.Fatalf("expected 0 exposures after rejection, got %d", got)
+		t.Fatalf("expected 0 exposures (unverifiable seed dropped), got %d", got)
 	}
 	found := false
 	for _, u := range result.Unresolved {
@@ -404,7 +442,7 @@ func TestRunReexaminationRejectsSuspectSeed(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("expected rejected_on_reexamination unresolved item; got: %+v", result.Unresolved)
+		t.Fatalf("expected rejected_on_reexamination for the unverifiable seed; got: %+v", result.Unresolved)
 	}
 }
 
