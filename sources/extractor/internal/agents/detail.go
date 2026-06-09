@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -604,6 +605,52 @@ func entityFromBase(b model.BaseEntity) *llmEntity {
 		})
 	}
 	return e
+}
+
+// identityDetailKeys lists the Details keys that feed an entity's identity
+// (dedup/eval) key, per objective type. These are exactly the fields the
+// reconcile/eval identity functions read, so pinning them to the discovered
+// seed keeps an entity's identity invariant across detail enrichment (C2).
+func identityDetailKeys(typ string) []string {
+	switch strings.ToLower(strings.TrimSpace(typ)) {
+	case "http_route", "webhook", "outbound_http":
+		return []string{"method", "path"}
+	case "db_operation", "cache_operation":
+		return []string{"table", "table_or_entity", "entity", "cache", "collection", "index", "key", "operation", "operation_kind", "platform"}
+	case "queue_consumer", "queue_publish", "stream_consume":
+		return []string{"queue", "topic", "destination", "stream", "platform"}
+	case "rpc_endpoint", "outbound_rpc":
+		return []string{"service", "method"}
+	case "cli_command", "command_exec":
+		return []string{"command", "invocation"}
+	}
+	return nil
+}
+
+// pinIdentityDetails forces the seed's identity-bearing detail values onto item
+// (seed wins for identity keys), so detail enrichment cannot change an entity's
+// dedup/eval identity. Detail may still FILL identity keys the seed left empty
+// (establishing, not changing) and may freely enrich every non-identity detail.
+func pinIdentityDetails(item *llmEntity, seed llmEntity) {
+	if item == nil || seed.Details == nil {
+		return
+	}
+	if item.Details == nil {
+		item.Details = map[string]any{}
+	}
+	for _, k := range identityDetailKeys(seed.Type) {
+		if v, ok := seed.Details[k]; ok && !isEmptyDetailValue(v) {
+			item.Details[k] = v
+		}
+	}
+}
+
+func isEmptyDetailValue(v any) bool {
+	if v == nil {
+		return true
+	}
+	s := strings.TrimSpace(fmt.Sprint(v))
+	return s == "" || s == "<nil>"
 }
 
 // mergeEnrichment overlays the detail response on top of the seed.
