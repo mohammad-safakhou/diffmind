@@ -26,6 +26,11 @@ type Runtime struct {
 	OpenCodeDeleteDelaySec  int  `json:"opencode_delete_delay_seconds"`
 	ReuseOpenCodeSession    bool `json:"reuse_opencode_session"`
 	SkipReexamination       bool `json:"skip_reexamination"`
+	// SkipInfrastructure skips the Stage-0c infrastructure LLM call. That
+	// stage's output (state/infrastructure.json) is consumed only by the UI,
+	// not by core extraction, so skipping it removes a full LLM call per run on
+	// repos with config files when the UI inventory isn't needed (X6).
+	SkipInfrastructure bool `json:"skip_infrastructure"`
 
 	// PromptRetryCount is how many times DiffMind retries a prompt after
 	// the liveness watchdog declares it stuck. The initial attempt is not
