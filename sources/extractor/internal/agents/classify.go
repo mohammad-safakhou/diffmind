@@ -10,6 +10,7 @@ import (
 
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
+	"github.com/mohammad-safakhou/diffmind/internal/reconcile"
 )
 
 var typeAliases = map[model.EntityKind]map[string]string{
@@ -134,7 +135,11 @@ func deriveGrouping(b model.BaseEntity) (platform, instance, operation, opKind s
 		platform = dbPlatform(nameLower, get("database", "database_type", "aws_service", "cache_type", "client_class"))
 		instance = firstNonEmpty(get("database", "database_name", "datasource", "connection_string", "table", "entity", "cache_name", "namespace"), platform)
 		operation = firstNonEmpty(get("operation", "sql_equivalent", "query", "method", "service_method"), b.Name)
-		opKind = normalizeOperationKind(operation)
+		// Canonical kind via the SAME folder the identity/dedup uses, so the
+		// emitted operation_kind is genuinely read/write (delete/insert/saveAll
+		// -> write, findBy/select -> read) and not a raw verb. The raw verb is
+		// preserved in details["operation"] (C5).
+		opKind = reconcile.NormalizeDBOp(operation)
 	case "outbound_http", "outbound_rpc":
 		platform = map[bool]string{true: "rpc", false: "http"}[b.Type == "outbound_rpc"]
 		instance = outboundInstance(get("target_service", "service", "host", "target_host", "base_url", "target_url", "default_url", "production_url", "base_url_property", "client_class"), b.Name)

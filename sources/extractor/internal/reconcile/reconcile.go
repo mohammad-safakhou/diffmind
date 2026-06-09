@@ -492,6 +492,12 @@ func singularResource(s string) string {
 // normalizeDBOp folds operation verbs into read/write classes so equivalent
 // operations from different sources (LLM "SELECT", AST "read") collapse. Verbs
 // it does not recognise (e.g. a cache "evict") pass through unchanged.
+// NormalizeDBOp folds a raw data verb to the canonical operation_kind
+// (read/write), passing through unrecognized verbs (e.g. cache evict/expire,
+// custom finders). Exported so the classify stage emits the same canonical kind
+// the identity/dedup uses — one definition of read vs write (C5).
+func NormalizeDBOp(op string) string { return normalizeDBOp(op) }
+
 func normalizeDBOp(op string) string {
 	op = strings.ToLower(strings.TrimSpace(op))
 	switch {
