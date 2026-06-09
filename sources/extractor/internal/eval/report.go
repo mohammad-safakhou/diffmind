@@ -80,3 +80,32 @@ func WriteVarianceJSON(w io.Writer, rep VarianceReport) error {
 	enc.SetIndent("", "  ")
 	return enc.Encode(rep)
 }
+
+// RenderFloorCoverage writes the per-objective floor↔LLM overlap table. The
+// coverage column shows "n/a" when the LLM run found nothing of that type (so
+// an empty bucket never reads as 1.0).
+func RenderFloorCoverage(w io.Writer, rep FloorCoverageReport) {
+	fmt.Fprintf(w, "FLOOR COVERAGE  repo=%s", rep.Repo)
+	if rep.RunID != "" {
+		fmt.Fprintf(w, "  run=%s", rep.RunID)
+	}
+	fmt.Fprintln(w, "  (overlap with the LLM run, NOT recall vs ground truth)")
+	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(tw, "objective\tfloor\tllm\tcovered\tfloor_only\tcoverage")
+	for _, o := range rep.Objectives {
+		cov := "n/a"
+		if o.Applicable {
+			cov = fmt.Sprintf("%.2f", o.Coverage)
+		}
+		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%s\n",
+			o.Objective, o.FloorKeys, o.LLMKeys, o.Covered, o.FloorOnly, cov)
+	}
+	tw.Flush()
+}
+
+// WriteFloorCoverageJSON emits the machine-readable floor-coverage report.
+func WriteFloorCoverageJSON(w io.Writer, rep FloorCoverageReport) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(rep)
+}
