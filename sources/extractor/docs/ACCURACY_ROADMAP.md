@@ -1,5 +1,11 @@
 # DiffMind — accuracy-first roadmap to a concrete working extractor
 
+> **Status:** APPROVED for **accuracy-scope** implementation (team review, after
+> four rounds). NOT a production sign-off — security + reliability hardening
+> remain explicitly deferred (see end). Two items are intentionally provisional:
+> gate threshold *numbers* (freeze + version after the first labeled calibration
+> runs) — the gate *structure* is approved.
+
 ## Goal & scope (the north star)
 
 Build a **perfectly functioning** architecture extractor (exposures,
@@ -481,19 +487,15 @@ Whole categories are invisible or mislabeled today (`registry.go:36-420`):
     `values.yaml` overriding base) define the same key, the winner varies
     run-to-run → unstable resource names/dedup keys *with the LLM held constant*.
     Temperature/seed (Workstream D) can't fix this. **Defined behavior (single
-    rule, reviewer + one refinement):** a key defined in the **base/unprofiled**
-    config resolves deterministically from the base (this is how Spring actually
-    layers — base then active-profile overlay; keep it). But **never use lexical
-    precedence among profile files** — lexical order can surface an *inactive*
-    profile's value as truth. When a key exists **only** in profile-specific files
-    that **disagree** and the active profile is unknown, **always mark it
-    unresolved and record ALL candidate values** (one defined outcome — not
-    "unresolved *or* lower-confidence"); never pick one. Same rule for helm
-    `values.yaml` vs base.
-    *(Refinement vs reviewer: she said "never lexical precedence" — agreed for
-    inter-profile disagreement; I retain legitimate base→overlay precedence for
-    base-defined keys, since that resolution is well-defined, not a guess. Flagged
-    for her confirmation.)*
+    rule — final, reviewer-approved):** a base/unprofiled value is **authoritative
+    only when** (a) **no** profile-specific file overrides that key, OR (b) the
+    **active profile is known** and its overlay is applied. **If the active
+    profile is unknown AND any profile defines a different value for the key, mark
+    the result unresolved and retain the base plus ALL profile candidates** —
+    because Spring's profile-specific properties override non-profile ones, so the
+    base value cannot be trusted as the winner. **Never use lexical precedence
+    among profiles** (it can surface an inactive profile's value as truth). Same
+    rule for helm `values.yaml` vs base.
   - **V3b — YAML list-of-mappings mis-keyed (HIGH, accuracy).**
     `parseYAMLEntries` (`parser.go:994,1022`) doesn't open list-item scopes; a
     sequence of mappings collapses all items to one key (`listeners.queue` for
@@ -557,8 +559,10 @@ what your real target services actually use.
   **and** connection pairs) + `--mode floor-coverage`, vs the prior baseline in
   `testdata/eval/history/`.
 
-**Production gates (⚠️ INITIAL targets — calibrate after the first labeled runs;
-needs reviewer sign-off; not derivable from current data):**
+**Production gates (structure approved; numbers PROVISIONAL — reviewer):** the
+initial numbers below may stand for now, but **freeze and version the final
+thresholds, minimum label support, and per-benchmark budgets after the first
+labeled calibration runs**, before they are used for any green-release decision.
 - **Only score buckets with sufficient labeled support (reviewer).** A bucket
   (objective / language / connection-type) with fewer than a minimum N labels is
   **N/A** — excluded from the gate, NOT scored as F1 = 1.0. An empty/under-supported
@@ -664,8 +668,8 @@ refuted (investigated, not a bug) / done. Update Status as work lands.
 | A1 | 13 (not 18) exposures unconnected: 8 routes + 5 cron; queue consumers ALL connected | `connections.go:298` | MED-HIGH | A | open (numbers corrected) |
 | A1-schema | `model.Connection` has no provenance field — add `Source∈{ast,llm_repair}` (needed by output, eval, label init) | `model:70` | MED | A | open (model change) |
 | F3-schema | DECIDED: `resolution_status` + unresolved keyed by file+enclosing-symbol+call-ordinal (line fallback), else UnresolvedItem | `model`, `reconcile` | MED | A | open (decided) |
-| GATES | Per-bucket P&R individually (not F1); empty buckets N/A; benchmark-specific token budget (manifest field, configurable, explicit-fail); thresholds still need calibration sign-off | `internal/eval/` | — | A,V,C | ⚠ thresholds need sign-off |
-| V3a-rule | Base→overlay precedence kept for base-defined keys; profile-only + disagree + unknown-active → unresolved w/ all candidates (never lexical) | `config_resolve.go:90` | HIGH | V,A | ⚠ base-precedence carve-out needs confirm |
+| GATES | Per-bucket P&R individually (not F1); empty buckets N/A; benchmark-specific budget (manifest field, configurable, explicit-fail). Numbers provisional → FREEZE + version thresholds/min-label-support/budgets after first labeled calibration runs, before any green-release decision | `internal/eval/` | — | A,V,C | approved (provisional, freeze post-calibration) |
+| V3a-rule | Base authoritative only if no profile override OR active profile known; else (unknown active + profile disagrees) → unresolved, retain base + all candidates; never lexical | `config_resolve.go:90` | HIGH | V,A | approved |
 | A2 | Silent connection-walk truncation (no flag) | `scip/walker.go:190-206` | MED | A | open |
 | F1 | cache_operation: Spring emits NO cache bindings — needs a DETECTOR, not wiring | `spring.go`, `deterministic_discovery.go:233,252` | MED | A,C | reworked (was wrong) |
 | F2–F6 | No deterministic floor for command_exec/queue_publish/gRPC; JVM-only DB + routes (Go stdlib, Django urls.py, Flask, JAX-RS) | `connections.go:737`, `web.go:128` | HIGH | A,V,C | open |
