@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/eval"
@@ -17,25 +18,36 @@ import (
 //
 //	diffmind eval --mode cheap   --fixtures testdata/eval [--min-f1 0.9] [--json out.json]
 //	diffmind eval --mode score-run --run <run-id|dir> --fixture <fixture-dir> [--json out.json]
+//	diffmind eval --mode variance --runs <id1,id2,...> [--min-core-union 0.95] [--json out.json]
 //
 // Cheap mode runs the deterministic floor (no LLM, hermetic) over every fixture
 // under --fixtures and reports per-objective + overall precision/recall/F1.
 // score-run grades an already-finished run directory against one fixture label.
+// variance compares K finished runs of the SAME repo and reports per-objective
+// run-to-run stability (count mean/stdev, core/union ratio, pairwise Jaccard),
+// using the same identity the scorer/dedup use. It needs no OpenCode.
 func evalCmd(args []string) {
 	fs := flag.NewFlagSet("eval", flag.ExitOnError)
-	mode := fs.String("mode", "cheap", "cheap | score-run")
+	mode := fs.String("mode", "cheap", "cheap | score-run | variance")
 	fixtures := fs.String("fixtures", "testdata/eval", "directory of labeled fixtures (cheap mode)")
 	fixture := fs.String("fixture", "", "single fixture dir (score-run mode)")
 	runArg := fs.String("run", "", "run id or run directory to score (score-run mode)")
-	outDir := fs.String("out", "", "artifact base directory used to resolve --run (default ~/.diffmind/runs)")
+	runsArg := fs.String("runs", "", "comma-separated run ids/dirs of the SAME repo (variance mode)")
+	outDir := fs.String("out", "", "artifact base directory used to resolve --run/--runs (default ~/.diffmind/runs)")
 	jsonOut := fs.String("json", "", "optional path to write the machine-readable report")
 	minF1 := fs.Float64("min-f1", 0, "exit non-zero if any fixture's overall F1 is below this")
+	minCoreUnion := fs.Float64("min-core-union", 0, "variance mode: exit non-zero if any objective's core/union is below this")
 	workers := fs.Int("workers", 4, "AST build worker count (cheap mode)")
 	minConfidence := fs.Float64("min-confidence", 0.7, "confidence threshold for the deterministic floor")
 	verbose := fs.Bool("verbose", false, "enable debug logs")
 	logFile := fs.String("log-file", "", "optional log file path")
 	fs.Parse(args)
 	configureLogging(*verbose, false, *logFile)
+
+	if *mode == "variance" {
+		runVarianceMode(*runsArg, *outDir, *jsonOut, *minCoreUnion)
+		return
+	}
 
 	cfg := config.Default()
 	cfg.Quality.MinConfidence = *minConfidence
@@ -94,6 +106,65 @@ func evalCmd(args []string) {
 		fmt.Fprintf(os.Stderr, "eval: one or more fixtures below --min-f1 %.2f\n", *minF1)
 		os.Exit(1)
 	}
+}
+
+// runVarianceMode loads K finished runs of the same repo and reports
+// per-objective run-to-run stability. With --min-core-union it exits non-zero
+// when any objective falls below the threshold (a CI stability gate).
+func runVarianceMode(runsArg, outDir, jsonOut string, minCoreUnion float64) {
+	ids := splitCSV(runsArg)
+	if len(ids) < 2 {
+		fmt.Fprintln(os.Stderr, "eval --mode variance requires --runs with at least 2 run ids/dirs")
+		os.Exit(2)
+	}
+	exts := make([]eval.Extracted, 0, len(ids))
+	for _, id := range ids {
+		dir := resolveRunDir(id, outDir)
+		ext, err := eval.LoadRunArtifacts(dir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "eval: load %s: %v\n", dir, err)
+			os.Exit(1)
+		}
+		exts = append(exts, ext)
+	}
+	rep := eval.Variance(exts, ids)
+	eval.RenderVariance(os.Stdout, rep)
+	if jsonOut != "" {
+		f, err := os.Create(jsonOut)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "eval: write json:", err)
+		} else {
+			defer f.Close()
+			if err := eval.WriteVarianceJSON(f, rep); err != nil {
+				fmt.Fprintln(os.Stderr, "eval: encode json:", err)
+			}
+		}
+	}
+	failed := false
+	if minCoreUnion > 0 {
+		for _, o := range rep.Objectives {
+			if o.CoreUnion < minCoreUnion {
+				fmt.Fprintf(os.Stderr, "eval: objective %q core/union %.2f below --min-core-union %.2f\n",
+					o.Objective, o.CoreUnion, minCoreUnion)
+				failed = true
+			}
+		}
+	}
+	util.Info("cli.eval", "variance finished", map[string]any{"runs": len(exts)})
+	if failed {
+		os.Exit(1)
+	}
+}
+
+// splitCSV splits a comma-separated list, trimming spaces and dropping empties.
+func splitCSV(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // fixtureDirs returns every subdirectory of root that holds an expected.json,
