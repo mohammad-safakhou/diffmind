@@ -134,16 +134,21 @@ evidence. So: enforce the enum on `operation_kind`, NEVER on `operation`. (This 
 why the ledger now reads "taxonomy decided, P1 unblocked.")
 
 In `entitySchemaForObjective` (`classify.go:59`) inject per-objective `details`
-sub-schemas: `operation_kind ∈ {read,write}` (cache adds `evict,expire`);
-`http method ∈ {GET,POST,PUT,PATCH,DELETE,HEAD,OPTIONS}`. Replace the conflicting
-prose at `registry.go:253,260` with one canonical mapping line.
+sub-schemas, scoped per objective (reviewer): **db_operation** `operation_kind ∈
+{read, write}`; **cache_operation** `operation_kind ∈ {read, write, evict,
+expire}` (cache explicitly adds the eviction verbs — not shared with db). Replace
+the conflicting prose at `registry.go:253,260` with one canonical mapping line.
 
-**`platform` is NOT a closed enum (reviewer, valid — closed enums kill recall on
-new providers).** Use a **per-objective enum with an `other` member PLUS a free
-`raw_platform`** field (or leave `platform` open and normalize in reconcile). A
-novel provider must classify as `other` with its real name in `raw_platform`,
-never be rejected. Closed enums only ever apply to genuinely-closed ontologies
-(operation_kind, http method), never to the open world of platforms/frameworks.
+**`platform` and `http method` are NOT closed enums (reviewer, valid — closed
+enums kill recall).** For `platform`: per-objective enum with an `other` member
+PLUS a free `raw_platform` (or leave open + normalize in reconcile); a novel
+provider classifies as `other` with its real name in `raw_platform`, never
+rejected. **For `http method`: do NOT hard-code the seven common verbs** — it must
+also admit `TRACE`, `CONNECT`, framework `ANY`/`ALL` (e.g. Spring
+`@RequestMapping` with no method, Express `app.all`), and WebDAV/custom verbs.
+Use `{...common..., ANY, other}` + `raw_method`, or keep the field open. **The
+only genuinely-closed ontology that gets a closed enum is `operation_kind`** —
+never platforms, frameworks, or HTTP methods.
 
 ### P2 — Fix the `queue_publish` key contract
 Example/DetailKeys teach `queue` (`registry.go:473`) but the reexamine gate
@@ -252,10 +257,12 @@ eval signal.
 - **C5 — `delete` folded into `write` → explicit product decision (reviewer).**
   `normalizeDBOp` (`reconcile.go:333`), `inferDBOperationKind*`
   (`connections.go:784,1243`) collapse delete+insert+update → write.
-  **Recommended resolution (reviewer + agreed):** canonical `operation_kind ∈
-  {read,write}` for dedup/identity stability, PLUS a preserved finer
-  CRUD/`raw_operation` field for fidelity. This is the ontology that P1's enum
-  must encode — **decided** (P1 enforces the enum on `operation_kind`).
+  **Resolution (decided):** canonical `operation_kind ∈ {read,write}` for
+  dedup/identity stability, PLUS the verbatim CRUD verb preserved in **`operation`**
+  (single name — NOT `raw_operation`; reviewer, resolves the P1↔C5 naming
+  contradiction). P1 enforces the enum on `operation_kind`; `operation` stays free
+  text. Document that `operation`=raw verb, `operation_kind`=canonical, so no
+  consumer assumes `operation` is normalized.
 
 ---
 
@@ -319,16 +326,17 @@ flag flips in the same commit.
   guessed destination as confirmed.** But "emit with an unresolved destination"
   is incompatible with the current model — queue identity falls back to the
   name, so a blank/unknown destination would false-merge all unknown publishes.
-  **⚠️ DECISION NEEDED (proposed, needs reviewer sign-off — touches identity
-  semantics):** add `resolution_status ∈ {resolved, unresolved}` to the
-  dependency; for an unresolved publish, key its identity on the **publish
-  call-site evidence** (`file:line` + platform), not the missing name, so the
-  high-precision "a publish happens here" fact is preserved without false-merge.
-  If even the call-site can't disambiguate, record an **`UnresolvedItem`** instead
-  of a confirmed dependency. (Reviewer's framing: choose UnresolvedItem vs explicit
-  resolution-status + identity semantics — this is my recommendation, pending her
-  call.) **F4 — gRPC** outbound_rpc/rpc_endpoint (stub/ImplBase types). Each
-  call-site based, behind the precision bar.
+  **DECIDED (reviewer-approved with refinement):** add `resolution_status ∈
+  {resolved, unresolved}` to the dependency; for an unresolved publish, key its
+  identity on a **stable call-site fingerprint — repo-relative file + enclosing
+  symbol + call ordinal**, with **line number only as a fallback** (line is
+  edit-unstable; symbol+ordinal survives reformatting). This preserves the
+  high-precision "a publish happens here" fact without false-merging distinct
+  unknown publishes. **If the fingerprint is unavailable, emit an `UnresolvedItem`**
+  rather than a confirmed dependency. (Caveat to track: call ordinal still shifts
+  if a sibling publish is added/removed — fine within a run, imperfect for
+  cross-version diffing.) **F4 — gRPC** outbound_rpc/rpc_endpoint (stub/ImplBase
+  types). Each call-site based, behind the precision bar.
 - **F5 — multi-language DB derivers** (the JVM-only floor is the documented worst
   case for non-JVM). Ranked: **GORM** (Go) → **Django ORM** (Python). Match verb
   calls, resolve table/model, emit nothing if unresolvable. `isRepositoryOperationSymbol`
@@ -473,12 +481,19 @@ Whole categories are invisible or mislabeled today (`registry.go:36-420`):
     `values.yaml` overriding base) define the same key, the winner varies
     run-to-run → unstable resource names/dedup keys *with the LLM held constant*.
     Temperature/seed (Workstream D) can't fix this. **Defined behavior (single
-    rule):** deterministic precedence = **base/unprofiled config first, then
-    profile files in lexical order** (never map-iteration order). **When the
-    active profile is unknown** and a key exists only in profile-specific files,
-    do **not** pick one arbitrarily — surface the conflict as an **unresolved /
-    lower-confidence** value (or an `UnresolvedItem`), preserving determinism
-    without guessing. Same rule for helm `values.yaml` vs base.
+    rule, reviewer + one refinement):** a key defined in the **base/unprofiled**
+    config resolves deterministically from the base (this is how Spring actually
+    layers — base then active-profile overlay; keep it). But **never use lexical
+    precedence among profile files** — lexical order can surface an *inactive*
+    profile's value as truth. When a key exists **only** in profile-specific files
+    that **disagree** and the active profile is unknown, **always mark it
+    unresolved and record ALL candidate values** (one defined outcome — not
+    "unresolved *or* lower-confidence"); never pick one. Same rule for helm
+    `values.yaml` vs base.
+    *(Refinement vs reviewer: she said "never lexical precedence" — agreed for
+    inter-profile disagreement; I retain legitimate base→overlay precedence for
+    base-defined keys, since that resolution is well-defined, not a guess. Flagged
+    for her confirmation.)*
   - **V3b — YAML list-of-mappings mis-keyed (HIGH, accuracy).**
     `parseYAMLEntries` (`parser.go:994,1022`) doesn't open list-item scopes; a
     sequence of mappings collapses all items to one key (`listeners.queue` for
@@ -542,21 +557,28 @@ what your real target services actually use.
   **and** connection pairs) + `--mode floor-coverage`, vs the prior baseline in
   `testdata/eval/history/`.
 
-**Production gates (⚠️ INITIAL targets — propose, calibrate after the first
-labeled runs; needs reviewer sign-off; these are not derivable from current
-data):**
-- **Accuracy:** per-objective F1 ≥ **0.90** for deterministic-floored types
-  (http_route, scheduled_job, JVM db_operation), ≥ **0.80** for LLM-only types;
-  per-language F1 ≥ **0.80**; **connection F1 ≥ 0.85** (endpoint-pair identity).
-- **Variance:** core/union ratio ≥ **0.95** per objective over **K = 5** runs,
-  for entities AND connection pairs.
-- **Regression tolerance:** no objective/language F1 drops > **0.02** vs the last
-  green baseline; cheap-mode floor stays at **1.0**.
-- **Cost ceiling:** ≤ **2.0M** total tokens/run (vs the 1.47M-input baseline) —
-  a hard abort, not a silent cap (X3).
+**Production gates (⚠️ INITIAL targets — calibrate after the first labeled runs;
+needs reviewer sign-off; not derivable from current data):**
+- **Only score buckets with sufficient labeled support (reviewer).** A bucket
+  (objective / language / connection-type) with fewer than a minimum N labels is
+  **N/A** — excluded from the gate, NOT scored as F1 = 1.0. An empty/under-supported
+  bucket can never *pass* a gate vacuously.
+- **Gate precision AND recall individually (reviewer), not only F1** — F1 hides a
+  P/R imbalance (e.g. recall 0.95 / precision 0.70 can clear an F1 bar while
+  precision rots). Initial: deterministic-floored types P ≥ **0.95**, R ≥ **0.90**;
+  LLM-only types P ≥ **0.85**, R ≥ **0.75**; per-language R ≥ **0.80**;
+  **connection** P ≥ **0.85**, R ≥ **0.80** (endpoint-pair identity).
+- **Variance:** core/union ratio ≥ **0.95** per objective over **K = 5** runs, for
+  entities AND connection pairs.
+- **Regression tolerance:** no objective/language P or R drops > **0.02** vs the
+  last green baseline; cheap-mode floor stays at **1.0**.
+- **Cost ceiling: benchmark-specific, NOT universal (reviewer).** No single global
+  token cap — each fixture/repo carries its own budget. Define the **exact manifest
+  field checked** (`run_manifest.token_totals.total.total`) and make runtime
+  budgets **configurable**. Exceeding a budget must **fail explicitly — never emit
+  partial-success output** (ties to X3: chunk or fail, never silently cap).
 - Labeled **floor recall** and cheap **floor coverage** reported separately
-  (they are different metrics — coverage is floor↔LLM overlap, recall is
-  floor↔human-labels).
+  (coverage is floor↔LLM overlap; recall is floor↔human-labels).
 
 # Production-readiness verdict (scope-honest)
 
@@ -641,8 +663,9 @@ refuted (investigated, not a bug) / done. Update Status as work lands.
 | P7 | Canonicalize op (add fields, keep raw); platform=database. outbound_http service already resolved — that part STALE | `reconcile.go`, `classify.go` | MED | A | partial |
 | A1 | 13 (not 18) exposures unconnected: 8 routes + 5 cron; queue consumers ALL connected | `connections.go:298` | MED-HIGH | A | open (numbers corrected) |
 | A1-schema | `model.Connection` has no provenance field — add `Source∈{ast,llm_repair}` (needed by output, eval, label init) | `model:70` | MED | A | open (model change) |
-| F3-schema | Unknown queue dest: add `resolution_status∈{resolved,unresolved}` + key unresolved on call-site, else UnresolvedItem | `model`, `reconcile` | MED | A | ⚠ needs sign-off |
-| GATES | Production thresholds (F1/variance/regression/cost) are INITIAL proposals — calibrate + sign off | `internal/eval/` | — | A,V,C | ⚠ needs sign-off |
+| F3-schema | DECIDED: `resolution_status` + unresolved keyed by file+enclosing-symbol+call-ordinal (line fallback), else UnresolvedItem | `model`, `reconcile` | MED | A | open (decided) |
+| GATES | Per-bucket P&R individually (not F1); empty buckets N/A; benchmark-specific token budget (manifest field, configurable, explicit-fail); thresholds still need calibration sign-off | `internal/eval/` | — | A,V,C | ⚠ thresholds need sign-off |
+| V3a-rule | Base→overlay precedence kept for base-defined keys; profile-only + disagree + unknown-active → unresolved w/ all candidates (never lexical) | `config_resolve.go:90` | HIGH | V,A | ⚠ base-precedence carve-out needs confirm |
 | A2 | Silent connection-walk truncation (no flag) | `scip/walker.go:190-206` | MED | A | open |
 | F1 | cache_operation: Spring emits NO cache bindings — needs a DETECTOR, not wiring | `spring.go`, `deterministic_discovery.go:233,252` | MED | A,C | reworked (was wrong) |
 | F2–F6 | No deterministic floor for command_exec/queue_publish/gRPC; JVM-only DB + routes (Go stdlib, Django urls.py, Flask, JAX-RS) | `connections.go:737`, `web.go:128` | HIGH | A,V,C | open |
