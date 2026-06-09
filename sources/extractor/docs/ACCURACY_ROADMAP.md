@@ -104,7 +104,11 @@ identity identically (one definition of "same fact"). CLI:
 a `run --k N` convenience. This is the *proof tool* for every stability claim
 (sharding, prompt enums, temperature) — measure before/after.
 
-### M5 — Floor-**coverage** metric (renamed; reviewer, valid) (new `internal/eval/floor_coverage.go`)
+### M5 — Floor-**coverage** metric — DONE (8402973) (`internal/eval/floor_coverage.go`)
+Shipped: `eval --mode floor-coverage --run <id> [--repo path]` → per-objective
+floor/llm/covered/floor_only/coverage; N/A when the LLM found nothing of a type;
+reuses identityKey/connectionPairKey; connections first-class; `--json`. Original
+spec below.
 `--mode floor-coverage`: run `DeterministicFloor` and load the full LLM run for
 the same repo; per type compute `|floor_keys ∩ llm_keys| / |llm_keys|`. **This is
 NOT recall** — the LLM run is not ground truth, so this measures floor↔LLM
@@ -693,7 +697,10 @@ refuted (investigated, not a bug) / done. Update Status as work lands.
 | V3d | Test-resource config files pollute the index | `index.go:51,55` | MED | A | open |
 | V3e | Mis-indented YAML re-parented silently | `parser.go:1008` | LOW | A | open |
 | V1/V2/V4 | Unmodeled types: GraphQL/WS/SSE/serverless triggers; storage/secrets/flags; auth/PII | `registry.go:36-420` | HIGH | A | open |
-| M* | Only one toy fixture; no real-repo/LLM/variance/floor-coverage measurement | `internal/eval/`, `testdata/eval/` | HIGH | A,V,C | open |
+| M* | Only one toy fixture; no real-repo/LLM/variance/floor-coverage measurement | `internal/eval/`, `testdata/eval/` | HIGH | A,V,C | partial (M4+M5 done; M1/M2/M3 open) |
+| M4 | Variance harness (core/union, Jaccard, counts; entities + connections) | `internal/eval/variance.go` | HIGH | V | DONE (063b316) |
+| M5 | Floor-coverage mode (floor↔LLM overlap; not recall) | `internal/eval/floor_coverage.go` | MED | A,C | DONE (8402973) |
+| OBS-1 | scheduled_job: repo has 0 @Scheduled, yet LLM reports 6 — verify those are real (detector gap: Quartz/AWS scheduled events?) or LLM over-reporting | `internal/ast/framework/`, registry scheduled_job | MED | A | open (investigate) |
 | D | No sampling controls; set via OpenCode agent config (temp/top_p in 1.16.2), no agent selected (`client.go:399`); seed unconfirmed | `client.go:399` | MED | V | open (mechanism known) |
 | — | Connection orphan-drop after dedup | — | — | refuted (dedup precedes connections) |
 | — | HTTP base-path concatenation | `spring.go:176` | — | refuted (correct) |
