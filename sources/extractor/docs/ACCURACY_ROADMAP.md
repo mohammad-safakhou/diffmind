@@ -81,9 +81,13 @@ M1's loop. Flag an item `deterministic:true` only once the floor actually
 recovers it, so the cheap-mode F1=1.0 gate ratchets honestly.
 
 ### M4 — Variance harness (new `internal/eval/variance.go`)
-K-run stability: bucket each run's entities by type, build `SemanticKeyLoose`
-key-sets, report per-objective count mean/stdev and the **core/union ratio**
-(keys in ALL K runs ÷ keys in ANY run — 1.0 = perfectly reproducible). CLI:
+K-run stability: report per-objective count mean/stdev and the **core/union
+ratio** (keys in ALL K runs ÷ keys in ANY run — 1.0 = perfectly reproducible).
+**Must cover connections too (reviewer, valid):** measure connection
+endpoint-pair stability, not just entities. **Use the scorer's shared identity
+functions — `eval.identityKey` and `eval.connectionPairKey` (`identity.go:18,51`)
+— NOT `SemanticKeyLoose` directly**, so variance, dedup, and scoring all key
+identity identically (one definition of "same fact"). CLI:
 `eval --mode variance --runs id1,id2,...` (scores finished runs, no OpenCode) +
 a `run --k N` convenience. This is the *proof tool* for every stability claim
 (sharding, prompt enums, temperature) — measure before/after.
@@ -98,7 +102,7 @@ separately once M-labels exist. Keep both: coverage now, recall once labeled.
 
 ### M6 — Metrics & gating
 - Per-objective + **per-language** P/R/F1 (bucket `ObjectiveScore` by the new
-  `Language` tag), connection P/R, floor-recall %, and **run cost** (fold
+  `Language` tag), connection P/R (endpoint-pair), floor **coverage** + labeled floor **recall**, and **run cost** (fold
   `run_manifest.token_totals`) reported alongside accuracy, so every accuracy
   gain shows its token price.
 - Gating layers: (a) **cheap-mode** `TestCheapAccuracyFloor` (`cheap_test.go`,
@@ -106,7 +110,7 @@ separately once M-labels exist. Keep both: coverage now, recall once labeled.
   record-replay** — a cassette layer hashing OpenCode req→resp under
   `testdata/eval/<fixture>/cassette/`, replayed in a new `full_replay_test.go`
   to gate LLM-driven types hermetically and deterministically; (c) **nightly
-  `make accuracy`** (needs live OpenCode) for score-run + variance + floor-recall
+  `make accuracy`** (needs live OpenCode) for score-run + variance + floor-coverage/recall
   trends into `testdata/eval/history/`. *Caveat: the cassette layer is the
   biggest new infra; scope how cleanly the OpenCode client is interface-abstracted
   before committing.*
@@ -117,22 +121,29 @@ separately once M-labels exist. Keep both: coverage now, recall once labeled.
 
 The dominant variance + quality problem: the output schema treats `details{}` as
 free text (`schemas.go:16` `additionalProperties:true`) and prompts teach values
-by conflicting prose. One run produced **13 spellings** of `db_operation.operation`
+by conflicting prose. One run produced **~17 spellings** of `db_operation.operation`
 for ~3 real classes. These are cheap prompt/schema edits with the biggest
 accuracy+stability payoff.
 
-### P1 — Closed enums in the per-objective schema (not just prose)
+### P1 — Enums in the per-objective schema (THE settled operation contract)
+**One contract, used everywhere (resolves P1↔C5↔P7):** the canonical identity
+field is **`operation_kind ∈ {read, write}`** — a genuinely closed ontology, so a
+closed enum is safe; it is what dedup/eval key on. The verbatim verb is kept in
+**`operation`** (free text, e.g. `SELECT`, `saveAll`, `DELETE`) for fidelity and
+evidence. So: enforce the enum on `operation_kind`, NEVER on `operation`. (This is
+why the ledger now reads "taxonomy decided, P1 unblocked.")
+
 In `entitySchemaForObjective` (`classify.go:59`) inject per-objective `details`
-sub-schemas with `enum`s (OpenCode validates server-side, `schemas.go:3`):
-`db_operation.operation ∈ {read,write}`; `cache_operation.operation ∈
-{read,write,evict,expire}`; `platform` lowercased enum `{sqs,sns,kafka,...}`;
-`http method ∈ {GET,POST,...}`. Replace the conflicting prose at
-`registry.go:253,260` with one canonical mapping line. The schema enum is what
-actually *enforces*; the prose alone drifts.
-**Reviewer (valid): decide the operation ontology BEFORE adding enums** — see C5
-(recommended `operation_kind ∈ {read,write}` + preserved raw CRUD). The run holds
-~17 distinct `details.operation` strings (not 13); the exact count is immaterial,
-the ontology decision is the blocker.
+sub-schemas: `operation_kind ∈ {read,write}` (cache adds `evict,expire`);
+`http method ∈ {GET,POST,PUT,PATCH,DELETE,HEAD,OPTIONS}`. Replace the conflicting
+prose at `registry.go:253,260` with one canonical mapping line.
+
+**`platform` is NOT a closed enum (reviewer, valid — closed enums kill recall on
+new providers).** Use a **per-objective enum with an `other` member PLUS a free
+`raw_platform`** field (or leave `platform` open and normalize in reconcile). A
+novel provider must classify as `other` with its real name in `raw_platform`,
+never be rejected. Closed enums only ever apply to genuinely-closed ontologies
+(operation_kind, http method), never to the open world of platforms/frameworks.
 
 ### P2 — Fix the `queue_publish` key contract
 Example/DetailKeys teach `queue` (`registry.go:473`) but the reexamine gate
@@ -221,11 +232,13 @@ eval signal.
   stable. Fix scope: pin identity-bearing details (not the name) to the seed;
   regression-test that the dedup key is invariant across detail.
 - **C3 — Reexamination deletes true positives (data loss).** One LLM "no" drops
-  a real low-confidence item (`reexamine.go:509,583`). Require corroboration
-  before deletion, or downgrade-don't-drop; never let one conservative "no" erase
-  discovered architecture. (Note: in the audited run reexamination made 0 calls —
-  `deriveDetailsFromName` cleared all suspects — so this is latent, fires on
-  noisier repos.)
+  a real low-confidence item (`reexamine.go:509,583`). **Defined behavior (single
+  rule, reviewer):** reexamination **never deletes** on a single negative — it
+  **downgrades confidence and retains** the item; outright removal requires an
+  *independent* corroborating signal (e.g. the item also fails a structural
+  check), not just one model "no". Items below `MinConfidence` are flagged, not
+  dropped. (Latent today: the audited run made 0 reexamine calls because
+  `deriveDetailsFromName` cleared all suspects.)
 - **C4 — Schema-qualified resource false-split (duplicate). RESOLVED (reviewer
   conditional sign-off).** `public.orders` vs deterministic `orders` → different
   keys (`reconcile.go:303`). **Do NOT strip the schema** — schema stays part of
@@ -242,7 +255,7 @@ eval signal.
   **Recommended resolution (reviewer + agreed):** canonical `operation_kind ∈
   {read,write}` for dedup/identity stability, PLUS a preserved finer
   CRUD/`raw_operation` field for fidelity. This is the ontology that P1's enum
-  must encode — **decide it before P1** (see Open debate below).
+  must encode — **decided** (P1 enforces the enum on `operation_kind`).
 
 ---
 
@@ -289,7 +302,7 @@ just missing. Add them there.
 
 This is simultaneously the **biggest accuracy-stabilizer** (deterministic types
 don't swing run-to-run) and the **biggest cost lever** (work the floor recovers
-is work the LLM needn't, tracked by M5 floor-recall). Each detector ships only
+is work the LLM needn't, tracked by M5 floor-coverage). Each detector ships only
 behind invariant #6 (emit nothing over a guess), paired with an M3 fixture whose
 flag flips in the same commit.
 
@@ -302,12 +315,20 @@ flag flips in the same commit.
   F2–F4 accordingly, not as a quick win.
 - **F2 — command_exec** (`Runtime.exec`/`ProcessBuilder`/`os/exec.Command`/
   `subprocess`), **F3 — queue_publish** (`SqsTemplate/KafkaTemplate.send`,
-  `boto3 publish`; resolve destination via `config_resolve.go`). **Reviewer
-  (valid): never emit a guessed destination as confirmed** — if the name can't be
-  resolved, emit the publish with an **unresolved destination + provenance**
-  (the publish fact is high-precision; the target name isn't). **F4 — gRPC**
-  outbound_rpc/rpc_endpoint (stub/ImplBase types). Each call-site based, behind
-  the precision bar.
+  `boto3 publish`; resolve destination via `config_resolve.go`). **Never emit a
+  guessed destination as confirmed.** But "emit with an unresolved destination"
+  is incompatible with the current model — queue identity falls back to the
+  name, so a blank/unknown destination would false-merge all unknown publishes.
+  **⚠️ DECISION NEEDED (proposed, needs reviewer sign-off — touches identity
+  semantics):** add `resolution_status ∈ {resolved, unresolved}` to the
+  dependency; for an unresolved publish, key its identity on the **publish
+  call-site evidence** (`file:line` + platform), not the missing name, so the
+  high-precision "a publish happens here" fact is preserved without false-merge.
+  If even the call-site can't disambiguate, record an **`UnresolvedItem`** instead
+  of a confirmed dependency. (Reviewer's framing: choose UnresolvedItem vs explicit
+  resolution-status + identity semantics — this is my recommendation, pending her
+  call.) **F4 — gRPC** outbound_rpc/rpc_endpoint (stub/ImplBase types). Each
+  call-site based, behind the precision bar.
 - **F5 — multi-language DB derivers** (the JVM-only floor is the documented worst
   case for non-JVM). Ranked: **GORM** (Go) → **Django ORM** (Python). Match verb
   calls, resolve table/model, emit nothing if unresolvable. `isRepositoryOperationSymbol`
@@ -334,12 +355,17 @@ or some cron boundaries.
   deterministic walk. **MVP: exposures with zero connections** (clearest win, no
   merge/double-count complexity). **Reviewer (valid, future): also repair
   INCOMPLETE connection sets** — deferred because "incomplete" needs a detection
-  signal we don't yet have (you can't see what's missing); see Open debate. The
+  signal we don't yet have (you can't see what's missing); later work item. The
   LLM picks targets from a **closed set** of existing dependency IDs
   (hallucinations rejected, orphan-dropped by `reconcile.FilterConnections`).
-  Tagged `llm_repair`, confidence-clamped, checkpointed, fail-soft. New
+  confidence-clamped, checkpointed, fail-soft. New
   `internal/agents/connection_repair.go`; integrate before reconcile
   (`pipeline.go:~800`). *(Safe to measure once C1/C2 fix identity.)*
+  **Schema change required (reviewer, verified):** `model.Connection`
+  (`model:70`) has **no provenance field** today — add one, e.g.
+  `Source string` ∈ {`ast`, `llm_repair`} (a first-class field, not just
+  per-`Evidence.Source`). Required so output, eval, and **`label init`** can
+  distinguish deterministic connections from repaired ones.
   **Reviewer (valid): validate repair output by its EVIDENCE** (cited file:line
   exists and is plausible), **not by re-confirming via the AST path that already
   failed** — requiring the AST walk the repair exists to recover would be circular.
@@ -446,8 +472,13 @@ Whole categories are invisible or mislabeled today (`registry.go:36-420`):
     randomized order); when `application.yml` and `application-prod.yml` (or
     `values.yaml` overriding base) define the same key, the winner varies
     run-to-run → unstable resource names/dedup keys *with the LLM held constant*.
-    Temperature/seed (Workstream D) can't fix this. **Fix:** deterministic
-    profile/helm-aware file precedence.
+    Temperature/seed (Workstream D) can't fix this. **Defined behavior (single
+    rule):** deterministic precedence = **base/unprofiled config first, then
+    profile files in lexical order** (never map-iteration order). **When the
+    active profile is unknown** and a key exists only in profile-specific files,
+    do **not** pick one arbitrarily — surface the conflict as an **unresolved /
+    lower-confidence** value (or an `UnresolvedItem`), preserving determinism
+    without guessing. Same rule for helm `values.yaml` vs base.
   - **V3b — YAML list-of-mappings mis-keyed (HIGH, accuracy).**
     `parseYAMLEntries` (`parser.go:994,1022`) doesn't open list-item scopes; a
     sequence of mappings collapses all items to one key (`listeners.queue` for
@@ -496,39 +527,57 @@ what your real target services actually use.
    gain on M.
 4. **V3 config correctness** (V3a precedence + V3b/d YAML decoder + test-path
    filter) — kills a non-LLM variance source.
-5. **C3 (corroborate-before-reject), C4 (schema-identity — see Open debate), E3–E4.**
+5. **C3 (downgrade-never-delete), C4 (datastore-aware conditional merge), E3–E4.**
 6. **A1/A2 (connection repair, evidence-validated + truncation honesty).**
 7. **Floor expansion + measured sharding** — F1 (cache detector, NOT wiring) +
    F2–F6 + S1–S3 (sharding, hub-safe clustering, validated via M).
 8. **Cost controls (X, incl. X6 make-optional) → sampling experiments (D, after
    API capability check) → coverage expansion (V).**
 
-# Verification (every commit)
+# Verification & gates (concrete thresholds)
 
-- `go build ./... && go test ./...` green; `go test ./internal/eval/...`
-  (cheap-mode F1 gate) green as fixtures grow.
-- After accuracy changes: `eval --mode score-run` + `--mode variance`
-  (core/union ratio) + `--mode floor-recall`, compared to the prior baseline in
+- Per-commit hermetic: `go build ./... && go test ./...` green;
+  `go test ./internal/eval/...` (cheap-mode F1 gate) green as fixtures grow.
+- After accuracy changes: `eval --mode score-run` + `--mode variance` (entities
+  **and** connection pairs) + `--mode floor-coverage`, vs the prior baseline in
   `testdata/eval/history/`.
-- End-to-end on `routing-service` (live OpenCode), diff
-  `~/.diffmind/runs/<new>` vs `20260608T230315Z`: dangling-exposure count ≪ 13;
-  `operation_kind ∈ {read,write}` with raw CRUD/`raw_operation` preserved
-  (outbound_http target service is already resolved — no requirement there);
-  floor *coverage* vs labeled floor *recall* reported separately;
-  queue_publish/cli_command counts stable
-  across two runs; token cost per the manifest down after X.
 
-# Production-readiness verdict (re-scoped to "functioning, accurate")
+**Production gates (⚠️ INITIAL targets — propose, calibrate after the first
+labeled runs; needs reviewer sign-off; these are not derivable from current
+data):**
+- **Accuracy:** per-objective F1 ≥ **0.90** for deterministic-floored types
+  (http_route, scheduled_job, JVM db_operation), ≥ **0.80** for LLM-only types;
+  per-language F1 ≥ **0.80**; **connection F1 ≥ 0.85** (endpoint-pair identity).
+- **Variance:** core/union ratio ≥ **0.95** per objective over **K = 5** runs,
+  for entities AND connection pairs.
+- **Regression tolerance:** no objective/language F1 drops > **0.02** vs the last
+  green baseline; cheap-mode floor stays at **1.0**.
+- **Cost ceiling:** ≤ **2.0M** total tokens/run (vs the 1.47M-input baseline) —
+  a hard abort, not a silent cap (X3).
+- Labeled **floor recall** and cheap **floor coverage** reported separately
+  (they are different metrics — coverage is floor↔LLM overlap, recall is
+  floor↔human-labels).
 
-Not yet — but the path is concrete and measurable. The order that matters
-(per the revised sequence): **fix the floor's wrong facts first** (E1/E2), then
-**a minimal human-labeled measurement layer** (M, no floor-promote), then the
-operation-taxonomy decision and the cheap accuracy fixes (P+C), then config
-correctness (V3), then the structural gains (A+F+S), then cost (X). "~100%" is not literally
+# Production-readiness verdict (scope-honest)
+
+**Two different bars, do not conflate them (reviewer, valid):**
+- **Accuracy-scope implementation-ready:** the accuracy work in this roadmap can
+  reach that bar once the gates above are met. That is what this document is for.
+- **Fully production-ready:** NOT claimable from this roadmap — it **explicitly
+  defers security and reliability hardening** (see Deferred). Those remain real
+  prerequisites for production; this document does not address them and must not
+  be read as a production sign-off.
+
+The order that matters (per the revised sequence): **fix the floor's wrong facts
+first** (E1/E2), then **a minimal human-labeled measurement layer** (M, no
+floor-promote), then the operation-taxonomy decision and the cheap accuracy fixes
+(P+C), then config correctness (V3), then the structural gains (A+F+S), then cost
+(X). "~100%" is not literally
 achievable on novel custom code — the honest, *measurable* target is: the
-deterministic floor recovers the mechanical majority (tracked by floor-recall),
-the LLM covers the custom tail, run-to-run output is stable (tracked by
-core/union ratio), and per-language F1 is gated in CI. When those three numbers
+deterministic floor recovers the mechanical majority (tracked by floor coverage +
+labeled recall), the LLM covers the custom tail, run-to-run output is stable
+(tracked by core/union ratio over entities and connection pairs), and
+per-objective/language/connection F1 clear the gates above. When those numbers
 are green on real-repo fixtures, it's a trustworthy functioning system.
 
 # Open debates — RESOLVED with reviewer
@@ -581,8 +630,8 @@ refuted (investigated, not a bug) / done. Update Status as work lands.
 | C2 | Detail re-identification — names already pinned (`pipeline.go:727`); only identity-details overwrite remains | `detail.go:635` | MED | A | partially stale |
 | C3 | Reexamination deletes true positives on one LLM "no" | `reexamine.go:509,583` | MED | A | open |
 | C4 | Schema-qualified resource false-split (`public.orders`) | `reconcile.go:303` | LOW | A | open |
-| C5 | `delete` folded into `write` → adopt `operation_kind∈{read,write}` + preserved raw CRUD (decide before P1) | `reconcile.go:333`, `connections.go:784,1243` | MED | A | open (taxonomy decided) |
-| P1 | `details{}` free-text; no enums → ~17 op spellings; encode the C5 taxonomy as enums | `schemas.go:16`, `classify.go:59`, `registry.go:253,260` | HIGH | A,V | open (blocked on C5) |
+| C5 | DECIDED: canonical `operation_kind∈{read,write}` (identity) + raw `operation` verb (fidelity) | `reconcile.go:333`, `connections.go:784,1243` | MED | A | open (taxonomy settled) |
+| P1 | Enforce enum on `operation_kind` (NOT `operation`); `platform` open/`other`+`raw_platform`; ~17 op spellings today | `schemas.go:16`, `classify.go:59`, `registry.go:253,260` | HIGH | A,V | open (unblocked) |
 | P2 | queue_publish key contract mismatch (queue vs destination) | `registry.go:473`, `reexamine.go:73,334` | MED | A | open |
 | P3 | No objective-boundary disambiguation (route/webhook, http/aws, db/cache redis, queue/stream) | `registry.go:65,255,367`, `discovery.go:120` | HIGH | A | open |
 | P3b | Wrong alias `sqs_consumer→stream_consume` | `classify.go:24` | MED | A | open |
@@ -591,6 +640,9 @@ refuted (investigated, not a bug) / done. Update Status as work lands.
 | P6 | Empty-return ALREADY present (`prompts.go:356`); real fix = shard/retry, never truncate | `prompts.go:356` | MED | A,V | corrected |
 | P7 | Canonicalize op (add fields, keep raw); platform=database. outbound_http service already resolved — that part STALE | `reconcile.go`, `classify.go` | MED | A | partial |
 | A1 | 13 (not 18) exposures unconnected: 8 routes + 5 cron; queue consumers ALL connected | `connections.go:298` | MED-HIGH | A | open (numbers corrected) |
+| A1-schema | `model.Connection` has no provenance field — add `Source∈{ast,llm_repair}` (needed by output, eval, label init) | `model:70` | MED | A | open (model change) |
+| F3-schema | Unknown queue dest: add `resolution_status∈{resolved,unresolved}` + key unresolved on call-site, else UnresolvedItem | `model`, `reconcile` | MED | A | ⚠ needs sign-off |
+| GATES | Production thresholds (F1/variance/regression/cost) are INITIAL proposals — calibrate + sign off | `internal/eval/` | — | A,V,C | ⚠ needs sign-off |
 | A2 | Silent connection-walk truncation (no flag) | `scip/walker.go:190-206` | MED | A | open |
 | F1 | cache_operation: Spring emits NO cache bindings — needs a DETECTOR, not wiring | `spring.go`, `deterministic_discovery.go:233,252` | MED | A,C | reworked (was wrong) |
 | F2–F6 | No deterministic floor for command_exec/queue_publish/gRPC; JVM-only DB + routes (Go stdlib, Django urls.py, Flask, JAX-RS) | `connections.go:737`, `web.go:128` | HIGH | A,V,C | open |
@@ -608,7 +660,7 @@ refuted (investigated, not a bug) / done. Update Status as work lands.
 | V3d | Test-resource config files pollute the index | `index.go:51,55` | MED | A | open |
 | V3e | Mis-indented YAML re-parented silently | `parser.go:1008` | LOW | A | open |
 | V1/V2/V4 | Unmodeled types: GraphQL/WS/SSE/serverless triggers; storage/secrets/flags; auth/PII | `registry.go:36-420` | HIGH | A | open |
-| M* | Only one toy fixture; no real-repo/LLM/variance/floor-recall measurement | `internal/eval/`, `testdata/eval/` | HIGH | A,V,C | open |
+| M* | Only one toy fixture; no real-repo/LLM/variance/floor-coverage measurement | `internal/eval/`, `testdata/eval/` | HIGH | A,V,C | open |
 | D | No sampling controls; set via OpenCode agent config (temp/top_p in 1.16.2), no agent selected (`client.go:399`); seed unconfirmed | `client.go:399` | MED | V | open (mechanism known) |
 | — | Connection orphan-drop after dedup | — | — | refuted (dedup precedes connections) |
 | — | HTTP base-path concatenation | `spring.go:176` | — | refuted (correct) |
@@ -636,5 +688,6 @@ just missing. Add them there.
 Security (symlink escape, webfetch egress, prompt-injection fencing, disable
 mutating tools); reliability hardening (checkpoint version fingerprint so `retry`
 across upgrades doesn't blend logic; file-size/OOM guard + parse `recover()`;
-refuse unsafe session-reuse+workers combo — partly addressed by X1's per-worker
-design); cross-service architecture graph; commit-to-commit diff mode.
+refuse the unsafe session-reuse+workers combo — and note X1 no longer reuses
+sessions at all, so the risk is avoided rather than mitigated); cross-service
+architecture graph; commit-to-commit diff mode.
