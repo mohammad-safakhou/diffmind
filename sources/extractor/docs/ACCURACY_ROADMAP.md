@@ -665,8 +665,8 @@ refuted (investigated, not a bug) / done. Update Status as work lands.
 | C1 | HTTP path params not canonicalized (`{id}`/`:id`/`<int:id>`) | `reconcile.CanonicalizeRoutePath` | HIGH | A,V | DONE (ae72d04) |
 | C2 | Detail could overwrite identity-bearing details | `detail.go pinIdentityDetails` | MED | A | DONE (747fa9b) |
 | C3 | Reexamination deleted true positives on one LLM "no" | `reexamine.go` | MED | A | DONE (75084f0) |
-| C4 | Schema-qualified resource false-split (`public.orders`) | `reconcile.go:303` | LOW | A | open |
-| C5 | DECIDED: canonical `operation_kind∈{read,write}` (identity) + raw `operation` verb (fidelity) | `reconcile.go:333`, `connections.go:784,1243` | MED | A | open (taxonomy settled) |
+| C4 | Schema-qualified resource false-split (`public.orders`) — datastore-aware unique-candidate merge | `reconcile.go` | LOW | A | DONE (C4 commit) |
+| C5 | Emit canonical `operation_kind∈{read,write}` via reconcile.NormalizeDBOp; raw verb kept in `operation` | `classify.go`, `reconcile.go` | MED | A | DONE (C5 commit); P1 schema-enum needs LLM run |
 | P1 | Enforce enum on `operation_kind` (NOT `operation`); `platform` open/`other`+`raw_platform`; ~17 op spellings today | `schemas.go:16`, `classify.go:59`, `registry.go:253,260` | HIGH | A,V | open (unblocked) |
 | P2 | queue_publish key contract mismatch (queue vs destination) | `registry.go:473`, `reexamine.go:73,334` | MED | A | open |
 | P3 | No objective-boundary disambiguation (route/webhook, http/aws, db/cache redis, queue/stream) | `registry.go:65,255,367`, `discovery.go:120` | HIGH | A | open |
