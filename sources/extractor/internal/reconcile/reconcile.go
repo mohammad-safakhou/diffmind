@@ -263,7 +263,83 @@ func semanticIdentity(b model.BaseEntity, withLoc bool) string {
 		cls := depPlatformClass(model.Dependency{BaseEntity: b})
 		return strings.Join([]string{b.Type, dataResource(b), dataOperation(b), cls}, "|")
 	}
+	// Route-shaped entities key on method + canonical path so the same route in
+	// different framework param syntaxes ({id} / :id / <int:id> / *) is one fact
+	// (C1). Shared with the discovery-merge and eval matchers via
+	// CanonicalizeRoutePath.
+	switch b.Type {
+	case "http_route", "webhook", "outbound_http":
+		method, path := routeMethodPath(b)
+		loc := ""
+		if withLoc && len(b.Locations) > 0 {
+			loc = b.Locations[0].File
+		}
+		return strings.Join([]string{b.Type, method, CanonicalizeRoutePath(path), loc}, "|")
+	}
 	return genericSemanticKey(b, withLoc)
+}
+
+// routeMethodPath extracts the HTTP method and path from a route-shaped entity,
+// preferring explicit details and falling back to parsing the name ("GET /x").
+func routeMethodPath(b model.BaseEntity) (method, path string) {
+	method = firstDetail(b, "method")
+	path = firstDetail(b, "path")
+	if method != "" || path != "" {
+		return method, path
+	}
+	fields := strings.Fields(strings.TrimSpace(b.Name))
+	if len(fields) == 0 {
+		return "", ""
+	}
+	switch strings.ToUpper(fields[0]) {
+	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT", "ANY", "ALL":
+		return strings.ToLower(fields[0]), strings.Join(fields[1:], " ")
+	}
+	return "", b.Name
+}
+
+// CanonicalizeRoutePath normalizes an HTTP path for identity: lower-cases,
+// single leading slash, collapses repeated slashes, trims a trailing slash, and
+// replaces every path PARAMETER segment (:id, {id}, {id:.*}, <id>, <int:id>, *,
+// **) with a uniform "{}" token. The same route written in different framework
+// syntaxes therefore keys identically. Applied on all sides, so the rule only
+// has to be internally consistent.
+func CanonicalizeRoutePath(p string) string {
+	p = strings.ToLower(strings.TrimSpace(p))
+	if p == "" {
+		return ""
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	for strings.Contains(p, "//") {
+		p = strings.ReplaceAll(p, "//", "/")
+	}
+	segs := strings.Split(p, "/")
+	for i, s := range segs {
+		if isRouteParamSegment(s) {
+			segs[i] = "{}"
+		}
+	}
+	p = strings.Join(segs, "/")
+	if len(p) > 1 {
+		p = strings.TrimRight(p, "/")
+	}
+	return p
+}
+
+func isRouteParamSegment(s string) bool {
+	switch {
+	case s == "*" || s == "**":
+		return true
+	case strings.HasPrefix(s, ":"): // Express / Rails :id
+		return true
+	case strings.HasPrefix(s, "{") && strings.HasSuffix(s, "}"): // Spring / chi {id}, {id:.*}
+		return true
+	case strings.HasPrefix(s, "<") && strings.HasSuffix(s, ">"): // Flask <id>, <int:id>
+		return true
+	}
+	return false
 }
 
 // firstDetail returns the first non-empty Details value for the given keys,
