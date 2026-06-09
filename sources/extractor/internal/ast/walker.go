@@ -92,8 +92,19 @@ func NewWalker(idx *ProjectIndex) *Walker {
 //  4. Per-hop conditions and repetitions are derived from the EnclosingPath
 //     of each CallSite, which tree-sitter populated at parse time.
 func (w *Walker) Walk(entrySymbol string, cfg WalkConfig) []CallPath {
+	paths, _ := w.WalkVerbose(entrySymbol, cfg)
+	return paths
+}
+
+// WalkVerbose is Walk but also reports whether the walk was TRUNCATED by a cap
+// (MaxPathsTotal, MaxVisitedEdges, or a MaxDepth cut on a node that still had
+// outgoing calls). Truncation means "more paths may exist than were returned",
+// so callers can distinguish "no connection" from "capped" and surface it
+// instead of silently under-reporting (A2). Hitting MaxPathsPerTarget is NOT
+// truncation — the dependency is still connected via an earlier path.
+func (w *Walker) WalkVerbose(entrySymbol string, cfg WalkConfig) (paths []CallPath, truncated bool) {
 	if w == nil || w.idx == nil || entrySymbol == "" || cfg.IsTarget == nil {
-		return nil
+		return nil, false
 	}
 	cfg = cfg.withDefaults()
 
@@ -109,29 +120,40 @@ func (w *Walker) Walk(entrySymbol string, cfg WalkConfig) []CallPath {
 		visited: map[string]struct{}{entrySymbol: {}},
 	}}
 
-	var paths []CallPath
 	hitCounts := map[string]int{}
 	edgesVisited := 0
 
 	for len(queue) > 0 {
-		if cfg.Context.Err() != nil || len(paths) >= cfg.MaxPathsTotal {
+		if cfg.Context.Err() != nil {
+			break
+		}
+		if len(paths) >= cfg.MaxPathsTotal {
+			truncated = true
 			break
 		}
 		n := queue[0]
 		queue = queue[1:]
 
 		if n.depth >= cfg.MaxDepth {
+			if len(w.idx.CallGraph[n.symbol]) > 0 {
+				truncated = true
+			}
 			continue
 		}
 
 		calls := w.idx.CallGraph[n.symbol]
 		for _, call := range calls {
-			if cfg.Context.Err() != nil || len(paths) >= cfg.MaxPathsTotal {
+			if cfg.Context.Err() != nil {
+				break
+			}
+			if len(paths) >= cfg.MaxPathsTotal {
+				truncated = true
 				break
 			}
 			edgesVisited++
 			if edgesVisited > cfg.MaxVisitedEdges {
-				return paths
+				truncated = true
+				return
 			}
 
 			// Derive step-level condition and repetition from the call's
@@ -187,7 +209,7 @@ func (w *Walker) Walk(entrySymbol string, cfg WalkConfig) []CallPath {
 		}
 	}
 
-	return paths
+	return
 }
 
 // HasLocalDefinition reports whether a symbol is defined in the project (not
