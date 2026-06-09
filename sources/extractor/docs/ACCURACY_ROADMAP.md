@@ -647,8 +647,8 @@ refuted (investigated, not a bug) / done. Update Status as work lands.
 
 | ID | Finding | File:line | Sev | Impact | Status |
 |----|---------|-----------|-----|--------|--------|
-| E1 | Spring fabricates phantom routes from produces/consumes/headers/params | `spring.go:166,240` | CRIT | A,V | open |
-| E2 | Kafka/Rabbit array-topic name mangled, siblings dropped | `spring.go:86,101,225` | HIGH | A | open |
+| E1 | Spring fabricates phantom routes from produces/consumes/headers/params | `spring.go` | CRIT | A,V | DONE (fd9ede5) |
+| E2 | Kafka/Rabbit/SQS/JMS array destinations mangled, siblings dropped | `spring.go` | HIGH | A | DONE (fd9ede5) |
 | E3 | Finder-method op misclassification (all/scan/page → read) | `connections.go:1268` | MED | A | open |
 | E4 | `@Scheduled(cron=,zone=)` whole arg stored as schedule | `spring.go:57` | LOW | A | open |
 | E5 | `extractFirstStringArg` returns raw arg when unquoted | `spring.go` | LOW | A | open |
