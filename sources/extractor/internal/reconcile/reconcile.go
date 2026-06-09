@@ -105,7 +105,100 @@ func dedupeDependenciesSemantic(in []model.Dependency) []model.Dependency {
 // alone when no specific platform is known. This removes the earlier single-DB
 // assumption (which silently merged across distinct databases) without letting
 // the LLM's noisy platform/instance text re-fragment one logical store.
+// resolveSchemaQualifiedResources fixes the schema-qualified false-split (C4):
+// a bare resource ("orders") and a schema-qualified one ("public.orders") for
+// the same table key differently and would not dedup. Schema STAYS part of
+// identity (so public.orders and audit.orders never merge). We only qualify a
+// bare resource when its (type, operation, base-name) group contains EXACTLY
+// ONE explicit schema — an unambiguous, datastore-aware merge. With two or more
+// schemas the bare resource is left unresolved (no guessing, no over-merge).
+//
+// NOTE: condition is intentionally conservative (unique candidate). Corroborating
+// against a configured default schema/datasource is a future refinement.
+func resolveSchemaQualifiedResources(in []model.Dependency) []model.Dependency {
+	type gkey struct{ typ, op, base string }
+	schemasFor := map[gkey]map[string]struct{}{}
+	for _, d := range in {
+		if d.Type != "db_operation" && d.Type != "cache_operation" {
+			continue
+		}
+		_, raw := rawResourceDetail(d.BaseEntity)
+		schema, base := splitSchemaQualified(raw)
+		if schema == "" {
+			continue
+		}
+		k := gkey{d.Type, dataOperation(d.BaseEntity), singularResource(base)}
+		if schemasFor[k] == nil {
+			schemasFor[k] = map[string]struct{}{}
+		}
+		schemasFor[k][strings.ToLower(schema)] = struct{}{}
+	}
+	if len(schemasFor) == 0 {
+		return in
+	}
+	out := make([]model.Dependency, len(in))
+	copy(out, in)
+	for i := range out {
+		d := &out[i]
+		if d.Type != "db_operation" && d.Type != "cache_operation" {
+			continue
+		}
+		key, raw := rawResourceDetail(d.BaseEntity)
+		if raw == "" {
+			continue
+		}
+		if schema, _ := splitSchemaQualified(raw); schema != "" {
+			continue // already qualified
+		}
+		k := gkey{d.Type, dataOperation(d.BaseEntity), singularResource(raw)}
+		ss := schemasFor[k]
+		if len(ss) != 1 {
+			continue // zero or ambiguous → leave bare
+		}
+		var only string
+		for s := range ss {
+			only = s
+		}
+		// Clone details before mutating (the map is shared with the input).
+		nd := make(map[string]any, len(d.Details)+1)
+		for kk, vv := range d.Details {
+			nd[kk] = vv
+		}
+		nd[key] = only + "." + raw
+		d.Details = nd
+	}
+	return out
+}
+
+// rawResourceDetail returns the resource detail key in use and its raw
+// (case-preserving) value, in the same priority order dataResource reads.
+func rawResourceDetail(b model.BaseEntity) (key, value string) {
+	if b.Details == nil {
+		return "", ""
+	}
+	for _, k := range []string{"table", "table_or_entity", "entity", "cache", "collection", "index", "key"} {
+		if v, ok := b.Details[k]; ok && v != nil {
+			s := strings.TrimSpace(fmt.Sprint(v))
+			if s != "" && s != "<nil>" {
+				return k, s
+			}
+		}
+	}
+	return "", ""
+}
+
+// splitSchemaQualified splits a "schema.table" name on its last dot. A bare
+// name returns an empty schema.
+func splitSchemaQualified(name string) (schema, base string) {
+	name = strings.TrimSpace(name)
+	if i := strings.LastIndex(name, "."); i > 0 && i < len(name)-1 {
+		return name[:i], name[i+1:]
+	}
+	return "", name
+}
+
 func dedupeDataDependencies(in []model.Dependency) []model.Dependency {
+	in = resolveSchemaQualifiedResources(in)
 	groups := map[string][]model.Dependency{}
 	var order []string
 	for _, d := range in {
