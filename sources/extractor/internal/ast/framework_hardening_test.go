@@ -233,6 +233,28 @@ public class Listeners {
 	assertBinding(t, idx.Frameworks, "spring", "queue_consumer", "sqs: single-queue", "Listeners.onSqs")
 	// The mangled single-topic form must not survive.
 	assertNoBinding(t, idx.Frameworks, "spring", "queue_consumer", `kafka: {"orders`)
+	// A sibling string attribute (groupId) must NOT be picked as the topic.
+	assertNoBinding(t, idx.Frameworks, "spring", "queue_consumer", "kafka: g1")
+}
+
+// E2 regression: real Spring Cloud AWS @SqsListener uses queueNames= (not value=);
+// the destination must still be extracted (and not dropped to an empty name).
+func TestSpringSqsListenerQueueNamesAttribute(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "AtsListener.java", `package com.example;
+
+import io.awspring.cloud.sqs.annotation.SqsListener;
+
+public class AtsListener {
+    @SqsListener(queueNames = "${services.aws.sqs.ats-events-sqs.url}", factory = "f")
+    public void onMessage(String m) {}
+}
+`)
+	idx := buildIndex(t, dir)
+	assertBinding(t, idx.Frameworks, "spring", "queue_consumer",
+		"sqs: ${services.aws.sqs.ats-events-sqs.url}", "AtsListener.onMessage")
+	// Must not collapse to an empty destination (the pre-fix regression).
+	assertNoBinding(t, idx.Frameworks, "spring", "queue_consumer", "sqs: ")
 }
 
 func buildIndex(t *testing.T, dir string) *ast.ProjectIndex {

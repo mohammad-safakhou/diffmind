@@ -85,17 +85,21 @@ func springAnnotationToBindings(sym ast.SymbolDef, cls *ast.SymbolDef, ann ast.A
 	// framework-specific attribute; the value may be a single literal or an
 	// array ({"a","b"}). We emit ONE consumer binding per destination so array
 	// forms aren't mangled or dropped (E2).
+	// Each listener names its destination(s) under a framework-specific
+	// attribute (with version aliases), or positionally. We try the known
+	// attribute names in order so e.g. Spring Cloud AWS's @SqsListener(queueNames=…)
+	// and the older value= form both resolve.
 	queueListeners := map[string]struct {
 		platform string
-		attr     string
+		attrs    []string
 	}{
-		"KafkaListener":  {"kafka", "topics"},
-		"RabbitListener": {"rabbitmq", "queues"},
-		"SqsListener":    {"sqs", "value"},
-		"JmsListener":    {"jms", "destination"},
+		"KafkaListener":  {"kafka", []string{"topics"}},
+		"RabbitListener": {"rabbitmq", []string{"queues"}},
+		"SqsListener":    {"sqs", []string{"queueNames", "value"}},
+		"JmsListener":    {"jms", []string{"destination"}},
 	}
 	if ql, ok := queueListeners[name]; ok {
-		dests := namedOrPositionalValues(args, ql.attr)
+		dests := namedOrPositionalValues(args, ql.attrs...)
 		return queueConsumerBindings(sym, ql.platform, dests, "@"+name+"("+args+")")
 	}
 
@@ -220,13 +224,18 @@ func extractRoutePaths(args string) []string {
 	return nil
 }
 
-// namedOrPositionalValues returns the string literal(s) of a named annotation
-// attribute, falling back to the leading positional argument. Handles array
-// (`{"a","b"}`) forms so multi-value attributes aren't truncated (E2).
-func namedOrPositionalValues(args, key string) []string {
+// namedOrPositionalValues returns the string literal(s) of the first matching
+// named annotation attribute (keys tried in order, so version aliases like
+// SQS's queueNames/value both work), falling back to the leading positional
+// argument. Handles array (`{"a","b"}`) forms so multi-value attributes aren't
+// truncated (E2). Matching by attribute name avoids grabbing an unrelated
+// string like groupId.
+func namedOrPositionalValues(args string, keys ...string) []string {
 	named, positional, hasPositional := parseAnnotationArgs(args)
-	if v, ok := named[strings.ToLower(key)]; ok {
-		return extractStringArgs(v)
+	for _, key := range keys {
+		if v, ok := named[strings.ToLower(key)]; ok {
+			return extractStringArgs(v)
+		}
 	}
 	if hasPositional {
 		return extractStringArgs(positional)
