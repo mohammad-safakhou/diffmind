@@ -11,6 +11,7 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
+	"github.com/mohammad-safakhou/diffmind/internal/reconcile"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -587,18 +588,11 @@ func discoverySemanticKey(obj objectives.Objective, e llmEntity) string {
 	return shardEntityKey(e)
 }
 
+// normalizePathForKey defers to reconcile.CanonicalizeRoutePath so the
+// discovery-merge key canonicalizes paths (incl. parameter syntax
+// {id}/:id/<int:id>/*) identically to reconcile dedup and the eval matcher (C1).
 func normalizePathForKey(path string) string {
-	path = strings.TrimSpace(strings.ToLower(path))
-	if path == "" {
-		return ""
-	}
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-	for strings.Contains(path, "//") {
-		path = strings.ReplaceAll(path, "//", "/")
-	}
-	return path
+	return reconcile.CanonicalizeRoutePath(path)
 }
 
 func isCompleteDeterministicSeed(obj objectives.Objective, e *llmEntity) bool {

@@ -84,24 +84,11 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// normPath lowercases, ensures a leading slash, collapses repeated slashes, and
-// trims a trailing slash so "/Orders/" and "orders" match. Applied to both
-// sides, so the rule only has to be internally consistent.
+// normPath defers to reconcile.CanonicalizeRoutePath so the matcher canonicalizes
+// paths (incl. parameter syntax {id}/:id/<int:id>/*) exactly as the pipeline's
+// dedup does (C1).
 func normPath(p string) string {
-	p = lc(p)
-	if p == "" {
-		return ""
-	}
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
-	}
-	for strings.Contains(p, "//") {
-		p = strings.ReplaceAll(p, "//", "/")
-	}
-	if len(p) > 1 {
-		p = strings.TrimRight(p, "/")
-	}
-	return p
+	return reconcile.CanonicalizeRoutePath(p)
 }
 
 // methodPathFromName splits a name like "GET /orders" into ("get","/orders").
