@@ -507,21 +507,39 @@ func (o *orchestrator) runReexamination(
 			continue
 		}
 		if r.Item == nil {
-			// LLM confirmed the candidate is not real.
-			u := model.UnresolvedItem{
-				Kind:       r.Trigger.Obj.Kind,
-				Type:       r.Trigger.Obj.Type,
-				Name:       r.Trigger.Seed.Name,
-				ReasonCode: "rejected_on_reexamination",
-				Reason:     "Re-examination agent rejected candidate (trigger: " + r.Trigger.ReasonID + ")",
-				Confidence: r.Trigger.Seed.Confidence,
-				Evidence:   toEvidence(r.Trigger.Seed.Evidence),
+			// The LLM said "not real". C3: a single negative must NOT delete
+			// evidence-backed architecture. Only drop when the rejection is
+			// CORROBORATED by the seed being structurally unverifiable (no
+			// source location to point at). Otherwise downgrade confidence and
+			// RETAIN the item (errs toward keeping real findings).
+			seed := r.Trigger.Seed
+			if seedStructurallyUnverifiable(seed) {
+				u := model.UnresolvedItem{
+					Kind:       r.Trigger.Obj.Kind,
+					Type:       r.Trigger.Obj.Type,
+					Name:       seed.Name,
+					ReasonCode: "rejected_on_reexamination",
+					Reason:     "Re-examination rejected an unverifiable candidate (no source location; trigger: " + r.Trigger.ReasonID + ")",
+					Confidence: seed.Confidence,
+					Evidence:   toEvidence(seed.Evidence),
+				}
+				unresolved = append(unresolved, u)
+				o.appendReexamEntity(reexamCheckpointEntry{
+					Key:        reexamKey(r.Trigger.Obj.ID, seed.Name),
+					Outcome:    "rejected",
+					Unresolved: &u,
+				})
+				continue
 			}
-			unresolved = append(unresolved, u)
+			// Evidence-backed but doubted: retain, downgraded and tagged.
+			retained := seed
+			retained.Confidence = downgradeConfidence(seed.Confidence, o.cfg.Quality.MinConfidence)
+			retained.Tags = appendUniqueTag(retained.Tags, "reexamination_doubted")
+			cleanJobs = append(cleanJobs, detailJob{Objective: r.Trigger.Obj, Seed: retained})
 			o.appendReexamEntity(reexamCheckpointEntry{
-				Key:        reexamKey(r.Trigger.Obj.ID, r.Trigger.Seed.Name),
-				Outcome:    "rejected",
-				Unresolved: &u,
+				Key:     reexamKey(r.Trigger.Obj.ID, seed.Name),
+				Outcome: "confirmed",
+				Seed:    &retained,
 			})
 			continue
 		}
@@ -541,6 +559,42 @@ func (o *orchestrator) runReexamination(
 		"clean_after": len(cleanJobs), "unresolved": len(unresolved),
 	})
 	return cleanJobs, unresolved, firstErr, firstTrigger
+}
+
+// seedStructurallyUnverifiable reports whether a rejected seed lacks the
+// minimum to be a real, locatable fact (no name, no type, or no source
+// location). Only such a seed may be deleted on a single LLM "no" (C3) — the
+// rejection is then corroborated by the absence of verifiable evidence.
+func seedStructurallyUnverifiable(seed llmEntity) bool {
+	if strings.TrimSpace(seed.Name) == "" || strings.TrimSpace(seed.Type) == "" {
+		return true
+	}
+	for _, l := range seed.Locations {
+		if strings.TrimSpace(l.File) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// downgradeConfidence lowers a doubted seed's confidence while keeping it at or
+// above the run's MinConfidence floor so the retained item still survives the
+// downstream confidence gate.
+func downgradeConfidence(conf, minConf float64) float64 {
+	lowered := conf * 0.7
+	if lowered < minConf {
+		return minConf
+	}
+	return lowered
+}
+
+func appendUniqueTag(tags []string, tag string) []string {
+	for _, t := range tags {
+		if t == tag {
+			return tags
+		}
+	}
+	return append(tags, tag)
 }
 
 func (o *orchestrator) runReexamineOne(ctx context.Context, t reexamineTrigger, rf *repoFacts) (*llmEntity, error) {
