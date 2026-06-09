@@ -2,6 +2,8 @@ package ast_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -255,6 +257,29 @@ public class AtsListener {
 		"sqs: ${services.aws.sqs.ats-events-sqs.url}", "AtsListener.onMessage")
 	// Must not collapse to an empty destination (the pre-fix regression).
 	assertNoBinding(t, idx.Frameworks, "spring", "queue_consumer", "sqs: ")
+}
+
+// V3d: config files under test resources carry fake/local values and must not
+// be indexed (they would pollute ${...} resolution and dedup keys).
+func TestConfigFilesUnderTestResourcesExcluded(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "application.yml", "queue:\n  name: prod-queue\n")
+	sub := filepath.Join(dir, "src", "test", "resources")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "application.yml"), []byte("queue:\n  name: test-queue\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx := buildIndex(t, dir)
+	for path := range idx.Configs {
+		if strings.Contains(filepath.ToSlash(path), "/test/") {
+			t.Errorf("test-resource config was indexed: %s", path)
+		}
+	}
+	if _, ok := idx.Configs["application.yml"]; !ok {
+		t.Errorf("top-level application.yml should be indexed; got configs: %v", idx.Configs)
+	}
 }
 
 func buildIndex(t *testing.T, dir string) *ast.ProjectIndex {

@@ -53,6 +53,13 @@ func Build(ctx context.Context, repoRoot, primaryLanguage string, workers int, p
 			}
 			sourceFiles = append(sourceFiles, rel)
 		} else if ConfigFormatForExtension(ext) != "" {
+			// Config files under test resources (e.g. src/test/resources/
+			// application.yml) carry deliberately fake/local values that would
+			// pollute ${...} resolution and dedup keys (V3d). Exclude them, same
+			// as test source.
+			if isTestLikePath(rel) {
+				return nil
+			}
 			configFiles = append(configFiles, rel)
 		}
 		return nil
