@@ -1091,11 +1091,15 @@ func buildASTConnectionsForExposure(
 		entryPrefixes[cls] = struct{}{}
 	}
 
+	walkTruncated := false
 	for _, entry := range entrySymbols {
 		if ctx.Err() != nil {
 			return nil, nil
 		}
-		paths := walker.Walk(entry, cfg)
+		paths, truncated := walker.WalkVerbose(entry, cfg)
+		if truncated {
+			walkTruncated = true
+		}
 		for _, p := range paths {
 			if !isProductionCallPath(p) || isLowSignalTargetSymbol(p.TargetSymbol) {
 				continue
@@ -1130,7 +1134,20 @@ func buildASTConnectionsForExposure(
 		c := buildASTConnection(exposure, b.dep, b.paths, minConfidence)
 		conns = append(conns, c)
 	}
-	return conns, nil
+	// A2: if the walk hit a cap, some exposure->dependency paths may be missing.
+	// Surface it through the unresolved channel so "fewer connections" is not
+	// silently indistinguishable from "no more connections exist".
+	var unresolved []model.UnresolvedItem
+	if walkTruncated {
+		unresolved = append(unresolved, model.UnresolvedItem{
+			Kind:       model.KindExposure,
+			Type:       exposure.Type,
+			Name:       exposure.Name,
+			ReasonCode: "connection_walk_truncated",
+			Reason:     fmt.Sprintf("connection walk for %q hit a depth/path cap; some connections may be missing", exposure.Name),
+		})
+	}
+	return conns, unresolved
 }
 
 func dependencyTargetLocations(dep model.Dependency) []model.Location {
