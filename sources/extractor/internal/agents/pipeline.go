@@ -746,10 +746,14 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 				item = &s
 			} else if hasSeed {
 				// Preserve the discovered identity; keep detail's enrichment.
+				// Type, name AND identity-bearing details (path, operation,
+				// table, …) are pinned to the seed so detail can never silently
+				// re-identify an entity and break its dedup/eval key (C2).
 				item.Type = seed.Type
 				if strings.TrimSpace(seed.Name) != "" {
 					item.Name = seed.Name
 				}
+				pinIdentityDetails(item, seed)
 			}
 			base, ur := toBase(o.repoPath, d.Objective, *item, o.cfg.Quality.MinConfidence)
 			if ur != nil {
