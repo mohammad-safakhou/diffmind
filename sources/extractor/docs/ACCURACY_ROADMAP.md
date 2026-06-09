@@ -17,9 +17,10 @@ enterprise-hardening reliability that doesn't affect accuracy or cost
 diff mode). These are listed at the end so they aren't lost.
 
 > **The keystone:** you cannot improve accuracy you cannot measure. Today
-> accuracy is measured on ONE toy fixture in deterministic-only mode. So
-> **Workstream M (measurement) is the foundation and ships first** — every other
-> workstream is validated through it.
+> accuracy is measured on ONE toy fixture in deterministic-only mode. So after
+> the two floor-precision fixes that come first (E1/E2 — don't let the first
+> labels capture phantom facts), **Workstream M (measurement) is the foundation**
+> — every other workstream is validated through it.
 
 All findings below were verified against source (file:line) and the real run
 `~/.diffmind/runs/20260608T230315Z` (Spring `routing-service`: 45
@@ -225,9 +226,16 @@ eval signal.
   discovered architecture. (Note: in the audited run reexamination made 0 calls —
   `deriveDetailsFromName` cleared all suspects — so this is latent, fires on
   noisier repos.)
-- **C4 — Schema-qualified resource false-split (duplicate).** `public.orders` vs
-  deterministic `orders` → different keys (`reconcile.go:303`). Strip schema
-  qualifier + unify snake/camel before keying.
+- **C4 — Schema-qualified resource false-split (duplicate). RESOLVED (reviewer
+  conditional sign-off).** `public.orders` vs deterministic `orders` → different
+  keys (`reconcile.go:303`). **Do NOT strip the schema** — schema stays part of
+  identity; a schema-less name means "unknown schema," not wildcard equality
+  (wildcard matching is non-transitive and would wrongly merge `public.orders`
+  with `audit.orders`). Instead, merge a bare `orders` with a qualified name only
+  during **datastore-aware reconciliation** when ALL hold: (1) exactly one
+  qualified candidate exists, (2) resource type + operation match, (3) source
+  evidence / datasource / configured default schema corroborates. Otherwise keep
+  it unresolved. (Also unify snake/camel, which is independent and safe.)
 - **C5 — `delete` folded into `write` → explicit product decision (reviewer).**
   `normalizeDBOp` (`reconcile.go:333`), `inferDBOperationKind*`
   (`connections.go:784,1243`) collapse delete+insert+update → write.
@@ -294,9 +302,12 @@ flag flips in the same commit.
   F2–F4 accordingly, not as a quick win.
 - **F2 — command_exec** (`Runtime.exec`/`ProcessBuilder`/`os/exec.Command`/
   `subprocess`), **F3 — queue_publish** (`SqsTemplate/KafkaTemplate.send`,
-  `boto3 publish`; resolve destination via `config_resolve.go`, emit the publish
-  fact even when the name is uncertain), **F4 — gRPC** outbound_rpc/rpc_endpoint
-  (stub/ImplBase types). Each call-site based, behind the precision bar.
+  `boto3 publish`; resolve destination via `config_resolve.go`). **Reviewer
+  (valid): never emit a guessed destination as confirmed** — if the name can't be
+  resolved, emit the publish with an **unresolved destination + provenance**
+  (the publish fact is high-precision; the target name isn't). **F4 — gRPC**
+  outbound_rpc/rpc_endpoint (stub/ImplBase types). Each call-site based, behind
+  the precision bar.
 - **F5 — multi-language DB derivers** (the JVM-only floor is the documented worst
   case for non-JVM). Ranked: **GORM** (Go) → **Django ORM** (Python). Match verb
   calls, resolve table/model, emit nothing if unresolvable. `isRepositoryOperationSymbol`
@@ -309,7 +320,7 @@ flag flips in the same commit.
 
 ---
 
-# Workstream A — Connections (close the 40% dangling gap)
+# Workstream A — Connections (close the ~29% dangling gap, 13/45)
 
 **CORRECTED NUMBERS (reviewer + re-verified across all 8 connection files):**
 **13** of 45 exposures got zero connections — **8 http_routes + 5 scheduled_jobs;
@@ -347,10 +358,13 @@ modules and bundling unrelated dirs. It also fanned `rpc_endpoint` into **11
 shards** (2.7× the call count of one-per-objective).
 
 - **S1 — Cohesion clustering** (replace alphabetical packing): cluster candidate
-  files by nearest module/feature root, reinforced by **call-graph connectivity**
-  (`idx.CallGraph` union-find) so a controller and the service it calls share a
-  shard; pack whole clusters; only split a cluster that alone exceeds the cap.
-  A shard becomes "this feature + the code it calls."
+  files by nearest module/feature root, reinforced by call-graph proximity.
+  **Reviewer (valid): do NOT use raw union-find** — shared utility/helper hub
+  nodes would collapse the whole repo into one cluster. Use **hub-safe weighted
+  clustering** (down-weight/ignore high-degree shared nodes; cluster on edge
+  weight, not mere connectivity) so a controller and the service it calls share a
+  shard without a logging util merging everything. Pack whole clusters; split a
+  cluster only when it alone exceeds the cap.
 - **S2 — Keyword seeding for detector-less objectives** (so they shard at all,
   where F doesn't cover them): add `clientLibs` to `objectiveMatcher`
   (`grounding.go:72`); weight imports (+2), client-lib call receivers (+1),
@@ -365,27 +379,29 @@ shards** (2.7× the call count of one-per-objective).
 
 # Workstream X — Cost levers (accuracy-neutral; cost is #2)
 
-- **X1 — Cross-call caching (biggest cost win) — but NOT accuracy-neutral
-  (reviewer).** Today `ReuseOpenCodeSession=false` (`config.go:110`); the
-  4.52M cache_read (manifest, not 6.6M) is within-call only. The same
-  build/config/base files are re-read cold across 35 discovery + 10 detail calls
-  (input is 67% of cost, mostly repeated file reads). **Reviewer (valid):
-  reusing sessions can contaminate one objective with another's context — that's
-  an accuracy risk, not just concurrency.** So do NOT reuse sessions for caching;
-  prefer **explicit provider prompt-caching** (cache-control breakpoint on the
-  stable repo context) or **isolated per-worker contexts**. ⚠️ Open: whether
-  OpenCode's API exposes an explicit cache breakpoint is unverified (see Open
-  debate); the no-API-dependency lever is X2 (prefix reordering → provider auto
-  prefix-cache).
+- **X1 — Cross-call caching: do NOT pursue the breakpoint mechanism yet
+  (reviewer, verified on OpenCode 1.16.2).** Today `ReuseOpenCodeSession=false`
+  (`config.go:110`); the 4.52M cache_read (manifest) is within-call only, so the
+  same build/config/base files are re-read cold across calls. **But:** (a)
+  reusing sessions can contaminate one objective with another's context — an
+  accuracy risk — so don't reuse sessions for caching; (b) OpenCode 1.16.2's
+  `setCacheKey` derives `promptCacheKey` from the **session ID**, and DiffMind
+  creates a separate session per call, so there's no cross-call reuse and **no
+  arbitrary cache-control breakpoint is available**. OpenAI gets prefix caching
+  automatically. **Therefore: do not commit to an explicit-breakpoint mechanism;
+  rely on X2 (the only verified, no-API-dependency lever) and measure it.**
 - **X2 — Reorder prompts stable-first** (`prompts.go:327`): today volatile
   content (objective/scope/hints) is first, so the cacheable common prefix is
   only ~250 tokens. Put readOnlyPreamble + HARD RULES + objective-static text
   first, volatile scope/hints/seed last. Multiplies X1 at zero accuracy cost.
-- **X3 — Global token/time budget + wire-or-delete `MaxCatalogItems`.** The knob
-  is dead config (`config.go:24`, never consumed) yet the failure tip cites it
-  (`persist.go:549`). Either make it truncate the catalog AND add a global
-  token/wall-clock budget that aborts cleanly, or delete the knob+tip. Prevents
-  monorepo blowups (no global ceiling exists today).
+- **X3 — Global token/time budget + fix `MaxCatalogItems` (NEVER truncate
+  facts).** The knob is dead config (`config.go:24`, never consumed) yet the
+  failure tip cites it (`persist.go:549`). **Reviewer (valid): truncating the
+  catalog would drop architectural facts = accuracy loss, which is forbidden.**
+  So either **chunk** the catalog (process all items in batches) or **fail
+  explicitly** when over budget — never silently cap; if neither is wired, delete
+  the dead knob+tip. Add a global token/wall-clock budget that aborts cleanly
+  (no global ceiling exists today).
 - **X4 — Per-stage model tiering (feature ask).** repo_facts + reexamine could
   use a cheaper/faster model; keep the strong model for discovery + detail.
   Needs a per-stage model field (`config.go` has only one `ModelID`). Validate
@@ -403,15 +419,15 @@ shards** (2.7× the call count of one-per-objective).
 
 # Workstream D — Determinism / sampling controls (measured, not assumed)
 
-The client sends no sampling controls today (`client.go:404,491`). **Reviewer
-(needs confirmation): adding `temperature`/`top_p`/`seed` directly to the message
-body is NOT supported by OpenCode's documented API — temperature/top-p are set
-via OpenCode *agent configuration*, and `seed` is provider-specific.** This is
-the one claim I could not verify from this repo (it's about the external server's
-API) — confirm against the OpenCode version in use before redesigning D around
-agent-config. Either way, sequence LAST and judge purely by the M4 variance
-harness, so it measures residual variance after F/P/S rather than masking whether
-those were the real stabilizers.
+The client sends no sampling controls today and **selects no agent** in its
+message requests (`client.go:399`). **Verified (reviewer, OpenCode 1.16.2):**
+sampling is set via OpenCode **agent configuration**, not the message body —
+agent-level `temperature` and `top_p` are supported; **`seed` is NOT confirmed**
+as a first-class option (keep it explicitly unconfirmed / provider-specific).
+**Implement D through a dedicated selected agent**, then verify actual provider
+behavior empirically. Sequence LAST and judge purely by the M4 variance harness,
+so it measures residual variance after F/P/S rather than masking whether those
+were the real stabilizers.
 
 ---
 
@@ -437,8 +453,11 @@ Whole categories are invisible or mislabeled today (`registry.go:36-420`):
     sequence of mappings collapses all items to one key (`listeners.queue` for
     every listener, `name` lost). Common in Spring Cloud Stream / helm. **Fix:**
     use a real YAML decoder (closes V3b, V3c, V3e together).
-  - **V3c — YAML scalar lists silently dropped (MEDIUM).** `queues.names: [a,b]`
-    → zero entries → `${...}` falls back to a guessed segment.
+  - **V3c — YAML lists mishandled (MEDIUM; reviewer-corrected).** Two distinct
+    bugs: an **inline** list `queues.names: [a, b]` becomes a single *opaque
+    string* value (not split); a **block scalar** sequence (`- a` / `- b` lines)
+    is *dropped* entirely. Either way `${...}` resolution degrades. (The YAML
+    decoder in V3b fixes both.)
   - **V3d — Test-resource configs pollute the index (MEDIUM).** Config files are
     NOT filtered by `isTestLikePath` (`index.go:51,55`), so
     `src/test/resources/application.yml` (deliberately fake local values) feeds
@@ -492,26 +511,30 @@ what your real target services actually use.
   (core/union ratio) + `--mode floor-recall`, compared to the prior baseline in
   `testdata/eval/history/`.
 - End-to-end on `routing-service` (live OpenCode), diff
-  `~/.diffmind/runs/<new>` vs `20260608T230315Z`: dangling-exposure count ≪ 18;
-  `db_operation.operation ∈ {read,write}` with `raw_operation` preserved;
-  outbound_http `service` populated; queue_publish/cli_command counts stable
+  `~/.diffmind/runs/<new>` vs `20260608T230315Z`: dangling-exposure count ≪ 13;
+  `operation_kind ∈ {read,write}` with raw CRUD/`raw_operation` preserved
+  (outbound_http target service is already resolved — no requirement there);
+  floor *coverage* vs labeled floor *recall* reported separately;
+  queue_publish/cli_command counts stable
   across two runs; token cost per the manifest down after X.
 
 # Production-readiness verdict (re-scoped to "functioning, accurate")
 
-Not yet — but the path is concrete and measurable. The order that matters:
-**measurement first** (M), then the cheap high-impact accuracy fixes (P+C), then
-the structural accuracy gains (A+F+S), then cost (X). "~100%" is not literally
+Not yet — but the path is concrete and measurable. The order that matters
+(per the revised sequence): **fix the floor's wrong facts first** (E1/E2), then
+**a minimal human-labeled measurement layer** (M, no floor-promote), then the
+operation-taxonomy decision and the cheap accuracy fixes (P+C), then config
+correctness (V3), then the structural gains (A+F+S), then cost (X). "~100%" is not literally
 achievable on novel custom code — the honest, *measurable* target is: the
 deterministic floor recovers the mechanical majority (tracked by floor-recall),
 the LLM covers the custom tail, run-to-run output is stable (tracked by
 core/union ratio), and per-language F1 is gated in CI. When those three numbers
 are green on real-repo fixtures, it's a trustworthy functioning system.
 
-# Open debates (need alignment with reviewer — NOT settled)
+# Open debates — RESOLVED with reviewer
 
-These are the points where I did **not** simply accept the review — each has a
-real counter-argument or an unresolved tension worth discussing before we build.
+These were the points I did not simply accept. All four are now settled after the
+reviewer's second pass; kept here as the decision record.
 
 1. **C4 — schema-qualified table identity is a genuine two-sided tension, not a
    one-way fix.** The reviewer is right that blindly *stripping* schemas would
@@ -519,25 +542,24 @@ real counter-argument or an unresolved tension worth discussing before we build.
    the opposite failure that's also real in the run: the LLM emits `public.orders`
    while the deterministic deriver emits `orders`, so the *same* table FALSE-SPLITS
    into two db_operations. You cannot fix both by "always strip" or "always keep."
-   **Proposed resolution to debate:** treat the schema as part of identity, but
-   make a schema-less name a *wildcard* that matches a single schema-qualified
-   counterpart (merge `orders`↔`public.orders` only when `public` is the lone
-   schema seen; keep `public.orders`≠`audit.orders`). Needs sign-off.
-2. **A1 scope — zero-connection MVP vs incomplete-connection repair.** Agreed
-   incomplete-connection repair is the eventual goal, but it needs a *signal that
-   a connection set is incomplete*, which we don't have (you can't validate
-   against connections you don't know are missing). Propose: ship zero-connection
-   repair first; design an "incompleteness" heuristic (e.g. exposure reaches deps
-   the LLM lists in its details but the walk didn't) as a follow-up. Agree on
-   MVP-first?
-3. **X1 / D — both presuppose OpenCode API capabilities we have NOT verified.**
-   "Explicit prompt caching" (X1) and "sampling via agent config" (D) are the
-   reviewer's recommended mechanisms, but neither is confirmed against the
-   OpenCode version we run. Before committing: confirm (a) does OpenCode expose a
-   prompt cache-control breakpoint? (b) does it accept temperature/top-p/seed via
-   agent config, and does the provider honor seed? If not, the only verified
-   levers are X2 (prompt reordering for provider auto prefix-cache) and accepting
-   residual variance. Action: a short OpenCode-API capability spike feeds both.
+   **RESOLVED (reviewer conditional sign-off):** my wildcard idea was rejected —
+   wildcard `SemanticKey` matching is non-transitive (would merge `public.orders`
+   AND `audit.orders` via the bare `orders`). Final design: schema-less = "unknown
+   schema"; merge with a qualified name only in datastore-aware reconciliation
+   when exactly one qualified candidate exists AND type+operation match AND
+   evidence/datasource/default-schema corroborates; else keep unresolved. See the
+   updated C4 bullet above.
+2. **A1 scope — RESOLVED (reviewer approved).** Zero-connection repair is the
+   correct MVP. Incomplete-set repair needs independently observable signals and
+   stays a later work item. (Note: "40% gap" renamed to ~29%, 13/45.)
+3. **X1 / D — RESOLVED by reviewer's OpenCode 1.16.2 capability check.**
+   X1: `setCacheKey` derives the cache key from the **session ID**, and DiffMind
+   uses one session per call → no cross-call reuse and no arbitrary breakpoint.
+   Conclusion: **do not pursue X1's breakpoint; rely on X2 and measure it.**
+   D: temperature/top_p are settable via a **selected agent** (DiffMind selects
+   none today, `client.go:399`); **seed stays unconfirmed.** Implement D through a
+   dedicated agent, then verify provider behavior empirically. No open question
+   remains here — both folded into the X/D sections above.
 4. **M1 — agreed (drop promote), one note:** the labeling-cost goal is fully met
    by `init`+`diff`; dropping `promote` costs us nothing, so this is not really a
    tradeoff. Flagging only so the reviewer knows we didn't lose the cost win.
@@ -559,8 +581,8 @@ refuted (investigated, not a bug) / done. Update Status as work lands.
 | C2 | Detail re-identification — names already pinned (`pipeline.go:727`); only identity-details overwrite remains | `detail.go:635` | MED | A | partially stale |
 | C3 | Reexamination deletes true positives on one LLM "no" | `reexamine.go:509,583` | MED | A | open |
 | C4 | Schema-qualified resource false-split (`public.orders`) | `reconcile.go:303` | LOW | A | open |
-| C5 | `delete` folded into `write` (decide: keep delete class) | `reconcile.go:333`, `connections.go:784,1243` | MED | A | open |
-| P1 | `details{}` free-text; no enums → 13 spellings of operation | `schemas.go:16`, `classify.go:59`, `registry.go:253,260` | HIGH | A,V | open |
+| C5 | `delete` folded into `write` → adopt `operation_kind∈{read,write}` + preserved raw CRUD (decide before P1) | `reconcile.go:333`, `connections.go:784,1243` | MED | A | open (taxonomy decided) |
+| P1 | `details{}` free-text; no enums → ~17 op spellings; encode the C5 taxonomy as enums | `schemas.go:16`, `classify.go:59`, `registry.go:253,260` | HIGH | A,V | open (blocked on C5) |
 | P2 | queue_publish key contract mismatch (queue vs destination) | `registry.go:473`, `reexamine.go:73,334` | MED | A | open |
 | P3 | No objective-boundary disambiguation (route/webhook, http/aws, db/cache redis, queue/stream) | `registry.go:65,255,367`, `discovery.go:120` | HIGH | A | open |
 | P3b | Wrong alias `sqs_consumer→stream_consume` | `classify.go:24` | MED | A | open |
@@ -575,19 +597,19 @@ refuted (investigated, not a bug) / done. Update Status as work lands.
 | S1 | Sharding packs files alphabetically, not by cohesion | `sharding.go:83,103,134` | MED | A,C | open |
 | S2 | Detector-less objectives never shard (no candidates) | `sharding.go:90`, `grounding.go:72` | MED | A,V | open |
 | S3 | rpc_endpoint fanned into 11 shards (2.7× calls) | `sharding.go:33` | MED | C | open |
-| X1 | No cross-call caching (ReuseOpenCodeSession=false) → cold file re-reads | `config.go:110`, `pipeline.go:1349` | HIGH | C | open |
+| X1 | No cross-call caching; OpenCode 1.16.2 cacheKey is per-session (no breakpoint) → use X2 only, don't reuse sessions | `config.go:110`, `pipeline.go:1349` | MED | C | open (mechanism narrowed) |
 | X2 | Prompts volatile-first → ~250-token cacheable prefix | `prompts.go:327` | MED | C | open |
 | X3 | `MaxCatalogItems` dead config; no global token/time budget | `config.go:24`, `pipeline.go:180`, `persist.go:549` | MED | C | open |
 | X4 | No per-stage model tiering (one ModelID) | `config.go:8` | LOW | C | open |
-| X6 | Infrastructure-stage LLM call output never consumed | `ast_stage.go:154`, `pipeline.go:509` | MED | C | open |
+| X6 | Infra-stage output unused by core extraction but consumed by the UI → make optional or wire in (not "dead") | `ast_stage.go:154`, `pipeline.go:509` | LOW | C | open (reframed) |
 | V3a | Nondeterministic cross-file config resolution (map order) | `config_resolve.go:90` | HIGH | V,A | open |
 | V3b | YAML list-of-mappings mis-keyed/collapsed | `parser.go:994,1022` | HIGH | A | open |
-| V3c | YAML scalar lists silently dropped | `parser.go:994` | MED | A | open |
+| V3c | YAML lists: inline `[a,b]` kept as one opaque string; block scalar seq dropped | `parser.go:994` | MED | A | open (corrected) |
 | V3d | Test-resource config files pollute the index | `index.go:51,55` | MED | A | open |
 | V3e | Mis-indented YAML re-parented silently | `parser.go:1008` | LOW | A | open |
 | V1/V2/V4 | Unmodeled types: GraphQL/WS/SSE/serverless triggers; storage/secrets/flags; auth/PII | `registry.go:36-420` | HIGH | A | open |
 | M* | Only one toy fixture; no real-repo/LLM/variance/floor-recall measurement | `internal/eval/`, `testdata/eval/` | HIGH | A,V,C | open |
-| D | No sampling controls (temperature/seed) sent | `client.go:404,491` | MED | V | open |
+| D | No sampling controls; set via OpenCode agent config (temp/top_p in 1.16.2), no agent selected (`client.go:399`); seed unconfirmed | `client.go:399` | MED | V | open (mechanism known) |
 | — | Connection orphan-drop after dedup | — | — | refuted (dedup precedes connections) |
 | — | HTTP base-path concatenation | `spring.go:176` | — | refuted (correct) |
 | — | uncountable/status/data resource normalization | `reconcile.go:288` | — | refuted (sound) |
