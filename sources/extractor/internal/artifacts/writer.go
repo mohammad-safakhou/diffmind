@@ -3,6 +3,7 @@ package artifacts
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,6 +14,21 @@ import (
 )
 
 const SchemaVersion = "v1alpha1"
+
+// DiffMindVersion identifies the extractor build that produced a run. Override
+// at build time with -ldflags "-X .../internal/artifacts.DiffMindVersion=<sha>".
+var DiffMindVersion = "dev"
+
+// gitHeadSHA returns the HEAD commit of the repo at path, or "" if it is not a
+// git working tree. Used to pin a run to the exact analyzed revision.
+func gitHeadSHA(path string) string {
+	cmd := exec.Command("git", "-C", path, "rev-parse", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
 
 type WriteInput struct {
 	RunID         string
@@ -58,6 +74,8 @@ func Write(in WriteInput) (string, error) {
 		StartedAt:         in.StartedAt,
 		FinishedAt:        in.FinishedAt,
 		RepoPath:          in.RepoPath,
+		RepoGitSHA:        gitHeadSHA(in.RepoPath),
+		DiffMindVersion:   DiffMindVersion,
 		SchemaVersion:     SchemaVersion,
 		OpenCodeURL:       in.OpenCodeURL,
 		ConfidenceMinimum: in.MinConfidence,

@@ -115,6 +115,12 @@ type RunManifest struct {
 	StartedAt         time.Time         `json:"started_at"`
 	FinishedAt        time.Time         `json:"finished_at"`
 	RepoPath          string            `json:"repo_path"`
+	// RepoGitSHA is the analyzed repo's HEAD commit (when it is a git repo), so a
+	// run can be pinned to the exact target revision. DiffMindVersion records the
+	// extractor build (set via -ldflags, else "dev") so output can be pinned to
+	// the code that produced it.
+	RepoGitSHA        string            `json:"repo_git_sha,omitempty"`
+	DiffMindVersion   string            `json:"diffmind_version,omitempty"`
 	SchemaVersion     string            `json:"schema_version"`
 	OpenCodeURL       string            `json:"opencode_url,omitempty"`
 	ConfidenceMinimum float64           `json:"confidence_minimum"`

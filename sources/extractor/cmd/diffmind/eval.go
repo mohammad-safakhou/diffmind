@@ -125,6 +125,7 @@ func runVarianceMode(runsArg, outDir, jsonOut string, minCoreUnion float64) {
 		os.Exit(2)
 	}
 	exts := make([]eval.Extracted, 0, len(ids))
+	validIDs := make([]string, 0, len(ids))
 	for _, id := range ids {
 		dir := resolveRunDir(id, outDir)
 		ext, err := eval.LoadRunArtifacts(dir)
@@ -132,9 +133,20 @@ func runVarianceMode(runsArg, outDir, jsonOut string, minCoreUnion float64) {
 			fmt.Fprintf(os.Stderr, "eval: load %s: %v\n", dir, err)
 			os.Exit(1)
 		}
+		// Guard against incomplete/failed runs (no artifacts) which would
+		// otherwise produce a misleading 0.00 variance against empty sets.
+		if len(ext.Exposures)+len(ext.Dependencies)+len(ext.Connections) == 0 {
+			fmt.Fprintf(os.Stderr, "eval: skipping %s — no artifacts (incomplete/failed run?)\n", id)
+			continue
+		}
 		exts = append(exts, ext)
+		validIDs = append(validIDs, id)
 	}
-	rep := eval.Variance(exts, ids)
+	if len(exts) < 2 {
+		fmt.Fprintf(os.Stderr, "eval: need at least 2 runs WITH artifacts for variance; got %d valid\n", len(exts))
+		os.Exit(2)
+	}
+	rep := eval.Variance(exts, validIDs)
 	eval.RenderVariance(os.Stdout, rep)
 	if jsonOut != "" {
 		f, err := os.Create(jsonOut)
@@ -179,6 +191,10 @@ func runFloorCoverageMode(runArg, repoArg, outDir, jsonOut string, cfg config.Co
 			fmt.Fprintf(os.Stderr, "eval: no --repo given and no repo_path in %s/run_manifest.json\n", runDir)
 			os.Exit(2)
 		}
+	}
+	if ext, _ := eval.LoadRunArtifacts(runDir); len(ext.Exposures)+len(ext.Dependencies)+len(ext.Connections) == 0 {
+		fmt.Fprintf(os.Stderr, "eval: run %s has no artifacts (incomplete/failed run?)\n", filepath.Base(runDir))
+		os.Exit(2)
 	}
 	rep, err := eval.RunFloorCoverage(context.Background(), repo, runDir, cfg)
 	if err != nil {
