@@ -211,7 +211,7 @@ func (o *orchestrator) runInfrastructureStage(ctx context.Context, rf *repoFacts
 	return inv, nil
 }
 
-// ─── Infrastructure types ─────────────────────────────────────────────────────
+// Infrastructure types
 
 // InfrastructureInventory is the project-level list of external systems.
 type InfrastructureInventory struct {

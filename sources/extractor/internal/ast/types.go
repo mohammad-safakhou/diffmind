@@ -19,7 +19,7 @@ package ast
 
 import "strings"
 
-// ─── Core data types ──────────────────────────────────────────────────────────
+// Core data types
 
 // ProjectIndex is the complete AST analysis of one repository. Built once,
 // queried by every pipeline stage after ast_index runs.
@@ -182,7 +182,7 @@ type Range struct {
 	EndColumn   uint32
 }
 
-// ─── Enumerations ─────────────────────────────────────────────────────────────
+// Enumerations
 
 // SymbolKind classifies a symbol definition.
 type SymbolKind int
@@ -215,7 +215,7 @@ func (k SymbolKind) String() string {
 	}
 }
 
-// ─── Control-flow kind normalisation ─────────────────────────────────────────
+// Control-flow kind normalisation
 
 // normaliseNodeKindMap maps tree-sitter node type strings (which are mostly
 // shared across languages — tree-sitter uses the same names for the same
@@ -225,7 +225,7 @@ func (k SymbolKind) String() string {
 // consistent naming (e.g. "if_statement" is the same in Go, Java, Python,
 // C#, PHP grammars). Language-unique names are added where they differ.
 var normaliseNodeKindMap = map[string]string{
-	// ── Conditionals ──────────────────────────────────────────────────────
+	// Conditionals
 	"if_statement":           "if_guard",
 	"if_expression":          "if_guard", // Rust
 	"if_let_expression":      "if_guard", // Rust
@@ -243,7 +243,7 @@ var normaliseNodeKindMap = map[string]string{
 	"optional_chain":         "optional_chain",
 	"select_statement":       "if_guard", // Go select
 
-	// ── Loops ─────────────────────────────────────────────────────────────
+	// Loops
 	"for_statement":            "loop",
 	"for_expression":           "loop", // Rust, Kotlin
 	"enhanced_for_statement":   "loop", // Java
@@ -260,7 +260,7 @@ var normaliseNodeKindMap = map[string]string{
 	"generator_expression":     "loop", // Python
 	"range_clause":             "loop", // Go `range`
 
-	// ── Try/Except ────────────────────────────────────────────────────────
+	// Try/Except
 	"try_statement":  "try_block",
 	"try_expression": "try_block",
 	"catch_clause":   "catch_block",
@@ -269,7 +269,7 @@ var normaliseNodeKindMap = map[string]string{
 	"finally_clause": "finally_block",
 	"ensure":         "finally_block", // Ruby
 
-	// ── Async / concurrent dispatch ────────────────────────────────────────
+	// Async / concurrent dispatch
 	"go_statement":     "goroutine", // Go
 	"await_expression": "async_block",
 	"spawn_expression": "goroutine",
@@ -297,7 +297,7 @@ func NormaliseNodeKind(rawKind string) string {
 	return ""
 }
 
-// ─── Condition derivation ──────────────────────────────────────────────────
+// Condition derivation
 
 // ConnectionCondition describes the control-flow context of one call edge.
 type ConnectionCondition struct {

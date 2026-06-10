@@ -903,7 +903,7 @@ func classifyArgument(s string) string {
 	return "other"
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// Helpers
 
 func nodeRange(n *sitter.Node) Range {
 	sp := n.StartPoint()
@@ -969,7 +969,7 @@ func isFunctionNode(t string) bool {
 	return false
 }
 
-// ─── Config file parsing ──────────────────────────────────────────────────────
+// Config file parsing
 
 // extractConfigEntries extracts flat key-value pairs from a configuration file.
 // The parser is format-specific but the output is always a flat []ConfigEntry.

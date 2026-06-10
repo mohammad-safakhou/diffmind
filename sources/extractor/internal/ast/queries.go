@@ -43,7 +43,7 @@ func queriesForLanguage(lang string) *languageQueries {
 	return queryRegistry[lang]
 }
 
-// ── Go ────────────────────────────────────────────────────────────────────────
+// Go
 
 var goQueries = &languageQueries{
 	imports: []byte(`
@@ -83,7 +83,7 @@ var goQueries = &languageQueries{
 	annotations: nil, // Go has no annotations/decorators
 }
 
-// ── Python ────────────────────────────────────────────────────────────────────
+// Python
 
 var pythonQueries = &languageQueries{
 	imports: []byte(`
@@ -141,7 +141,7 @@ var pythonQueries = &languageQueries{
 `),
 }
 
-// ── Java ─────────────────────────────────────────────────────────────────────
+// Java
 
 var javaQueries = &languageQueries{
 	imports: []byte(`
@@ -194,7 +194,7 @@ var javaQueries = &languageQueries{
 `),
 }
 
-// ── Kotlin ────────────────────────────────────────────────────────────────────
+// Kotlin
 
 var kotlinQueries = &languageQueries{
 	imports: []byte(`
@@ -242,7 +242,7 @@ var kotlinQueries = &languageQueries{
 `),
 }
 
-// ── C# ───────────────────────────────────────────────────────────────────────
+// C#
 
 var csharpQueries = &languageQueries{
 	imports: []byte(`
@@ -289,7 +289,7 @@ var csharpQueries = &languageQueries{
 `),
 }
 
-// ── TypeScript / JavaScript ───────────────────────────────────────────────────
+// TypeScript / JavaScript
 
 var typescriptQueries = &languageQueries{
 	imports: []byte(`
@@ -362,7 +362,7 @@ var typescriptQueries = &languageQueries{
 
 var javascriptQueries = typescriptQueries
 
-// ── PHP ───────────────────────────────────────────────────────────────────────
+// PHP
 
 var phpQueries = &languageQueries{
 	imports: []byte(`
@@ -414,7 +414,7 @@ var phpQueries = &languageQueries{
       (arguments)? @args)))`),
 }
 
-// ── Ruby ─────────────────────────────────────────────────────────────────────
+// Ruby
 
 var rubyQueries = &languageQueries{
 	imports: []byte(`
@@ -453,7 +453,7 @@ var rubyQueries = &languageQueries{
 	annotations: nil, // Ruby doesn't use annotations; framework detection handles routes
 }
 
-// ── Rust ─────────────────────────────────────────────────────────────────────
+// Rust
 
 var rustQueries = &languageQueries{
 	imports: []byte(`

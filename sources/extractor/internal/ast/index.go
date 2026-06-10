@@ -25,7 +25,7 @@ func Build(ctx context.Context, repoRoot, primaryLanguage string, workers int, p
 		workers = 8
 	}
 
-	// ── Step 1: walk the repo and collect file paths ──────────────────────
+	// Step 1: walk the repo and collect file paths
 	var sourceFiles []string
 	var configFiles []string
 
@@ -80,7 +80,7 @@ func Build(ctx context.Context, repoRoot, primaryLanguage string, workers int, p
 		mu.Unlock()
 	}
 
-	// ── Step 2: parse source files in parallel ────────────────────────────
+	// Step 2: parse source files in parallel
 	idx := &ProjectIndex{
 		Files:      make(map[string]*FileAST),
 		Symbols:    make(map[string][]SymbolDef),
@@ -132,7 +132,7 @@ func Build(ctx context.Context, repoRoot, primaryLanguage string, workers int, p
 		mu.Unlock()
 	}
 
-	// ── Step 3: parse config files (sequential, cheap) ────────────────────
+	// Step 3: parse config files (sequential, cheap)
 	for _, rel := range configFiles {
 		cf, err := ParseConfigFile(repoRoot, rel)
 		if err != nil {
@@ -145,7 +145,7 @@ func Build(ctx context.Context, repoRoot, primaryLanguage string, workers int, p
 		reportProgress()
 	}
 
-	// ── Step 4: build global symbol table ─────────────────────────────────
+	// Step 4: build global symbol table
 	for _, fa := range idx.Files {
 		for _, sym := range fa.Symbols {
 			idx.Symbols[sym.Qualified] = append(idx.Symbols[sym.Qualified], sym)
@@ -161,7 +161,7 @@ func Build(ctx context.Context, repoRoot, primaryLanguage string, workers int, p
 		}
 	}
 
-	// ── Step 5: build call graph ──────────────────────────────────────────
+	// Step 5: build call graph
 	for _, fa := range idx.Files {
 		for _, call := range fa.Calls {
 			if call.Caller != "" {
@@ -170,13 +170,13 @@ func Build(ctx context.Context, repoRoot, primaryLanguage string, workers int, p
 		}
 	}
 
-	// ── Step 6: build type map (interface → implementations) ──────────────
+	// Step 6: build type map (interface → implementations)
 	buildTypeMap(idx)
 
-	// ── Step 7: cross-file symbol resolution ─────────────────────────────
+	// Step 7: cross-file symbol resolution
 	resolveCallees(idx)
 
-	// ── Step 8: detect framework bindings ────────────────────────────────
+	// Step 8: detect framework bindings
 	idx.Frameworks, idx.RejectedFrameworks = detectFrameworks(idx)
 
 	util.Info("ast.index", "project index built", map[string]any{
