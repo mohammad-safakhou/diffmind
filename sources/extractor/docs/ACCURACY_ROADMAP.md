@@ -681,8 +681,13 @@ refuted (investigated, not a bug) / done. Update Status as work lands.
 | GATES | Per-bucket P&R individually (not F1); empty buckets N/A; benchmark-specific budget (manifest field, configurable, explicit-fail). Numbers provisional → FREEZE + version thresholds/min-label-support/budgets after first labeled calibration runs, before any green-release decision | `internal/eval/` | — | A,V,C | approved (provisional, freeze post-calibration) |
 | V3a-rule | Base authoritative only if no profile override OR active profile known; else (unknown active + profile disagrees) → unresolved, retain base + all candidates; never lexical | `config_resolve.go:90` | HIGH | V,A | approved |
 | A2 | Connection-walk truncation now surfaced (WalkVerbose + unresolved item) | `ast/walker.go`, `connections.go` | MED | A | DONE |
-| F1 | cache_operation: Spring emits NO cache bindings — needs a DETECTOR, not wiring | `spring.go`, `deterministic_discovery.go:233,252` | MED | A,C | reworked (was wrong) |
-| F2–F6 | No deterministic floor for command_exec/queue_publish/gRPC; JVM-only DB + routes (Go stdlib, Django urls.py, Flask, JAX-RS) | `connections.go:737`, `web.go:128` | HIGH | A,V,C | open |
+| F1 | cache_operation deterministic detector (Spring @Cacheable/@CachePut/@CacheEvict, gated on external backing) | `spring.go`, `deterministic_discovery.go` | MED | A,C | DONE |
+| F2 | command_exec deterministic detector (Runtime.exec/ProcessBuilder/os-exec/subprocess) | `deterministic_calls.go` | MED | A,C | DONE |
+| F3 | queue_publish deterministic detector (Sqs/Sns/Kafka/Rabbit templates, AWS SDK; literal dest) | `deterministic_calls.go` | MED | A,C | DONE |
+| F4 | outbound_rpc deterministic detector (gRPC *BlockingStub/*FutureStub calls) | `deterministic_calls.go` | MED | A,C | DONE |
+| F4b | stream_consume deterministic detector (Kafka Streams streamsBuilder.stream) | `deterministic_calls.go` | MED | A,C | DONE |
+| F5 | rpc_endpoint (gRPC server) — needs class-extends-*ImplBase, not in the AST yet (parser work) | `ast/index.go:160` | MED | A | open (needs parser support) |
+| F6 | non-JVM db_operation (GORM/Django ORM/Sequelize) + multi-lang routes (Go stdlib net/http, Django urls.py, Flask, JAX-RS) | `connections.go:737`, `web.go` | HIGH | A,V,C | open (larger milestone) |
 | S1 | Sharding packs files alphabetically, not by cohesion | `sharding.go:83,103,134` | MED | A,C | open |
 | S2 | Detector-less objectives never shard (no candidates) | `sharding.go:90`, `grounding.go:72` | MED | A,V | open |
 | S3 | rpc_endpoint fanned into 11 shards (2.7× calls) | `sharding.go:33` | MED | C | open |
