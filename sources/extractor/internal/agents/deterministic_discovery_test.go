@@ -236,7 +236,7 @@ func TestMergeDiscoveryResultsCollapsesSemanticDuplicate(t *testing.T) {
 }
 
 func TestConfirmedDiscoveryBlock(t *testing.T) {
-	block := confirmedDiscoveryBlock([]llmEntity{{
+	block := ConfirmedDiscoveryBlock([]llmEntity{{
 		Name:      "GET /orders",
 		Locations: []llmLocation{{File: "orders.go", StartLine: 10}},
 	}})

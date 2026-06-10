@@ -270,7 +270,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		}
 	}()
 
-	progress := newProgressReporter()
+	progress := NewProgressReporter()
 	progress.SetSink(sink)
 	defer progress.Close()
 
@@ -454,7 +454,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		if reexamErr != nil {
 			o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "reexamination", Status: events.StatusFailed})
 			return haltFailure("reexamination",
-				"reexamine."+reexamFailedSeed.Obj.ID+"."+safeJobID(reexamFailedSeed.Seed.Name),
+				"reexamine."+reexamFailedSeed.Obj.ID+"."+SafeJobID(reexamFailedSeed.Seed.Name),
 				reexamFailedSeed.Obj.ID, reexamFailedSeed.Seed.Name, reexamErr, nil)
 		}
 		o.emitStageCompleted("reexamination", events.StatusSuccess, nil)
@@ -512,7 +512,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 			}
 			previewPending = filtered
 		}
-		previewBatches := detailGroups(previewPending)
+		previewBatches := DetailGroups(previewPending)
 		o.emit(events.Event{
 			Kind: events.KindStageStarted, Stage: "detail", Status: events.StatusRunning,
 			Payload: map[string]any{
@@ -550,7 +550,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		if firstDetailErr != nil {
 			o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "detail", Status: events.StatusFailed})
 			return haltFailure("detail",
-				"detail."+firstDetailObjID+"."+safeJobID(firstDetailSeed),
+				"detail."+firstDetailObjID+"."+SafeJobID(firstDetailSeed),
 				firstDetailObjID, firstDetailSeed, firstDetailErr, nil)
 		}
 		o.emitStageCompleted("detail", events.StatusSuccess, nil)
@@ -586,7 +586,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 				}
 				pinIdentityDetails(item, seed)
 			}
-			base, ur := toBase(o.repoPath, d.Objective, *item, o.cfg.Quality.MinConfidence)
+			base, ur := ToBase(o.repoPath, d.Objective, *item, o.cfg.Quality.MinConfidence)
 			if ur != nil {
 				unresolved = append(unresolved, *ur)
 				continue
@@ -726,13 +726,13 @@ func (o *orchestrator) emitRunStarted() {
 		Kind:    events.KindRunStarted,
 		Message: "extraction pipeline started",
 		Payload: map[string]any{
-			"repo":               o.repoPath,
-			"snapshot":           o.snap.Path,
-			"sub_dir":            o.subDir,
-			"workers":            cfg.Runtime.Workers,
-			"max_catalog_items":  cfg.Runtime.MaxCatalogItems,
-			"min_confidence":     cfg.Quality.MinConfidence,
-			"skip_reexamination": cfg.Runtime.SkipReexamination,
+			"repo":                           o.repoPath,
+			"snapshot":                       o.snap.Path,
+			"sub_dir":                        o.subDir,
+			"workers":                        cfg.Runtime.Workers,
+			"max_catalog_items":              cfg.Runtime.MaxCatalogItems,
+			"min_confidence":                 cfg.Quality.MinConfidence,
+			"skip_reexamination":             cfg.Runtime.SkipReexamination,
 			"opencode_transport_timeout_sec": cfg.OpenCode.TimeoutSec,
 			"idle_timeout_sec":               cfg.Runtime.IdleTimeoutSec,
 			"prompt_retry_count":             cfg.Runtime.PromptRetryCount,
@@ -774,15 +774,15 @@ func (o *orchestrator) wireBridges(oc openCodeAPI) {
 // resume from. start/state/unresolved/warnings are passed by the caller so the
 // live accumulators are captured at the moment of the halt.
 func (o *orchestrator) buildFailure(ctx context.Context, start time.Time, state IntermediateState, unresolved []model.UnresolvedItem, warnings []string, stage, jobID, objectiveID, entityName string, err error, extra map[string]any) (Result, error) {
-	errClass := classifyError(err)
+	errClass := ClassifyError(err)
 	// Only attach a numeric HTTP status when the error is actually
 	// HTTP-shaped (4xx/5xx/rate-limit). For schema/network/timeout
 	// failures the error message frequently includes 3-digit numbers in
 	// other contexts (token counts, byte sizes) the regex would otherwise
 	// pick up as a phantom status.
 	var httpStatus int
-	if shouldReportHTTPStatus(errClass) {
-		httpStatus = extractHTTPStatus(err.Error())
+	if ShouldReportHTTPStatus(errClass) {
+		httpStatus = ExtractHTTPStatus(err.Error())
 	}
 	// `cancelled` means the run was halted by an external cancel (user
 	// clicked Cancel, parent context expired) — NOT a build-driven halt,
@@ -865,11 +865,11 @@ func (o *orchestrator) buildFailure(ctx context.Context, start time.Time, state 
 
 // pathMapper returns the (cached) helper that rewrites snapshot-relative
 // paths back to source-relative paths in agent responses.
-func (o *orchestrator) pathMapper() *pathMapper {
+func (o *orchestrator) PathMapper() *PathMapper {
 	if o.snap == nil {
 		return nil
 	}
-	return newPathMapper(o.snap.Path, o.snap.SourcePath)
+	return NewPathMapper(o.snap.Path, o.snap.SourcePath)
 }
 
 // promptAgent is the single point where every stage talks to the OpenCode
@@ -1017,9 +1017,9 @@ func (o *orchestrator) relabelIfStuck(err error, report *livenessReport, role, s
 		"prompt_len":   promptLen,
 		"reason":       stuckCause,
 		"last_tool":    report.LastTool,
-		"original_err": errString(err),
+		"original_err": ErrString(err),
 	})
-	return newStuckError(stuckCause)
+	return NewStuckError(stuckCause)
 }
 
 // handlePromptError runs the failure path: free-text fallback (for providers
@@ -1263,7 +1263,7 @@ func (o *orchestrator) persistPrompt(role, prompt string) {
 	if o.captureDir == "" || role == "" {
 		return
 	}
-	path := filepath.Join(o.captureDir, safeJobID(role)+".prompt.txt")
+	path := filepath.Join(o.captureDir, SafeJobID(role)+".prompt.txt")
 	_ = os.WriteFile(path, []byte(prompt), 0o644)
 }
 
@@ -1276,7 +1276,7 @@ func (o *orchestrator) captureFilePath(jobID, kind, ext string) string {
 	if o.captureDir == "" || jobID == "" {
 		return ""
 	}
-	return filepath.Join(o.captureDir, safeJobID(jobID)+"."+kind+"."+ext)
+	return filepath.Join(o.captureDir, SafeJobID(jobID)+"."+kind+"."+ext)
 }
 
 func (o *orchestrator) persistResponse(role string, payload map[string]any) {
@@ -1298,7 +1298,7 @@ func (o *orchestrator) persistResponseBundle(role string, payload map[string]any
 	if o.captureDir == "" || role == "" {
 		return
 	}
-	base := filepath.Join(o.captureDir, safeJobID(role))
+	base := filepath.Join(o.captureDir, SafeJobID(role))
 	if payload != nil {
 		if b, err := json.MarshalIndent(payload, "", "  "); err == nil {
 			_ = os.WriteFile(base+".response.json", b, 0o644)

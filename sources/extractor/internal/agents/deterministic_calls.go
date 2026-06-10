@@ -75,7 +75,7 @@ func deterministicQueuePublish(idx *astpkg.ProjectIndex) []llmEntity {
 		if !ok {
 			return
 		}
-		dest := resolveResourceName(idx, firstLiteralArg(cs.Arguments))
+		dest := ResolveResourceName(idx, firstLiteralArg(cs.Arguments))
 		if dest == "" {
 			return // destination not statically resolvable; leave to the LLM
 		}
@@ -162,7 +162,7 @@ func deterministicStreamConsume(idx *astpkg.ProjectIndex) []llmEntity {
 		if strings.ToLower(m) != "stream" || !strings.Contains(strings.ToLower(r), "streamsbuilder") {
 			return
 		}
-		topic := resolveResourceName(idx, firstLiteralArg(cs.Arguments))
+		topic := ResolveResourceName(idx, firstLiteralArg(cs.Arguments))
 		if topic == "" {
 			return
 		}

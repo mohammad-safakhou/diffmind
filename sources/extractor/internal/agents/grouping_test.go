@@ -33,7 +33,7 @@ func TestDetailGroups_HomogenousByObjective(t *testing.T) {
 		mkSeed(model.KindDependency, "db_operation", "X.save", "src/repo/X.go"),
 		mkSeed(model.KindExposure, "queue_consumer", "consume.foo", "src/queue/Foo.go"),
 	}
-	batches := detailGroups(jobs)
+	batches := DetailGroups(jobs)
 	for i, b := range batches {
 		k0, t0 := b[0].Objective.Kind, b[0].Objective.Type
 		for _, j := range b[1:] {
@@ -54,7 +54,7 @@ func TestDetailGroups_SameFileClusters(t *testing.T) {
 		mkSeed(model.KindExposure, "http_route", "POST /c", "src/controller/A.go"),
 		mkSeed(model.KindExposure, "http_route", "GET /x", "src/controller/X.go"),
 	}
-	batches := detailGroups(jobs)
+	batches := DetailGroups(jobs)
 	// Find the batch containing "GET /a"; "GET /b" and "POST /c" must be there too.
 	var hostBatch []detailJob
 	for _, b := range batches {
@@ -93,7 +93,7 @@ func TestDetailGroups_HardCap(t *testing.T) {
 		name := "method" + string(rune('A'+i))
 		jobs[i] = mkSeed(model.KindDependency, "db_operation", name, "src/repo/Big.go")
 	}
-	batches := detailGroups(jobs)
+	batches := DetailGroups(jobs)
 	for i, b := range batches {
 		if len(b) > detailBatchHardCap {
 			t.Errorf("batch %d has %d entities; hard cap is %d", i, len(b), detailBatchHardCap)
@@ -103,10 +103,10 @@ func TestDetailGroups_HardCap(t *testing.T) {
 
 // Empty input must not panic.
 func TestDetailGroups_Empty(t *testing.T) {
-	if got := detailGroups(nil); got != nil {
+	if got := DetailGroups(nil); got != nil {
 		t.Errorf("nil input → %v; want nil", got)
 	}
-	if got := detailGroups([]detailJob{}); got != nil {
+	if got := DetailGroups([]detailJob{}); got != nil {
 		t.Errorf("empty input → %v; want nil", got)
 	}
 }
@@ -119,7 +119,7 @@ func TestDetailGroups_UnrelatedEntitiesGetSeparateBatches(t *testing.T) {
 		mkSeed(model.KindExposure, "http_route", "DELETE /z", "src/zzz/Z.go"),
 		mkSeed(model.KindExposure, "http_route", "PATCH /m", "src/mmm/M.go"),
 	}
-	batches := detailGroups(jobs)
+	batches := DetailGroups(jobs)
 	if len(batches) != 3 {
 		t.Errorf("expected 3 batches for 3 unrelated entities; got %d (%v)", len(batches), batches)
 	}
@@ -136,8 +136,8 @@ func TestDetailGroups_Deterministic(t *testing.T) {
 		mkSeed(model.KindExposure, "http_route", "GET /a", "src/api/A.go"),
 		mkSeed(model.KindExposure, "http_route", "GET /b", "src/api/A.go"),
 	}
-	first := detailGroups(jobs)
-	second := detailGroups(jobs)
+	first := DetailGroups(jobs)
+	second := DetailGroups(jobs)
 	if len(first) != len(second) {
 		t.Fatalf("non-deterministic batch counts: %d vs %d", len(first), len(second))
 	}
@@ -165,7 +165,7 @@ func TestDetailGroups_NameTokenAffinity(t *testing.T) {
 		mkSeed(model.KindDependency, "db_operation", "CampaignSettingRepository.findAll", "src/service/abstracts/AbstractService.go"),
 		mkSeed(model.KindDependency, "db_operation", "CampaignSettingRepository.save", "src/service/abstracts/AbstractService.go"),
 	}
-	batches := detailGroups(jobs)
+	batches := DetailGroups(jobs)
 	if len(batches) != 1 {
 		t.Errorf("3 methods on the same repo class should batch together; got %d batches", len(batches))
 	}
@@ -180,7 +180,7 @@ func TestNameTokens(t *testing.T) {
 		"":                                       nil,
 	}
 	for in, want := range cases {
-		got := nameTokens(in)
+		got := NameTokens(in)
 		if len(want) == 0 {
 			if len(got) != 0 {
 				t.Errorf("nameTokens(%q) = %v; want empty", in, got)

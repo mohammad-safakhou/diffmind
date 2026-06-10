@@ -4,8 +4,8 @@ import (
 	"sort"
 	"strings"
 
-	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
 	"github.com/mohammad-safakhou/diffmind/internal/agents/core"
+	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 )
 

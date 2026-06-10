@@ -65,7 +65,7 @@ func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []detailJob, rf 
 	}
 
 	// Group the pending jobs into batches of related entities.
-	batches := detailGroups(pending)
+	batches := DetailGroups(pending)
 	util.Info("agents.detail", "detail batches assembled", map[string]any{
 		"pending_entities": len(pending),
 		"batches":          len(batches),
@@ -133,7 +133,7 @@ func (o *orchestrator) partitionDetailJobs(jobs []detailJob, checkpoint map[stri
 // deterministic entry so the dashboard's pipeline strip shows progress.
 func (o *orchestrator) emitCarriedSkips(carried []detailResult, carriedMessages map[string]string, onResult func()) {
 	for _, r := range carried {
-		jobID := "detail." + r.Objective.ID + "." + safeJobID(r.SeedName)
+		jobID := "detail." + r.Objective.ID + "." + SafeJobID(r.SeedName)
 		key := detailEntityKey(r.Objective.ID, r.SeedName)
 		message := carriedMessages[key]
 		if message == "" {
@@ -182,7 +182,7 @@ func (o *orchestrator) emitBatchPlaceholders(batches [][]detailJob) {
 			},
 		})
 		for _, j := range b {
-			jobID := "detail." + j.Objective.ID + "." + safeJobID(j.Seed.Name)
+			jobID := "detail." + j.Objective.ID + "." + SafeJobID(j.Seed.Name)
 			o.emit(events.Event{
 				Kind: events.KindJobPending, Stage: "detail", JobID: jobID, Status: events.StatusPending,
 				// Parent is the BATCH node, not the objective, so the
@@ -308,7 +308,7 @@ func (o *orchestrator) checkpointDetailResult(r detailResult) {
 	// that matches what the assembler would produce. We do this here
 	// (eagerly) so the checkpoint already holds the assembled value;
 	// on resume we can hand it back without re-running toBase().
-	base, ur := toBase(o.repoPath, r.Objective, *r.Item, o.cfg.Quality.MinConfidence)
+	base, ur := ToBase(o.repoPath, r.Objective, *r.Item, o.cfg.Quality.MinConfidence)
 	if ur != nil {
 		// The result didn't survive validation (low confidence, no
 		// source_location, etc.). Don't checkpoint as a success;
@@ -349,8 +349,8 @@ func (o *orchestrator) runDetailBatchOne(ctx context.Context, batch []detailJob,
 	started := time.Now()
 	o.emitBatchStarted(batch, batchJobID, obj)
 
-	prompt := buildDetailBatchPrompt(obj, seeds, rf, o.subDir, o.hintsFor(obj, nil))
-	schema := entityListSchemaForObjective(obj)
+	prompt := BuildDetailBatchPrompt(obj, seeds, rf, o.subDir, o.hintsFor(obj, nil))
+	schema := EntityListSchemaForObjective(obj)
 	payload, err := o.promptAgent(ctx, batchJobID, prompt, schema)
 	dur := time.Since(started)
 	if err != nil {
@@ -362,15 +362,15 @@ func (o *orchestrator) runDetailBatchOne(ctx context.Context, batch []detailJob,
 	// item per input seed in order under payload.items. Be tolerant of
 	// smaller models that return the single-entity {"item": {...}} shape
 	// (treat as a 1-item array) and of {"items": null}.
-	items := parseEntities(payload["items"])
+	items := ParseEntities(payload["items"])
 	if len(items) == 0 {
 		if single, ok := payload["item"]; ok && single != nil {
-			if it := parseSingleEntity(single); it != nil {
+			if it := ParseSingleEntity(single); it != nil {
 				items = []llmEntity{*it}
 			}
 		}
 	}
-	o.pathMapper().applyToEntities(items)
+	o.PathMapper().ApplyToEntities(items)
 
 	results := o.assembleBatchResults(batch, batchJobID, items, dur)
 	o.emitBatchCompleted(batch, batchJobID, obj, results, dur)
@@ -397,7 +397,7 @@ func (o *orchestrator) emitBatchStarted(batch []detailJob, batchJobID string, ob
 		},
 	})
 	for _, j := range batch {
-		entityJobID := "detail." + j.Objective.ID + "." + safeJobID(j.Seed.Name)
+		entityJobID := "detail." + j.Objective.ID + "." + SafeJobID(j.Seed.Name)
 		o.emit(events.Event{
 			Kind: events.KindJobStarted, Stage: "detail", JobID: entityJobID, Status: events.StatusRunning,
 			ParentID: batchJobID,
@@ -427,7 +427,7 @@ func (o *orchestrator) emitBatchFailed(batch []detailJob, batchJobID string, obj
 		},
 	})
 	for _, j := range batch {
-		entityJobID := "detail." + j.Objective.ID + "." + safeJobID(j.Seed.Name)
+		entityJobID := "detail." + j.Objective.ID + "." + SafeJobID(j.Seed.Name)
 		o.emit(events.Event{
 			Kind: events.KindJobFailed, Stage: "detail", JobID: entityJobID, Status: events.StatusFailed,
 			Message: err.Error(),
@@ -448,13 +448,13 @@ func (o *orchestrator) emitBatchFailed(batch []detailJob, batchJobID string, obj
 func (o *orchestrator) assembleBatchResults(batch []detailJob, batchJobID string, items []llmEntity, dur time.Duration) []detailResult {
 	results := make([]detailResult, 0, len(batch))
 	for i, j := range batch {
-		entityJobID := "detail." + j.Objective.ID + "." + safeJobID(j.Seed.Name)
+		entityJobID := "detail." + j.Objective.ID + "." + SafeJobID(j.Seed.Name)
 		var item *llmEntity
 		if i < len(items) {
 			it := items[i]
 			// Guard against the LLM rewriting the entity into a different
 			// type. Same logic as the single-entity path.
-			forceObjectiveType(j.Objective, &it)
+			ForceObjectiveType(j.Objective, &it)
 			if strings.TrimSpace(it.Name) == "" {
 				it.Name = j.Seed.Name
 			}
@@ -549,7 +549,7 @@ func detailBatchJobID(batch []detailJob) string {
 	if first == "" {
 		first = "anon"
 	}
-	return "detail." + batch[0].Objective.ID + ".batch." + safeJobID(first)
+	return "detail." + batch[0].Objective.ID + ".batch." + SafeJobID(first)
 }
 
 // batchDisplayName returns a human-friendly label used in the
@@ -570,7 +570,7 @@ func batchDisplayName(batch []detailJob) string {
 	}
 	out := "batch: " + strings.Join(parts, ", ")
 	if len(batch) > preview {
-		out += " (+" + itoa(len(batch)-preview) + " more)"
+		out += " (+" + Itoa(len(batch)-preview) + " more)"
 	}
 	return out
 }

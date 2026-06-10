@@ -40,7 +40,7 @@ func shouldReexamine(obj objectives.Objective, e *llmEntity, minConfidence float
 	if strings.TrimSpace(e.Name) == "" || strings.TrimSpace(e.Type) == "" {
 		return "missing_name_or_type", "Candidate is missing name or type fields.", true
 	}
-	if _, ok := canonicalObjectiveType(obj, e.Type); !ok {
+	if _, ok := CanonicalObjectiveType(obj, e.Type); !ok {
 		return "wrong_objective_type", "Candidate type does not match the objective type.", true
 	}
 	if len(e.Locations) == 0 {
@@ -521,7 +521,7 @@ func (o *orchestrator) runReexamination(
 					ReasonCode: "rejected_on_reexamination",
 					Reason:     "Re-examination rejected an unverifiable candidate (no source location; trigger: " + r.Trigger.ReasonID + ")",
 					Confidence: seed.Confidence,
-					Evidence:   toEvidence(seed.Evidence),
+					Evidence:   ToEvidence(seed.Evidence),
 				}
 				unresolved = append(unresolved, u)
 				o.appendReexamEntity(reexamCheckpointEntry{
@@ -598,9 +598,9 @@ func appendUniqueTag(tags []string, tag string) []string {
 }
 
 func (o *orchestrator) runReexamineOne(ctx context.Context, t reexamineTrigger, rf *repoFacts) (*llmEntity, error) {
-	prompt := buildReexaminePrompt(t.Obj, t.Seed, t.ReasonID+": "+t.Reason, rf, o.subDir, o.hintsFor(t.Obj, nil))
-	schema := entityListSchemaForObjective(t.Obj)
-	jobID := "reexamine." + t.Obj.ID + "." + safeJobID(t.Seed.Name)
+	prompt := BuildReexaminePrompt(t.Obj, t.Seed, t.ReasonID+": "+t.Reason, rf, o.subDir, o.hintsFor(t.Obj, nil))
+	schema := EntityListSchemaForObjective(t.Obj)
+	jobID := "reexamine." + t.Obj.ID + "." + SafeJobID(t.Seed.Name)
 	started := time.Now()
 	o.emit(events.Event{
 		Kind: events.KindJobStarted, Stage: "reexamination", JobID: jobID, Status: events.StatusRunning,
@@ -615,15 +615,15 @@ func (o *orchestrator) runReexamineOne(ctx context.Context, t reexamineTrigger, 
 		})
 		return nil, err
 	}
-	items := parseEntities(payload["items"])
+	items := ParseEntities(payload["items"])
 	kept := items[:0]
 	for i := range items {
-		if forceObjectiveType(t.Obj, &items[i]) {
+		if ForceObjectiveType(t.Obj, &items[i]) {
 			kept = append(kept, items[i])
 		}
 	}
 	items = kept
-	o.pathMapper().applyToEntities(items)
+	o.PathMapper().ApplyToEntities(items)
 	resolution := "rejected"
 	if len(items) > 0 {
 		resolution = "rescued"

@@ -10,7 +10,7 @@ import (
 func TestForceObjectiveTypeCanonicalizesAlias(t *testing.T) {
 	obj := objectives.Objective{Kind: model.KindDependency, Type: "outbound_http"}
 	e := &llmEntity{Type: "outbound_http_service", Name: "Boost API"}
-	if !forceObjectiveType(obj, e) {
+	if !ForceObjectiveType(obj, e) {
 		t.Fatal("expected alias to be accepted")
 	}
 	if e.Type != "outbound_http" {
@@ -21,7 +21,7 @@ func TestForceObjectiveTypeCanonicalizesAlias(t *testing.T) {
 func TestForceObjectiveTypeRejectsWrongCategory(t *testing.T) {
 	obj := objectives.Objective{Kind: model.KindDependency, Type: "queue_publish"}
 	e := &llmEntity{Type: "command_exec", Name: "SQS send"}
-	if forceObjectiveType(obj, e) {
+	if ForceObjectiveType(obj, e) {
 		t.Fatal("expected wrong category to be rejected")
 	}
 	if e.Type != "queue_publish" {
@@ -40,7 +40,7 @@ func TestEnrichEntityGroupingDerivesOutboundHTTPInstance(t *testing.T) {
 			"client_class": "BoostFactorCalculatorClient",
 		},
 	}
-	enrichEntityGrouping(&b)
+	EnrichEntityGrouping(&b)
 	if b.Platform != "http" {
 		t.Fatalf("platform = %q, want http", b.Platform)
 	}

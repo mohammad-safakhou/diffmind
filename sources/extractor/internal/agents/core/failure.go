@@ -1,4 +1,4 @@
-package agents
+package core
 
 import (
 	"context"
@@ -23,16 +23,16 @@ var ErrStuck = errors.New("stuck")
 // operator can see *why* we declared the call stuck (e.g. "no part
 // growth for 127s; last tool: read /path/to/big.go (completed 130s
 // ago)").
-type stuckError struct {
+type StuckError struct {
 	cause string
 }
 
-func (e *stuckError) Error() string { return fmt.Sprintf("stuck: %s", e.cause) }
-func (e *stuckError) Unwrap() error { return ErrStuck }
+func (e *StuckError) Error() string { return fmt.Sprintf("stuck: %s", e.cause) }
+func (e *StuckError) Unwrap() error { return ErrStuck }
 
 // newStuckError constructs a stuckError that satisfies errors.Is(_,
 // ErrStuck). Used by the liveness watchdog when it decides to abort.
-func newStuckError(cause string) error { return &stuckError{cause: cause} }
+func NewStuckError(cause string) error { return &StuckError{cause: cause} }
 
 // classifyError returns a coarse, machine-readable label for an error
 // surfaced by promptAgent. The classifier is intentionally narrow: it
@@ -63,7 +63,7 @@ func newStuckError(cause string) error { return &stuckError{cause: cause} }
 // asked us to stop) when they are actually root-cause "timeout"
 // (request itself ran too long). See
 // .diffmind/runs/20260515T123031Z for the cautionary tale.
-func classifyError(err error) string {
+func ClassifyError(err error) string {
 	if err == nil {
 		return ""
 	}
@@ -104,10 +104,10 @@ func classifyError(err error) string {
 	// The schema classifier would happily eat those; the user is
 	// then told "the model didn't honour the schema" when the real
 	// fix is "renew your token" or "top up credits".
-	if isAuthFailure(lower) {
+	if IsAuthFailure(lower) {
 		return "auth"
 	}
-	if isQuotaFailure(lower) {
+	if IsQuotaFailure(lower) {
 		return "quota"
 	}
 	if strings.Contains(lower, "no structured payload") ||
@@ -130,7 +130,7 @@ func classifyError(err error) string {
 		strings.Contains(lower, "dial tcp") {
 		return "network"
 	}
-	if status := extractHTTPStatus(msg); status >= 400 {
+	if status := ExtractHTTPStatus(msg); status >= 400 {
 		switch {
 		case status == 429:
 			return "rate_limit"
@@ -160,7 +160,7 @@ var statusRegex = regexp.MustCompile(`(?i)(?:^|status[ =:]|code[ =:]|status code
 // function will happily match a 3-digit number embedded in a JSON
 // payload dump and produce a fictitious status — see runs/2026-05-15
 // for an example where token-count 419 leaked into http_status.
-func extractHTTPStatus(msg string) int {
+func ExtractHTTPStatus(msg string) int {
 	matches := statusRegex.FindAllStringSubmatch(msg, -1)
 	for _, m := range matches {
 		if len(m) < 2 {
@@ -188,7 +188,7 @@ var httpErrorClasses = map[string]struct{}{
 
 // shouldReportHTTPStatus reports whether the given error class is one
 // for which a numeric HTTP status is meaningful.
-func shouldReportHTTPStatus(class string) bool {
+func ShouldReportHTTPStatus(class string) bool {
 	_, ok := httpErrorClasses[class]
 	return ok
 }
@@ -241,7 +241,7 @@ var quotaPatterns = []string{
 
 // isAuthFailure reports whether `lower` (already lowercased) contains
 // any auth-failure signature.
-func isAuthFailure(lower string) bool {
+func IsAuthFailure(lower string) bool {
 	for _, p := range authPatterns {
 		if strings.Contains(lower, p) {
 			return true
@@ -252,7 +252,7 @@ func isAuthFailure(lower string) bool {
 
 // isQuotaFailure reports whether `lower` (already lowercased)
 // contains any quota / credit-exhaustion signature.
-func isQuotaFailure(lower string) bool {
+func IsQuotaFailure(lower string) bool {
 	for _, p := range quotaPatterns {
 		if strings.Contains(lower, p) {
 			return true

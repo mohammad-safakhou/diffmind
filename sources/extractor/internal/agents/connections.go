@@ -306,6 +306,7 @@ func (o *orchestrator) emitConnectionsAggregate(
 //  3. BFS from each entry symbol to any dependency symbol, collecting paths.
 //  4. Each path's hops carry per-step condition + repetition derived from the
 //     tree-sitter enclosing context (populated at parse time, no LLM).
+//
 // buildDependencySymbolIndex resolves every dependency to its AST symbol(s) and
 // returns the symbol→deps target map plus the deps that could not be resolved.
 // When a resolved symbol is a class/interface, its methods are registered as
@@ -567,13 +568,13 @@ func buildASTDerivedDBDependency(idx *astpkg.ProjectIndex, name string, path ast
 	}
 	owner, method, _ := splitOwnerMethod(name)
 	entity, table := tableEntityFromRepository(owner)
-	platform := firstNonEmpty(dbCtx.Platform, "database")
-	instance := firstNonEmpty(dbCtx.Instance, dbCtx.DatabaseName, platform)
+	platform := FirstNonEmpty(dbCtx.Platform, "database")
+	instance := FirstNonEmpty(dbCtx.Instance, dbCtx.DatabaseName, platform)
 	base := model.BaseEntity{
 		ID:         util.StableID("dependency", "db_operation", name, locs[0].File, fmt.Sprintf("%d:%d", locs[0].StartLine, locs[0].EndLine)),
 		Type:       "db_operation",
 		Name:       name,
-		Summary:    fmt.Sprintf("AST-derived database operation %s on %s", name, firstNonEmpty(table, entity, owner)),
+		Summary:    fmt.Sprintf("AST-derived database operation %s on %s", name, FirstNonEmpty(table, entity, owner)),
 		Locations:  locs,
 		Confidence: conf,
 		Evidence: []model.Evidence{{
@@ -585,7 +586,7 @@ func buildASTDerivedDBDependency(idx *astpkg.ProjectIndex, name string, path ast
 			"platform":           platform,
 			"database_type":      platform,
 			"instance":           instance,
-			"database_name":      firstNonEmpty(dbCtx.DatabaseName, instance),
+			"database_name":      FirstNonEmpty(dbCtx.DatabaseName, instance),
 			"operation_kind":     operationKind,
 			"operation_type":     operationKind,
 			"operation":          method,
@@ -593,13 +594,13 @@ func buildASTDerivedDBDependency(idx *astpkg.ProjectIndex, name string, path ast
 			"repository_method":  method,
 			"entity":             entity,
 			"table":              table,
-			"table_or_entity":    firstNonEmpty(table, entity),
+			"table_or_entity":    FirstNonEmpty(table, entity),
 			"discovered_by":      "ast_repository_call",
 			"source_call_symbol": path.TargetSymbol,
 		},
 		PluginSource: "ast",
 	}
-	enrichEntityGrouping(&base)
+	EnrichEntityGrouping(&base)
 	return model.Dependency{BaseEntity: base}
 }
 
@@ -613,14 +614,14 @@ func databaseContextFromDependencies(dependencies []model.Dependency) databaseCo
 		if dep.Type != "db_operation" && dep.Type != "cache_operation" {
 			continue
 		}
-		platform := firstNonEmpty(dep.Platform, detailString(dep.Details, "platform"), detailString(dep.Details, "database_type"), detailString(dep.Details, "database"))
-		instance := firstNonEmpty(dep.Instance, detailString(dep.Details, "instance"), detailString(dep.Details, "database_name"), detailString(dep.Details, "database"))
-		dbName := firstNonEmpty(detailString(dep.Details, "database_name"), databaseNameFromDetails(dep.Details))
+		platform := FirstNonEmpty(dep.Platform, detailString(dep.Details, "platform"), detailString(dep.Details, "database_type"), detailString(dep.Details, "database"))
+		instance := FirstNonEmpty(dep.Instance, detailString(dep.Details, "instance"), detailString(dep.Details, "database_name"), detailString(dep.Details, "database"))
+		dbName := FirstNonEmpty(detailString(dep.Details, "database_name"), databaseNameFromDetails(dep.Details))
 		if platform == "unknown" || platform == "" {
-			platform = dbPlatform(dep.Name+" "+dep.Summary, fmt.Sprint(dep.Details))
+			platform = DBPlatform(dep.Name+" "+dep.Summary, fmt.Sprint(dep.Details))
 		}
 		if instance == "unknown" || instance == "" || instance == platform {
-			instance = firstNonEmpty(dbName, instance, platform)
+			instance = FirstNonEmpty(dbName, instance, platform)
 		}
 		key := strings.ToLower(platform + "|" + instance + "|" + dbName)
 		if byKey[key] == nil {

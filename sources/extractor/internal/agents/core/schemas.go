@@ -1,9 +1,9 @@
-package agents
+package core
 
 // JSON schemas used with OpenCode PromptStructured calls. The server enforces
 // these so the resulting payloads we parse back are already validated.
 
-func entitySchema() map[string]any {
+func EntitySchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -57,26 +57,26 @@ func entitySchema() map[string]any {
 	}
 }
 
-func entityListSchema() map[string]any {
+func EntityListSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"items": map[string]any{"type": "array", "items": entitySchema()},
+			"items": map[string]any{"type": "array", "items": EntitySchema()},
 		},
 		"required": []string{"items"},
 	}
 }
 
-func entitySingleSchema() map[string]any {
+func EntitySingleSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"item": entitySchema(),
+			"item": EntitySchema(),
 		},
 	}
 }
 
-func conditionSchema() map[string]any {
+func ConditionSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -96,7 +96,7 @@ func conditionSchema() map[string]any {
 // connections stage to validate model output. With the deterministic
 // SCIP path no LLM JSON is produced; these schemas were removed.
 
-func repoFactsSchema() map[string]any {
+func RepoFactsSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{

@@ -95,38 +95,38 @@ func configIndex(entries map[string]string) *astpkg.ProjectIndex {
 
 func TestResolveResourceName(t *testing.T) {
 	t.Run("non-placeholder passes through", func(t *testing.T) {
-		if got := resolveResourceName(nil, "orders-created"); got != "orders-created" {
+		if got := ResolveResourceName(nil, "orders-created"); got != "orders-created" {
 			t.Errorf("got %q", got)
 		}
 	})
 	t.Run("key-segment fallback when value unresolved", func(t *testing.T) {
 		// The exact run defect: ${...sqs.catalogue-target-response-sqs.url} with
 		// no config value should still yield the queue name.
-		got := resolveResourceName(configIndex(nil), "${services.aws.sqs.catalogue-target-response-sqs.url}")
+		got := ResolveResourceName(configIndex(nil), "${services.aws.sqs.catalogue-target-response-sqs.url}")
 		if got != "catalogue-target-response-sqs" {
 			t.Errorf("key-segment fallback got %q", got)
 		}
 	})
 	t.Run("resolves URL value to trailing segment", func(t *testing.T) {
 		idx := configIndex(map[string]string{"app.queue.url": "https://sqs.eu-central-1.amazonaws.com/123456789012/my-real-queue"})
-		if got := resolveResourceName(idx, "${app.queue.url}"); got != "my-real-queue" {
+		if got := ResolveResourceName(idx, "${app.queue.url}"); got != "my-real-queue" {
 			t.Errorf("got %q", got)
 		}
 	})
 	t.Run("resolves ARN value to trailing segment", func(t *testing.T) {
 		idx := configIndex(map[string]string{"app.q": "arn:aws:sqs:eu-central-1:123456789012:campaign-changes.fifo"})
-		if got := resolveResourceName(idx, "${app.q}"); got != "campaign-changes.fifo" {
+		if got := ResolveResourceName(idx, "${app.q}"); got != "campaign-changes.fifo" {
 			t.Errorf("got %q", got)
 		}
 	})
 	t.Run("default value when key absent", func(t *testing.T) {
-		if got := resolveResourceName(configIndex(nil), "${missing.key:fallback-queue}"); got != "fallback-queue" {
+		if got := ResolveResourceName(configIndex(nil), "${missing.key:fallback-queue}"); got != "fallback-queue" {
 			t.Errorf("got %q", got)
 		}
 	})
 	t.Run("one level of indirection", func(t *testing.T) {
 		idx := configIndex(map[string]string{"a": "${b}", "b": "inner-queue"})
-		if got := resolveResourceName(idx, "${a}"); got != "inner-queue" {
+		if got := ResolveResourceName(idx, "${a}"); got != "inner-queue" {
 			t.Errorf("got %q", got)
 		}
 	})

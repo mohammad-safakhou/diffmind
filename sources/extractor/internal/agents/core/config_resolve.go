@@ -1,4 +1,4 @@
-package agents
+package core
 
 import (
 	"strings"
@@ -21,31 +21,31 @@ import (
 //  3. fall back to the last meaningful segment of the placeholder KEY itself
 //     (…sqs.foo.url → "foo"), so an unset/external value still yields a name.
 //  4. last resort → the raw placeholder unchanged.
-func resolveResourceName(idx *astpkg.ProjectIndex, trigger string) string {
+func ResolveResourceName(idx *astpkg.ProjectIndex, trigger string) string {
 	t := strings.TrimSpace(trigger)
-	body, _, ok := splitPlaceholder(t)
+	body, _, ok := SplitPlaceholder(t)
 	if !ok {
 		return t
 	}
-	if val, found := resolvePlaceholder(idx, t, 0); found && val != "" && !isPlaceholder(val) {
-		if seg := trailingResourceSegment(val); seg != "" {
+	if val, found := ResolvePlaceholder(idx, t, 0); found && val != "" && !IsPlaceholder(val) {
+		if seg := TrailingResourceSegment(val); seg != "" {
 			return seg
 		}
 		return val
 	}
-	if seg := keySegmentName(body); seg != "" {
+	if seg := KeySegmentName(body); seg != "" {
 		return seg
 	}
 	return t
 }
 
-func isPlaceholder(s string) bool {
-	_, _, ok := splitPlaceholder(strings.TrimSpace(s))
+func IsPlaceholder(s string) bool {
+	_, _, ok := SplitPlaceholder(strings.TrimSpace(s))
 	return ok
 }
 
 // splitPlaceholder parses "${a.b.c}" or "${a.b.c:default}".
-func splitPlaceholder(s string) (body, def string, ok bool) {
+func SplitPlaceholder(s string) (body, def string, ok bool) {
 	s = strings.TrimSpace(s)
 	if !strings.HasPrefix(s, "${") || !strings.HasSuffix(s, "}") || len(s) < 4 {
 		return "", "", false
@@ -59,30 +59,30 @@ func splitPlaceholder(s string) (body, def string, ok bool) {
 
 // resolvePlaceholder resolves ${key} (or ${key:default}) against idx.Configs,
 // following up to a few indirections when the value is itself a placeholder.
-func resolvePlaceholder(idx *astpkg.ProjectIndex, raw string, depth int) (string, bool) {
+func ResolvePlaceholder(idx *astpkg.ProjectIndex, raw string, depth int) (string, bool) {
 	if depth > 5 {
 		return "", false
 	}
-	body, def, ok := splitPlaceholder(raw)
+	body, def, ok := SplitPlaceholder(raw)
 	if !ok {
 		return strings.TrimSpace(raw), true
 	}
-	if val, found := configValue(idx, body); found {
-		if isPlaceholder(val) {
-			return resolvePlaceholder(idx, val, depth+1)
+	if val, found := ConfigValue(idx, body); found {
+		if IsPlaceholder(val) {
+			return ResolvePlaceholder(idx, val, depth+1)
 		}
 		return val, true
 	}
 	if def != "" {
-		if isPlaceholder(def) {
-			return resolvePlaceholder(idx, def, depth+1)
+		if IsPlaceholder(def) {
+			return ResolvePlaceholder(idx, def, depth+1)
 		}
 		return def, true
 	}
 	return "", false
 }
 
-func configValue(idx *astpkg.ProjectIndex, key string) (string, bool) {
+func ConfigValue(idx *astpkg.ProjectIndex, key string) (string, bool) {
 	key = strings.TrimSpace(key)
 	if idx == nil || key == "" {
 		return "", false
@@ -100,9 +100,9 @@ func configValue(idx *astpkg.ProjectIndex, key string) (string, bool) {
 // trailingResourceSegment extracts the queue/topic name from a URL or ARN:
 // "https://sqs.../123/my-queue" → "my-queue"; "arn:aws:sqs:…:my-queue.fifo" →
 // "my-queue.fifo". Returns "" for non-URL/ARN values.
-func trailingResourceSegment(val string) string {
+func TrailingResourceSegment(val string) string {
 	val = strings.TrimSpace(val)
-	if val == "" || isPlaceholder(val) {
+	if val == "" || IsPlaceholder(val) {
 		return ""
 	}
 	if !strings.Contains(val, "://") && !strings.HasPrefix(val, "arn:") {
@@ -122,7 +122,7 @@ func trailingResourceSegment(val string) string {
 // last meaningful segment, stripping trailing descriptor suffixes:
 // "services.aws.sqs.catalogue-target-response-sqs.url" →
 // "catalogue-target-response-sqs".
-func keySegmentName(key string) string {
+func KeySegmentName(key string) string {
 	parts := strings.Split(key, ".")
 	for len(parts) > 0 {
 		switch strings.ToLower(parts[len(parts)-1]) {

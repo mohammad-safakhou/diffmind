@@ -32,7 +32,7 @@ func TestDetailGroups_RealWorldCatalogueAPI(t *testing.T) {
 	if len(jobs) == 0 {
 		t.Skip("seed file is empty; skipping")
 	}
-	batches := detailGroups(jobs)
+	batches := DetailGroups(jobs)
 
 	// Headline: at least 80% reduction in LLM calls.
 	if reduction := 1.0 - float64(len(batches))/float64(len(jobs)); reduction < 0.8 {

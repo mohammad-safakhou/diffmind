@@ -19,7 +19,7 @@ func testObj() objectives.Objective {
 }
 
 func TestBuildDiscoveryPromptContainsRequiredMarkers(t *testing.T) {
-	p := buildDiscoveryPrompt(testObj(), nil, "services/foo", objectiveHints{}, nil, nil)
+	p := BuildDiscoveryPrompt(testObj(), nil, "services/foo", objectiveHints{}, nil, nil)
 	mustContain(t, p, "AGENT ROLE: objective-extractor")
 	mustContain(t, p, "OBJECTIVE_ID: exposure.http_route")
 	mustContain(t, p, "OBJECTIVE_KIND: exposure")
@@ -30,7 +30,7 @@ func TestBuildDiscoveryPromptContainsRequiredMarkers(t *testing.T) {
 
 func TestBuildDetailPromptContainsSeed(t *testing.T) {
 	seed := llmEntity{Type: "http_route", Name: "GET /", Confidence: 0.9}
-	p := buildDetailPrompt(testObj(), seed, nil, "", objectiveHints{})
+	p := BuildDetailPrompt(testObj(), seed, nil, "", objectiveHints{})
 	mustContain(t, p, "AGENT ROLE: detail-extractor")
 	mustContain(t, p, "OBJECTIVE_ID: exposure.http_route")
 	mustContain(t, p, "detail http routes")
@@ -39,7 +39,7 @@ func TestBuildDetailPromptContainsSeed(t *testing.T) {
 
 func TestBuildReexaminePromptContainsTrigger(t *testing.T) {
 	seed := llmEntity{Type: "http_route", Name: "GET /x"}
-	p := buildReexaminePrompt(testObj(), seed, "low_confidence: below threshold", nil, "", objectiveHints{})
+	p := BuildReexaminePrompt(testObj(), seed, "low_confidence: below threshold", nil, "", objectiveHints{})
 	mustContain(t, p, "AGENT ROLE: reexaminer")
 	mustContain(t, p, "TRIGGER_REASON: low_confidence: below threshold")
 	mustContain(t, p, "\"name\": \"GET /x\"")
@@ -49,7 +49,7 @@ func TestBuildReexaminePromptContainsTrigger(t *testing.T) {
 // DiscoveryASTHints=false path) leave the prompt byte-identical to the
 // pre-grounding behaviour — no AST_HINTS section at all.
 func TestEmptyHintsProduceNoBlock(t *testing.T) {
-	p := buildDiscoveryPrompt(testObj(), nil, "", objectiveHints{}, nil, nil)
+	p := BuildDiscoveryPrompt(testObj(), nil, "", objectiveHints{}, nil, nil)
 	if strings.Contains(p, "AST_HINTS") {
 		t.Fatalf("empty hints must not render an AST_HINTS block:\n%s", p)
 	}
@@ -63,7 +63,7 @@ func TestDiscoveryPromptRendersHints(t *testing.T) {
 		Symbols:  []symbolHint{{Qualified: "OrderController.create", File: "src/api/OrderController.java", Line: 34, Annotations: []string{"RestController", "PostMapping"}}},
 		Bindings: []bindingHint{{Kind: "http_route", Symbol: "OrderController.create", Trigger: "@PostMapping", File: "src/api/OrderController.java", Line: 34}},
 	}
-	p := buildDiscoveryPrompt(obj, nil, "", hints, nil, nil)
+	p := BuildDiscoveryPrompt(obj, nil, "", hints, nil, nil)
 	mustContain(t, p, "AST_HINTS")
 	mustContain(t, p, "HINTS, NOT a whitelist")
 	mustContain(t, p, "src/api/OrderController.java:34  OrderController.create")
@@ -76,7 +76,7 @@ func TestDiscoveryPromptRendersHints(t *testing.T) {
 // TestHintsTruncationNote renders the truncation note only when set.
 func TestHintsTruncationNote(t *testing.T) {
 	hints := objectiveHints{Symbols: []symbolHint{{Qualified: "X.y", File: "a.go", Line: 1}}, Truncated: true}
-	p := buildDiscoveryPrompt(testObj(), nil, "", hints, nil, nil)
+	p := BuildDiscoveryPrompt(testObj(), nil, "", hints, nil, nil)
 	mustContain(t, p, "candidate list truncated")
 }
 
@@ -86,7 +86,7 @@ func TestHintsTruncationNote(t *testing.T) {
 // test (and the prompt builder it exercised) have been removed.
 
 func TestBuildRepoFactsPromptReferencesMonorepo(t *testing.T) {
-	p := buildRepoFactsPrompt("apps/x")
+	p := BuildRepoFactsPrompt("apps/x")
 	mustContain(t, p, "AGENT ROLE: repo-facts")
 	mustContain(t, p, "'apps/x/' subdirectory")
 }
@@ -107,7 +107,7 @@ func TestScopeFrameworkPatternsDropsForeignLanguages(t *testing.T) {
 		"Do NOT include webhooks.",
 	}, "\n")
 	rf := &repoFacts{Languages: []string{"Java", "XML", "YAML"}}
-	got := scopeFrameworkPatterns(prompt, detectedLanguageSet(rf))
+	got := ScopeFrameworkPatterns(prompt, DetectedLanguageSet(rf))
 
 	for _, keep := range []string{"Spring Boot", "JAX-RS", "Redis", "Do NOT include webhooks", "Find ALL routes"} {
 		if !strings.Contains(got, keep) {
@@ -126,7 +126,7 @@ func TestScopeFrameworkPatternsDropsForeignLanguages(t *testing.T) {
 func TestScopeFrameworkPatternsLanguageGates(t *testing.T) {
 	prompt := "- Node.js: Express\n- Python: Flask\n- Spring Boot: @GetMapping"
 
-	ts := scopeFrameworkPatterns(prompt, detectedLanguageSet(&repoFacts{Languages: []string{"TypeScript"}}))
+	ts := ScopeFrameworkPatterns(prompt, DetectedLanguageSet(&repoFacts{Languages: []string{"TypeScript"}}))
 	if !strings.Contains(ts, "Node.js") {
 		t.Errorf("TypeScript repo must keep Node.js line:\n%s", ts)
 	}
@@ -135,10 +135,10 @@ func TestScopeFrameworkPatternsLanguageGates(t *testing.T) {
 	}
 
 	// nil/unknown languages → no filtering at all.
-	if got := scopeFrameworkPatterns(prompt, detectedLanguageSet(nil)); got != prompt {
+	if got := ScopeFrameworkPatterns(prompt, DetectedLanguageSet(nil)); got != prompt {
 		t.Errorf("nil repo_facts must leave prompt unchanged, got:\n%s", got)
 	}
-	if got := scopeFrameworkPatterns(prompt, detectedLanguageSet(&repoFacts{Languages: []string{"XML", "YAML"}})); got != prompt {
+	if got := ScopeFrameworkPatterns(prompt, DetectedLanguageSet(&repoFacts{Languages: []string{"XML", "YAML"}})); got != prompt {
 		t.Errorf("non-language facts must leave prompt unchanged, got:\n%s", got)
 	}
 }

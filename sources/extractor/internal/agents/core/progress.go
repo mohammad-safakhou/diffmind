@@ -1,4 +1,4 @@
-package agents
+package core
 
 import (
 	"fmt"
@@ -10,7 +10,7 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
-type progressReporter struct {
+type ProgressReporter struct {
 	mu           sync.Mutex
 	phase        string
 	tip          string
@@ -23,21 +23,21 @@ type progressReporter struct {
 	sink         events.Sink
 }
 
-func newProgressReporter() *progressReporter {
-	p := &progressReporter{lastPercent: -1, tickerStop: make(chan struct{})}
+func NewProgressReporter() *ProgressReporter {
+	p := &ProgressReporter{lastPercent: -1, tickerStop: make(chan struct{})}
 	go p.tick()
 	return p
 }
 
 // SetSink wires a live event sink so each progress tick is also published as
 // a stage_progress event to the dashboard.
-func (p *progressReporter) SetSink(s events.Sink) {
+func (p *ProgressReporter) SetSink(s events.Sink) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.sink = s
 }
 
-func (p *progressReporter) tick() {
+func (p *ProgressReporter) tick() {
 	t := time.NewTicker(10 * time.Second)
 	defer t.Stop()
 	for {
@@ -50,12 +50,12 @@ func (p *progressReporter) tick() {
 	}
 }
 
-func (p *progressReporter) Close() {
+func (p *ProgressReporter) Close() {
 	close(p.tickerStop)
 	p.report(true)
 }
 
-func (p *progressReporter) StartPhase(name string, total, startPercent, endPercent int, tip string) {
+func (p *ProgressReporter) StartPhase(name string, total, startPercent, endPercent int, tip string) {
 	if total < 0 {
 		total = 0
 	}
@@ -70,7 +70,7 @@ func (p *progressReporter) StartPhase(name string, total, startPercent, endPerce
 	p.report(true)
 }
 
-func (p *progressReporter) Advance() {
+func (p *ProgressReporter) Advance() {
 	p.mu.Lock()
 	if p.phaseDone < p.phaseTotal {
 		p.phaseDone++
@@ -79,14 +79,14 @@ func (p *progressReporter) Advance() {
 	p.report(false)
 }
 
-func (p *progressReporter) CompletePhase() {
+func (p *ProgressReporter) CompletePhase() {
 	p.mu.Lock()
 	p.phaseDone = p.phaseTotal
 	p.mu.Unlock()
 	p.report(true)
 }
 
-func (p *progressReporter) report(force bool) {
+func (p *ProgressReporter) report(force bool) {
 	p.mu.Lock()
 	phase := p.phase
 	tip := p.tip
@@ -120,7 +120,7 @@ func (p *progressReporter) report(force bool) {
 		return
 	}
 
-	bar := renderProgressBar(percent, 20)
+	bar := RenderProgressBar(percent, 20)
 	if strings.TrimSpace(phase) == "" {
 		phase = "starting"
 	}
@@ -156,7 +156,7 @@ func (p *progressReporter) report(force bool) {
 	}
 }
 
-func renderProgressBar(percent, width int) string {
+func RenderProgressBar(percent, width int) string {
 	if width <= 0 {
 		width = 10
 	}

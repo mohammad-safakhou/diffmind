@@ -53,8 +53,8 @@ func (o *orchestrator) runASTIndexStage(ctx context.Context) error {
 		Kind: events.KindStageStarted, Stage: "ast_index",
 		Status: events.StatusRunning,
 		Payload: map[string]any{
-			"snapshot":        o.sessionDir,
-			"tip":             "Building language-agnostic AST index of the project source.",
+			"snapshot": o.sessionDir,
+			"tip":      "Building language-agnostic AST index of the project source.",
 		},
 	})
 
@@ -159,7 +159,7 @@ func (o *orchestrator) runInfrastructureStage(ctx context.Context, rf *repoFacts
 
 	o.emit(events.Event{
 		Kind: events.KindStageStarted, Stage: "infrastructure",
-		Status: events.StatusRunning,
+		Status:  events.StatusRunning,
 		Payload: map[string]any{"config_files": len(o.astIndex.Configs)},
 	})
 
@@ -224,11 +224,11 @@ type InfrastructureInventory struct {
 
 // InfraSystem is one external infrastructure system.
 type InfraSystem struct {
-	Name        string   `json:"name"`
-	Kind        string   `json:"kind"` // "database" | "topic" | "queue" | "http_service" | "cache" | ...
-	System      string   `json:"system"` // "postgres" | "mysql" | "mongodb" | "kafka" | "sns" | "redis" | ...
-	ConfigKeys  []string `json:"config_keys,omitempty"`
-	EndpointHint string  `json:"endpoint_hint,omitempty"`
+	Name         string   `json:"name"`
+	Kind         string   `json:"kind"`   // "database" | "topic" | "queue" | "http_service" | "cache" | ...
+	System       string   `json:"system"` // "postgres" | "mysql" | "mongodb" | "kafka" | "sns" | "redis" | ...
+	ConfigKeys   []string `json:"config_keys,omitempty"`
+	EndpointHint string   `json:"endpoint_hint,omitempty"`
 }
 
 func buildInfrastructurePrompt(configEntries string, rf *repoFacts) string {
@@ -304,10 +304,10 @@ func parseInfrastructureInventory(payload map[string]any) *InfrastructureInvento
 		return out
 	}
 	inv.Databases = parse("databases")
-	inv.Topics    = parse("topics")
-	inv.Queues    = parse("queues")
-	inv.Services  = parse("services")
-	inv.Caches    = parse("caches")
+	inv.Topics = parse("topics")
+	inv.Queues = parse("queues")
+	inv.Services = parse("services")
+	inv.Caches = parse("caches")
 	return inv
 }
 

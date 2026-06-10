@@ -238,18 +238,18 @@ func TestHTTPStatusNotReportedForSchemaErrors(t *testing.T) {
 	// with the well-known "no structured payload" sentinel.
 	msg := `detail.dependency.queue_publish.foo prompt: no structured payload in response; raw={"info":{"tokens":{"total":12485,"input":2345,"output":419,"reasoning":121}},"parts":[]}`
 	err := errors.New(msg)
-	class := classifyError(err)
+	class := ClassifyError(err)
 	if class != "schema" {
 		t.Fatalf("classifyError = %q, want schema", class)
 	}
-	if shouldReportHTTPStatus(class) {
+	if ShouldReportHTTPStatus(class) {
 		t.Fatalf("shouldReportHTTPStatus(%q) must be false", class)
 	}
 	// extractHTTPStatus itself should also no longer match arbitrary
 	// 3-digit numbers tucked inside JSON. The previous regex matched
 	// "419" via the ":" lookbehind; our tightened pattern requires a
 	// status-line context (HTTP/, status code, "got 502", etc.).
-	if got := extractHTTPStatus(msg); got != 0 {
+	if got := ExtractHTTPStatus(msg); got != 0 {
 		t.Errorf("extractHTTPStatus(token-count embedded msg) = %d, want 0 — regex too greedy", got)
 	}
 }
@@ -264,7 +264,7 @@ func TestHTTPStatusReportedForRealStatusLines(t *testing.T) {
 		"status code 401":                         401,
 	}
 	for msg, want := range cases {
-		if got := extractHTTPStatus(msg); got != want {
+		if got := ExtractHTTPStatus(msg); got != want {
 			t.Errorf("extractHTTPStatus(%q) = %d, want %d", msg, got, want)
 		}
 	}

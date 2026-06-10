@@ -42,9 +42,9 @@ func TestStampInferredDBPlatform(t *testing.T) {
 		"application.yml": cfg("application.yml", "spring.datasource.url", "jdbc:postgresql://db/ats"),
 	}}
 	deps := []model.Dependency{
-		{BaseEntity: model.BaseEntity{Type: "db_operation", Name: "read orders", Platform: "database"}},               // generic -> stamped
-		{BaseEntity: model.BaseEntity{Type: "db_operation", Name: "read events", Platform: "athena"}},                 // specific -> untouched
-		{BaseEntity: model.BaseEntity{Type: "outbound_http", Name: "GET /x", Platform: "http"}},                        // non-db -> untouched
+		{BaseEntity: model.BaseEntity{Type: "db_operation", Name: "read orders", Platform: "database"}}, // generic -> stamped
+		{BaseEntity: model.BaseEntity{Type: "db_operation", Name: "read events", Platform: "athena"}},   // specific -> untouched
+		{BaseEntity: model.BaseEntity{Type: "outbound_http", Name: "GET /x", Platform: "http"}},         // non-db -> untouched
 	}
 	stampInferredDBPlatform(idx, deps)
 	if deps[0].Platform != "postgres" {

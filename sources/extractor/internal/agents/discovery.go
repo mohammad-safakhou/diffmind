@@ -18,14 +18,14 @@ import (
 // stages will still run, they will just receive a nil repoFacts and have to
 // rediscover the tech stack themselves.
 func (o *orchestrator) runRepoFacts(ctx context.Context) (*repoFacts, error) {
-	prompt := buildRepoFactsPrompt(o.subDir)
-	schema := repoFactsSchema()
+	prompt := BuildRepoFactsPrompt(o.subDir)
+	schema := RepoFactsSchema()
 	payload, err := o.promptAgent(ctx, "repo_facts", prompt, schema)
 	if err != nil {
 		util.Warn("agents.repo_facts", "repo facts extraction failed", map[string]any{"error": err})
 		return nil, err
 	}
-	rf := parseRepoFacts(payload)
+	rf := ParseRepoFacts(payload)
 
 	// Augment the LLM-derived facts with deterministic marker-
 	// file inspection. The result feeds the parallel image build:
@@ -202,8 +202,8 @@ func (o *orchestrator) runDiscoveryOne(ctx context.Context, obj objectives.Objec
 		return nil, err
 	}
 
-	o.pathMapper().applyToEntities(items)
-	sortLLMEntities(items)
+	o.PathMapper().ApplyToEntities(items)
+	SortLLMEntities(items)
 	util.Info("agents.discovery", "objective discovery completed", map[string]any{
 		"objective": obj.ID, "items": len(items), "shards": len(shards),
 	})
@@ -241,16 +241,16 @@ func (o *orchestrator) runDiscoveryShard(ctx context.Context, obj objectives.Obj
 		}
 		scope = shard.Dirs
 	}
-	prompt := buildDiscoveryPrompt(obj, rf, o.subDir, hints, scope, o.discoveryConfirmed[obj.ID])
-	schema := entityListSchemaForObjective(obj)
+	prompt := BuildDiscoveryPrompt(obj, rf, o.subDir, hints, scope, o.discoveryConfirmed[obj.ID])
+	schema := EntityListSchemaForObjective(obj)
 	payload, err := o.promptAgent(ctx, jobID, prompt, schema)
 	if err != nil {
 		return nil, err
 	}
-	items := parseEntities(payload["items"])
+	items := ParseEntities(payload["items"])
 	kept := items[:0]
 	for i := range items {
-		if forceObjectiveType(obj, &items[i]) {
+		if ForceObjectiveType(obj, &items[i]) {
 			kept = append(kept, items[i])
 		}
 	}

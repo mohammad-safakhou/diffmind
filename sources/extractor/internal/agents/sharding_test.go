@@ -16,9 +16,9 @@ func bigIndex(modules []string, perModule int) *astpkg.ProjectIndex {
 	}
 	for _, m := range modules {
 		for i := 0; i < perModule; i++ {
-			file := m + "/C" + itoa(i) + ".java"
-			q := m + ".C" + itoa(i)
-			idx.Symbols[q] = []astpkg.SymbolDef{sym(q, "C"+itoa(i), "FooController", file, uint32(i+1), "RestController", "GetMapping")}
+			file := m + "/C" + Itoa(i) + ".java"
+			q := m + ".C" + Itoa(i)
+			idx.Symbols[q] = []astpkg.SymbolDef{sym(q, "C"+Itoa(i), "FooController", file, uint32(i+1), "RestController", "GetMapping")}
 			idx.Files[file] = &astpkg.FileAST{Path: file}
 		}
 	}
@@ -71,7 +71,7 @@ func TestPlanShards_SplitsAboveTarget(t *testing.T) {
 	}
 	for _, m := range modules {
 		for i := 0; i < 20; i++ {
-			f := m + "/C" + itoa(i) + ".java"
+			f := m + "/C" + Itoa(i) + ".java"
 			if seen[f] != 1 {
 				t.Fatalf("file %s appeared %d times across shards (want exactly 1)", f, seen[f])
 			}
@@ -104,7 +104,7 @@ func TestPlanShards_NilWithoutASTCandidates(t *testing.T) {
 	modules := []string{"src/a", "src/b", "src/c", "src/d", "src/e"}
 	for _, m := range modules {
 		for i := 0; i < 12; i++ { // 5×12 = 60 files, no http annotations
-			f := m + "/F" + itoa(i) + ".go"
+			f := m + "/F" + Itoa(i) + ".go"
 			idx.Files[f] = &astpkg.FileAST{Path: f}
 		}
 	}
@@ -120,14 +120,14 @@ func TestPlanShards_OnlyClustersCandidateFiles(t *testing.T) {
 	idx := &astpkg.ProjectIndex{Symbols: map[string][]astpkg.SymbolDef{}, Files: map[string]*astpkg.FileAST{}}
 	// 100 repository candidate files (db_operation matches @Repository / *Repository).
 	for i := 0; i < 100; i++ {
-		f := "src/repository/Repo" + itoa(i) + ".java"
-		q := "repository.Repo" + itoa(i)
-		idx.Symbols[q] = []astpkg.SymbolDef{sym(q, "Repo"+itoa(i), "UserRepository", f, uint32(i+1), "Repository")}
+		f := "src/repository/Repo" + Itoa(i) + ".java"
+		q := "repository.Repo" + Itoa(i)
+		idx.Symbols[q] = []astpkg.SymbolDef{sym(q, "Repo"+Itoa(i), "UserRepository", f, uint32(i+1), "Repository")}
 		idx.Files[f] = &astpkg.FileAST{Path: f}
 	}
 	// 200 unrelated files (no db candidates) that must NOT be sharded.
 	for i := 0; i < 200; i++ {
-		f := "src/controller/Ctrl" + itoa(i) + ".java"
+		f := "src/controller/Ctrl" + Itoa(i) + ".java"
 		idx.Files[f] = &astpkg.FileAST{Path: f}
 	}
 	shards := planDiscoveryShards(idx, objByType(t, "db_operation"), "")

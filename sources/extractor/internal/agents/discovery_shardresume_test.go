@@ -28,7 +28,7 @@ func TestShardedDiscoveryResumesCheckpointedShards(t *testing.T) {
 
 	// Pre-write all shards but the last as completed checkpoints.
 	for i := 0; i < len(shards)-1; i++ {
-		o.appendDiscoveryShard(obj.ID, shards[i].Index, []llmEntity{{Type: "http_route", Name: "cached-" + itoa(i), Confidence: 0.9}})
+		o.appendDiscoveryShard(obj.ID, shards[i].Index, []llmEntity{{Type: "http_route", Name: "cached-" + Itoa(i), Confidence: 0.9}})
 	}
 
 	items, err := o.runDiscoveryOne(context.Background(), obj, &repoFacts{})

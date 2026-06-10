@@ -1,4 +1,4 @@
-package agents
+package core
 
 import (
 	"encoding/json"
@@ -27,7 +27,7 @@ const readOnlyPreamble = `OPERATIONAL RULES (apply to the entire response):
 
 // ---- Stage 0 ----
 
-func buildRepoFactsPrompt(subDir string) string {
+func BuildRepoFactsPrompt(subDir string) string {
 	var sb strings.Builder
 	sb.WriteString("AGENT ROLE: repo-facts\n")
 	sb.WriteString(readOnlyPreamble)
@@ -60,7 +60,7 @@ OUTPUT: Return a single JSON object matching the provided schema.`)
 
 // ---- Shared REPO_FACTS injection ----
 
-func repoFactsBlock(rf *repoFacts) string {
+func RepoFactsBlock(rf *RepoFacts) string {
 	if rf == nil {
 		return ""
 	}
@@ -71,7 +71,7 @@ func repoFactsBlock(rf *repoFacts) string {
 	return "REPO_FACTS:\n" + string(b) + "\n\n"
 }
 
-func monorepoScopeLine(subDir string) string {
+func MonorepoScopeLine(subDir string) string {
 	if subDir == "" {
 		return ""
 	}
@@ -88,7 +88,7 @@ func monorepoScopeLine(subDir string) string {
 // The header is emphatic that the list is NOT a whitelist: the static index
 // misses reflection / dynamic registration / custom frameworks, so the model
 // MUST still search the code for anything not listed.
-func astHintsBlock(h objectiveHints) string {
+func AstHintsBlock(h ObjectiveHints) string {
 	if h.Empty() {
 		return ""
 	}
@@ -103,7 +103,7 @@ func astHintsBlock(h objectiveHints) string {
 			sb.WriteString("    ")
 			sb.WriteString(s.File)
 			sb.WriteString(":")
-			sb.WriteString(itoa(int(s.Line)))
+			sb.WriteString(Itoa(int(s.Line)))
 			sb.WriteString("  ")
 			sb.WriteString(s.Qualified)
 			if len(s.Annotations) > 0 {
@@ -126,7 +126,7 @@ func astHintsBlock(h objectiveHints) string {
 			sb.WriteString("  ")
 			sb.WriteString(b.File)
 			sb.WriteString(":")
-			sb.WriteString(itoa(int(b.Line)))
+			sb.WriteString(Itoa(int(b.Line)))
 			sb.WriteString("\n")
 		}
 	}
@@ -153,7 +153,7 @@ func astHintsBlock(h objectiveHints) string {
 // objective has been split into directory-scoped sub-tasks (Phase B). It tells
 // the model to restrict its search to the listed directories so shards don't
 // re-scan the whole repo. Empty scope (single whole-repo call) → "".
-func discoveryScopeBlock(dirs []string) string {
+func DiscoveryScopeBlock(dirs []string) string {
 	if len(dirs) == 0 {
 		return ""
 	}
@@ -174,7 +174,7 @@ func discoveryScopeBlock(dirs []string) string {
 }
 
 // exampleBlock renders the objective's few-shot example, if any.
-func exampleBlock(obj objectives.Objective) string {
+func ExampleBlock(obj objectives.Objective) string {
 	if strings.TrimSpace(obj.Example) == "" {
 		return ""
 	}
@@ -182,7 +182,7 @@ func exampleBlock(obj objectives.Objective) string {
 }
 
 // detailKeysLine renders the required-detail-keys hint, if any.
-func detailKeysLine(obj objectives.Objective) string {
+func DetailKeysLine(obj objectives.Objective) string {
 	if len(obj.DetailKeys) == 0 {
 		return ""
 	}
@@ -221,13 +221,13 @@ var promptLabelLanguages = map[string][]string{
 // detectedLanguageSet canonicalises the repo's languages (from both the LLM
 // repo_facts and the deterministic marker-file facts) into a lower-cased set.
 // Returns nil when nothing is known, signalling callers to skip filtering.
-func detectedLanguageSet(rf *repoFacts) map[string]bool {
+func DetectedLanguageSet(rf *RepoFacts) map[string]bool {
 	if rf == nil {
 		return nil
 	}
 	set := map[string]bool{}
 	add := func(s string) {
-		c := canonicalLanguage(s)
+		c := CanonicalLanguage(s)
 		if c != "" {
 			set[c] = true
 		}
@@ -247,7 +247,7 @@ func detectedLanguageSet(rf *repoFacts) map[string]bool {
 // canonicalLanguage normalises a free-form language name to a stable key.
 // Non-language entries (XML, YAML, JSON, ...) map to "" and are ignored, so
 // they never accidentally widen or narrow the detected set.
-func canonicalLanguage(s string) string {
+func CanonicalLanguage(s string) string {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "java":
 		return "java"
@@ -276,14 +276,14 @@ func canonicalLanguage(s string) string {
 
 // scopeFrameworkPatterns drops language-labelled bullet lines for languages the
 // repo does not use. langs==nil (unknown) returns the prompt unchanged.
-func scopeFrameworkPatterns(prompt string, langs map[string]bool) string {
+func ScopeFrameworkPatterns(prompt string, langs map[string]bool) string {
 	if len(langs) == 0 {
 		return prompt
 	}
 	lines := strings.Split(prompt, "\n")
 	out := lines[:0]
 	for _, line := range lines {
-		if want, ok := bulletLanguages(line); ok {
+		if want, ok := BulletLanguages(line); ok {
 			keep := false
 			for _, l := range want {
 				if langs[l] {
@@ -304,7 +304,7 @@ func scopeFrameworkPatterns(prompt string, langs map[string]bool) string {
 // names a programming language, returns the canonical languages that satisfy
 // it. ok=false means the line is not a language-labelled bullet and must be
 // kept verbatim.
-func bulletLanguages(line string) (langs []string, ok bool) {
+func BulletLanguages(line string) (langs []string, ok bool) {
 	t := strings.TrimSpace(line)
 	if !strings.HasPrefix(t, "- ") {
 		return nil, false
@@ -324,7 +324,7 @@ func bulletLanguages(line string) (langs []string, ok bool) {
 
 // ---- Stage 1: per-objective discovery ----
 
-func buildDiscoveryPrompt(obj objectives.Objective, rf *repoFacts, subDir string, hints objectiveHints, scopeDirs []string, confirmed []llmEntity) string {
+func BuildDiscoveryPrompt(obj objectives.Objective, rf *RepoFacts, subDir string, hints ObjectiveHints, scopeDirs []string, confirmed []LLMEntity) string {
 	var sb strings.Builder
 	sb.WriteString("AGENT ROLE: objective-extractor\n")
 	sb.WriteString(readOnlyPreamble)
@@ -340,16 +340,16 @@ func buildDiscoveryPrompt(obj objectives.Objective, rf *repoFacts, subDir string
 	sb.WriteString("DESCRIPTION: ")
 	sb.WriteString(obj.Description)
 	sb.WriteString("\n\n")
-	sb.WriteString(monorepoScopeLine(subDir))
-	sb.WriteString(discoveryScopeBlock(scopeDirs))
-	sb.WriteString(repoFactsBlock(rf))
-	sb.WriteString(astHintsBlock(hints))
-	sb.WriteString(confirmedDiscoveryBlock(confirmed))
+	sb.WriteString(MonorepoScopeLine(subDir))
+	sb.WriteString(DiscoveryScopeBlock(scopeDirs))
+	sb.WriteString(RepoFactsBlock(rf))
+	sb.WriteString(AstHintsBlock(hints))
+	sb.WriteString(ConfirmedDiscoveryBlock(confirmed))
 	sb.WriteString("DISCOVERY INSTRUCTIONS:\n")
-	sb.WriteString(scopeFrameworkPatterns(obj.DiscoveryPrompt, detectedLanguageSet(rf)))
+	sb.WriteString(ScopeFrameworkPatterns(obj.DiscoveryPrompt, DetectedLanguageSet(rf)))
 	sb.WriteString("\n\n")
-	sb.WriteString(exampleBlock(obj))
-	sb.WriteString(detailKeysLine(obj))
+	sb.WriteString(ExampleBlock(obj))
+	sb.WriteString(DetailKeysLine(obj))
 	sb.WriteString(`HARD RULES:
 - Every item MUST have name, type, summary, confidence in [0,1], and at least one source_locations entry with file + start_line. start_line MUST be the exact declaration line; do not approximate.
 - Every file path MUST be relative to repo root.
@@ -361,7 +361,7 @@ OUTPUT: Return a single JSON object {"items": [...]} matching the provided schem
 	return sb.String()
 }
 
-func confirmedDiscoveryBlock(items []llmEntity) string {
+func ConfirmedDiscoveryBlock(items []LLMEntity) string {
 	if len(items) == 0 {
 		return ""
 	}
@@ -385,7 +385,7 @@ func confirmedDiscoveryBlock(items []llmEntity) string {
 	}
 	if len(items) > limit {
 		sb.WriteString("- ... ")
-		sb.WriteString(itoa(len(items) - limit))
+		sb.WriteString(Itoa(len(items) - limit))
 		sb.WriteString(" more confirmed items omitted\n")
 	}
 	sb.WriteString("\nDo not rediscover known confirmed items above. Search for additional custom, dynamic, or non-standard items not covered by the confirmed list.\n\n")
@@ -394,7 +394,7 @@ func confirmedDiscoveryBlock(items []llmEntity) string {
 
 // ---- Stage 2: re-examination ----
 
-func buildReexaminePrompt(obj objectives.Objective, seed llmEntity, triggerReason string, rf *repoFacts, subDir string, hints objectiveHints) string {
+func BuildReexaminePrompt(obj objectives.Objective, seed LLMEntity, triggerReason string, rf *RepoFacts, subDir string, hints ObjectiveHints) string {
 	seedJSON, _ := json.MarshalIndent(seed, "", "  ")
 	var sb strings.Builder
 	sb.WriteString("AGENT ROLE: reexaminer\n")
@@ -411,9 +411,9 @@ func buildReexaminePrompt(obj objectives.Objective, seed llmEntity, triggerReaso
 	sb.WriteString("TRIGGER_REASON: ")
 	sb.WriteString(triggerReason)
 	sb.WriteString("\n\n")
-	sb.WriteString(monorepoScopeLine(subDir))
-	sb.WriteString(repoFactsBlock(rf))
-	sb.WriteString(astHintsBlock(hints))
+	sb.WriteString(MonorepoScopeLine(subDir))
+	sb.WriteString(RepoFactsBlock(rf))
+	sb.WriteString(AstHintsBlock(hints))
 	sb.WriteString("CANDIDATE_ITEM:\n")
 	sb.Write(seedJSON)
 	sb.WriteString("\n\n")
@@ -436,7 +436,7 @@ OUTPUT: Return {"items": [correctedItem]} on confirmation, or {"items": []} on r
 
 // ---- Stage 3: detail enrichment ----
 
-func buildDetailPrompt(obj objectives.Objective, seed llmEntity, rf *repoFacts, subDir string, hints objectiveHints) string {
+func BuildDetailPrompt(obj objectives.Objective, seed LLMEntity, rf *RepoFacts, subDir string, hints ObjectiveHints) string {
 	seedJSON, _ := json.MarshalIndent(seed, "", "  ")
 	var sb strings.Builder
 	sb.WriteString("AGENT ROLE: detail-extractor\n")
@@ -450,10 +450,10 @@ func buildDetailPrompt(obj objectives.Objective, seed llmEntity, rf *repoFacts, 
 	sb.WriteString("OBJECTIVE_TYPE: ")
 	sb.WriteString(obj.Type)
 	sb.WriteString("\n\n")
-	sb.WriteString(monorepoScopeLine(subDir))
-	sb.WriteString(repoFactsBlock(rf))
-	sb.WriteString(astHintsBlock(hints))
-	sb.WriteString(detailKeysLine(obj))
+	sb.WriteString(MonorepoScopeLine(subDir))
+	sb.WriteString(RepoFactsBlock(rf))
+	sb.WriteString(AstHintsBlock(hints))
+	sb.WriteString(DetailKeysLine(obj))
 	sb.WriteString("SEED_ITEM:\n")
 	sb.Write(seedJSON)
 	sb.WriteString("\n\n")
@@ -493,7 +493,7 @@ OUTPUT: Return a single JSON object {"item": {...}} matching the provided schema
 // "model deliberately marked it incomplete" — the orchestrator
 // treats the former as an error (re-batch later) and the latter as
 // a normal "not enough info" outcome.
-func buildDetailBatchPrompt(obj objectives.Objective, seeds []llmEntity, rf *repoFacts, subDir string, hints objectiveHints) string {
+func BuildDetailBatchPrompt(obj objectives.Objective, seeds []LLMEntity, rf *RepoFacts, subDir string, hints ObjectiveHints) string {
 	var sb strings.Builder
 	sb.WriteString("AGENT ROLE: detail-extractor (BATCH)\n")
 	sb.WriteString(readOnlyPreamble)
@@ -506,10 +506,10 @@ func buildDetailBatchPrompt(obj objectives.Objective, seeds []llmEntity, rf *rep
 	sb.WriteString("OBJECTIVE_TYPE: ")
 	sb.WriteString(obj.Type)
 	sb.WriteString("\n\n")
-	sb.WriteString(monorepoScopeLine(subDir))
-	sb.WriteString(repoFactsBlock(rf))
-	sb.WriteString(astHintsBlock(hints))
-	sb.WriteString(detailKeysLine(obj))
+	sb.WriteString(MonorepoScopeLine(subDir))
+	sb.WriteString(RepoFactsBlock(rf))
+	sb.WriteString(AstHintsBlock(hints))
+	sb.WriteString(DetailKeysLine(obj))
 
 	// Collect the unique source files this batch points at. The
 	// affinity grouper picks seeds that share files, so this list
@@ -539,7 +539,7 @@ func buildDetailBatchPrompt(obj objectives.Objective, seeds []llmEntity, rf *rep
 	}
 
 	sb.WriteString("SEEDS (")
-	sb.WriteString(itoa(len(seeds)))
+	sb.WriteString(Itoa(len(seeds)))
 	sb.WriteString("):\n")
 	seedsJSON, _ := json.MarshalIndent(seeds, "", "  ")
 	sb.Write(seedsJSON)
@@ -565,7 +565,7 @@ OUTPUT: a single JSON object {"items": [<one entry per input seed, same order>]}
 
 // itoa is a tiny helper so prompts.go does not need to pull in
 // strconv just to render a count.
-func itoa(n int) string {
+func Itoa(n int) string {
 	if n == 0 {
 		return "0"
 	}
