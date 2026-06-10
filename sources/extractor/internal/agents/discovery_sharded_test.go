@@ -58,7 +58,7 @@ func (f *scopeFake) PromptStructured(_ context.Context, _, _, prompt string, _ m
 	// Return one unique, type-correct item per call.
 	item := map[string]any{
 		"type":             "http_route",
-		"name":             "GET /r" + itoa(id),
+		"name":             "GET /r" + Itoa(id),
 		"summary":          "route",
 		"confidence":       0.9,
 		"source_locations": []any{map[string]any{"file": "src/api/a/C.java", "start_line": id, "end_line": id}},

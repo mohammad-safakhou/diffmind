@@ -1,4 +1,4 @@
-package agents
+package core
 
 import (
 	"fmt"
@@ -28,8 +28,8 @@ var typeAliases = map[model.EntityKind]map[string]string{
 	},
 }
 
-func canonicalObjectiveType(obj objectives.Objective, typ string) (string, bool) {
-	t := normalizeType(typ)
+func CanonicalObjectiveType(obj objectives.Objective, typ string) (string, bool) {
+	t := NormalizeType(typ)
 	if t == "" || t == obj.Type {
 		return obj.Type, true
 	}
@@ -41,24 +41,24 @@ func canonicalObjectiveType(obj objectives.Objective, typ string) (string, bool)
 	return obj.Type, false
 }
 
-func normalizeType(s string) string {
+func NormalizeType(s string) string {
 	s = strings.TrimSpace(strings.ToLower(s))
 	s = strings.ReplaceAll(s, " ", "_")
 	s = strings.ReplaceAll(s, "-", "_")
 	return s
 }
 
-func forceObjectiveType(obj objectives.Objective, e *llmEntity) bool {
+func ForceObjectiveType(obj objectives.Objective, e *LLMEntity) bool {
 	if e == nil {
 		return true
 	}
-	canonical, ok := canonicalObjectiveType(obj, e.Type)
+	canonical, ok := CanonicalObjectiveType(obj, e.Type)
 	e.Type = canonical
 	return ok
 }
 
-func entitySchemaForObjective(obj objectives.Objective) map[string]any {
-	s := entitySchema()
+func EntitySchemaForObjective(obj objectives.Objective) map[string]any {
+	s := EntitySchema()
 	props, _ := s["properties"].(map[string]any)
 	if props != nil {
 		props["type"] = map[string]any{"type": "string", "enum": []string{obj.Type}}
@@ -66,17 +66,17 @@ func entitySchemaForObjective(obj objectives.Objective) map[string]any {
 	return s
 }
 
-func entityListSchemaForObjective(obj objectives.Objective) map[string]any {
+func EntityListSchemaForObjective(obj objectives.Objective) map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"items": map[string]any{"type": "array", "items": entitySchemaForObjective(obj)},
+			"items": map[string]any{"type": "array", "items": EntitySchemaForObjective(obj)},
 		},
 		"required": []string{"items"},
 	}
 }
 
-func enrichEntityGrouping(b *model.BaseEntity) {
+func EnrichEntityGrouping(b *model.BaseEntity) {
 	if b == nil {
 		return
 	}
@@ -85,7 +85,7 @@ func enrichEntityGrouping(b *model.BaseEntity) {
 		d = map[string]any{}
 		b.Details = d
 	}
-	platform, instance, operation, opKind := deriveGrouping(*b)
+	platform, instance, operation, opKind := DeriveGrouping(*b)
 	b.Platform, b.Instance, b.Operation, b.OperationKind = platform, instance, operation, opKind
 	d["platform"] = platform
 	d["instance"] = instance
@@ -93,7 +93,7 @@ func enrichEntityGrouping(b *model.BaseEntity) {
 	d["operation_kind"] = opKind
 }
 
-func deriveGrouping(b model.BaseEntity) (platform, instance, operation, opKind string) {
+func DeriveGrouping(b model.BaseEntity) (platform, instance, operation, opKind string) {
 	d := b.Details
 	nameLower := strings.ToLower(b.Name + " " + strings.Join(b.Tags, " ") + " " + b.Summary)
 	get := func(keys ...string) string {
@@ -117,24 +117,24 @@ func deriveGrouping(b model.BaseEntity) (platform, instance, operation, opKind s
 		}
 		opKind = strings.ToLower(strings.Fields(operation)[0])
 	case "queue_consumer", "stream_consume":
-		platform = queuePlatform(nameLower, get("queue", "stream", "topic", "queue_url", "queue_url_property"))
-		instance = firstNonEmpty(get("queue", "stream", "topic", "queue_name", "queue_url", "destination"), b.Name)
+		platform = QueuePlatform(nameLower, get("queue", "stream", "topic", "queue_url", "queue_url_property"))
+		instance = FirstNonEmpty(get("queue", "stream", "topic", "queue_name", "queue_url", "destination"), b.Name)
 		operation = "consume " + instance
 		opKind = "consume"
 	case "scheduled_job":
 		platform = "scheduler"
-		instance = firstNonEmpty(get("schedule"), "scheduler")
+		instance = FirstNonEmpty(get("schedule"), "scheduler")
 		operation = b.Name
 		opKind = "run"
 	case "cli_command":
 		platform = "process"
-		instance = firstNonEmpty(get("command"), b.Name)
+		instance = FirstNonEmpty(get("command"), b.Name)
 		operation = b.Name
 		opKind = "execute"
 	case "db_operation", "cache_operation":
-		platform = dbPlatform(nameLower, get("database", "database_type", "aws_service", "cache_type", "client_class"))
-		instance = firstNonEmpty(get("database", "database_name", "datasource", "connection_string", "table", "entity", "cache_name", "namespace"), platform)
-		operation = firstNonEmpty(get("operation", "sql_equivalent", "query", "method", "service_method"), b.Name)
+		platform = DBPlatform(nameLower, get("database", "database_type", "aws_service", "cache_type", "client_class"))
+		instance = FirstNonEmpty(get("database", "database_name", "datasource", "connection_string", "table", "entity", "cache_name", "namespace"), platform)
+		operation = FirstNonEmpty(get("operation", "sql_equivalent", "query", "method", "service_method"), b.Name)
 		// Canonical kind via the SAME folder the identity/dedup uses, so the
 		// emitted operation_kind is genuinely read/write (delete/insert/saveAll
 		// -> write, findBy/select -> read) and not a raw verb. The raw verb is
@@ -142,20 +142,20 @@ func deriveGrouping(b model.BaseEntity) (platform, instance, operation, opKind s
 		opKind = reconcile.NormalizeDBOp(operation)
 	case "outbound_http", "outbound_rpc":
 		platform = map[bool]string{true: "rpc", false: "http"}[b.Type == "outbound_rpc"]
-		instance = outboundInstance(get("target_service", "service", "host", "target_host", "base_url", "target_url", "default_url", "production_url", "base_url_property", "client_class"), b.Name)
+		instance = OutboundInstance(get("target_service", "service", "host", "target_host", "base_url", "target_url", "default_url", "production_url", "base_url_property", "client_class"), b.Name)
 		operation = strings.TrimSpace(get("http_method", "method") + " " + get("path", "endpoint"))
 		if operation == "" || strings.TrimSpace(operation) == "" {
 			operation = b.Name
 		}
-		opKind = normalizeOperationKind(operation)
+		opKind = NormalizeOperationKind(operation)
 	case "queue_publish":
-		platform = queuePlatform(nameLower, get("destination", "queue", "topic", "queue_url"))
-		instance = firstNonEmpty(get("destination", "queue", "topic", "queue_name", "queue_url", "destination_queue"), b.Name)
+		platform = QueuePlatform(nameLower, get("destination", "queue", "topic", "queue_url"))
+		instance = FirstNonEmpty(get("destination", "queue", "topic", "queue_name", "queue_url", "destination_queue"), b.Name)
 		operation = "publish " + instance
 		opKind = "publish"
 	case "command_exec":
 		platform = "process"
-		instance = firstNonEmpty(get("command"), b.Name)
+		instance = FirstNonEmpty(get("command"), b.Name)
 		operation = b.Name
 		opKind = "execute"
 	default:
@@ -164,10 +164,10 @@ func deriveGrouping(b model.BaseEntity) (platform, instance, operation, opKind s
 		operation = b.Name
 		opKind = "use"
 	}
-	return sanitizeGroup(platform), sanitizeGroup(instance), strings.TrimSpace(operation), sanitizeGroup(opKind)
+	return SanitizeGroup(platform), SanitizeGroup(instance), strings.TrimSpace(operation), SanitizeGroup(opKind)
 }
 
-func firstNonEmpty(vals ...string) string {
+func FirstNonEmpty(vals ...string) string {
 	for _, v := range vals {
 		if strings.TrimSpace(v) != "" {
 			return strings.TrimSpace(v)
@@ -176,7 +176,7 @@ func firstNonEmpty(vals ...string) string {
 	return "unknown"
 }
 
-func dbPlatform(text, hint string) string {
+func DBPlatform(text, hint string) string {
 	t := strings.ToLower(text + " " + hint)
 	switch {
 	case strings.Contains(t, "athena"):
@@ -197,7 +197,7 @@ func dbPlatform(text, hint string) string {
 	return "database"
 }
 
-func queuePlatform(text, hint string) string {
+func QueuePlatform(text, hint string) string {
 	t := strings.ToLower(text + " " + hint)
 	switch {
 	case strings.Contains(t, "sqs"):
@@ -214,7 +214,7 @@ func queuePlatform(text, hint string) string {
 	return "queue"
 }
 
-func outboundInstance(raw, fallback string) string {
+func OutboundInstance(raw, fallback string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return fallback
@@ -228,7 +228,7 @@ func outboundInstance(raw, fallback string) string {
 	return raw
 }
 
-func normalizeOperationKind(op string) string {
+func NormalizeOperationKind(op string) string {
 	f := strings.Fields(strings.ToLower(op))
 	if len(f) == 0 {
 		return "use"
@@ -248,7 +248,7 @@ func normalizeOperationKind(op string) string {
 
 var nonGroupChars = regexp.MustCompile(`\s+`)
 
-func sanitizeGroup(s string) string {
+func SanitizeGroup(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return "unknown"
@@ -256,20 +256,20 @@ func sanitizeGroup(s string) string {
 	return nonGroupChars.ReplaceAllString(s, " ")
 }
 
-func semanticEntityKey(b model.BaseEntity) string {
+func SemanticEntityKey(b model.BaseEntity) string {
 	loc := ""
 	if len(b.Locations) > 0 {
 		loc = filepath.ToSlash(b.Locations[0].File)
 	}
-	return strings.Join([]string{b.Type, strings.ToLower(b.Platform), strings.ToLower(b.Instance), strings.ToLower(b.Operation), loc, containingName(b.Name)}, "|")
+	return strings.Join([]string{b.Type, strings.ToLower(b.Platform), strings.ToLower(b.Instance), strings.ToLower(b.Operation), loc, ContainingName(b.Name)}, "|")
 }
 
-func containingName(name string) string {
+func ContainingName(name string) string {
 	name = strings.ToLower(strings.TrimSpace(name))
 	name = strings.ReplaceAll(name, " ", "")
 	return name
 }
 
-func sortLLMEntities(in []llmEntity) {
+func SortLLMEntities(in []LLMEntity) {
 	sort.SliceStable(in, func(i, j int) bool { return in[i].Name < in[j].Name })
 }

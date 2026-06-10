@@ -1,4 +1,4 @@
-package agents
+package core
 
 import (
 	"encoding/json"
@@ -14,26 +14,26 @@ import (
 // populated entity or an UnresolvedItem describing why the candidate was
 // dropped. It is the single gate where confidence + source-location rules are
 // enforced on converted results.
-func toBase(repoPath string, obj objectives.Objective, e llmEntity, minConfidence float64) (model.BaseEntity, *model.UnresolvedItem) {
+func ToBase(repoPath string, obj objectives.Objective, e LLMEntity, minConfidence float64) (model.BaseEntity, *model.UnresolvedItem) {
 	name := strings.TrimSpace(e.Name)
-	typ, typeOK := canonicalObjectiveType(obj, e.Type)
+	typ, typeOK := CanonicalObjectiveType(obj, e.Type)
 	if name == "" || typ == "" {
 		return model.BaseEntity{}, &model.UnresolvedItem{
 			Kind: obj.Kind, Type: typ, Name: name,
 			ReasonCode: "invalid_entity", Reason: "Missing name/type",
 			Confidence: e.Confidence,
-			Evidence:   toEvidence(e.Evidence),
+			Evidence:   ToEvidence(e.Evidence),
 		}
 	}
 	if !typeOK {
 		return model.BaseEntity{}, &model.UnresolvedItem{
 			Kind:       obj.Kind,
-			Type:       normalizeType(e.Type),
+			Type:       NormalizeType(e.Type),
 			Name:       name,
 			ReasonCode: "wrong_objective_type",
 			Reason:     fmt.Sprintf("Type %q does not match objective type %q", e.Type, obj.Type),
 			Confidence: e.Confidence,
-			Evidence:   toEvidence(e.Evidence),
+			Evidence:   ToEvidence(e.Evidence),
 		}
 	}
 	if e.Confidence < minConfidence {
@@ -42,20 +42,20 @@ func toBase(repoPath string, obj objectives.Objective, e llmEntity, minConfidenc
 			ReasonCode: "low_confidence",
 			Reason:     fmt.Sprintf("Confidence %.2f below threshold %.2f", e.Confidence, minConfidence),
 			Confidence: e.Confidence,
-			Evidence:   toEvidence(e.Evidence),
+			Evidence:   ToEvidence(e.Evidence),
 		}
 	}
-	locations := toLocations(e.Locations)
+	locations := ToLocations(e.Locations)
 	if len(locations) == 0 {
 		return model.BaseEntity{}, &model.UnresolvedItem{
 			Kind: obj.Kind, Type: typ, Name: name,
 			ReasonCode: "no_source_location",
 			Reason:     "No source location provided",
 			Confidence: e.Confidence,
-			Evidence:   toEvidence(e.Evidence),
+			Evidence:   ToEvidence(e.Evidence),
 		}
 	}
-	evidence := toEvidence(e.Evidence)
+	evidence := ToEvidence(e.Evidence)
 	if len(evidence) == 0 {
 		evidence = append(evidence, model.Evidence{Location: locations[0], Snippet: e.Summary, Source: "opencode"})
 	}
@@ -77,7 +77,7 @@ func toBase(repoPath string, obj objectives.Objective, e llmEntity, minConfidenc
 		Name:         name,
 		Service:      repoPath,
 		Inputs:       inputs,
-		Summary:      defaultStr(e.Summary, "Extracted by OpenCode"),
+		Summary:      DefaultStr(e.Summary, "Extracted by OpenCode"),
 		KeyActions:   e.Actions,
 		Locations:    locations,
 		Evidence:     evidence,
@@ -86,11 +86,11 @@ func toBase(repoPath string, obj objectives.Objective, e llmEntity, minConfidenc
 		Details:      e.Details,
 		PluginSource: "opencode",
 	}
-	enrichEntityGrouping(&base)
+	EnrichEntityGrouping(&base)
 	return base, nil
 }
 
-func toLocations(in []llmLocation) []model.Location {
+func ToLocations(in []LLMLocation) []model.Location {
 	out := make([]model.Location, 0, len(in))
 	for _, v := range in {
 		if strings.TrimSpace(v.File) == "" || v.StartLine <= 0 {
@@ -105,7 +105,7 @@ func toLocations(in []llmLocation) []model.Location {
 	return out
 }
 
-func toEvidence(in []llmEvidence) []model.Evidence {
+func ToEvidence(in []LLMEvidence) []model.Evidence {
 	out := make([]model.Evidence, 0, len(in))
 	for _, v := range in {
 		if strings.TrimSpace(v.File) == "" || v.StartLine <= 0 {
@@ -134,7 +134,7 @@ func toEvidence(in []llmEvidence) []model.Evidence {
 // obsolete and has been removed. See internal/agents/connections.go's
 // convertPath function for the replacement.
 
-func fillCondition(c model.Condition, fallbackExplanation string) model.Condition {
+func FillCondition(c model.Condition, fallbackExplanation string) model.Condition {
 	if strings.TrimSpace(c.Kind) == "" {
 		c.Kind = "predicate"
 	}
@@ -142,12 +142,12 @@ func fillCondition(c model.Condition, fallbackExplanation string) model.Conditio
 		c.Expression = "true"
 	}
 	if strings.TrimSpace(c.Explanation) == "" {
-		c.Explanation = defaultStr(fallbackExplanation, "always")
+		c.Explanation = DefaultStr(fallbackExplanation, "always")
 	}
 	return c
 }
 
-func defaultStr(in, fallback string) string {
+func DefaultStr(in, fallback string) string {
 	if strings.TrimSpace(in) == "" {
 		return fallback
 	}
@@ -156,7 +156,7 @@ func defaultStr(in, fallback string) string {
 
 // errString returns err.Error() or "" when err is nil. Used in event
 // payloads where we want a stable string field even on nil error.
-func errString(err error) string {
+func ErrString(err error) string {
 	if err == nil {
 		return ""
 	}
@@ -167,7 +167,7 @@ func errString(err error) string {
 // inside an event JobID. We keep alnum, dashes, dots, slashes, and colons;
 // everything else collapses to a dash. The truncation keeps log lines and
 // graph node ids reasonably short.
-func safeJobID(name string) string {
+func SafeJobID(name string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "_"
@@ -192,7 +192,7 @@ func safeJobID(name string) string {
 	return out
 }
 
-func dedupeUnresolved(in []model.UnresolvedItem) []model.UnresolvedItem {
+func DedupeUnresolved(in []model.UnresolvedItem) []model.UnresolvedItem {
 	seen := map[string]struct{}{}
 	out := make([]model.UnresolvedItem, 0, len(in))
 	for _, u := range in {
@@ -206,7 +206,7 @@ func dedupeUnresolved(in []model.UnresolvedItem) []model.UnresolvedItem {
 	return out
 }
 
-func dedupeStrings(in []string) []string {
+func DedupeStrings(in []string) []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(in))
 	for _, s := range in {
@@ -219,7 +219,7 @@ func dedupeStrings(in []string) []string {
 	return out
 }
 
-func parseEntities(v any) []llmEntity {
+func ParseEntities(v any) []LLMEntity {
 	if v == nil {
 		return nil
 	}
@@ -227,18 +227,18 @@ func parseEntities(v any) []llmEntity {
 	if err != nil {
 		return nil
 	}
-	var out []llmEntity
+	var out []LLMEntity
 	_ = json.Unmarshal(b, &out)
 	return out
 }
 
-func parseSingleEntity(v any) *llmEntity {
+func ParseSingleEntity(v any) *LLMEntity {
 	if v == nil {
 		return nil
 	}
 	// Tolerate either "item": <obj> or "item": [<obj>, ...].
 	if list, ok := v.([]any); ok {
-		items := parseEntities(list)
+		items := ParseEntities(list)
 		if len(items) == 0 {
 			return nil
 		}
@@ -248,7 +248,7 @@ func parseSingleEntity(v any) *llmEntity {
 	if err != nil {
 		return nil
 	}
-	var e llmEntity
+	var e LLMEntity
 	if err := json.Unmarshal(b, &e); err != nil {
 		return nil
 	}
@@ -262,7 +262,7 @@ func parseSingleEntity(v any) *llmEntity {
 // old LLM-based connections stage. With the deterministic SCIP path
 // no LLM connection JSON is ever produced, so this helper is removed.
 
-func parseRepoFacts(v map[string]any) *repoFacts {
+func ParseRepoFacts(v map[string]any) *RepoFacts {
 	if v == nil {
 		return nil
 	}
@@ -270,7 +270,7 @@ func parseRepoFacts(v map[string]any) *repoFacts {
 	if err != nil {
 		return nil
 	}
-	var rf repoFacts
+	var rf RepoFacts
 	if err := json.Unmarshal(b, &rf); err != nil {
 		return nil
 	}

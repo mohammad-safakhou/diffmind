@@ -80,7 +80,7 @@ func DeterministicFloor(ctx context.Context, idx *astpkg.ProjectIndex, repoPath 
 	var dependencies []model.Dependency
 	for _, obj := range objs {
 		for _, e := range outMap[obj.ID] {
-			base, ur := toBase(repoPath, obj, e, minConf)
+			base, ur := ToBase(repoPath, obj, e, minConf)
 			if ur != nil {
 				continue
 			}

@@ -27,7 +27,7 @@ func TestEnrichEntityGroupingCanonicalOperationKind(t *testing.T) {
 			Name:    "op orders",
 			Details: map[string]any{"table": "orders", "operation": c.rawOp},
 		}
-		enrichEntityGrouping(&b)
+		EnrichEntityGrouping(&b)
 		if b.OperationKind != c.wantKind {
 			t.Errorf("op %q: OperationKind=%q, want %q", c.rawOp, b.OperationKind, c.wantKind)
 		}
@@ -44,7 +44,7 @@ func TestEnrichEntityGroupingCanonicalOperationKind(t *testing.T) {
 // Cache eviction verbs are not read/write and must pass through (not be folded).
 func TestEnrichEntityGroupingCacheEvictPassesThrough(t *testing.T) {
 	b := model.BaseEntity{Type: "cache_operation", Name: "evict sessions", Details: map[string]any{"cache": "sessions", "operation": "evict"}}
-	enrichEntityGrouping(&b)
+	EnrichEntityGrouping(&b)
 	if b.OperationKind != "evict" {
 		t.Errorf("cache evict should pass through, got %q", b.OperationKind)
 	}

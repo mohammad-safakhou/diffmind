@@ -148,8 +148,8 @@ func TestBuildObjectiveHints_NilIndexAndUnknownType(t *testing.T) {
 func TestBuildObjectiveHints_CapAndTruncate(t *testing.T) {
 	idx := &astpkg.ProjectIndex{Symbols: map[string][]astpkg.SymbolDef{}}
 	for i := 0; i < maxSymbolHints+25; i++ {
-		q := "Ctl.m" + itoa(i)
-		idx.Symbols[q] = []astpkg.SymbolDef{sym(q, "m"+itoa(i), "OrderController", "src/api/C"+itoa(i)+".java", uint32(i), "GetMapping")}
+		q := "Ctl.m" + Itoa(i)
+		idx.Symbols[q] = []astpkg.SymbolDef{sym(q, "m"+Itoa(i), "OrderController", "src/api/C"+Itoa(i)+".java", uint32(i), "GetMapping")}
 	}
 	h := buildObjectiveHints(idx, objByType(t, "http_route"), "", nil)
 	if len(h.Symbols) != maxSymbolHints {

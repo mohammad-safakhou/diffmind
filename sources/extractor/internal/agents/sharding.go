@@ -222,7 +222,7 @@ func shardEntityKey(e llmEntity) string {
 		file = e.Locations[0].File
 		line = e.Locations[0].StartLine
 	}
-	return strings.ToLower(e.Type) + "|" + strings.ToLower(e.Name) + "|" + file + ":" + itoa(line)
+	return strings.ToLower(e.Type) + "|" + strings.ToLower(e.Name) + "|" + file + ":" + Itoa(line)
 }
 
 func unionLocations(a, b []llmLocation) []llmLocation {
@@ -230,7 +230,7 @@ func unionLocations(a, b []llmLocation) []llmLocation {
 	var out []llmLocation
 	add := func(locs []llmLocation) {
 		for _, l := range locs {
-			k := l.File + ":" + itoa(l.StartLine) + ":" + itoa(l.EndLine)
+			k := l.File + ":" + Itoa(l.StartLine) + ":" + Itoa(l.EndLine)
 			if _, ok := seen[k]; ok {
 				continue
 			}

@@ -1,4 +1,4 @@
-package agents
+package core
 
 import (
 	"path/filepath"
@@ -9,13 +9,13 @@ import (
 // the snapshot directory so that artifacts published to the user reference
 // the original (source) paths. This is purely a string transformation: we
 // never touch the snapshot or source filesystems here.
-type pathMapper struct {
+type PathMapper struct {
 	snapshotPath string
 	sourcePath   string
 }
 
-func newPathMapper(snapshotPath, sourcePath string) *pathMapper {
-	return &pathMapper{snapshotPath: filepath.Clean(snapshotPath), sourcePath: filepath.Clean(sourcePath)}
+func NewPathMapper(snapshotPath, sourcePath string) *PathMapper {
+	return &PathMapper{snapshotPath: filepath.Clean(snapshotPath), sourcePath: filepath.Clean(sourcePath)}
 }
 
 // MapFile rewrites a single file path. It handles three shapes:
@@ -26,7 +26,7 @@ func newPathMapper(snapshotPath, sourcePath string) *pathMapper {
 //
 // The result is always relative to the source tree (forward-slashes), to
 // match the convention the rest of the pipeline uses for artifact paths.
-func (m *pathMapper) MapFile(p string) string {
+func (m *PathMapper) MapFile(p string) string {
 	if m == nil {
 		return p
 	}
@@ -51,7 +51,7 @@ func (m *pathMapper) MapFile(p string) string {
 }
 
 // applyToEntity rewrites all path-bearing fields on an llmEntity in place.
-func (m *pathMapper) applyToEntity(e *llmEntity) {
+func (m *PathMapper) ApplyToEntity(e *LLMEntity) {
 	if e == nil || m == nil {
 		return
 	}
@@ -64,9 +64,9 @@ func (m *pathMapper) applyToEntity(e *llmEntity) {
 }
 
 // applyToEntities is a convenience for slices of llmEntity.
-func (m *pathMapper) applyToEntities(es []llmEntity) {
+func (m *PathMapper) ApplyToEntities(es []LLMEntity) {
 	for i := range es {
-		m.applyToEntity(&es[i])
+		m.ApplyToEntity(&es[i])
 	}
 }
 

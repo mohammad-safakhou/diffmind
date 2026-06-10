@@ -92,8 +92,8 @@ func (o *orchestrator) runDeterministicDiscovery(ctx context.Context, objs []obj
 		if len(items) == 0 {
 			continue
 		}
-		o.pathMapper().applyToEntities(items)
-		sortLLMEntities(items)
+		o.PathMapper().ApplyToEntities(items)
+		SortLLMEntities(items)
 		total += len(items)
 		jobID := "deterministic." + obj.ID
 		o.emit(events.Event{
@@ -142,6 +142,7 @@ func (o *orchestrator) runDeterministicDiscovery(ctx context.Context, objs []obj
 //     be slightly off (e.g. "entity_manager" from a raw EntityManager call, or
 //     a "*_id_seq" sequence). These are low-signal precision nits, not
 //     duplicates; reconcile collapses by (resource, operation) regardless.
+//
 // inferConfigDBPlatform returns the single concrete relational DB platform
 // referenced by the repo's config (jdbc URL / driver class), or "" when none or
 // more than one distinct platform is found. Conservative on purpose: an
@@ -425,7 +426,7 @@ func entityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objecti
 		// Resolve ${...} property placeholders to the real queue name using the
 		// already-parsed config index, so the entity is named after the queue
 		// (e.g. catalogue-target-response-sqs) rather than the raw placeholder.
-		queue = resolveResourceName(idx, queue)
+		queue = ResolveResourceName(idx, queue)
 		if queue == "" {
 			return llmEntity{}, false
 		}
@@ -446,7 +447,7 @@ func entityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objecti
 		e.Details["schedule"] = schedule
 	case "cache_operation":
 		op, cache := parseCacheTrigger(trigger)
-		cache = resolveResourceName(idx, cache)
+		cache = ResolveResourceName(idx, cache)
 		if cache == "" {
 			cache = lastIdentOf(handler)
 		}
@@ -620,7 +621,7 @@ func mergeEntitiesForObjective(obj objectives.Objective, baseline, deterministic
 		index[k] = len(out)
 		out = append(out, e)
 	}
-	sortLLMEntities(out)
+	SortLLMEntities(out)
 	return out
 }
 
@@ -635,7 +636,7 @@ func mergeDeterministicDuplicate(llm, det llmEntity) llmEntity {
 	if len(out.Inputs) == 0 {
 		out.Inputs = llm.Inputs
 	}
-	out.Tags = dedupeStrings(append(append([]string(nil), det.Tags...), llm.Tags...))
+	out.Tags = DedupeStrings(append(append([]string(nil), det.Tags...), llm.Tags...))
 	out.Locations = unionLocations(det.Locations, llm.Locations)
 	out.Evidence = append(append([]llmEvidence(nil), det.Evidence...), llm.Evidence...)
 	if out.Details == nil {
@@ -736,7 +737,7 @@ func isCompleteDeterministicSeed(obj objectives.Objective, e *llmEntity) bool {
 	if strings.TrimSpace(e.Name) == "" || strings.TrimSpace(e.Type) == "" {
 		return false
 	}
-	if _, ok := canonicalObjectiveType(obj, e.Type); !ok {
+	if _, ok := CanonicalObjectiveType(obj, e.Type); !ok {
 		return false
 	}
 	if len(e.Locations) == 0 || strings.TrimSpace(e.Locations[0].File) == "" || e.Locations[0].StartLine <= 0 {
@@ -764,7 +765,7 @@ func hasDeterministicEvidence(e llmEntity) bool {
 }
 
 func (o *orchestrator) detailCheckpointForSeed(j detailJob) (detailCheckpointEntry, bool) {
-	base, ur := toBase(o.repoPath, j.Objective, j.Seed, o.cfg.Quality.MinConfidence)
+	base, ur := ToBase(o.repoPath, j.Objective, j.Seed, o.cfg.Quality.MinConfidence)
 	if ur != nil {
 		return detailCheckpointEntry{}, false
 	}

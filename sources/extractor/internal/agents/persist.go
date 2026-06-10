@@ -64,7 +64,7 @@ type detailCheckpointEntry struct {
 // already requires names to be unique within an objective for the
 // stable-ID generation, so this is safe.
 func detailEntityKey(objectiveID, seedName string) string {
-	return objectiveID + "::" + safeJobID(seedName)
+	return objectiveID + "::" + SafeJobID(seedName)
 }
 
 // appendDetailEntity writes one entry to the detail checkpoint file
@@ -362,7 +362,7 @@ type reexamCheckpointEntry struct {
 }
 
 func reexamKey(objectiveID, seedName string) string {
-	return objectiveID + "::" + safeJobID(seedName)
+	return objectiveID + "::" + SafeJobID(seedName)
 }
 
 // appendReexamEntity appends one completed reexamination result to the

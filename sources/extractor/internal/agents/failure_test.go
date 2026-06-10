@@ -41,7 +41,7 @@ func TestClassifyError(t *testing.T) {
 		if msg != "" {
 			err = errors.New(msg)
 		}
-		if got := classifyError(err); got != want {
+		if got := ClassifyError(err); got != want {
 			t.Errorf("classifyError(%q) = %q, want %q", msg, got, want)
 		}
 	}
@@ -68,7 +68,7 @@ func TestClassifyError_AuthAndQuotaSurfaceThroughSchemaWrapper(t *testing.T) {
 		`prompt: error code billing required`:                                                    "quota",
 	}
 	for msg, want := range cases {
-		if got := classifyError(errors.New(msg)); got != want {
+		if got := ClassifyError(errors.New(msg)); got != want {
 			t.Errorf("classifyError(%q) = %q, want %q", msg, got, want)
 		}
 	}
@@ -80,7 +80,7 @@ func TestClassifyError_AuthAndQuotaSurfaceThroughSchemaWrapper(t *testing.T) {
 func TestClassifyError_RateLimitWinsOver429Wording(t *testing.T) {
 	// "429 Too Many Requests" is a rate-limit; it does NOT mention
 	// auth/quota wording.
-	if got := classifyError(errors.New("prompt failed: 429 Too Many Requests")); got != "rate_limit" {
+	if got := ClassifyError(errors.New("prompt failed: 429 Too Many Requests")); got != "rate_limit" {
 		t.Errorf("rate_limit must win over numeric 429; got %q", got)
 	}
 }
@@ -88,7 +88,7 @@ func TestClassifyError_RateLimitWinsOver429Wording(t *testing.T) {
 func TestClassifyErrorRespectsContext(t *testing.T) {
 	// Caller-initiated cancellation (Ctrl-C, SIGTERM, ctx.cancel) is
 	// the unambiguous "cancelled" case.
-	if got := classifyError(context.Canceled); got != "cancelled" {
+	if got := ClassifyError(context.Canceled); got != "cancelled" {
 		t.Errorf("ctx.Canceled = %q, want cancelled", got)
 	}
 	// DeadlineExceeded — bare or wrapped — represents some clock
@@ -98,7 +98,7 @@ func TestClassifyErrorRespectsContext(t *testing.T) {
 	// Note: context.DeadlineExceeded implements net.Error with
 	// Timeout()==true, which is what makes this classification
 	// possible. See classifyError's docstring for the rationale.
-	if got := classifyError(context.DeadlineExceeded); got != "timeout" {
+	if got := ClassifyError(context.DeadlineExceeded); got != "timeout" {
 		t.Errorf("ctx.DeadlineExceeded = %q, want timeout", got)
 	}
 }
@@ -112,7 +112,7 @@ func (netTimeoutErr) Temporary() bool { return true }
 var _ net.Error = netTimeoutErr{}
 
 func TestClassifyErrorRecognisesNetTimeout(t *testing.T) {
-	if classifyError(netTimeoutErr{}) != "timeout" {
+	if ClassifyError(netTimeoutErr{}) != "timeout" {
 		t.Errorf("net.Error{Timeout:true} must classify as timeout")
 	}
 }

@@ -1,4 +1,4 @@
-package agents
+package core
 
 import (
 	"path/filepath"
@@ -22,7 +22,7 @@ import (
 // not via a config knob the operator might set blindly.
 const (
 	detailBatchSoftTarget = 8
-	detailBatchHardCap    = 12
+	DetailBatchHardCap    = 12
 )
 
 // detailGroups partitions a set of detail jobs into batches such that:
@@ -55,13 +55,13 @@ const (
 // The algorithm is O(n²) over the seeds in each objective bucket.
 // That is fine: n is small (typical bucket sizes 1-70) and we run
 // this once per run, not per LLM call.
-func detailGroups(jobs []detailJob) [][]detailJob {
+func DetailGroups(jobs []DetailJob) [][]DetailJob {
 	if len(jobs) == 0 {
 		return nil
 	}
 	// Bucket by (objective.Kind, objective.Type).
 	type bucketKey struct{ kind, typ string }
-	buckets := map[bucketKey][]detailJob{}
+	buckets := map[bucketKey][]DetailJob{}
 	keys := []bucketKey{} // insertion order for deterministic output
 	for _, j := range jobs {
 		k := bucketKey{string(j.Objective.Kind), j.Objective.Type}
@@ -79,9 +79,9 @@ func detailGroups(jobs []detailJob) [][]detailJob {
 		})
 	}
 	// Build batches one bucket at a time.
-	var batches [][]detailJob
+	var batches [][]DetailJob
 	for _, k := range keys {
-		batches = append(batches, partitionByAffinity(buckets[k])...)
+		batches = append(batches, PartitionByAffinity(buckets[k])...)
 	}
 	return batches
 }
@@ -100,22 +100,22 @@ func detailGroups(jobs []detailJob) [][]detailJob {
 //
 // Returns nil for an empty input, [[singleton]] for a 1-job input,
 // and a list of batches for larger inputs.
-func partitionByAffinity(jobs []detailJob) [][]detailJob {
+func PartitionByAffinity(jobs []DetailJob) [][]DetailJob {
 	if len(jobs) == 0 {
 		return nil
 	}
 	if len(jobs) == 1 {
-		return [][]detailJob{{jobs[0]}}
+		return [][]DetailJob{{jobs[0]}}
 	}
-	batches := [][]detailJob{{jobs[0]}}
+	batches := [][]DetailJob{{jobs[0]}}
 	for _, j := range jobs[1:] {
 		bestBatch := -1
 		bestScore := -1
 		for bi := range batches {
-			if len(batches[bi]) >= detailBatchHardCap {
+			if len(batches[bi]) >= DetailBatchHardCap {
 				continue
 			}
-			score := batchAffinity(j, batches[bi])
+			score := BatchAffinity(j, batches[bi])
 			if len(batches[bi]) >= detailBatchSoftTarget {
 				score-- // gentle penalty for going past the soft target
 			}
@@ -126,7 +126,7 @@ func partitionByAffinity(jobs []detailJob) [][]detailJob {
 		}
 		// If no batch has affinity OR all batches are full, start a new one.
 		if bestBatch < 0 || bestScore <= 0 {
-			batches = append(batches, []detailJob{j})
+			batches = append(batches, []DetailJob{j})
 			continue
 		}
 		batches[bestBatch] = append(batches[bestBatch], j)
@@ -138,13 +138,13 @@ func partitionByAffinity(jobs []detailJob) [][]detailJob {
 // every existing member of `batch`. Average rather than max so a
 // large batch dominated by unrelated entities doesn't keep
 // attracting more on the strength of one match.
-func batchAffinity(j detailJob, batch []detailJob) int {
+func BatchAffinity(j DetailJob, batch []DetailJob) int {
 	if len(batch) == 0 {
 		return 0
 	}
 	total := 0
 	for _, m := range batch {
-		total += affinityScore(j, m)
+		total += AffinityScore(j, m)
 	}
 	return total / len(batch)
 }
@@ -167,9 +167,9 @@ func batchAffinity(j detailJob, batch []detailJob) int {
 //
 // Zero score means "unrelated by any signal we trust". Such pairs
 // land in separate batches.
-func affinityScore(a, b detailJob) int {
+func AffinityScore(a, b DetailJob) int {
 	score := 0
-	fa, fb := primaryFile(a.Seed), primaryFile(b.Seed)
+	fa, fb := PrimaryFile(a.Seed), PrimaryFile(b.Seed)
 	switch {
 	case fa != "" && fa == fb:
 		score += 3
@@ -191,10 +191,10 @@ func affinityScore(a, b detailJob) int {
 		}
 	}
 	na, nb := a.Seed.Name, b.Seed.Name
-	if commonPrefixLen(na, nb) >= 4 {
+	if CommonPrefixLen(na, nb) >= 4 {
 		score += 2
 	}
-	overlap := tokenOverlap(na, nb)
+	overlap := TokenOverlap(na, nb)
 	switch {
 	case overlap >= 2:
 		score += 2
@@ -207,14 +207,14 @@ func affinityScore(a, b detailJob) int {
 // primaryFile returns the first source_location.file of a seed
 // (the file the model is most likely to open first), or "" if
 // none exists.
-func primaryFile(seed llmEntity) string {
+func PrimaryFile(seed LLMEntity) string {
 	if len(seed.Locations) == 0 {
 		return ""
 	}
 	return seed.Locations[0].File
 }
 
-func commonPrefixLen(a, b string) int {
+func CommonPrefixLen(a, b string) int {
 	n := 0
 	for i := 0; i < len(a) && i < len(b); i++ {
 		if a[i] != b[i] {
@@ -230,12 +230,12 @@ func commonPrefixLen(a, b string) int {
 // boundaries; tokens shorter than 3 characters are discarded
 // because 1-2 character tokens (`s`, `id`, `to`) are too generic
 // to be a useful affinity signal.
-func tokenOverlap(a, b string) int {
-	ta := nameTokens(a)
+func TokenOverlap(a, b string) int {
+	ta := NameTokens(a)
 	if len(ta) == 0 {
 		return 0
 	}
-	tb := nameTokens(b)
+	tb := NameTokens(b)
 	if len(tb) == 0 {
 		return 0
 	}
@@ -251,7 +251,7 @@ func tokenOverlap(a, b string) int {
 // nameTokens splits a name into lowercase tokens. "AccountController.findByEmail"
 // → {"account", "controller", "find", "email"}. Camel-case is honoured;
 // short tokens (< 3 chars) dropped to keep noise out.
-func nameTokens(s string) map[string]struct{} {
+func NameTokens(s string) map[string]struct{} {
 	out := map[string]struct{}{}
 	var current strings.Builder
 	flush := func() {
