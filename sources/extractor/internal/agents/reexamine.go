@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mohammad-safakhou/diffmind/internal/agents/core"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
@@ -370,7 +371,7 @@ func (o *orchestrator) runReexamination(
 	}
 
 	// Load per-item checkpoint so a retry can skip already-completed suspects.
-	checkpoint := o.loadReexaminationCheckpoint(filepath.Join(o.runDir, stateDir))
+	checkpoint := o.store.LoadReexaminationCheckpoint(filepath.Join(o.runDir, stateDir))
 
 	cleanJobs := make([]detailJob, 0, len(seeds))
 	suspect := make([]reexamineTrigger, 0)
@@ -386,7 +387,7 @@ func (o *orchestrator) runReexamination(
 			continue
 		}
 
-		key := reexamKey(seeds[i].Objective.ID, seeds[i].Seed.Name)
+		key := core.ReexamKey(seeds[i].Objective.ID, seeds[i].Seed.Name)
 		if entry, done := checkpoint[key]; done {
 			// This suspect was already resolved in a prior run.
 			// Restore the outcome without re-asking the model.
@@ -524,8 +525,8 @@ func (o *orchestrator) runReexamination(
 					Evidence:   ToEvidence(seed.Evidence),
 				}
 				unresolved = append(unresolved, u)
-				o.appendReexamEntity(reexamCheckpointEntry{
-					Key:        reexamKey(r.Trigger.Obj.ID, seed.Name),
+				o.store.AppendReexamEntity(core.ReexamCheckpointEntry{
+					Key:        core.ReexamKey(r.Trigger.Obj.ID, seed.Name),
 					Outcome:    "rejected",
 					Unresolved: &u,
 				})
@@ -536,8 +537,8 @@ func (o *orchestrator) runReexamination(
 			retained.Confidence = downgradeConfidence(seed.Confidence, o.cfg.Quality.MinConfidence)
 			retained.Tags = appendUniqueTag(retained.Tags, "reexamination_doubted")
 			cleanJobs = append(cleanJobs, detailJob{Objective: r.Trigger.Obj, Seed: retained})
-			o.appendReexamEntity(reexamCheckpointEntry{
-				Key:     reexamKey(r.Trigger.Obj.ID, seed.Name),
+			o.store.AppendReexamEntity(core.ReexamCheckpointEntry{
+				Key:     core.ReexamKey(r.Trigger.Obj.ID, seed.Name),
 				Outcome: "confirmed",
 				Seed:    &retained,
 			})
@@ -548,8 +549,8 @@ func (o *orchestrator) runReexamination(
 			r.Item.Confidence = r.Trigger.Seed.Confidence
 		}
 		cleanJobs = append(cleanJobs, detailJob{Objective: r.Trigger.Obj, Seed: *r.Item})
-		o.appendReexamEntity(reexamCheckpointEntry{
-			Key:     reexamKey(r.Trigger.Obj.ID, r.Trigger.Seed.Name),
+		o.store.AppendReexamEntity(core.ReexamCheckpointEntry{
+			Key:     core.ReexamKey(r.Trigger.Obj.ID, r.Trigger.Seed.Name),
 			Outcome: "confirmed",
 			Seed:    r.Item,
 		})

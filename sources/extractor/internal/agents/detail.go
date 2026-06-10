@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mohammad-safakhou/diffmind/internal/agents/core"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
@@ -49,9 +50,9 @@ func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []detailJob, rf 
 	// fresh run; on a retry it contains every entity that was
 	// successfully enriched (or explicitly skipped by the model) on
 	// the previous attempt.
-	checkpoint := map[string]detailCheckpointEntry{}
+	checkpoint := map[string]core.DetailCheckpointEntry{}
 	if o.runDir != "" {
-		checkpoint = o.loadDetailCheckpoint(o.runDir + "/" + stateDir)
+		checkpoint = o.store.LoadDetailCheckpoint(o.runDir + "/" + stateDir)
 	}
 
 	pending, carriedResults, carriedMessages := o.partitionDetailJobs(jobs, checkpoint)
@@ -81,11 +82,11 @@ func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []detailJob, rf 
 // checkpoint, plus complete deterministic seeds usable without an LLM call.
 // carriedMessages records why each carried entry was carried (for the skip
 // event). Complete deterministic seeds are also appended to the checkpoint.
-func (o *orchestrator) partitionDetailJobs(jobs []detailJob, checkpoint map[string]detailCheckpointEntry) (pending []detailJob, carried []detailResult, carriedMessages map[string]string) {
+func (o *orchestrator) partitionDetailJobs(jobs []detailJob, checkpoint map[string]core.DetailCheckpointEntry) (pending []detailJob, carried []detailResult, carriedMessages map[string]string) {
 	carried = make([]detailResult, 0, len(checkpoint))
 	carriedMessages = map[string]string{}
 	for _, j := range jobs {
-		key := detailEntityKey(j.Objective.ID, j.Seed.Name)
+		key := core.DetailEntityKey(j.Objective.ID, j.Seed.Name)
 		entry, ok := checkpoint[key]
 		if !ok {
 			if isCompleteDeterministicSeed(j.Objective, &j.Seed) {
@@ -93,7 +94,7 @@ func (o *orchestrator) partitionDetailJobs(jobs []detailJob, checkpoint map[stri
 				carried = append(carried, detailResult{Objective: j.Objective, SeedName: j.Seed.Name, Item: &seed})
 				carriedMessages[key] = "complete deterministic seed"
 				if checkpointEntry, ok := o.detailCheckpointForSeed(j); ok {
-					o.appendDetailEntity(checkpointEntry)
+					o.store.AppendDetailEntity(checkpointEntry)
 				}
 			} else {
 				pending = append(pending, j)
@@ -134,7 +135,7 @@ func (o *orchestrator) partitionDetailJobs(jobs []detailJob, checkpoint map[stri
 func (o *orchestrator) emitCarriedSkips(carried []detailResult, carriedMessages map[string]string, onResult func()) {
 	for _, r := range carried {
 		jobID := "detail." + r.Objective.ID + "." + SafeJobID(r.SeedName)
-		key := detailEntityKey(r.Objective.ID, r.SeedName)
+		key := core.DetailEntityKey(r.Objective.ID, r.SeedName)
 		message := carriedMessages[key]
 		if message == "" {
 			message = "resumed from per-entity checkpoint"
@@ -294,14 +295,14 @@ func (o *orchestrator) checkpointDetailResult(r detailResult) {
 	if r.Err != nil {
 		return
 	}
-	entry := detailCheckpointEntry{
-		Key:         detailEntityKey(r.Objective.ID, r.SeedName),
+	entry := core.DetailCheckpointEntry{
+		Key:         core.DetailEntityKey(r.Objective.ID, r.SeedName),
 		ObjectiveID: r.Objective.ID,
 		SeedName:    r.SeedName,
 	}
 	if r.Item == nil {
 		entry.Skipped = true
-		o.appendDetailEntity(entry)
+		o.store.AppendDetailEntity(entry)
 		return
 	}
 	// Convert the enriched llmEntity into the final model.* shape
@@ -322,7 +323,7 @@ func (o *orchestrator) checkpointDetailResult(r detailResult) {
 		dep := model.Dependency{BaseEntity: base}
 		entry.Dependency = &dep
 	}
-	o.appendDetailEntity(entry)
+	o.store.AppendDetailEntity(entry)
 }
 
 // runDetailBatchOne issues ONE LLM call for a batch of related

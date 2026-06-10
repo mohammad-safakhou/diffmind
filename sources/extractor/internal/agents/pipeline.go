@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mohammad-safakhou/diffmind/internal/agents/core"
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
@@ -47,7 +48,7 @@ type orchestrator struct {
 	sink             events.Sink     // never nil (NoopSink fallback)
 	captureDir       string          // optional: dir where prompt/response files are written
 	runDir           string          // optional: artifact root for state + failure report
-
+	store            *core.CheckpointStore
 	// tokenAgg accumulates per-stage and per-run token totals from
 	// every promptAgent call's final /session/{id} read. Updated
 	// from the orchestrator's main goroutine after each prompt
@@ -246,6 +247,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		runDir:           opts.RunDir,
 		pipelineCancel:   pipelineCancel,
 	}
+	o.store = &core.CheckpointStore{RunDir: opts.RunDir}
 	// All stages read `ctx`; alias the cancellable child so the
 	// existing call sites stay untouched.
 	ctx = pipelineCtx
@@ -489,11 +491,11 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		// the original 152.
 		previewPending := reexamined
 		if o.runDir != "" {
-			checkpoint := o.loadDetailCheckpoint(o.runDir + "/" + stateDir)
+			checkpoint := o.store.LoadDetailCheckpoint(o.runDir + "/" + stateDir)
 			if len(checkpoint) > 0 {
 				filtered := make([]detailJob, 0, len(reexamined))
 				for _, j := range reexamined {
-					if _, ok := checkpoint[detailEntityKey(j.Objective.ID, j.Seed.Name)]; ok {
+					if _, ok := checkpoint[core.DetailEntityKey(j.Objective.ID, j.Seed.Name)]; ok {
 						continue
 					}
 					filtered = append(filtered, j)
@@ -564,10 +566,10 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		// identity stable across runs regardless of detail-stage variance.
 		seedByKey := make(map[string]llmEntity, len(reexamined))
 		for _, j := range reexamined {
-			seedByKey[detailEntityKey(j.Objective.ID, j.Seed.Name)] = j.Seed
+			seedByKey[core.DetailEntityKey(j.Objective.ID, j.Seed.Name)] = j.Seed
 		}
 		for _, d := range details {
-			seed, hasSeed := seedByKey[detailEntityKey(d.Objective.ID, d.SeedName)]
+			seed, hasSeed := seedByKey[core.DetailEntityKey(d.Objective.ID, d.SeedName)]
 			item := d.Item
 			if item == nil {
 				if !hasSeed {
