@@ -64,6 +64,16 @@ func (o *orchestrator) runDeterministicDiscovery(ctx context.Context, objs []obj
 			outMap[dbObj.ID] = append(outMap[dbObj.ID], e)
 		}
 	}
+	if obj, ok := objectiveByTypeIn(objs, "command_exec"); ok {
+		for _, e := range deterministicCommandExec(o.astIndex) {
+			outMap[obj.ID] = append(outMap[obj.ID], e)
+		}
+	}
+	if obj, ok := objectiveByTypeIn(objs, "queue_publish"); ok {
+		for _, e := range deterministicQueuePublish(o.astIndex) {
+			outMap[obj.ID] = append(outMap[obj.ID], e)
+		}
+	}
 
 	results := make([]discoveryResult, 0, len(outMap))
 	total := 0
