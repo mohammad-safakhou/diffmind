@@ -125,3 +125,32 @@ var (
 	NewProgressReporter = core.NewProgressReporter
 	RenderProgressBar   = core.RenderProgressBar
 )
+
+// resilience (watchdog / liveness / bridges)
+type (
+	watchdog              = core.Watchdog
+	livenessConfig        = core.LivenessConfig
+	livenessReport        = core.LivenessReport
+	livenessProbe         = core.LivenessProbe
+	aborter               = core.Aborter
+	probeSnapshot         = core.ProbeSnapshot
+	livenessClient        = core.LivenessClient
+	livenessAborter       = core.LivenessAborter
+	openCodeLivenessProbe = core.OpenCodeLivenessProbe
+	openCodeAborter       = core.OpenCodeAborter
+	pauseBridge           = core.PauseBridge
+	verboseBridge         = core.VerboseBridge
+	tokenBridge           = core.TokenBridge
+	permissionDecision    = core.PermissionDecision
+)
+
+var (
+	newWatchdog              = core.NewWatchdog
+	runLiveness              = core.RunLiveness
+	decidePermission         = core.DecidePermission
+	newOpenCodeLivenessProbe = core.NewOpenCodeLivenessProbe
+	newOpenCodeAborter       = core.NewOpenCodeAborter
+	newPauseBridge           = core.NewPauseBridge
+	newVerboseBridge         = core.NewVerboseBridge
+	newTokenBridge           = core.NewTokenBridge
+)

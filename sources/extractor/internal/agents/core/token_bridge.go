@@ -1,4 +1,4 @@
-package agents
+package core
 
 import (
 	"context"
@@ -16,16 +16,23 @@ import (
 // and verbose-prompter bridges; when the underlying client does not
 // implement opencode.SessionState (e.g. a slim test fake), we leave
 // orchestrator.tokens nil and per-call token reads become no-ops.
-type tokenBridge struct {
+type TokenBridge struct {
 	c *opencode.Client
 }
 
-func (b *tokenBridge) GetSession(ctx context.Context, sessionID, directory string) (sessionState, error) {
+// NewTokenBridge wraps an *opencode.Client so the orchestrator (a
+// different package) can build the bridge without reaching into core's
+// unexported field.
+func NewTokenBridge(c *opencode.Client) *TokenBridge {
+	return &TokenBridge{c: c}
+}
+
+func (b *TokenBridge) GetSession(ctx context.Context, sessionID, directory string) (SessionState, error) {
 	s, err := b.c.GetSession(ctx, sessionID, directory)
 	if err != nil {
-		return sessionState{}, err
+		return SessionState{}, err
 	}
-	return sessionState{
+	return SessionState{
 		ID:         s.ID,
 		Cost:       s.Cost,
 		Input:      s.Tokens.Input,

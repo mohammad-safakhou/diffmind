@@ -1,4 +1,4 @@
-package agents
+package core
 
 import (
 	"path/filepath"
@@ -8,7 +8,7 @@ import (
 // permissionDecision captures what the watchdog decided to do with a
 // pending permission and why. The "why" is exposed in the dashboard event
 // so users can quickly understand the watchdog's behavior.
-type permissionDecision struct {
+type PermissionDecision struct {
 	Response string // "allow" | "deny" | "" (skip — not enough signal)
 	Reason   string
 }
@@ -64,7 +64,7 @@ var mutatingPermissions = map[string]struct{}{
 //     ends up here.
 //   - Otherwise (unknown kind, no patterns, or patterns clearly outside
 //     the snapshot), deny.
-func decidePermission(p PendingPermission, snapshotPath string) permissionDecision {
+func DecidePermission(p PendingPermission, snapshotPath string) PermissionDecision {
 	kind := strings.ToLower(strings.TrimSpace(p.Permission))
 	if kind == "" {
 		kind = strings.ToLower(strings.TrimSpace(p.Type))
@@ -73,13 +73,13 @@ func decidePermission(p PendingPermission, snapshotPath string) permissionDecisi
 	matchesSnapshot := patternsTouchSnapshot(p.Patterns, snapshotBase)
 
 	if _, ok := readOnlyPermissions[kind]; ok {
-		return permissionDecision{
+		return PermissionDecision{
 			Response: "allow",
 			Reason:   "read-only permission (" + kind + "); always allowed",
 		}
 	}
 	if _, denied := deniedPermissions[kind]; denied {
-		return permissionDecision{
+		return PermissionDecision{
 			Response: "deny",
 			Reason:   "delegating tool (" + kind + ") disabled for headless extraction",
 		}
@@ -92,18 +92,18 @@ func decidePermission(p PendingPermission, snapshotPath string) permissionDecisi
 		// as the asked path contains our snapshot basename, the agent is
 		// asking for files inside our sandbox — allow.
 		if matchesSnapshot {
-			return permissionDecision{
+			return PermissionDecision{
 				Response: "allow",
 				Reason:   "external_directory inside our snapshot",
 			}
 		}
-		return permissionDecision{
+		return PermissionDecision{
 			Response: "deny",
 			Reason:   "external_directory outside our snapshot",
 		}
 	}
 	if _, mut := mutatingPermissions[kind]; mut {
-		return permissionDecision{
+		return PermissionDecision{
 			Response: "deny",
 			Reason:   "mutating tool (" + kind + ") — read-only run",
 		}
@@ -111,12 +111,12 @@ func decidePermission(p PendingPermission, snapshotPath string) permissionDecisi
 	if matchesSnapshot {
 		// Unknown kind but at least scoped to our sandbox; lean allow
 		// rather than block the run.
-		return permissionDecision{
+		return PermissionDecision{
 			Response: "allow",
 			Reason:   "unknown kind (" + kind + ") inside snapshot; defaulting to allow",
 		}
 	}
-	return permissionDecision{
+	return PermissionDecision{
 		Response: "deny",
 		Reason:   "unknown kind (" + kind + ") with no snapshot match; defaulting to deny",
 	}
