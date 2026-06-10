@@ -76,6 +76,7 @@ func DeterministicFloor(ctx context.Context, idx *astpkg.ProjectIndex, repoPath 
 
 	// ── AST-derived db augmentation (the same step the pipeline runs) ────────
 	dependencies = augmentDependenciesFromAST(idx, exposures, dependencies, minConf)
+	stampInferredDBPlatform(idx, dependencies) // P7: give deterministic db ops the configured platform
 	dependencies = reconcile.DedupeDependencies(dependencies)
 
 	// ── Connections (AST walk only; no shallow fallback, no LLM repair) ──────

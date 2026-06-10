@@ -784,6 +784,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	state.DetailDependency = append([]model.Dependency(nil), dependencies...)
 	if o.astIndex != nil {
 		dependencies = augmentDependenciesFromAST(o.astIndex, exposures, dependencies, o.cfg.Quality.MinConfidence)
+		stampInferredDBPlatform(o.astIndex, dependencies) // P7: configured platform for deterministic db ops
 		dependencies = reconcile.DedupeDependencies(dependencies)
 		state.DetailDependency = append([]model.Dependency(nil), dependencies...)
 		o.persistStageState("detail_dependencies.json", state.DetailDependency)

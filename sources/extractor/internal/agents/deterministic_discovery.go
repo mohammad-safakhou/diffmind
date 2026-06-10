@@ -122,6 +122,79 @@ func (o *orchestrator) runDeterministicDiscovery(ctx context.Context, objs []obj
 //     be slightly off (e.g. "entity_manager" from a raw EntityManager call, or
 //     a "*_id_seq" sequence). These are low-signal precision nits, not
 //     duplicates; reconcile collapses by (resource, operation) regardless.
+// inferConfigDBPlatform returns the single concrete relational DB platform
+// referenced by the repo's config (jdbc URL / driver class), or "" when none or
+// more than one distinct platform is found. Conservative on purpose: an
+// ambiguous guess would be worse than leaving the platform generic (P7).
+func inferConfigDBPlatform(idx *astpkg.ProjectIndex) string {
+	if idx == nil {
+		return ""
+	}
+	found := map[string]struct{}{}
+	for _, cf := range idx.Configs {
+		for _, e := range cf.Entries {
+			if p := dbPlatformFromConfigValue(e.Value); p != "" {
+				found[p] = struct{}{}
+			}
+		}
+	}
+	if len(found) == 1 {
+		for p := range found {
+			return p
+		}
+	}
+	return ""
+}
+
+func dbPlatformFromConfigValue(v string) string {
+	v = strings.ToLower(v)
+	switch {
+	case strings.Contains(v, "postgresql") || strings.Contains(v, "postgres") || strings.Contains(v, "org.postgresql"):
+		return "postgres"
+	case strings.Contains(v, "mariadb"):
+		return "mariadb"
+	case strings.Contains(v, "mysql"):
+		return "mysql"
+	case strings.Contains(v, "sqlserver") || strings.Contains(v, "jtds"):
+		return "sqlserver"
+	case strings.Contains(v, "oracle"):
+		return "oracle"
+	case strings.Contains(v, "mongodb"):
+		return "mongodb"
+	}
+	return ""
+}
+
+// stampInferredDBPlatform fills a concrete platform onto db_operation deps that
+// only have a generic/empty one, using the repo's single configured datasource
+// platform. This lets deterministic db ops (which know the table but not the
+// engine) share identity with the LLM's platform-qualified ones — fixing the
+// floor↔LLM coverage artifact and keeping the eval/dedup identity consistent
+// (P7). Never overwrites an already-specific platform.
+func stampInferredDBPlatform(idx *astpkg.ProjectIndex, deps []model.Dependency) {
+	plat := inferConfigDBPlatform(idx)
+	if plat == "" {
+		return
+	}
+	generic := map[string]bool{"": true, "database": true, "jdbc": true, "sql": true, "rdbms": true, "unknown": true}
+	for i := range deps {
+		d := &deps[i]
+		if d.Type != "db_operation" {
+			continue
+		}
+		if !generic[strings.ToLower(strings.TrimSpace(d.Platform))] {
+			continue // already specific
+		}
+		d.Platform = plat
+		if d.Details == nil {
+			d.Details = map[string]any{}
+		}
+		if _, ok := d.Details["database_type"]; !ok {
+			d.Details["database_type"] = plat
+		}
+	}
+}
+
 func deterministicDBOperations(idx *astpkg.ProjectIndex) []llmEntity {
 	if idx == nil || len(idx.CallGraph) == 0 {
 		return nil
