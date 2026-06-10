@@ -106,6 +106,119 @@ func deterministicQueuePublish(idx *astpkg.ProjectIndex) []llmEntity {
 	return out
 }
 
+// deterministicOutboundRPC finds gRPC client calls through generated blocking/
+// future stubs (e.g. fooServiceBlockingStub.getThing(req)). Matched on the
+// generated stub naming convention, which is gRPC-specific (never a plain var).
+func deterministicOutboundRPC(idx *astpkg.ProjectIndex) []llmEntity {
+	if idx == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var out []llmEntity
+	forEachCall(idx, func(cs astpkg.CallSite) {
+		service, method, ok := matchGRPCStubCall(cs)
+		if !ok {
+			return
+		}
+		loc := callLoc(cs)
+		if loc.File == "" {
+			return
+		}
+		key := strings.ToLower(service + "." + method)
+		if _, dup := seen[key]; dup {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, llmEntity{
+			Type:       "outbound_rpc",
+			Name:       service + "." + method,
+			Summary:    "AST-derived gRPC client call",
+			Confidence: 1.0,
+			Tags:       []string{"deterministic", "grpc"},
+			Details: map[string]any{
+				"platform":      "grpc",
+				"service":       service,
+				"method":        method,
+				"discovered_by": "ast_grpc_stub_call",
+			},
+			Locations: []llmLocation{loc},
+			Evidence:  []llmEvidence{callEvidence(cs)},
+		})
+	})
+	return out
+}
+
+// deterministicStreamConsume finds Kafka Streams sources (streamsBuilder.stream
+// ("topic")). Gated on a StreamsBuilder receiver so the ubiquitous Java
+// Collection.stream() never matches, and only when the topic is a literal.
+func deterministicStreamConsume(idx *astpkg.ProjectIndex) []llmEntity {
+	if idx == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var out []llmEntity
+	forEachCall(idx, func(cs astpkg.CallSite) {
+		r, m := splitCall(cs)
+		if strings.ToLower(m) != "stream" || !strings.Contains(strings.ToLower(r), "streamsbuilder") {
+			return
+		}
+		topic := resolveResourceName(idx, firstLiteralArg(cs.Arguments))
+		if topic == "" {
+			return
+		}
+		loc := callLoc(cs)
+		if loc.File == "" {
+			return
+		}
+		if _, dup := seen[strings.ToLower(topic)]; dup {
+			return
+		}
+		seen[strings.ToLower(topic)] = struct{}{}
+		out = append(out, llmEntity{
+			Type:       "stream_consume",
+			Name:       topic,
+			Summary:    "AST-derived Kafka Streams source for " + topic,
+			Confidence: 1.0,
+			Tags:       []string{"deterministic", "streaming"},
+			Details: map[string]any{
+				"platform":      "kafka-streams",
+				"stream":        topic,
+				"discovered_by": "ast_kafka_streams",
+			},
+			Locations: []llmLocation{loc},
+			Evidence:  []llmEvidence{callEvidence(cs)},
+		})
+	})
+	return out
+}
+
+// matchGRPCStubCall returns (service, method) when the call is on a generated
+// gRPC blocking/future stub. The "BlockingStub"/"FutureStub" naming is specific
+// to gRPC codegen, so this stays high-precision.
+func matchGRPCStubCall(cs astpkg.CallSite) (service, method string, ok bool) {
+	r, m := splitCall(cs)
+	rl := strings.ToLower(r)
+	if !strings.Contains(rl, "blockingstub") && !strings.Contains(rl, "futurestub") {
+		return "", "", false
+	}
+	if m == "" {
+		return "", "", false
+	}
+	return deriveGRPCService(r), m, true
+}
+
+// deriveGRPCService strips the stub suffix from a stub variable/type to recover
+// the service name (fooServiceBlockingStub -> fooService).
+func deriveGRPCService(stub string) string {
+	s := strings.TrimSpace(stub)
+	for _, suf := range []string{"BlockingStub", "FutureStub", "Stub", "blockingStub", "futureStub", "stub"} {
+		if strings.HasSuffix(s, suf) {
+			return strings.TrimSuffix(s, suf)
+		}
+	}
+	return s
+}
+
 // matchCommandExec reports whether a call site is a process execution, by a
 // curated (receiver, callee) set. High precision: the receiver must tie to a
 // known exec API, never a bare ".exec"/".run".
