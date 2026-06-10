@@ -325,7 +325,7 @@ func supportedDeterministicObjectives(objs []objectives.Objective) map[string]ob
 			}
 		case model.KindDependency:
 			switch obj.Type {
-			case "outbound_http":
+			case "outbound_http", "cache_operation":
 				out[obj.Type] = obj
 			}
 		}
@@ -340,6 +340,9 @@ func objectiveForBinding(objs map[string]objectives.Objective, b astpkg.Framewor
 		return obj, ok
 	case "http_client":
 		obj, ok := objs["outbound_http"]
+		return obj, ok
+	case "cache_operation":
+		obj, ok := objs["cache_operation"]
 		return obj, ok
 	case "queue_consumer":
 		obj, ok := objs["queue_consumer"]
@@ -431,10 +434,37 @@ func entityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objecti
 		}
 		e.Summary = fmt.Sprintf("%s scheduled job detected from framework binding", displayFramework(b.Framework))
 		e.Details["schedule"] = schedule
+	case "cache_operation":
+		op, cache := parseCacheTrigger(trigger)
+		cache = resolveResourceName(idx, cache)
+		if cache == "" {
+			cache = lastIdentOf(handler)
+		}
+		if cache == "" || op == "" {
+			return llmEntity{}, false
+		}
+		e.Name = op + " " + cache
+		e.Summary = fmt.Sprintf("%s cache operation detected from framework binding", displayFramework(b.Framework))
+		e.Details["operation"] = op
+		e.Details["cache"] = cache
 	default:
 		return llmEntity{}, false
 	}
 	return e, true
+}
+
+// parseCacheTrigger splits a "cache: <op> <name>" trigger.
+func parseCacheTrigger(trigger string) (op, cache string) {
+	t := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(trigger), "cache:"))
+	f := strings.Fields(t)
+	if len(f) == 0 {
+		return "", ""
+	}
+	op = f[0]
+	if len(f) > 1 {
+		cache = strings.Join(f[1:], " ")
+	}
+	return op, cache
 }
 
 func parseHTTPTrigger(trigger string) (method, path string) {
