@@ -1,4 +1,4 @@
-package agents
+package core
 
 import (
 	"context"
@@ -23,8 +23,8 @@ import (
 //   - Without this, a single rogue agent could block all 16 workers because
 //     they would all hit the per-call timeout while sessions stay paused
 //     server-side.
-type watchdog struct {
-	api           pauseHandler
+type Watchdog struct {
+	api           PauseHandler
 	directory     string
 	pollInterval  time.Duration
 	sink          events.Sink
@@ -45,7 +45,7 @@ type watchdog struct {
 	stopOnce    sync.Once
 }
 
-func (w *watchdog) markAnswered(permID string) {
+func (w *Watchdog) markAnswered(permID string) {
 	if w == nil || permID == "" {
 		return
 	}
@@ -57,7 +57,7 @@ func (w *watchdog) markAnswered(permID string) {
 	w.mu.Unlock()
 }
 
-func (w *watchdog) hasAnswered(permID string) bool {
+func (w *Watchdog) hasAnswered(permID string) bool {
 	if w == nil || permID == "" {
 		return false
 	}
@@ -67,7 +67,7 @@ func (w *watchdog) hasAnswered(permID string) bool {
 	return ok
 }
 
-func (w *watchdog) unmarkAnswered(permID string) {
+func (w *Watchdog) unmarkAnswered(permID string) {
 	if w == nil || permID == "" {
 		return
 	}
@@ -76,11 +76,11 @@ func (w *watchdog) unmarkAnswered(permID string) {
 	w.mu.Unlock()
 }
 
-func newWatchdog(api pauseHandler, directory string, poll time.Duration) *watchdog {
+func NewWatchdog(api PauseHandler, directory string, poll time.Duration) *Watchdog {
 	if poll <= 0 {
 		poll = 2 * time.Second
 	}
-	return &watchdog{
+	return &Watchdog{
 		api:           api,
 		directory:     directory,
 		pollInterval:  poll,
@@ -94,7 +94,7 @@ func newWatchdog(api pauseHandler, directory string, poll time.Duration) *watchd
 
 // SetSink wires a live event sink so watchdog actions are observable from
 // the dashboard.
-func (w *watchdog) SetSink(s events.Sink) {
+func (w *Watchdog) SetSink(s events.Sink) {
 	if w == nil {
 		return
 	}
@@ -103,7 +103,7 @@ func (w *watchdog) SetSink(s events.Sink) {
 	w.mu.Unlock()
 }
 
-func (w *watchdog) emit(e events.Event) {
+func (w *Watchdog) emit(e events.Event) {
 	if w == nil {
 		return
 	}
@@ -118,7 +118,7 @@ func (w *watchdog) emit(e events.Event) {
 // Track records that a session id belongs to this orchestrator. Only
 // permissions/questions from tracked sessions are auto-replied; this keeps
 // us from interfering with other clients sharing the same OpenCode server.
-func (w *watchdog) Track(sessionID string) {
+func (w *Watchdog) Track(sessionID string) {
 	if w == nil || sessionID == "" {
 		return
 	}
@@ -129,7 +129,7 @@ func (w *watchdog) Track(sessionID string) {
 
 // Untrack removes a session id (e.g. after DeleteSession). It is safe to
 // call multiple times.
-func (w *watchdog) Untrack(sessionID string) {
+func (w *Watchdog) Untrack(sessionID string) {
 	if w == nil || sessionID == "" {
 		return
 	}
@@ -138,7 +138,7 @@ func (w *watchdog) Untrack(sessionID string) {
 	w.mu.Unlock()
 }
 
-func (w *watchdog) owns(sessionID string) bool {
+func (w *Watchdog) owns(sessionID string) bool {
 	if w == nil {
 		return false
 	}
@@ -154,7 +154,7 @@ func (w *watchdog) owns(sessionID string) bool {
 // (or the lookup failed)". The watchdog uses both states to avoid
 // re-polling /session/{id} on every tick for sessions that turned
 // out not to be ours.
-func (w *watchdog) cachedParent(sessionID string) (string, bool) {
+func (w *Watchdog) cachedParent(sessionID string) (string, bool) {
 	if w == nil || sessionID == "" {
 		return "", false
 	}
@@ -167,7 +167,7 @@ func (w *watchdog) cachedParent(sessionID string) (string, bool) {
 // rememberParent records the looked-up parent for a session. We
 // cache even the negative result ("" parent) so we don't repeatedly
 // hit the server for the same untracked session.
-func (w *watchdog) rememberParent(sessionID, parentID string) {
+func (w *Watchdog) rememberParent(sessionID, parentID string) {
 	if w == nil || sessionID == "" {
 		return
 	}
@@ -198,7 +198,7 @@ func (w *watchdog) rememberParent(sessionID, parentID string) {
 // trusting). depth=4 is plenty: a subagent calling task to spawn
 // another subagent is rare; calling it 4 levels deep is implausible
 // and a strong sign something has gone wrong upstream.
-func (w *watchdog) ownsTransitive(ctx context.Context, sessionID string) bool {
+func (w *Watchdog) ownsTransitive(ctx context.Context, sessionID string) bool {
 	if w == nil || sessionID == "" {
 		return false
 	}
@@ -248,7 +248,7 @@ func (w *watchdog) ownsTransitive(ctx context.Context, sessionID string) bool {
 }
 
 // Start launches the polling goroutine. It is a no-op if api is nil.
-func (w *watchdog) Start(ctx context.Context) {
+func (w *Watchdog) Start(ctx context.Context) {
 	if w == nil || w.api == nil {
 		if w != nil {
 			close(w.doneCh)
@@ -259,7 +259,7 @@ func (w *watchdog) Start(ctx context.Context) {
 }
 
 // Stop signals the watchdog to exit and waits for the goroutine to finish.
-func (w *watchdog) Stop() {
+func (w *Watchdog) Stop() {
 	if w == nil {
 		return
 	}
@@ -267,7 +267,7 @@ func (w *watchdog) Stop() {
 	<-w.doneCh
 }
 
-func (w *watchdog) loop(ctx context.Context) {
+func (w *Watchdog) loop(ctx context.Context) {
 	defer close(w.doneCh)
 	t := time.NewTicker(w.pollInterval)
 	defer t.Stop()
@@ -283,7 +283,7 @@ func (w *watchdog) loop(ctx context.Context) {
 	}
 }
 
-func (w *watchdog) tick(ctx context.Context) {
+func (w *Watchdog) tick(ctx context.Context) {
 	// Use a short, independent timeout for each poll so a slow server can't
 	// stall the watchdog itself.
 	pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -304,7 +304,7 @@ func (w *watchdog) tick(ctx context.Context) {
 			if w.hasAnswered(p.ID) {
 				continue
 			}
-			decision := decidePermission(p, w.directory)
+			decision := DecidePermission(p, w.directory)
 			if decision.Response == "" {
 				continue
 			}

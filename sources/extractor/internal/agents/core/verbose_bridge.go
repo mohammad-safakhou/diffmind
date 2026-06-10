@@ -1,4 +1,4 @@
-package agents
+package core
 
 import (
 	"context"
@@ -11,18 +11,18 @@ import (
 // free-text parts when the structured slot couldn't be parsed. Keeping the
 // adapter local to this package means tests fakes that don't need this
 // extra surface stay focused on the smaller openCodeAPI interface.
-type verboseBridge struct {
+type VerboseBridge struct {
 	c *opencode.Client
 }
 
-func newVerboseBridge(c *opencode.Client) *verboseBridge {
+func NewVerboseBridge(c *opencode.Client) *VerboseBridge {
 	if c == nil {
 		return nil
 	}
-	return &verboseBridge{c: c}
+	return &VerboseBridge{c: c}
 }
 
-func (v *verboseBridge) PromptStructuredVerboseRaw(
+func (v *VerboseBridge) PromptStructuredVerboseRaw(
 	ctx context.Context,
 	sessionID, directory, prompt string,
 	schema map[string]any,

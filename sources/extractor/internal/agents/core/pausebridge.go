@@ -1,4 +1,4 @@
-package agents
+package core
 
 import (
 	"context"
@@ -9,25 +9,25 @@ import (
 // pauseBridge adapts a *opencode.Client into the agents.pauseHandler
 // interface. Keeping the bridge in this package means the agents tests can
 // continue to swap in fakes without dragging the opencode package into them.
-type pauseBridge struct {
+type PauseBridge struct {
 	c *opencode.Client
 }
 
-func newPauseBridge(c *opencode.Client) *pauseBridge {
+func NewPauseBridge(c *opencode.Client) *PauseBridge {
 	if c == nil {
 		return nil
 	}
-	return &pauseBridge{c: c}
+	return &PauseBridge{c: c}
 }
 
-func (p *pauseBridge) AbortSession(ctx context.Context, sessionID, directory string) error {
+func (p *PauseBridge) AbortSession(ctx context.Context, sessionID, directory string) error {
 	if p == nil || p.c == nil {
 		return nil
 	}
 	return p.c.AbortSession(ctx, sessionID, directory)
 }
 
-func (p *pauseBridge) ListPermissions(ctx context.Context, directory string) ([]PendingPermission, error) {
+func (p *PauseBridge) ListPermissions(ctx context.Context, directory string) ([]PendingPermission, error) {
 	if p == nil || p.c == nil {
 		return nil, nil
 	}
@@ -49,14 +49,14 @@ func (p *pauseBridge) ListPermissions(ctx context.Context, directory string) ([]
 	return out, nil
 }
 
-func (p *pauseBridge) RespondPermission(ctx context.Context, sessionID, permissionID, directory, response string) error {
+func (p *PauseBridge) RespondPermission(ctx context.Context, sessionID, permissionID, directory, response string) error {
 	if p == nil || p.c == nil {
 		return nil
 	}
 	return p.c.RespondPermission(ctx, sessionID, permissionID, directory, response)
 }
 
-func (p *pauseBridge) ListQuestions(ctx context.Context, directory string) ([]PendingQuestion, error) {
+func (p *PauseBridge) ListQuestions(ctx context.Context, directory string) ([]PendingQuestion, error) {
 	if p == nil || p.c == nil {
 		return nil, nil
 	}
@@ -73,7 +73,7 @@ func (p *pauseBridge) ListQuestions(ctx context.Context, directory string) ([]Pe
 	return out, nil
 }
 
-func (p *pauseBridge) RejectQuestion(ctx context.Context, requestID, directory string) error {
+func (p *PauseBridge) RejectQuestion(ctx context.Context, requestID, directory string) error {
 	if p == nil || p.c == nil {
 		return nil
 	}
@@ -86,7 +86,7 @@ func (p *pauseBridge) RejectQuestion(ctx context.Context, requestID, directory s
 // The watchdog calls this only for permissions whose SessionID is not
 // directly in ownedSessions, so it costs at most one round-trip per
 // unrecognised session (cached afterwards).
-func (p *pauseBridge) LookupSessionParent(ctx context.Context, sessionID, directory string) (string, error) {
+func (p *PauseBridge) LookupSessionParent(ctx context.Context, sessionID, directory string) (string, error) {
 	if p == nil || p.c == nil || sessionID == "" {
 		return "", nil
 	}

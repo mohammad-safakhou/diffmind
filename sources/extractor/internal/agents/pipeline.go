@@ -752,7 +752,7 @@ func (o *orchestrator) wireBridges(oc openCodeAPI) {
 	case *opencode.Client:
 		o.pauser = newPauseBridge(v)
 		o.verbose = newVerboseBridge(v)
-		o.tokens = &tokenBridge{c: v}
+		o.tokens = newTokenBridge(v)
 	case pauseHandler:
 		o.pauser = v
 	}
@@ -985,8 +985,8 @@ func (o *orchestrator) startLivenessWatch(ctx context.Context, role, sessionID s
 	if o.verbose != nil {
 		if client, ok := o.oc.(livenessClient); ok {
 			if ab, ok := o.oc.(livenessAborter); ok {
-				probe := &openCodeLivenessProbe{oc: client, sessionID: sessionID, directory: o.sessionDir}
-				abort := &openCodeAborter{oc: ab, sessionID: sessionID, directory: o.sessionDir}
+				probe := newOpenCodeLivenessProbe(client, sessionID, o.sessionDir)
+				abort := newOpenCodeAborter(ab, sessionID, o.sessionDir)
 				cfg := livenessConfig{
 					IdleTimeout:  time.Duration(o.cfg.Runtime.IdleTimeoutSec) * time.Second,
 					MaxCall:      time.Duration(o.cfg.Runtime.MaxCallSeconds) * time.Second,

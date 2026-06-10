@@ -1,4 +1,4 @@
-package agents
+package core
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 // livenessConfig controls when the watchdog declares an in-flight
 // prompt stuck and aborts it. All durations are positive; zero values
 // fall back to defaults.
-type livenessConfig struct {
+type LivenessConfig struct {
 	IdleTimeout  time.Duration // declare stuck after this long with no progress
 	MaxCall      time.Duration // hard ceiling on total call duration
 	PollInterval time.Duration // how often we poll for progress
@@ -23,7 +23,7 @@ type livenessConfig struct {
 // window, 30-minute hard ceiling, 5-second poll. These ratios mean a
 // stuck call is caught within IdleTimeout + PollInterval (~125s) and
 // a runaway loop is bounded at MaxCall (~30min) regardless.
-var livenessDefaults = livenessConfig{
+var livenessDefaults = LivenessConfig{
 	IdleTimeout:  120 * time.Second,
 	MaxCall:      30 * time.Minute,
 	PollInterval: 5 * time.Second,
@@ -32,7 +32,7 @@ var livenessDefaults = livenessConfig{
 // applyDefaults fills in zero fields with the production defaults.
 // We do NOT clamp to a minimum positive value so tests can pass tiny
 // durations to drive the state machine quickly.
-func (c livenessConfig) applyDefaults() livenessConfig {
+func (c LivenessConfig) applyDefaults() LivenessConfig {
 	if c.IdleTimeout <= 0 {
 		c.IdleTimeout = livenessDefaults.IdleTimeout
 	}
@@ -50,7 +50,7 @@ func (c livenessConfig) applyDefaults() livenessConfig {
 // latest assistant message, plus a flag for "is there a permission
 // pending on this session?" (the pause-handler watchdog already
 // tracks this; we just need the boolean here).
-type probeSnapshot struct {
+type ProbeSnapshot struct {
 	Session        opencode.SessionState // /session/{id}
 	Latest         opencode.Message      // /session/{id}/message?limit=1
 	PermissionWait bool                  // a permission is pending for this session
@@ -59,15 +59,15 @@ type probeSnapshot struct {
 // livenessProbe is the minimal interface the watchdog needs from the
 // outside world. The orchestrator wires up a real implementation
 // that hits OpenCode; tests inject a deterministic fake.
-type livenessProbe interface {
-	Snapshot(ctx context.Context) (probeSnapshot, error)
+type LivenessProbe interface {
+	Snapshot(ctx context.Context) (ProbeSnapshot, error)
 }
 
 // aborter is the action the watchdog takes when it gives up. The
 // orchestrator wires this to opencode.AbortSession; tests inject a
 // record-only fake. Returning an error from abort never propagates
 // back to the caller — we already decided to give up.
-type aborter interface {
+type Aborter interface {
 	Abort(ctx context.Context) error
 }
 
@@ -76,7 +76,7 @@ type aborter interface {
 // the failure report (e.g. "no progress for 127s; last part: tool
 // 'read' running 130s ago"). LastTool / LastTime are populated
 // best-effort for the dashboard.
-type livenessReport struct {
+type LivenessReport struct {
 	Reason   string
 	LastTool string
 	LastWhen time.Time
@@ -103,7 +103,7 @@ type livenessReport struct {
 //     watchdog itself.
 //   - When watchCtx is cancelled, the function returns cleanly
 //     without consulting the latest snapshot (no late-abort race).
-func runLiveness(watchCtx context.Context, cfg livenessConfig, probe livenessProbe, abort aborter, role string, sink events.Sink) *livenessReport {
+func RunLiveness(watchCtx context.Context, cfg LivenessConfig, probe LivenessProbe, abort Aborter, role string, sink events.Sink) *LivenessReport {
 	cfg = cfg.applyDefaults()
 	started := time.Now()
 	lastActivityAt := started
@@ -156,7 +156,7 @@ func runLiveness(watchCtx context.Context, cfg livenessConfig, probe livenessPro
 				"role": role, "elapsed_sec": total.Seconds(), "max_call_sec": cfg.MaxCall.Seconds(),
 			})
 			doAbort(watchCtx, abort, role)
-			return &livenessReport{Reason: reason, Aborted: true}
+			return &LivenessReport{Reason: reason, Aborted: true}
 		}
 
 		// Idle ceiling next: even without a successful snapshot, if
@@ -173,7 +173,7 @@ func runLiveness(watchCtx context.Context, cfg livenessConfig, probe livenessPro
 				"idle_max_sec": cfg.IdleTimeout.Seconds(),
 			})
 			doAbort(watchCtx, abort, role)
-			return &livenessReport{Reason: reason, LastWhen: lastActivityAt, Aborted: true}
+			return &LivenessReport{Reason: reason, LastWhen: lastActivityAt, Aborted: true}
 		}
 
 		// Take a snapshot. Use a short bounded context so a slow
@@ -262,7 +262,7 @@ func runLiveness(watchCtx context.Context, cfg livenessConfig, probe livenessPro
 			if p, ok := latestPart(snap.Latest); ok && p.Type == "tool" {
 				tool = p.Tool
 			}
-			return &livenessReport{
+			return &LivenessReport{
 				Reason:   reason,
 				LastTool: tool,
 				LastWhen: lastActivityAt,
@@ -303,7 +303,7 @@ func runLiveness(watchCtx context.Context, cfg livenessConfig, probe livenessPro
 // Errors from the abort itself are non-fatal: the prompt POST is
 // going to surface the cancellation anyway and that's what the
 // orchestrator hands back to the user.
-func doAbort(ctx context.Context, a aborter, role string) {
+func doAbort(ctx context.Context, a Aborter, role string) {
 	if a == nil {
 		return
 	}
@@ -362,16 +362,23 @@ func latestToolRunning(m opencode.Message) bool {
 // that auto-replies to OpenCode's permission/clarification prompts)
 // via ListPermissions, so the liveness clock correctly pauses while
 // the agent is blocked waiting on us.
-type openCodeLivenessProbe struct {
-	oc        livenessClient
+type OpenCodeLivenessProbe struct {
+	oc        LivenessClient
 	sessionID string
 	directory string
+}
+
+// NewOpenCodeLivenessProbe wires a LivenessClient to a session so the
+// orchestrator (a different package) can build the probe without
+// reaching into core's unexported fields.
+func NewOpenCodeLivenessProbe(oc LivenessClient, sessionID, directory string) *OpenCodeLivenessProbe {
+	return &OpenCodeLivenessProbe{oc: oc, sessionID: sessionID, directory: directory}
 }
 
 // livenessClient is the narrow subset of *opencode.Client the
 // liveness probe needs. Declared as an interface so future
 // implementations or mocks can swap in.
-type livenessClient interface {
+type LivenessClient interface {
 	GetSession(ctx context.Context, sessionID, directory string) (opencode.SessionState, error)
 	GetLatestMessage(ctx context.Context, sessionID, directory string) (opencode.Message, error)
 	ListPermissions(ctx context.Context, directory string) ([]opencode.PendingPermission, error)
@@ -383,9 +390,9 @@ type livenessClient interface {
 // return whatever partial data we got. The watchdog upstream treats
 // a fully-empty snapshot as "no info" but doesn't reset its idle
 // clock, so partial failures degrade gracefully.
-func (p *openCodeLivenessProbe) Snapshot(ctx context.Context) (probeSnapshot, error) {
+func (p *OpenCodeLivenessProbe) Snapshot(ctx context.Context) (ProbeSnapshot, error) {
 	if p == nil || p.oc == nil || p.sessionID == "" {
-		return probeSnapshot{}, nil
+		return ProbeSnapshot{}, nil
 	}
 
 	type sessRes struct {
@@ -434,7 +441,7 @@ func (p *openCodeLivenessProbe) Snapshot(ctx context.Context) (probeSnapshot, er
 			firstErr = e
 		}
 	}
-	return probeSnapshot{
+	return ProbeSnapshot{
 		Session:        sess.s,
 		Latest:         msg.m,
 		PermissionWait: perm.pending,
@@ -444,17 +451,24 @@ func (p *openCodeLivenessProbe) Snapshot(ctx context.Context) (probeSnapshot, er
 // openCodeAborter adapts an *opencode.Client into the aborter
 // interface. AbortSession is best-effort (it's the same call we
 // already make in promptAgent's defer-cleanup path).
-type openCodeAborter struct {
-	oc        livenessAborter
+type OpenCodeAborter struct {
+	oc        LivenessAborter
 	sessionID string
 	directory string
 }
 
-type livenessAborter interface {
+// NewOpenCodeAborter wires a LivenessAborter to a session so the
+// orchestrator (a different package) can build the aborter without
+// reaching into core's unexported fields.
+func NewOpenCodeAborter(oc LivenessAborter, sessionID, directory string) *OpenCodeAborter {
+	return &OpenCodeAborter{oc: oc, sessionID: sessionID, directory: directory}
+}
+
+type LivenessAborter interface {
 	AbortSession(ctx context.Context, sessionID, directory string) error
 }
 
-func (a *openCodeAborter) Abort(ctx context.Context) error {
+func (a *OpenCodeAborter) Abort(ctx context.Context) error {
 	if a == nil || a.oc == nil || a.sessionID == "" {
 		return nil
 	}
