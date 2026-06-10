@@ -54,6 +54,16 @@ func DeterministicFloor(ctx context.Context, idx *astpkg.ProjectIndex, repoPath 
 			outMap[dbObj.ID] = append(outMap[dbObj.ID], e)
 		}
 	}
+	if obj, ok := objectiveByTypeIn(objs, "command_exec"); ok {
+		for _, e := range deterministicCommandExec(idx) {
+			outMap[obj.ID] = append(outMap[obj.ID], e)
+		}
+	}
+	if obj, ok := objectiveByTypeIn(objs, "queue_publish"); ok {
+		for _, e := range deterministicQueuePublish(idx) {
+			outMap[obj.ID] = append(outMap[obj.ID], e)
+		}
+	}
 
 	// ── Convert to model entities (same confidence/location gate as detail) ──
 	var exposures []model.Exposure
