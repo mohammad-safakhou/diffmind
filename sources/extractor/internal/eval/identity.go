@@ -30,7 +30,9 @@ func identityKey(b model.BaseEntity) string {
 		if dest == "" {
 			dest = lc(b.Name)
 		}
-		return strings.Join([]string{t, lc(b.Platform), dest}, "|")
+		// Suffix-normalize so "<queue>" and "<queue>-consumer" are one fact,
+		// identical to reconcile dedup (Item 5).
+		return strings.Join([]string{t, lc(b.Platform), reconcile.NormalizeQueueDest(dest)}, "|")
 	case "rpc_endpoint", "outbound_rpc":
 		return strings.Join([]string{t, lc(detail(b, "service")), lc(detail(b, "method"))}, "|")
 	case "cli_command", "command_exec":
