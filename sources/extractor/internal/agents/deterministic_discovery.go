@@ -12,7 +12,6 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
-	"github.com/mohammad-safakhou/diffmind/internal/reconcile"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -649,120 +648,6 @@ func mergeDeterministicDuplicate(llm, det llmEntity) llmEntity {
 		}
 	}
 	return out
-}
-
-func discoverySemanticKey(obj objectives.Objective, e llmEntity) string {
-	deriveDetailsFromName(obj.Type, &e)
-	get := func(key string) string {
-		if e.Details == nil {
-			return ""
-		}
-		if v, ok := e.Details[key]; ok {
-			return strings.ToLower(strings.TrimSpace(fmt.Sprint(v)))
-		}
-		return ""
-	}
-	first := func(keys ...string) string {
-		for _, k := range keys {
-			if v := get(k); v != "" {
-				return v
-			}
-		}
-		return ""
-	}
-	switch obj.Type {
-	case "http_route", "webhook", "outbound_http":
-		method, path := get("method"), normalizePathForKey(get("path"))
-		if method != "" || path != "" {
-			return strings.Join([]string{obj.ID, method, path}, "|")
-		}
-	case "queue_consumer", "queue_publish", "stream_consume":
-		platform := get("platform")
-		dest := first("queue", "topic", "destination", "stream")
-		if platform != "" || dest != "" {
-			return strings.Join([]string{obj.ID, platform, dest}, "|")
-		}
-	case "scheduled_job":
-		schedule, handler := get("schedule"), get("handler")
-		if schedule != "" || handler != "" {
-			return strings.Join([]string{obj.ID, schedule, handler}, "|")
-		}
-	case "db_operation", "cache_operation":
-		// High-level identity: a dependency is "<operation> on <resource>"
-		// (e.g. read from orders), NOT one row per repository method. Keying
-		// on (resource, operation) collapses the LLM's per-method jitter into
-		// the architectural fact the extractor is after, which is also what
-		// stabilises the run-to-run count.
-		resource := first("table", "entity", "cache", "key", "collection", "index")
-		op := get("operation")
-		if resource != "" || op != "" {
-			return strings.Join([]string{obj.ID, resource, op}, "|")
-		}
-	case "rpc_endpoint", "outbound_rpc":
-		svc, meth := get("service"), get("method")
-		if svc != "" || meth != "" {
-			return strings.Join([]string{obj.ID, svc, meth}, "|")
-		}
-	case "cli_command", "command_exec":
-		cmd := first("command", "invocation")
-		handler := get("handler")
-		if cmd != "" || handler != "" {
-			return strings.Join([]string{obj.ID, cmd, handler}, "|")
-		}
-	}
-	return shardEntityKey(e)
-}
-
-// normalizePathForKey defers to reconcile.CanonicalizeRoutePath so the
-// discovery-merge key canonicalizes paths (incl. parameter syntax
-// {id}/:id/<int:id>/*) identically to reconcile dedup and the eval matcher (C1).
-func normalizePathForKey(path string) string {
-	return reconcile.CanonicalizeRoutePath(path)
-}
-
-func isCompleteDeterministicSeed(obj objectives.Objective, e *llmEntity) bool {
-	if e == nil {
-		return false
-	}
-	if obj.Kind != model.KindExposure {
-		return false
-	}
-	switch obj.Type {
-	case "http_route", "queue_consumer", "scheduled_job":
-	default:
-		return false
-	}
-	if !hasDeterministicEvidence(*e) {
-		return false
-	}
-	if strings.TrimSpace(e.Name) == "" || strings.TrimSpace(e.Type) == "" {
-		return false
-	}
-	if _, ok := CanonicalObjectiveType(obj, e.Type); !ok {
-		return false
-	}
-	if len(e.Locations) == 0 || strings.TrimSpace(e.Locations[0].File) == "" || e.Locations[0].StartLine <= 0 {
-		return false
-	}
-	if e.Confidence < 1.0 {
-		return false
-	}
-	deriveDetailsFromName(obj.Type, e)
-	return missingRequiredDetails(obj.Type, e.Details) == ""
-}
-
-func hasDeterministicEvidence(e llmEntity) bool {
-	for _, ev := range e.Evidence {
-		if strings.HasPrefix(strings.TrimSpace(ev.Source), "deterministic_") {
-			return true
-		}
-	}
-	for _, tag := range e.Tags {
-		if strings.TrimSpace(tag) == "deterministic" {
-			return true
-		}
-	}
-	return false
 }
 
 func (o *orchestrator) detailCheckpointForSeed(j detailJob) (core.DetailCheckpointEntry, bool) {
