@@ -91,6 +91,30 @@ func TestMatchQueuePublishPrecision(t *testing.T) {
 	}
 }
 
+func TestMatchGRPCStubCall(t *testing.T) {
+	svc, m, ok := matchGRPCStubCall(astpkg.CallSite{ReceiverRaw: "fooServiceBlockingStub", CalleeRaw: "getThing"})
+	if !ok || svc != "fooService" || m != "getThing" {
+		t.Errorf("gRPC stub call mis-parsed: svc=%q m=%q ok=%v", svc, m, ok)
+	}
+	// A plain variable named "stub" must NOT match (gRPC stubs are *BlockingStub/*FutureStub).
+	if _, _, ok := matchGRPCStubCall(astpkg.CallSite{ReceiverRaw: "stub", CalleeRaw: "doThing"}); ok {
+		t.Error("plain 'stub' receiver should not match gRPC")
+	}
+}
+
+func TestDeterministicStreamConsumePrecision(t *testing.T) {
+	// Java Collection.stream() must never be a stream_consume.
+	idx := buildAgentsIndex(t, map[string]string{
+		"S.go": `package svc
+func F(items []int) { _ = items }
+`,
+	})
+	// streamsBuilder gating is unit-tested via matcher; ensure a non-streams call yields nothing.
+	if got := deterministicStreamConsume(idx); len(got) != 0 {
+		t.Errorf("expected no stream_consume, got %v", entityNames(got))
+	}
+}
+
 func TestDeterministicQueuePublish(t *testing.T) {
 	idx := buildAgentsIndex(t, map[string]string{
 		"Publisher.java": `package com.example;

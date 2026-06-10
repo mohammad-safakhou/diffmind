@@ -64,6 +64,16 @@ func DeterministicFloor(ctx context.Context, idx *astpkg.ProjectIndex, repoPath 
 			outMap[obj.ID] = append(outMap[obj.ID], e)
 		}
 	}
+	if obj, ok := objectiveByTypeIn(objs, "outbound_rpc"); ok {
+		for _, e := range deterministicOutboundRPC(idx) {
+			outMap[obj.ID] = append(outMap[obj.ID], e)
+		}
+	}
+	if obj, ok := objectiveByTypeIn(objs, "stream_consume"); ok {
+		for _, e := range deterministicStreamConsume(idx) {
+			outMap[obj.ID] = append(outMap[obj.ID], e)
+		}
+	}
 
 	// ── Convert to model entities (same confidence/location gate as detail) ──
 	var exposures []model.Exposure

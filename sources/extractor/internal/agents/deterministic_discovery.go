@@ -74,6 +74,16 @@ func (o *orchestrator) runDeterministicDiscovery(ctx context.Context, objs []obj
 			outMap[obj.ID] = append(outMap[obj.ID], e)
 		}
 	}
+	if obj, ok := objectiveByTypeIn(objs, "outbound_rpc"); ok {
+		for _, e := range deterministicOutboundRPC(o.astIndex) {
+			outMap[obj.ID] = append(outMap[obj.ID], e)
+		}
+	}
+	if obj, ok := objectiveByTypeIn(objs, "stream_consume"); ok {
+		for _, e := range deterministicStreamConsume(o.astIndex) {
+			outMap[obj.ID] = append(outMap[obj.ID], e)
+		}
+	}
 
 	results := make([]discoveryResult, 0, len(outMap))
 	total := 0
