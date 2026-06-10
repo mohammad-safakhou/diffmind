@@ -136,11 +136,11 @@ func TestBuildObjectiveHints_FileScope(t *testing.T) {
 }
 
 func TestBuildObjectiveHints_NilIndexAndUnknownType(t *testing.T) {
-	if h := buildObjectiveHints(nil, objByType(t, "http_route"), "", nil); !h.empty() {
+	if h := buildObjectiveHints(nil, objByType(t, "http_route"), "", nil); !h.Empty() {
 		t.Fatalf("nil index should yield empty hints, got %+v", h)
 	}
 	// Unknown objective type → no matcher → empty.
-	if h := buildObjectiveHints(fixtureIndex(), objectives.Objective{Type: "totally_unknown"}, "", nil); !h.empty() {
+	if h := buildObjectiveHints(fixtureIndex(), objectives.Objective{Type: "totally_unknown"}, "", nil); !h.Empty() {
 		t.Fatalf("unknown type should yield empty hints, got %+v", h)
 	}
 }
