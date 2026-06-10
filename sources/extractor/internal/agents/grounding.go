@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
+	"github.com/mohammad-safakhou/diffmind/internal/agents/core"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 )
 
@@ -30,40 +31,15 @@ const (
 	maxConfigHints = 40
 )
 
-// objectiveHints is the compact, token-bounded AST context for one objective.
-type objectiveHints struct {
-	Symbols   []symbolHint
-	Bindings  []bindingHint
-	Configs   []configHint
-	Truncated bool // true if any list was capped
-}
-
-type symbolHint struct {
-	Qualified   string
-	File        string
-	Line        uint32
-	Annotations []string
-}
-
-type bindingHint struct {
-	Framework string
-	Kind      string
-	Symbol    string
-	Trigger   string
-	File      string
-	Line      uint32
-}
-
-type configHint struct {
-	File  string
-	Key   string
-	Value string
-}
-
-// empty reports whether there is nothing worth rendering.
-func (h objectiveHints) empty() bool {
-	return len(h.Symbols) == 0 && len(h.Bindings) == 0 && len(h.Configs) == 0
-}
+// The hint DTOs live in internal/agents/core so the prompt builders (which
+// move to core) can render them without depending on the orchestrator. These
+// aliases keep grounding.go's existing names working.
+type (
+	objectiveHints = core.ObjectiveHints
+	symbolHint     = core.SymbolHint
+	bindingHint    = core.BindingHint
+	configHint     = core.ConfigHint
+)
 
 // objectiveMatcher declares what AST facts are relevant to one objective type.
 // Matching is case-insensitive substring matching, deliberately loose: a hint

@@ -89,7 +89,7 @@ func monorepoScopeLine(subDir string) string {
 // misses reflection / dynamic registration / custom frameworks, so the model
 // MUST still search the code for anything not listed.
 func astHintsBlock(h objectiveHints) string {
-	if h.empty() {
+	if h.Empty() {
 		return ""
 	}
 	var sb strings.Builder
