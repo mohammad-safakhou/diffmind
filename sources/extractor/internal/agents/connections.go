@@ -37,7 +37,7 @@ func (o *orchestrator) runConnectionsBatch(
 		return nil, nil, nil, ""
 	}
 
-	// ── AST path (preferred) ─────────────────────────────────────────────
+	// AST path (preferred)
 	if o.astIndex != nil && (len(o.astIndex.Symbols) > 0 || len(o.astIndex.Frameworks) > 0) {
 		conns, unresolved := runASTConnections(ctx, o.astIndex, exposures, dependencies,
 			o.cfg.Quality.MinConfidence, o.cfg.Runtime.Workers, onResult)
@@ -64,7 +64,7 @@ func (o *orchestrator) runConnectionsBatch(
 		util.Warn("agents.connections", "ast walk produced no connections; falling back to shallow matcher", nil)
 	}
 
-	// ── Shallow name-based fallback ──────────────────────────────────────
+	// Shallow name-based fallback
 	util.Warn("agents.connections", "no ast index available; using shallow name matcher", nil)
 	conns, unresolved := buildShallowConnections(exposures, dependencies, o.cfg.Quality.MinConfidence)
 	o.emitConnectionsAggregate(len(exposures), len(conns), 0, "no_index")
@@ -293,7 +293,7 @@ func (o *orchestrator) emitConnectionsAggregate(
 	})
 }
 
-// ─── Tree-sitter connection engine ────────────────────────────────────────────
+// Tree-sitter connection engine
 
 // runASTConnections finds all connections between exposures and dependencies
 // using the tree-sitter project index. It replaces the SCIP-based connection

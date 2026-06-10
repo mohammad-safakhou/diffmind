@@ -5,24 +5,15 @@ import "context"
 // PathStep is one hop in a call path from an exposure entry symbol to a
 // dependency target.
 type PathStep struct {
-	// Order is the 1-based hop number.
-	Order int
-	// Caller is the qualified symbol of the enclosing function/method.
-	Caller string
-	// Callee is the resolved qualified symbol being called.
-	Callee string
-	// CalleeRaw is the identifier as written in source.
-	CalleeRaw string
-	// File is the file where the call occurs.
-	File string
-	// Range is the source position.
-	Range Range
-	// Arguments is the verbatim argument list.
-	Arguments []ArgumentExpr
-	// Condition is the control-flow context of this specific hop.
-	Condition ConnectionCondition
-	// Repetition describes whether this hop is inside a loop.
-	Repetition Repetition
+	Order      int    // 1-based hop number
+	Caller     string // qualified symbol of the enclosing function/method
+	Callee     string // resolved qualified symbol being called
+	CalleeRaw  string // identifier as written in source
+	File       string
+	Range      Range
+	Arguments  []ArgumentExpr
+	Condition  ConnectionCondition // control-flow context of this hop
+	Repetition Repetition          // whether this hop is inside a loop
 }
 
 // CallPath is one resolved path from an entry symbol to a target dependency.

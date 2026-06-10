@@ -16,7 +16,7 @@ func init() {
 	register(&ginDetector{})
 }
 
-// ── Express / Node.js ─────────────────────────────────────────────────────────
+// Express / Node.js
 
 type expressDetector struct{}
 
@@ -69,7 +69,7 @@ func expressCallToBinding(call ast.CallSite) *ast.FrameworkBinding {
 	}
 }
 
-// ── FastAPI (Python) ──────────────────────────────────────────────────────────
+// FastAPI (Python)
 
 type fastApiDetector struct{}
 
@@ -119,7 +119,7 @@ func fastAPIAnnotationToBinding(sym ast.SymbolDef, ann ast.Annotation) *ast.Fram
 	return nil
 }
 
-// ── Django (Python) ───────────────────────────────────────────────────────────
+// Django (Python)
 
 type djangoDetector struct{}
 
@@ -163,7 +163,7 @@ func (d *djangoDetector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
 	return out
 }
 
-// ── Ruby on Rails ─────────────────────────────────────────────────────────────
+// Ruby on Rails
 
 type railsDetector struct{}
 
@@ -205,7 +205,7 @@ func (d *railsDetector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
 	return out
 }
 
-// ── Laravel (PHP) ─────────────────────────────────────────────────────────────
+// Laravel (PHP)
 
 type laravelDetector struct{}
 
@@ -249,7 +249,7 @@ func (d *laravelDetector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
 	return out
 }
 
-// ── ASP.NET (C#) ──────────────────────────────────────────────────────────────
+// ASP.NET (C#)
 
 type aspnetDetector struct{}
 
@@ -320,7 +320,7 @@ func aspnetClassRoutePrefix(cls ast.SymbolDef) string {
 	return ""
 }
 
-// ── Gin (Go) ──────────────────────────────────────────────────────────────────
+// Gin (Go)
 
 type ginDetector struct{}
 

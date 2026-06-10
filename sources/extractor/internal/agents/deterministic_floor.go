@@ -31,7 +31,7 @@ func DeterministicFloor(ctx context.Context, idx *astpkg.ProjectIndex, repoPath 
 	minConf := cfg.Quality.MinConfidence
 	workers := cfg.Runtime.Workers
 
-	// ── Deterministic discovery (no events/persistence/path-mapping) ─────────
+	// Deterministic discovery (no events/persistence/path-mapping)
 	// This is the pure core of runDeterministicDiscovery: framework bindings →
 	// entities, plus call-graph-derived db operations. The orchestrator method
 	// adds event emission and snapshot→source path mapping on top; neither is
@@ -75,7 +75,7 @@ func DeterministicFloor(ctx context.Context, idx *astpkg.ProjectIndex, repoPath 
 		}
 	}
 
-	// ── Convert to model entities (same confidence/location gate as detail) ──
+	// Convert to model entities (same confidence/location gate as detail)
 	var exposures []model.Exposure
 	var dependencies []model.Dependency
 	for _, obj := range objs {
@@ -94,12 +94,12 @@ func DeterministicFloor(ctx context.Context, idx *astpkg.ProjectIndex, repoPath 
 	exposures = reconcile.DedupeExposures(exposures)
 	dependencies = reconcile.DedupeDependencies(dependencies)
 
-	// ── AST-derived db augmentation (the same step the pipeline runs) ────────
+	// AST-derived db augmentation (the same step the pipeline runs)
 	dependencies = augmentDependenciesFromAST(idx, exposures, dependencies, minConf)
 	stampInferredDBPlatform(idx, dependencies) // P7: give deterministic db ops the configured platform
 	dependencies = reconcile.DedupeDependencies(dependencies)
 
-	// ── Connections (AST walk only; no shallow fallback, no LLM repair) ──────
+	// Connections (AST walk only; no shallow fallback, no LLM repair)
 	var conns []model.Connection
 	var unresolved []model.UnresolvedItem
 	if len(exposures) > 0 && len(dependencies) > 0 && (len(idx.Symbols) > 0 || len(idx.Frameworks) > 0) {
@@ -108,7 +108,7 @@ func DeterministicFloor(ctx context.Context, idx *astpkg.ProjectIndex, repoPath 
 	conns, orphan := reconcile.FilterConnections(conns, exposures, dependencies)
 	unresolved = append(unresolved, orphan...)
 
-	// ── Deterministic ordering, matching RunWith's final sort ────────────────
+	// Deterministic ordering, matching RunWith's final sort
 	sort.Slice(exposures, func(i, j int) bool { return exposures[i].ID < exposures[j].ID })
 	sort.Slice(dependencies, func(i, j int) bool { return dependencies[i].ID < dependencies[j].ID })
 	sort.Slice(conns, func(i, j int) bool { return conns[i].ID < conns[j].ID })
