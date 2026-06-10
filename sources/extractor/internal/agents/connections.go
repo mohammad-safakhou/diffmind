@@ -306,23 +306,14 @@ func (o *orchestrator) emitConnectionsAggregate(
 //  3. BFS from each entry symbol to any dependency symbol, collecting paths.
 //  4. Each path's hops carry per-step condition + repetition derived from the
 //     tree-sitter enclosing context (populated at parse time, no LLM).
-func runASTConnections(
-	ctx context.Context,
-	idx *astpkg.ProjectIndex,
-	exposures []model.Exposure,
-	dependencies []model.Dependency,
-	minConfidence float64,
-	workerCount int,
-	onResult func(),
-) ([]model.Connection, []model.UnresolvedItem) {
-	if workerCount <= 0 {
-		workerCount = 6
-	}
-
-	// Build the dependency symbol set.
+// buildDependencySymbolIndex resolves every dependency to its AST symbol(s) and
+// returns the symbol→deps target map plus the deps that could not be resolved.
+// When a resolved symbol is a class/interface, its methods are registered as
+// targets too — constrained to the dep's source_location range when meaningful
+// so a dep pinned to a few lines doesn't expand to the whole class.
+func buildDependencySymbolIndex(idx *astpkg.ProjectIndex, dependencies []model.Dependency) (map[string][]model.Dependency, []model.UnresolvedItem) {
 	depBySymbol := map[string][]model.Dependency{} // resolved symbol → candidate deps
 	var unresolvedDeps []model.UnresolvedItem
-
 	for _, dep := range dependencies {
 		syms := resolveEntitySymbolsAST(idx, dep.Name, dependencyTargetLocations(dep))
 		if len(syms) == 0 {
@@ -338,47 +329,82 @@ func runASTConnections(
 		}
 		for _, sym := range syms {
 			depBySymbol[sym] = appendDependencyTarget(depBySymbol[sym], dep)
-			// If the resolved symbol is a class or interface, register its methods
-			// as targets too. Constrain the expansion to the dep's source_location
-			// range when available — this prevents overly broad matches when the
-			// dep identifies a specific range within a large class (e.g.
-			// campaign.save/update at lines 11-19 should not expand to ALL methods
-			// of CampaignRepository).
-			if defs, ok := idx.Symbols[sym]; ok {
-				for _, def := range defs {
-					if def.Kind == astpkg.SymbolKindClass || def.Kind == astpkg.SymbolKindInterface {
-						// Determine the effective method-search range.
-						// If the dep has a location, constrain to that range.
-						// Otherwise fall back to the full class body.
-						rangeStart := def.Range.StartLine
-						rangeEnd := def.Range.EndLine
-						if len(dep.Locations) > 0 {
-							loc := dep.Locations[0]
-							if loc.StartLine > 0 {
-								// Use the dep location range, converted to 0-based.
-								ls := uint32(loc.StartLine - 1)
-								le := uint32(loc.EndLine - 1)
-								// Only constrain when the range is meaningful (more than a single line).
-								if le > ls+2 {
-									rangeStart = ls
-									rangeEnd = le
-								}
-							}
+			defs, ok := idx.Symbols[sym]
+			if !ok {
+				continue
+			}
+			for _, def := range defs {
+				if def.Kind != astpkg.SymbolKindClass && def.Kind != astpkg.SymbolKindInterface {
+					continue
+				}
+				// Effective method-search range: the dep's location range
+				// when meaningful (>2 lines), else the full class body.
+				rangeStart := def.Range.StartLine
+				rangeEnd := def.Range.EndLine
+				if len(dep.Locations) > 0 {
+					loc := dep.Locations[0]
+					if loc.StartLine > 0 {
+						ls := uint32(loc.StartLine - 1)
+						le := uint32(loc.EndLine - 1)
+						if le > ls+2 {
+							rangeStart = ls
+							rangeEnd = le
 						}
-						if fa, ok := idx.Files[def.File]; ok {
-							for _, msym := range fa.Symbols {
-								if (msym.Kind == astpkg.SymbolKindMethod || msym.Kind == astpkg.SymbolKindFunction) &&
-									msym.Range.StartLine >= rangeStart &&
-									msym.Range.EndLine <= rangeEnd {
-									depBySymbol[msym.Qualified] = appendDependencyTarget(depBySymbol[msym.Qualified], dep)
-								}
-							}
-						}
+					}
+				}
+				fa, ok := idx.Files[def.File]
+				if !ok {
+					continue
+				}
+				for _, msym := range fa.Symbols {
+					if (msym.Kind == astpkg.SymbolKindMethod || msym.Kind == astpkg.SymbolKindFunction) &&
+						msym.Range.StartLine >= rangeStart &&
+						msym.Range.EndLine <= rangeEnd {
+						depBySymbol[msym.Qualified] = appendDependencyTarget(depBySymbol[msym.Qualified], dep)
 					}
 				}
 			}
 		}
 	}
+	return depBySymbol, unresolvedDeps
+}
+
+// resolveExposureEntries resolves an exposure's entry symbol(s) by position/
+// name, falling back to framework bindings (matched by name fragment or trigger
+// annotation) when the AST lookup finds nothing.
+func resolveExposureEntries(idx *astpkg.ProjectIndex, exp model.Exposure) []string {
+	entries := resolveExposureEntrySymbolsAST(idx, exp)
+	if len(entries) > 0 {
+		return entries
+	}
+	baseName := exp.Name
+	if i := strings.LastIndex(baseName, " - "); i >= 0 {
+		baseName = baseName[i+3:] // strip a suffix like "- SQS Message Handler"
+	}
+	for _, fb := range idx.Frameworks {
+		if fb.Symbol != "" && (strings.Contains(fb.Trigger, exp.Name) ||
+			strings.Contains(fb.Trigger, baseName) ||
+			strings.Contains(fb.Symbol, baseName)) {
+			entries = append(entries, fb.Symbol)
+		}
+	}
+	return entries
+}
+
+func runASTConnections(
+	ctx context.Context,
+	idx *astpkg.ProjectIndex,
+	exposures []model.Exposure,
+	dependencies []model.Dependency,
+	minConfidence float64,
+	workerCount int,
+	onResult func(),
+) ([]model.Connection, []model.UnresolvedItem) {
+	if workerCount <= 0 {
+		workerCount = 6
+	}
+
+	depBySymbol, unresolvedDeps := buildDependencySymbolIndex(idx, dependencies)
 
 	// (Per-exposure class sets are computed lazily in the producer goroutine.)
 
@@ -437,22 +463,7 @@ func runASTConnections(
 
 	go func() {
 		for _, exp := range exposures {
-			entries := resolveExposureEntrySymbolsAST(idx, exp)
-			if len(entries) == 0 {
-				// No entry point found by position/name: try framework bindings.
-				// Match by name fragment or trigger annotation.
-				baseName := exp.Name
-				if idx2 := strings.LastIndex(baseName, " - "); idx2 >= 0 {
-					baseName = baseName[idx2+3:] // strip suffix like "- SQS Message Handler"
-				}
-				for _, fb := range idx.Frameworks {
-					if fb.Symbol != "" && (strings.Contains(fb.Trigger, exp.Name) ||
-						strings.Contains(fb.Trigger, baseName) ||
-						strings.Contains(fb.Symbol, baseName)) {
-						entries = append(entries, fb.Symbol)
-					}
-				}
-			}
+			entries := resolveExposureEntries(idx, exp)
 			// Build a per-exposure self-reference filter: only classes that are
 			// the entry point of THIS specific exposure. Do not use the global
 			// exposureClasses set (which would incorrectly block targets whose
@@ -833,80 +844,7 @@ func resolveEntitySymbolsAST(idx *astpkg.ProjectIndex, name string, locs []model
 			return exact
 		}
 	}
-	// Positional lookup strategy:
-	//   - For each location, collect method and class symbols at that line.
-	//   - Methods are preferred over classes.
-	//   - Class symbols are expanded to all their methods.
-	//   - ALL locations are processed, collecting the union of results.
-	//   - When any location yields method symbols, those are included together
-	//     with any class expansion from earlier locations.
-	//
-	// This ensures that:
-	//   - An exposure whose first location is the class declaration (line 1)
-	//     gets all the class's methods as entry points.
-	//   - An exposure whose second location points to an inner method also
-	//     includes that method — even when the first location yielded a class.
-
-	var directMethods []string  // methods found at exact lines
-	var classExpansion []string // class-to-method expansions
-
-	for _, loc := range locs {
-		if loc.File == "" || loc.StartLine <= 0 {
-			continue
-		}
-		fa, ok := idx.Files[loc.File]
-		if !ok {
-			continue
-		}
-		line := uint32(loc.StartLine - 1) // 1-based → 0-based
-
-		// Collect all symbols that contain this line.
-		var methods, classes []astpkg.SymbolDef
-		for _, sym := range fa.Symbols {
-			if sym.Range.StartLine <= line && sym.Range.EndLine >= line {
-				switch sym.Kind {
-				case astpkg.SymbolKindMethod, astpkg.SymbolKindFunction, astpkg.SymbolKindConstructor:
-					methods = append(methods, sym)
-				case astpkg.SymbolKindClass, astpkg.SymbolKindInterface:
-					classes = append(classes, sym)
-				}
-			}
-		}
-
-		// Collect direct method hits.
-		for _, m := range methods {
-			directMethods = append(directMethods, m.Qualified)
-		}
-
-		// Expand classes to their methods (only accumulate once per class).
-		if len(methods) == 0 && len(classes) > 0 {
-			for _, cls := range classes {
-				classExpansion = append(classExpansion, cls.Qualified)
-				for _, sym := range fa.Symbols {
-					if sym.Kind == astpkg.SymbolKindMethod || sym.Kind == astpkg.SymbolKindFunction {
-						if sym.Range.StartLine >= cls.Range.StartLine &&
-							sym.Range.EndLine <= cls.Range.EndLine {
-							classExpansion = append(classExpansion, sym.Qualified)
-						}
-					}
-				}
-			}
-			continue // don't do widening if class was found
-		}
-
-		// Nothing at exact line: widen ±5 leading / +30 trailing lines.
-		if len(methods) == 0 && len(classes) == 0 {
-			lo := line
-			if line > 5 {
-				lo = line - 5
-			}
-			for _, sym := range fa.Symbols {
-				if sym.Range.StartLine >= lo && sym.Range.StartLine <= line+30 {
-					directMethods = append(directMethods, sym.Qualified)
-				}
-			}
-		}
-	}
+	directMethods, classExpansion := positionalSymbolLookup(idx, locs)
 
 	// Prefer direct method hits; augment with class expansion.
 	// When we have both, union them: the class expansion covers the entry class
@@ -927,10 +865,79 @@ func resolveEntitySymbolsAST(idx *astpkg.ProjectIndex, name string, locs []model
 		return uniqueStrings(combined)
 	}
 
-	var found []string
+	return nameBasedSymbolLookup(idx, name)
+}
 
-	// 2. Name-based lookup.
-	// Extract the method/function name from "ClassName.methodName" or bare "methodName".
+// positionalSymbolLookup collects callable symbols at an entity's
+// source_locations. For each location it gathers method/class symbols spanning
+// that line: methods are returned directly; a class with no method at the line
+// is expanded to all its methods; a line with nothing is widened ±5 leading /
+// +30 trailing lines. All locations are unioned, so a first location on a class
+// declaration and a second on an inner method both contribute.
+func positionalSymbolLookup(idx *astpkg.ProjectIndex, locs []model.Location) (directMethods, classExpansion []string) {
+	for _, loc := range locs {
+		if loc.File == "" || loc.StartLine <= 0 {
+			continue
+		}
+		fa, ok := idx.Files[loc.File]
+		if !ok {
+			continue
+		}
+		line := uint32(loc.StartLine - 1) // 1-based → 0-based
+
+		var methods, classes []astpkg.SymbolDef
+		for _, sym := range fa.Symbols {
+			if sym.Range.StartLine <= line && sym.Range.EndLine >= line {
+				switch sym.Kind {
+				case astpkg.SymbolKindMethod, astpkg.SymbolKindFunction, astpkg.SymbolKindConstructor:
+					methods = append(methods, sym)
+				case astpkg.SymbolKindClass, astpkg.SymbolKindInterface:
+					classes = append(classes, sym)
+				}
+			}
+		}
+
+		for _, m := range methods {
+			directMethods = append(directMethods, m.Qualified)
+		}
+
+		// Expand classes to their methods (only when no method hit the line).
+		if len(methods) == 0 && len(classes) > 0 {
+			for _, cls := range classes {
+				classExpansion = append(classExpansion, cls.Qualified)
+				for _, sym := range fa.Symbols {
+					if sym.Kind == astpkg.SymbolKindMethod || sym.Kind == astpkg.SymbolKindFunction {
+						if sym.Range.StartLine >= cls.Range.StartLine &&
+							sym.Range.EndLine <= cls.Range.EndLine {
+							classExpansion = append(classExpansion, sym.Qualified)
+						}
+					}
+				}
+			}
+			continue // don't widen if a class was found
+		}
+
+		// Nothing at the exact line: widen ±5 leading / +30 trailing lines.
+		if len(methods) == 0 && len(classes) == 0 {
+			lo := line
+			if line > 5 {
+				lo = line - 5
+			}
+			for _, sym := range fa.Symbols {
+				if sym.Range.StartLine >= lo && sym.Range.StartLine <= line+30 {
+					directMethods = append(directMethods, sym.Qualified)
+				}
+			}
+		}
+	}
+	return directMethods, classExpansion
+}
+
+// nameBasedSymbolLookup is the fallback when positional lookup finds nothing:
+// it matches symbols whose unqualified name equals the entity's method name
+// (extracted from "Class.method"/"Class#method") or whose qualified name equals
+// the full entity name.
+func nameBasedSymbolLookup(idx *astpkg.ProjectIndex, name string) []string {
 	searchName := name
 	if dot := strings.LastIndexAny(name, ".#/"); dot >= 0 {
 		searchName = name[dot+1:]
@@ -940,6 +947,7 @@ func resolveEntitySymbolsAST(idx *astpkg.ProjectIndex, name string, locs []model
 	}
 	searchName = strings.TrimSpace(searchName)
 
+	var found []string
 	for qualified, defs := range idx.Symbols {
 		for _, def := range defs {
 			if def.Name == searchName || def.Qualified == name {
@@ -1076,20 +1084,7 @@ func buildASTConnectionsForExposure(
 	}
 	byDep := map[string]*bucket{}
 
-	// Build a set of "entry class prefixes" from this specific exposure's
-	// entry symbols. Any target that starts with one of these prefixes is
-	// a method on the same class as the exposure itself — skip those to
-	// avoid circular intra-class connections.
-	entryPrefixes := make(map[string]struct{}, len(entrySymbols))
-	for _, e := range entrySymbols {
-		if dot := strings.LastIndex(e, "."); dot > 0 {
-			entryPrefixes[e[:dot]] = struct{}{}
-		}
-	}
-	// Also include the broader exposure-class set passed from the caller.
-	for cls := range exposureClasses {
-		entryPrefixes[cls] = struct{}{}
-	}
+	entryPrefixes := buildEntryPrefixes(entrySymbols, exposureClasses)
 
 	walkTruncated := false
 	for _, entry := range entrySymbols {
@@ -1148,6 +1143,23 @@ func buildASTConnectionsForExposure(
 		})
 	}
 	return conns, unresolved
+}
+
+// buildEntryPrefixes returns the set of "entry class prefixes" for an exposure:
+// the class of each entry symbol plus the broader exposure-class set from the
+// caller. A walk target on one of these classes is a method on the exposure's
+// own class, so it is skipped to avoid circular intra-class connections.
+func buildEntryPrefixes(entrySymbols []string, exposureClasses map[string]struct{}) map[string]struct{} {
+	entryPrefixes := make(map[string]struct{}, len(entrySymbols))
+	for _, e := range entrySymbols {
+		if dot := strings.LastIndex(e, "."); dot > 0 {
+			entryPrefixes[e[:dot]] = struct{}{}
+		}
+	}
+	for cls := range exposureClasses {
+		entryPrefixes[cls] = struct{}{}
+	}
+	return entryPrefixes
 }
 
 func dependencyTargetLocations(dep model.Dependency) []model.Location {
