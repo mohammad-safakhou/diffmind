@@ -9,6 +9,7 @@ import (
 
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
+	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -53,19 +54,43 @@ func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []detailJob, rf 
 		checkpoint = o.loadDetailCheckpoint(o.runDir + "/" + stateDir)
 	}
 
-	// Partition jobs into "already done" (from the checkpoint, or complete
-	// deterministic seeds ready to use without an LLM call) and "pending"
-	// (will be batched + sent to the LLM).
-	var pending []detailJob
-	carriedResults := make([]detailResult, 0, len(checkpoint))
-	carriedMessages := map[string]string{}
+	pending, carriedResults, carriedMessages := o.partitionDetailJobs(jobs, checkpoint)
+	o.emitCarriedSkips(carriedResults, carriedMessages, onResult)
+
+	if len(pending) == 0 {
+		util.Info("agents.detail", "all detail entities already checkpointed; nothing to do", map[string]any{
+			"total": len(jobs),
+		})
+		return carriedResults
+	}
+
+	// Group the pending jobs into batches of related entities.
+	batches := detailGroups(pending)
+	util.Info("agents.detail", "detail batches assembled", map[string]any{
+		"pending_entities": len(pending),
+		"batches":          len(batches),
+		"avg_size":         float64(len(pending)) / float64(len(batches)),
+	})
+
+	o.emitBatchPlaceholders(batches)
+	return o.runDetailWorkers(ctx, batches, rf, carriedResults, onResult)
+}
+
+// partitionDetailJobs splits jobs into pending (need an LLM enrichment call)
+// and carried (already done): entries reconstructed from the per-entity
+// checkpoint, plus complete deterministic seeds usable without an LLM call.
+// carriedMessages records why each carried entry was carried (for the skip
+// event). Complete deterministic seeds are also appended to the checkpoint.
+func (o *orchestrator) partitionDetailJobs(jobs []detailJob, checkpoint map[string]detailCheckpointEntry) (pending []detailJob, carried []detailResult, carriedMessages map[string]string) {
+	carried = make([]detailResult, 0, len(checkpoint))
+	carriedMessages = map[string]string{}
 	for _, j := range jobs {
 		key := detailEntityKey(j.Objective.ID, j.Seed.Name)
 		entry, ok := checkpoint[key]
 		if !ok {
 			if isCompleteDeterministicSeed(j.Objective, &j.Seed) {
 				seed := j.Seed
-				carriedResults = append(carriedResults, detailResult{Objective: j.Objective, SeedName: j.Seed.Name, Item: &seed})
+				carried = append(carried, detailResult{Objective: j.Objective, SeedName: j.Seed.Name, Item: &seed})
 				carriedMessages[key] = "complete deterministic seed"
 				if checkpointEntry, ok := o.detailCheckpointForSeed(j); ok {
 					o.appendDetailEntity(checkpointEntry)
@@ -90,21 +115,24 @@ func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []detailJob, rf 
 			pending = append(pending, j)
 			continue
 		}
-		carriedResults = append(carriedResults, res)
+		carried = append(carried, res)
 		carriedMessages[key] = "resumed from per-entity checkpoint"
 	}
 	if len(checkpoint) > 0 {
 		util.Info("agents.detail", "loaded detail checkpoint", map[string]any{
 			"checkpointed": len(checkpoint),
-			"reused":       len(carriedResults),
+			"reused":       len(carried),
 			"pending":      len(pending),
 			"total":        len(jobs),
 		})
 	}
+	return pending, carried, carriedMessages
+}
 
-	// Quickly emit "skipped" job events for the checkpointed entries
-	// so the dashboard's pipeline strip shows progress.
-	for _, r := range carriedResults {
+// emitCarriedSkips emits a "skipped" job event for each checkpointed/
+// deterministic entry so the dashboard's pipeline strip shows progress.
+func (o *orchestrator) emitCarriedSkips(carried []detailResult, carriedMessages map[string]string, onResult func()) {
+	for _, r := range carried {
 		jobID := "detail." + r.Objective.ID + "." + safeJobID(r.SeedName)
 		key := detailEntityKey(r.Objective.ID, r.SeedName)
 		message := carriedMessages[key]
@@ -126,37 +154,18 @@ func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []detailJob, rf 
 			onResult()
 		}
 	}
+}
 
-	if len(pending) == 0 {
-		util.Info("agents.detail", "all detail entities already checkpointed; nothing to do", map[string]any{
-			"total": len(jobs),
-		})
-		return carriedResults
-	}
-
-	// Group the pending jobs into batches of related entities.
-	batches := detailGroups(pending)
-	util.Info("agents.detail", "detail batches assembled", map[string]any{
-		"pending_entities": len(pending),
-		"batches":          len(batches),
-		"avg_size":         float64(len(pending)) / float64(len(batches)),
-	})
-
-	// Emit per-batch and per-entity placeholder events BEFORE any
-	// worker starts. This is what lets the dashboard's LiveGraph
-	// pre-render the batch nodes (with their entity children) so
-	// the user can see the structure of the work before any LLM
-	// call returns. The unique batch id is composed of the
-	// objective ID plus the first seed's safe name — the same
-	// formula runDetailBatchOne uses, so they always match.
+// emitBatchPlaceholders emits per-batch and per-entity placeholder events
+// BEFORE any worker starts, so the dashboard's LiveGraph can pre-render the
+// batch nodes (with entity children) before any LLM call returns. The batch id
+// uses the same formula as runDetailBatchOne so they always match.
+func (o *orchestrator) emitBatchPlaceholders(batches [][]detailJob) {
 	for _, b := range batches {
 		if len(b) == 0 {
 			continue
 		}
 		batchID := detailBatchJobID(b)
-		// Build a short preview list of the seed names so the
-		// dashboard can show "12: GET /a, GET /b, GET /c, … (9 more)"
-		// without having to fetch each entity record.
 		names := make([]string, 0, len(b))
 		for _, j := range b {
 			names = append(names, j.Seed.Name)
@@ -176,9 +185,8 @@ func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []detailJob, rf 
 			jobID := "detail." + j.Objective.ID + "." + safeJobID(j.Seed.Name)
 			o.emit(events.Event{
 				Kind: events.KindJobPending, Stage: "detail", JobID: jobID, Status: events.StatusPending,
-				// Crucially: parent is the BATCH node, not the
-				// objective. This makes the graph render batches
-				// as the intermediate layer.
+				// Parent is the BATCH node, not the objective, so the
+				// graph renders batches as the intermediate layer.
 				ParentID: batchID,
 				Payload: map[string]any{
 					"objective_id": j.Objective.ID,
@@ -190,7 +198,13 @@ func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []detailJob, rf 
 			})
 		}
 	}
+}
 
+// runDetailWorkers runs the pending batches through a worker pool (one LLM call
+// per batch), streams each enriched result back, checkpoints successes, and
+// trips fail-fast on the first batch error. The collected slice is seeded with
+// the carried (already-done) results.
+func (o *orchestrator) runDetailWorkers(ctx context.Context, batches [][]detailJob, rf *repoFacts, carried []detailResult, onResult func()) []detailResult {
 	workers := o.cfg.Runtime.Workers
 	if workers <= 0 {
 		workers = 8
@@ -229,8 +243,8 @@ func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []detailJob, rf 
 				if err != nil {
 					// The batch as a whole failed. Surface the error
 					// against EACH entity in the batch (so the
-					// orchestrator's "first failure" logic still
-					// has names to attribute) and trip fail-fast.
+					// orchestrator's "first failure" logic still has
+					// names to attribute) and trip fail-fast.
 					for _, j := range batch {
 						resCh <- detailResult{
 							Objective: j.Objective,
@@ -241,9 +255,8 @@ func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []detailJob, rf 
 					cancel()
 					continue
 				}
-				// Success path: stream individual results back to the
-				// collector AND append each to the on-disk checkpoint
-				// so a future retry can skip them.
+				// Success: stream individual results back AND append each
+				// to the on-disk checkpoint so a future retry can skip them.
 				for _, r := range results {
 					o.checkpointDetailResult(r)
 					resCh <- r
@@ -261,8 +274,8 @@ func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []detailJob, rf 
 		close(resCh)
 	}()
 
-	out := make([]detailResult, 0, len(jobs))
-	out = append(out, carriedResults...)
+	out := make([]detailResult, 0, len(carried)+len(batches))
+	out = append(out, carried...)
 	for r := range resCh {
 		out = append(out, r)
 		if onResult != nil {
@@ -334,12 +347,40 @@ func (o *orchestrator) runDetailBatchOne(ctx context.Context, batch []detailJob,
 	}
 
 	started := time.Now()
+	o.emitBatchStarted(batch, batchJobID, obj)
 
-	// Emit a BATCH-level job_started so the LiveGraph and Timeline
-	// can render this as an intermediate node (parent of the
-	// entities, child of the objective). This is the unit of work
-	// the LLM actually processes, and the dashboard's
-	// "X/N batches" counter reads off these events.
+	prompt := buildDetailBatchPrompt(obj, seeds, rf, o.subDir, o.hintsFor(obj, nil))
+	schema := entityListSchemaForObjective(obj)
+	payload, err := o.promptAgent(ctx, batchJobID, prompt, schema)
+	dur := time.Since(started)
+	if err != nil {
+		o.emitBatchFailed(batch, batchJobID, obj, err, dur)
+		return nil, err
+	}
+
+	// Parse the response. The model is contractually expected to return one
+	// item per input seed in order under payload.items. Be tolerant of
+	// smaller models that return the single-entity {"item": {...}} shape
+	// (treat as a 1-item array) and of {"items": null}.
+	items := parseEntities(payload["items"])
+	if len(items) == 0 {
+		if single, ok := payload["item"]; ok && single != nil {
+			if it := parseSingleEntity(single); it != nil {
+				items = []llmEntity{*it}
+			}
+		}
+	}
+	o.pathMapper().applyToEntities(items)
+
+	results := o.assembleBatchResults(batch, batchJobID, items, dur)
+	o.emitBatchCompleted(batch, batchJobID, obj, results, dur)
+	return results, nil
+}
+
+// emitBatchStarted emits the batch-level job_started (an intermediate graph
+// node: parent of the entities, child of the objective; the "X/N batches"
+// counter reads off these) plus a per-entity job_started parented to the batch.
+func (o *orchestrator) emitBatchStarted(batch []detailJob, batchJobID string, obj objectives.Objective) {
 	names := make([]string, 0, len(batch))
 	for _, j := range batch {
 		names = append(names, j.Seed.Name)
@@ -355,11 +396,6 @@ func (o *orchestrator) runDetailBatchOne(ctx context.Context, batch []detailJob,
 			"name":         batchDisplayName(batch),
 		},
 	})
-
-	// Emit a job_started event for EACH entity in the batch so the
-	// dashboard's per-entity progress bar still advances. ParentID
-	// is the batch node, not the objective — that's what makes the
-	// graph render entities under their batch.
 	for _, j := range batch {
 		entityJobID := "detail." + j.Objective.ID + "." + safeJobID(j.Seed.Name)
 		o.emit(events.Event{
@@ -374,67 +410,50 @@ func (o *orchestrator) runDetailBatchOne(ctx context.Context, batch []detailJob,
 			},
 		})
 	}
+}
 
-	prompt := buildDetailBatchPrompt(obj, seeds, rf, o.subDir, o.hintsFor(obj, nil))
-	schema := entityListSchemaForObjective(obj)
-	payload, err := o.promptAgent(ctx, batchJobID, prompt, schema)
-	dur := time.Since(started)
-	if err != nil {
-		// Emit job_failed for the BATCH and for each entity in it.
-		// The batch event surfaces the failure at the intermediate
-		// graph node; the entity events keep the per-entity tally
-		// correct on the pipeline strip.
+// emitBatchFailed emits job_failed for the batch node and for each entity in
+// it (the batch event surfaces the failure at the intermediate graph node; the
+// entity events keep the per-entity tally correct).
+func (o *orchestrator) emitBatchFailed(batch []detailJob, batchJobID string, obj objectives.Objective, err error, dur time.Duration) {
+	o.emit(events.Event{
+		Kind: events.KindJobFailed, Stage: "detail", JobID: batchJobID, Status: events.StatusFailed,
+		Message: err.Error(),
+		Payload: map[string]any{
+			"batch":        true,
+			"batch_size":   len(batch),
+			"objective_id": obj.ID,
+			"duration_ms":  dur.Milliseconds(),
+		},
+	})
+	for _, j := range batch {
+		entityJobID := "detail." + j.Objective.ID + "." + safeJobID(j.Seed.Name)
 		o.emit(events.Event{
-			Kind: events.KindJobFailed, Stage: "detail", JobID: batchJobID, Status: events.StatusFailed,
+			Kind: events.KindJobFailed, Stage: "detail", JobID: entityJobID, Status: events.StatusFailed,
 			Message: err.Error(),
 			Payload: map[string]any{
-				"batch":        true,
-				"batch_size":   len(batch),
-				"objective_id": obj.ID,
+				"objective_id": j.Objective.ID,
+				"name":         j.Seed.Name,
+				"batch_id":     batchJobID,
 				"duration_ms":  dur.Milliseconds(),
 			},
 		})
-		for _, j := range batch {
-			entityJobID := "detail." + j.Objective.ID + "." + safeJobID(j.Seed.Name)
-			o.emit(events.Event{
-				Kind: events.KindJobFailed, Stage: "detail", JobID: entityJobID, Status: events.StatusFailed,
-				Message: err.Error(),
-				Payload: map[string]any{
-					"objective_id": j.Objective.ID,
-					"name":         j.Seed.Name,
-					"batch_id":     batchJobID,
-					"duration_ms":  dur.Milliseconds(),
-				},
-			})
-		}
-		return nil, err
 	}
+}
 
-	// Parse the response. The model is contractually expected to
-	// return one item per input seed in the same order under
-	// payload.items. Be tolerant of older / smaller models that
-	// might return the single-entity {"item": {...}} shape — treat
-	// that as a 1-item array. Also tolerant of {"items": null} from
-	// schema validators that wrote the field but had nothing for it.
-	items := parseEntities(payload["items"])
-	if len(items) == 0 {
-		if single, ok := payload["item"]; ok && single != nil {
-			if it := parseSingleEntity(single); it != nil {
-				items = []llmEntity{*it}
-			}
-		}
-	}
-	o.pathMapper().applyToEntities(items)
-
+// assembleBatchResults maps the LLM's returned items back onto the batch seeds
+// (one detailResult per seed, in order), pinning type/name to the seed and
+// merging enrichment, and emits the per-entity completed/skipped event. A seed
+// the model omitted or marked details_complete:false yields a nil-Item result.
+func (o *orchestrator) assembleBatchResults(batch []detailJob, batchJobID string, items []llmEntity, dur time.Duration) []detailResult {
 	results := make([]detailResult, 0, len(batch))
 	for i, j := range batch {
 		entityJobID := "detail." + j.Objective.ID + "." + safeJobID(j.Seed.Name)
 		var item *llmEntity
 		if i < len(items) {
 			it := items[i]
-			// Guard against the LLM rewriting the entity into
-			// something of a different type. Same logic as the
-			// single-entity path.
+			// Guard against the LLM rewriting the entity into a different
+			// type. Same logic as the single-entity path.
 			forceObjectiveType(j.Objective, &it)
 			if strings.TrimSpace(it.Name) == "" {
 				it.Name = j.Seed.Name
@@ -442,8 +461,8 @@ func (o *orchestrator) runDetailBatchOne(ctx context.Context, batch []detailJob,
 			merged := mergeEnrichment(j.Seed, it)
 			item = &merged
 		}
-		// The model marked this seed as "details_complete: false"?
-		// Treat it the same as item==nil — keep the seed as-is.
+		// A "details_complete: false" seed is treated like item==nil —
+		// keep the seed as-is.
 		if item != nil {
 			if v, ok := item.Details["details_complete"]; ok {
 				if b, ok := v.(bool); ok && !b {
@@ -486,11 +505,12 @@ func (o *orchestrator) runDetailBatchOne(ctx context.Context, batch []detailJob,
 			Objective: j.Objective, SeedName: j.Seed.Name, Item: item,
 		})
 	}
+	return results
+}
 
-	// Batch-level completion event — surfaces the per-batch
-	// duration and the number of items the model returned vs.
-	// asked. The LiveGraph reads this to mark the batch node
-	// green / yellow / red.
+// emitBatchCompleted emits the batch-level completion event with the
+// succeeded/skipped tally the LiveGraph uses to color the batch node.
+func (o *orchestrator) emitBatchCompleted(batch []detailJob, batchJobID string, obj objectives.Objective, results []detailResult, dur time.Duration) {
 	succeeded, skipped := 0, 0
 	for _, r := range results {
 		if r.Item != nil {
@@ -510,7 +530,6 @@ func (o *orchestrator) runDetailBatchOne(ctx context.Context, batch []detailJob,
 			"skipped":      skipped,
 		},
 	})
-	return results, nil
 }
 
 // detailBatchJobID is the deterministic identifier we use for the
