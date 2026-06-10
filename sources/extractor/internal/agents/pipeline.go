@@ -252,34 +252,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	if o.captureDir != "" {
 		_ = os.MkdirAll(o.captureDir, 0o755)
 	}
-	// Wire the pause handler so the watchdog can auto-reply to
-	// permission/clarification prompts. We accept either:
-	//   1. the real opencode client, via the pauseBridge adapter, OR
-	//   2. any fake that already implements pauseHandler (used in tests).
-	// Test fakes that implement only openCodeAPI don't get a watchdog, which
-	// is fine — they cannot pause.
-	switch v := oc.(type) {
-	case *opencode.Client:
-		o.pauser = newPauseBridge(v)
-		o.verbose = newVerboseBridge(v)
-		o.tokens = &tokenBridge{c: v}
-	case pauseHandler:
-		o.pauser = v
-	}
-	// Also accept fakes that implement verbosePrompter directly.
-	if o.verbose == nil {
-		if vp, ok := oc.(verbosePrompter); ok {
-			o.verbose = vp
-		}
-	}
-	// Same pattern for tokenReader: fakes that want to expose token
-	// totals can do so explicitly without pulling in the full
-	// opencode.Client surface.
-	if o.tokens == nil {
-		if tr, ok := oc.(tokenReader); ok {
-			o.tokens = tr
-		}
-	}
+	o.wireBridges(oc)
 	if o.pauser != nil {
 		o.wd = newWatchdog(o.pauser, o.sessionDir, 2*time.Second)
 		o.wd.SetSink(sink)
@@ -301,41 +274,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	progress.SetSink(sink)
 	defer progress.Close()
 
-	util.Info("agents.orchestrator", "multi-step pipeline starting", map[string]any{
-		"repo": repoPath, "source_session_dir": sourceSessionDir, "snapshot": snap.Path, "sub_dir": subDir,
-		"workers": cfg.Runtime.Workers, "max_catalog_items": cfg.Runtime.MaxCatalogItems,
-		"reuse_session": cfg.Runtime.ReuseOpenCodeSession, "min_confidence": cfg.Quality.MinConfidence,
-		// Log the EFFECTIVE timeouts. Future debugging starts here:
-		// if any of these is too small, the watchdog can't do its job.
-		"opencode_transport_timeout_sec": cfg.OpenCode.TimeoutSec,
-		"idle_timeout_sec":               cfg.Runtime.IdleTimeoutSec,
-		"prompt_retry_count":             cfg.Runtime.PromptRetryCount,
-		"max_call_sec":                   cfg.Runtime.MaxCallSeconds,
-		"liveness_poll_sec":              cfg.Runtime.LivenessPollSec,
-	})
-	o.emit(events.Event{
-		Kind:    events.KindRunStarted,
-		Message: "extraction pipeline started",
-		Payload: map[string]any{
-			"repo":                    repoPath,
-			"snapshot":                snap.Path,
-			"sub_dir":                 subDir,
-			"workers":                 cfg.Runtime.Workers,
-			"max_catalog_items":       cfg.Runtime.MaxCatalogItems,
-			"min_confidence":     cfg.Quality.MinConfidence,
-			"skip_reexamination": cfg.Runtime.SkipReexamination,
-			// Effective timeout settings; shown in the run_started event
-			// so the dashboard's timeline shows the resolved values.
-			// If you ever see a run fail with timeout=300 again you can
-			// confirm it instantly from this event without diffing
-			// configs.
-			"opencode_transport_timeout_sec": cfg.OpenCode.TimeoutSec,
-			"idle_timeout_sec":               cfg.Runtime.IdleTimeoutSec,
-			"prompt_retry_count":             cfg.Runtime.PromptRetryCount,
-			"max_call_sec":                   cfg.Runtime.MaxCallSeconds,
-			"liveness_poll_sec":              cfg.Runtime.LivenessPollSec,
-		},
-	})
+	o.emitRunStarted()
 
 	warnings := make([]string, 0)
 	unresolved := make([]model.UnresolvedItem, 0)
@@ -345,122 +284,12 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	// Load any previously-saved stage state for resume.
 	resumeRf, resumeSeeds, resumeExpObjs, resumeReexam, resumeExposures, resumeDeps := o.loadResumeState(opts.ResumeFromDir)
 
-	// haltFailure builds the partial result we hand back to internal/app
-	// when a stage fails. It always preserves the snapshot path and the
-	// state captured up to (but not including) the failing stage so the
-	// retry command has a consistent base to resume from.
+	// haltFailure forwards to buildFailure with the live accumulators. Kept
+	// as a closure so the per-stage call sites stay terse; the body lives in
+	// buildFailure (it captures the current state/unresolved/warnings at the
+	// moment of the call, exactly as before).
 	haltFailure := func(stage, jobID, objectiveID, entityName string, err error, extra map[string]any) (Result, error) {
-		// Re-attribute when the root cause is a parallel image-
-		// build failure that cancelled the pipeline.
-		//
-		// When `runImageBuild` failed it called pipelineCancel(),
-		// which propagates context.Canceled into every in-flight
-		// LLM call across Stages 1-3. Whichever stage is first to
-		// observe the cancellation reaches this haltFailure with
-		// its own (stage, jobID) and a wrapped context.Canceled
-		// error. Without this re-attribution the dashboard's
-		// run_failure.json would blame, say, "discovery
-		// (cancelled)" — which is technically true but not the
-		// root cause.
-		//
-		// No SCIP image build to re-attribute to; the tree-sitter ast_index
-		// stage runs synchronously and non-fatal, so context cancellation
-		// is always attributable to the stage that actually reported it.
-		errClass := classifyError(err)
-		// Only attach a numeric HTTP status when the error is actually
-		// HTTP-shaped (4xx/5xx/rate-limit). For schema/network/timeout
-		// failures the error message frequently includes 3-digit
-		// numbers in other contexts (token counts, byte sizes, etc.)
-		// that the regex would otherwise pick up as a phantom status.
-		var httpStatus int
-		if shouldReportHTTPStatus(errClass) {
-			httpStatus = extractHTTPStatus(err.Error())
-		}
-		// `cancelled` means the run was halted by an external
-		// cancel (user clicked Cancel, parent context expired).
-		// We deliberately do NOT mark image-build-driven halts
-		// as cancelled — they are real FAILURES, even though our
-		// fail-fast mechanism propagates cancellation through the
-		// pipeline context. The marker the re-attribution branch
-		// above sets lets us tell them apart.
-		buildDriven := false
-		if extra != nil {
-			if v, ok := extra["reattributed_from_cancel"]; ok {
-				if b, ok2 := v.(bool); ok2 {
-					buildDriven = b
-				}
-			}
-		}
-		cancelled := ctx.Err() != nil && !buildDriven
-		f := &Failure{
-			Stage:        stage,
-			JobID:        jobID,
-			ObjectiveID:  objectiveID,
-			EntityName:   entityName,
-			Error:        err.Error(),
-			ErrorClass:   errClass,
-			HTTPStatus:   httpStatus,
-			OccurredAt:   time.Now().UTC(),
-			Extra:        extra,
-			PromptPath:   o.captureFilePath(jobID, "prompt", "txt"),
-			ResponsePath: o.captureFilePath(jobID, "response", "json"),
-			SnapshotPath: o.snap.Path,
-			Cancelled:    cancelled,
-		}
-		// If the parent context is dead the halt was triggered by the
-		// user pressing Cancel, NOT by an underlying failure. Emit
-		// KindRunCancelled so the dashboard's status pill flips to
-		// "cancelled" and the failure report semantics match (the
-		// failure report is still written so retry knows what was
-		// in flight when the user pulled the plug, but the run-level
-		// event communicates intent: this was user-initiated).
-		terminalKind := events.KindRunFailed
-		terminalStatus := events.StatusFailed
-		if cancelled {
-			terminalKind = events.KindRunCancelled
-			terminalStatus = events.StatusCancelled
-		}
-		haltPayload := map[string]any{
-			"stage":         stage,
-			"job_id":        jobID,
-			"objective_id":  objectiveID,
-			"entity_name":   entityName,
-			"error_class":   f.ErrorClass,
-			"http_status":   f.HTTPStatus,
-			"prompt_path":   f.PromptPath,
-			"response_path": f.ResponsePath,
-			"elapsed_ms":    time.Since(start).Milliseconds(),
-			"cancelled":     cancelled,
-		}
-		if all := o.snapshotAll(); all != nil {
-			tokensOut := map[string]any{}
-			for s, tb := range all {
-				tokensOut[s] = modelBucketPayload(tb)
-			}
-			haltPayload["tokens"] = tokensOut
-		}
-		o.emit(events.Event{
-			Kind: terminalKind, Status: terminalStatus, Stage: stage, JobID: jobID,
-			Message: err.Error(),
-			Payload: haltPayload,
-		})
-		// The snapshot must be retained for retry: instruct the deferred
-		// closer to keep the directory.
-		o.snap.Retain()
-		// Persist failure-report + intermediate state to disk so the
-		// operator (and `diffmind retry`) have everything they need.
-		o.writeFailureReport(f)
-		o.persistStageState("failure_state.json", state)
-		return Result{
-			Exposures:    nil,
-			Dependencies: nil,
-			Connections:  nil,
-			Unresolved:   reconcile.DedupeUnresolved(unresolved),
-			Warnings:     reconcile.DedupeWarnings(warnings),
-			Failure:      f,
-			SnapshotPath: o.snap.Path,
-			Intermediate: state,
-		}, fmt.Errorf("%s stage failed at %s: %w", stage, jobID, err)
+		return o.buildFailure(ctx, start, state, unresolved, warnings, stage, jobID, objectiveID, entityName, err, extra)
 	}
 
 	// --- Stage 0: repo facts ---
@@ -819,6 +648,12 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	progress.CompletePhase()
 	o.emitStageCompleted("reconcile", events.StatusSuccess, nil)
 
+	return o.assembleResult(ctx, start, exposures, dependencies, conns, unresolved, warnings), nil
+}
+
+// assembleResult builds the final Result, logs the completion summary, and
+// emits the terminal run event (completed/cancelled) with token totals.
+func (o *orchestrator) assembleResult(ctx context.Context, start time.Time, exposures []model.Exposure, dependencies []model.Dependency, conns []model.Connection, unresolved []model.UnresolvedItem, warnings []string) Result {
 	result := Result{
 		Exposures:    exposures,
 		Dependencies: dependencies,
@@ -854,12 +689,10 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		"elapsed_ms":   time.Since(start).Milliseconds(),
 		"empty":        empty,
 	}
-	// Attach token totals (run-wide and per-stage) to the terminal
-	// event so the SPA can render a final cost summary without
-	// having to walk every llm_call_completed event in its buffer.
+	// Attach token totals (run-wide and per-stage) to the terminal event so
+	// the SPA can render a final cost summary without walking every
+	// llm_call_completed event in its buffer.
 	if all := o.snapshotAll(); all != nil {
-		// snapshotAll returns model.TokenBucket directly, with the
-		// "total" key already substituted in for the empty key.
 		tokensOut := map[string]any{}
 		for stage, tb := range all {
 			tokensOut[stage] = modelBucketPayload(tb)
@@ -871,7 +704,159 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		Kind: finalKind, Status: finalStatus,
 		Payload: terminalPayload,
 	})
-	return result, nil
+	return result
+}
+
+// emitRunStarted logs and emits the run_started event with the resolved config
+// (effective timeouts included, so a failed run can be diagnosed from the
+// event alone without diffing configs).
+func (o *orchestrator) emitRunStarted() {
+	cfg := o.cfg
+	util.Info("agents.orchestrator", "multi-step pipeline starting", map[string]any{
+		"repo": o.repoPath, "source_session_dir": o.sourceSessionDir, "snapshot": o.snap.Path, "sub_dir": o.subDir,
+		"workers": cfg.Runtime.Workers, "max_catalog_items": cfg.Runtime.MaxCatalogItems,
+		"reuse_session": cfg.Runtime.ReuseOpenCodeSession, "min_confidence": cfg.Quality.MinConfidence,
+		"opencode_transport_timeout_sec": cfg.OpenCode.TimeoutSec,
+		"idle_timeout_sec":               cfg.Runtime.IdleTimeoutSec,
+		"prompt_retry_count":             cfg.Runtime.PromptRetryCount,
+		"max_call_sec":                   cfg.Runtime.MaxCallSeconds,
+		"liveness_poll_sec":              cfg.Runtime.LivenessPollSec,
+	})
+	o.emit(events.Event{
+		Kind:    events.KindRunStarted,
+		Message: "extraction pipeline started",
+		Payload: map[string]any{
+			"repo":               o.repoPath,
+			"snapshot":           o.snap.Path,
+			"sub_dir":            o.subDir,
+			"workers":            cfg.Runtime.Workers,
+			"max_catalog_items":  cfg.Runtime.MaxCatalogItems,
+			"min_confidence":     cfg.Quality.MinConfidence,
+			"skip_reexamination": cfg.Runtime.SkipReexamination,
+			"opencode_transport_timeout_sec": cfg.OpenCode.TimeoutSec,
+			"idle_timeout_sec":               cfg.Runtime.IdleTimeoutSec,
+			"prompt_retry_count":             cfg.Runtime.PromptRetryCount,
+			"max_call_sec":                   cfg.Runtime.MaxCallSeconds,
+			"liveness_poll_sec":              cfg.Runtime.LivenessPollSec,
+		},
+	})
+}
+
+// wireBridges connects the orchestrator to the OpenCode client (or a test
+// fake). The real *opencode.Client is adapted via pause/verbose/token bridges;
+// fakes that implement pauseHandler/verbosePrompter/tokenReader directly are
+// accepted as-is. A fake implementing only openCodeAPI gets no watchdog, which
+// is fine — it cannot pause.
+func (o *orchestrator) wireBridges(oc openCodeAPI) {
+	switch v := oc.(type) {
+	case *opencode.Client:
+		o.pauser = newPauseBridge(v)
+		o.verbose = newVerboseBridge(v)
+		o.tokens = &tokenBridge{c: v}
+	case pauseHandler:
+		o.pauser = v
+	}
+	if o.verbose == nil {
+		if vp, ok := oc.(verbosePrompter); ok {
+			o.verbose = vp
+		}
+	}
+	if o.tokens == nil {
+		if tr, ok := oc.(tokenReader); ok {
+			o.tokens = tr
+		}
+	}
+}
+
+// buildFailure builds the partial result we hand back to internal/app when a
+// stage fails. It preserves the snapshot path and the state captured up to (but
+// not including) the failing stage so `diffmind retry` has a consistent base to
+// resume from. start/state/unresolved/warnings are passed by the caller so the
+// live accumulators are captured at the moment of the halt.
+func (o *orchestrator) buildFailure(ctx context.Context, start time.Time, state IntermediateState, unresolved []model.UnresolvedItem, warnings []string, stage, jobID, objectiveID, entityName string, err error, extra map[string]any) (Result, error) {
+	errClass := classifyError(err)
+	// Only attach a numeric HTTP status when the error is actually
+	// HTTP-shaped (4xx/5xx/rate-limit). For schema/network/timeout
+	// failures the error message frequently includes 3-digit numbers in
+	// other contexts (token counts, byte sizes) the regex would otherwise
+	// pick up as a phantom status.
+	var httpStatus int
+	if shouldReportHTTPStatus(errClass) {
+		httpStatus = extractHTTPStatus(err.Error())
+	}
+	// `cancelled` means the run was halted by an external cancel (user
+	// clicked Cancel, parent context expired) — NOT a build-driven halt,
+	// which is a real FAILURE even though fail-fast propagates cancellation
+	// through the pipeline context. The reattributed_from_cancel marker
+	// lets us tell them apart.
+	buildDriven := false
+	if extra != nil {
+		if v, ok := extra["reattributed_from_cancel"]; ok {
+			if b, ok2 := v.(bool); ok2 {
+				buildDriven = b
+			}
+		}
+	}
+	cancelled := ctx.Err() != nil && !buildDriven
+	f := &Failure{
+		Stage:        stage,
+		JobID:        jobID,
+		ObjectiveID:  objectiveID,
+		EntityName:   entityName,
+		Error:        err.Error(),
+		ErrorClass:   errClass,
+		HTTPStatus:   httpStatus,
+		OccurredAt:   time.Now().UTC(),
+		Extra:        extra,
+		PromptPath:   o.captureFilePath(jobID, "prompt", "txt"),
+		ResponsePath: o.captureFilePath(jobID, "response", "json"),
+		SnapshotPath: o.snap.Path,
+		Cancelled:    cancelled,
+	}
+	// If the parent context is dead the halt was user-initiated: emit
+	// KindRunCancelled so the dashboard's status pill flips to "cancelled".
+	// The failure report is still written so retry knows what was in flight.
+	terminalKind := events.KindRunFailed
+	terminalStatus := events.StatusFailed
+	if cancelled {
+		terminalKind = events.KindRunCancelled
+		terminalStatus = events.StatusCancelled
+	}
+	haltPayload := map[string]any{
+		"stage":         stage,
+		"job_id":        jobID,
+		"objective_id":  objectiveID,
+		"entity_name":   entityName,
+		"error_class":   f.ErrorClass,
+		"http_status":   f.HTTPStatus,
+		"prompt_path":   f.PromptPath,
+		"response_path": f.ResponsePath,
+		"elapsed_ms":    time.Since(start).Milliseconds(),
+		"cancelled":     cancelled,
+	}
+	if all := o.snapshotAll(); all != nil {
+		tokensOut := map[string]any{}
+		for s, tb := range all {
+			tokensOut[s] = modelBucketPayload(tb)
+		}
+		haltPayload["tokens"] = tokensOut
+	}
+	o.emit(events.Event{
+		Kind: terminalKind, Status: terminalStatus, Stage: stage, JobID: jobID,
+		Message: err.Error(),
+		Payload: haltPayload,
+	})
+	// The snapshot must be retained for retry.
+	o.snap.Retain()
+	o.writeFailureReport(f)
+	o.persistStageState("failure_state.json", state)
+	return Result{
+		Unresolved:   reconcile.DedupeUnresolved(unresolved),
+		Warnings:     reconcile.DedupeWarnings(warnings),
+		Failure:      f,
+		SnapshotPath: o.snap.Path,
+		Intermediate: state,
+	}, fmt.Errorf("%s stage failed at %s: %w", stage, jobID, err)
 }
 
 // ----------------------------------------------------------------------------
