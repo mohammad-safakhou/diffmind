@@ -182,7 +182,13 @@ FOR EACH JOB EXTRACT:
 - What the job does (brief description)
 - Distributed locking (ShedLock, database locks)
 
-IMPORTANT: Check for @Profile annotations - some jobs only run in specific environments (e.g., @Profile("prod")).`,
+IMPORTANT: Check for @Profile annotations - some jobs only run in specific environments (e.g., @Profile("prod")).
+
+BOUNDARY (this objective OWNS them): a CommandLineRunner/ApplicationRunner gated
+by @Profile/@ConditionalOnProperty and triggered externally (e.g. a Kubernetes
+CronJob launching the app with that profile) is a scheduled_job. Report it HERE,
+not as a cli_command, and name it by its handler class.method so it has one
+stable identity.`,
 			DetailPrompt: `For this job, extract:
 1. Trigger conditions (schedule expression, profile/property guards)
 2. Distributed locking configuration (ShedLock name, lockAtLeast, lockAtMost)
@@ -212,6 +218,12 @@ FOR EACH ENTRYPOINT EXTRACT:
 - Arguments and options
 - Handler function/class
 - What it triggers
+
+BOUNDARY (do not double-report): a CommandLineRunner / batch job that is gated
+by a Spring @Profile (or @ConditionalOnProperty) and triggered externally (e.g.
+a Kubernetes CronJob launching the app with a profile) is a SCHEDULED_JOB, not a
+cli_command. Only report a genuine interactive/operator command or a true
+process entrypoint (the application's main launcher) here.
 
 If this is a standard web service with no CLI commands or Lambda handlers, return {"items": []}.`,
 			DetailPrompt:      "For this CLI entrypoint, extract arguments, command options, validation, and ordered downstream operations.",
@@ -293,7 +305,14 @@ CRITICAL: Check infrastructure configuration files for the ACTUAL base URLs:
 - any *values.yaml / config/production/*.yaml for environment-specific URLs
 - These URLs often reveal the target service name (e.g., http://gateway-service.lead2cash.svc.cluster.local/)
 
-DO NOT miss Retrofit interfaces - they define HTTP calls via annotated Java interfaces.`,
+DO NOT miss Retrofit interfaces - they define HTTP calls via annotated Java interfaces.
+
+BOUNDARY (do not double-report): EXCLUDE AWS SDK calls that have their own
+objective — SQS/SNS publishes are queue_publish, DynamoDB is db_operation,
+Kinesis is stream_consume. (Object storage like S3 has no dedicated objective
+yet, so DO report S3 here rather than dropping it.) A Feign/HTTP client is
+outbound_http, NOT outbound_rpc — only gRPC/Thrift/protobuf stubs are
+outbound_rpc.`,
 			DetailPrompt: `For this outbound HTTP dependency, extract:
 1. Target service/host and the config property that defines the URL
 2. Exact endpoint path and HTTP method
@@ -379,6 +398,11 @@ FOR EACH CACHE OPERATION EXTRACT:
 - Service class that uses the cache
 
 NOTE: In-memory-only caches (EhCache without external store, Caffeine, Guava Cache) are NOT external cache operations - do not include them.
+
+BOUNDARY (Redis ownership): Redis used as a CACHE (TTL'd keys, @Cacheable,
+cache-aside) is a cache_operation and belongs HERE. Redis used as a PRIMARY
+DATASTORE (durable keys, no TTL, source of truth) is a db_operation. Pick ONE;
+do not report the same Redis access as both.
 If no external cache operations exist, return {"items": []}.`,
 			DetailPrompt: `For this cache operation, provide:
 1. Cache type (Redis, Memcached, etc.) and connection config
