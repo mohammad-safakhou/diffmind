@@ -33,7 +33,57 @@ func (d *springDetector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
 			}
 		}
 	}
+	// @Cacheable/@CachePut/@CacheEvict only count as external cache_operations
+	// when the repo configures an external cache backing (Redis/Hazelcast/…).
+	// Without that signal the annotation may be an in-memory cache, so we drop
+	// the cache bindings and leave them to the LLM (precision over recall).
+	if !springHasExternalCache(idx) {
+		out = dropBindingsOfKind(out, "cache_operation")
+	}
 	return out
+}
+
+func dropBindingsOfKind(in []ast.FrameworkBinding, kind string) []ast.FrameworkBinding {
+	out := in[:0]
+	for _, b := range in {
+		if b.Kind == kind {
+			continue
+		}
+		out = append(out, b)
+	}
+	return out
+}
+
+// firstCacheName returns the first cache name from a @Cacheable/@CachePut/
+// @CacheEvict annotation (cacheNames= / value= / positional / array).
+func firstCacheName(args string) string {
+	if v := namedOrPositionalValues(args, "cacheNames", "value"); len(v) > 0 {
+		return v[0]
+	}
+	return ""
+}
+
+// springHasExternalCache reports whether the repo configures an external cache
+// manager (Redis/Hazelcast/Infinispan/Memcached/JCache/Couchbase). Used to gate
+// cache_operation bindings so in-memory caches (caffeine/simple) are excluded.
+func springHasExternalCache(idx *ast.ProjectIndex) bool {
+	if idx == nil {
+		return false
+	}
+	external := map[string]bool{"redis": true, "hazelcast": true, "infinispan": true, "memcached": true, "jcache": true, "couchbase": true}
+	for _, cf := range idx.Configs {
+		for _, e := range cf.Entries {
+			k := strings.ToLower(e.Key)
+			v := strings.ToLower(strings.TrimSpace(e.Value))
+			if strings.Contains(k, "spring.cache.type") && external[v] {
+				return true
+			}
+			if strings.Contains(k, "spring.redis") || strings.Contains(k, "spring.data.redis") || strings.Contains(k, "redis.host") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func springAnnotationToBindings(sym ast.SymbolDef, cls *ast.SymbolDef, ann ast.Annotation) []ast.FrameworkBinding {
@@ -101,6 +151,23 @@ func springAnnotationToBindings(sym ast.SymbolDef, cls *ast.SymbolDef, ann ast.A
 	if ql, ok := queueListeners[name]; ok {
 		dests := namedOrPositionalValues(args, ql.attrs...)
 		return queueConsumerBindings(sym, ql.platform, dests, "@"+name+"("+args+")")
+	}
+
+	// Cache operations. Only kept when an external cache backing is configured
+	// (see Detect); @Cacheable on an in-memory cache is not a cache_operation.
+	cacheOps := map[string]string{"Cacheable": "read", "CachePut": "write", "CacheEvict": "evict"}
+	if op, ok := cacheOps[name]; ok {
+		cache := firstCacheName(args)
+		return []ast.FrameworkBinding{{
+			Framework:     "spring",
+			Kind:          "cache_operation",
+			Direction:     "outbound",
+			Symbol:        sym.Qualified,
+			Trigger:       "cache: " + op + " " + cache,
+			TriggerSource: "@" + name + "(" + args + ")",
+			File:          sym.File,
+			Range:         sym.Range,
+		}}
 	}
 
 	// Async dispatch.
