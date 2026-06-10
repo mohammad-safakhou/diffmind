@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mohammad-safakhou/diffmind/internal/agents/core"
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
@@ -764,13 +765,13 @@ func hasDeterministicEvidence(e llmEntity) bool {
 	return false
 }
 
-func (o *orchestrator) detailCheckpointForSeed(j detailJob) (detailCheckpointEntry, bool) {
+func (o *orchestrator) detailCheckpointForSeed(j detailJob) (core.DetailCheckpointEntry, bool) {
 	base, ur := ToBase(o.repoPath, j.Objective, j.Seed, o.cfg.Quality.MinConfidence)
 	if ur != nil {
-		return detailCheckpointEntry{}, false
+		return core.DetailCheckpointEntry{}, false
 	}
-	entry := detailCheckpointEntry{
-		Key:         detailEntityKey(j.Objective.ID, j.Seed.Name),
+	entry := core.DetailCheckpointEntry{
+		Key:         core.DetailEntityKey(j.Objective.ID, j.Seed.Name),
 		ObjectiveID: j.Objective.ID,
 		SeedName:    j.Seed.Name,
 	}

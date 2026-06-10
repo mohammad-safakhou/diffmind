@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/mohammad-safakhou/diffmind/internal/agents/core"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 )
@@ -21,17 +22,18 @@ func TestDiscoveryCheckpointSkipsCompletedObjectives(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.Workers = 4
 	o := &orchestrator{cfg: cfg, runDir: runDir}
+	o.store = &core.CheckpointStore{RunDir: runDir}
 
 	// Pre-populate checkpoint with A and B already done.
 	objA := objectives.Objective{ID: "exposure.http_route", Kind: "exposure", Type: "http_route"}
 	objB := objectives.Objective{ID: "dependency.db_operation", Kind: "dependency", Type: "db_operation"}
 	objC := objectives.Objective{ID: "dependency.outbound_http", Kind: "dependency", Type: "outbound_http"}
 
-	o.appendDiscoveryObjective(discoveryCheckpointEntry{
+	o.store.AppendDiscoveryObjective(core.DiscoveryCheckpointEntry{
 		ObjectiveID: objA.ID,
 		Items:       []llmEntity{{Type: "http_route", Name: "GET /x", Confidence: 0.95}},
 	})
-	o.appendDiscoveryObjective(discoveryCheckpointEntry{
+	o.store.AppendDiscoveryObjective(core.DiscoveryCheckpointEntry{
 		ObjectiveID: objB.ID,
 		Items:       []llmEntity{},
 	})

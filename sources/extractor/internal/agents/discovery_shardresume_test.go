@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mohammad-safakhou/diffmind/internal/agents/core"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 )
 
@@ -19,6 +20,7 @@ func TestShardedDiscoveryResumesCheckpointedShards(t *testing.T) {
 	fake := &scopeFake{}
 	idx := bigIndex([]string{"src/api/a", "src/api/b", "src/api/c", "src/api/d", "src/api/e", "src/api/f"}, 20)
 	o := &orchestrator{cfg: cfg, oc: fake, sink: sink, astIndex: idx, runDir: runDir}
+	o.store = &core.CheckpointStore{RunDir: runDir}
 
 	obj := objByType(t, "http_route")
 	shards := planDiscoveryShards(idx, obj, "")
@@ -28,7 +30,7 @@ func TestShardedDiscoveryResumesCheckpointedShards(t *testing.T) {
 
 	// Pre-write all shards but the last as completed checkpoints.
 	for i := 0; i < len(shards)-1; i++ {
-		o.appendDiscoveryShard(obj.ID, shards[i].Index, []llmEntity{{Type: "http_route", Name: "cached-" + Itoa(i), Confidence: 0.9}})
+		o.store.AppendDiscoveryShard(obj.ID, shards[i].Index, []llmEntity{{Type: "http_route", Name: "cached-" + Itoa(i), Confidence: 0.9}})
 	}
 
 	items, err := o.runDiscoveryOne(context.Background(), obj, &repoFacts{})
@@ -51,16 +53,17 @@ func TestShardedDiscoveryResumesCheckpointedShards(t *testing.T) {
 func TestLegacyCheckpointLineLoads(t *testing.T) {
 	runDir := t.TempDir()
 	o := &orchestrator{runDir: runDir}
+	o.store = &core.CheckpointStore{RunDir: runDir}
 	dir := filepath.Join(runDir, stateDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	// A legacy line: no "sharded"/"shard_index" keys.
 	legacy := `{"objective_id":"exposure.http_route","items":[{"type":"http_route","name":"GET /legacy","confidence":0.9}],"written_at":"2026-01-01T00:00:00Z"}` + "\n"
-	if err := os.WriteFile(filepath.Join(dir, discoverEntitiesJSONL), []byte(legacy), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "discover_entities.jsonl"), []byte(legacy), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cp := o.loadDiscoveryCheckpoint(dir)
+	cp := o.store.LoadDiscoveryCheckpoint(dir)
 	entry, ok := cp["exposure.http_route"]
 	if !ok {
 		t.Fatal("legacy whole-objective line did not load")
@@ -69,7 +72,7 @@ func TestLegacyCheckpointLineLoads(t *testing.T) {
 		t.Fatalf("legacy items wrong: %+v", entry.Items)
 	}
 	// And it must NOT be mistaken for a shard.
-	if shardCP := o.loadDiscoveryShardCheckpoint(dir, "exposure.http_route"); len(shardCP) != 0 {
+	if shardCP := o.store.LoadDiscoveryShardCheckpoint(dir, "exposure.http_route"); len(shardCP) != 0 {
 		t.Fatalf("legacy line wrongly read as shard checkpoint: %+v", shardCP)
 	}
 }

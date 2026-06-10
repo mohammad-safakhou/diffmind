@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mohammad-safakhou/diffmind/internal/agents/core"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/langdetect"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
@@ -77,7 +78,7 @@ func (o *orchestrator) runDiscovery(ctx context.Context, objs []objectives.Objec
 	}
 
 	// Load per-objective checkpoint so a retry skips already-completed objectives.
-	checkpoint := o.loadDiscoveryCheckpoint(o.runDir + "/" + stateDir)
+	checkpoint := o.store.LoadDiscoveryCheckpoint(o.runDir + "/" + stateDir)
 
 	// Objectives that are already in the checkpoint are satisfied immediately
 	// without any LLM call. We still add them to `out` so the rest of the
@@ -138,7 +139,7 @@ func (o *orchestrator) runDiscovery(ctx context.Context, objs []objectives.Objec
 				if err == nil {
 					// Checkpoint the success immediately so a mid-stage
 					// failure on a later objective won't re-run this one.
-					o.appendDiscoveryObjective(discoveryCheckpointEntry{
+					o.store.AppendDiscoveryObjective(core.DiscoveryCheckpointEntry{
 						ObjectiveID: obj.ID,
 						Items:       items,
 					})
@@ -267,7 +268,7 @@ func (o *orchestrator) runDiscoverySharded(ctx context.Context, obj objectives.O
 	parentID := "discover." + obj.ID
 	// Resume: shards already checkpointed on a prior attempt are restored
 	// without an LLM call; only the missing shards re-run.
-	done := o.loadDiscoveryShardCheckpoint(filepath.Join(o.runDir, stateDir), obj.ID)
+	done := o.store.LoadDiscoveryShardCheckpoint(filepath.Join(o.runDir, stateDir), obj.ID)
 	results := make([][]llmEntity, 0, len(shards))
 	for i := range shards {
 		shard := shards[i]
@@ -299,7 +300,7 @@ func (o *orchestrator) runDiscoverySharded(ctx context.Context, obj objectives.O
 		}
 		// Checkpoint the shard immediately so a later shard's failure doesn't
 		// force this one to re-run on retry.
-		o.appendDiscoveryShard(obj.ID, shard.Index, items)
+		o.store.AppendDiscoveryShard(obj.ID, shard.Index, items)
 		o.emit(events.Event{
 			Kind: events.KindJobCompleted, Stage: "discovery", JobID: childID, ParentID: parentID, Status: events.StatusSuccess,
 			Payload: map[string]any{"objective_id": obj.ID, "shard": shard.Index, "items": len(items), "duration_ms": time.Since(shardStarted).Milliseconds()},
