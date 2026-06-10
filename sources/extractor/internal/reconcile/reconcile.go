@@ -16,6 +16,8 @@ import (
 // Dedupe collapses entities by ID, keeping the highest-confidence version
 // and merging non-empty fields from duplicates.
 func DedupeExposures(in []model.Exposure) []model.Exposure {
+	in = collapseJobEntrypoints(in)
+	in = collapseQueueExposureVariants(in)
 	in = dedupeExposuresSemantic(in)
 	byID := map[string]model.Exposure{}
 	for _, e := range in {
@@ -35,6 +37,9 @@ func DedupeExposures(in []model.Exposure) []model.Exposure {
 
 func DedupeDependencies(in []model.Dependency) []model.Dependency {
 	in = dropTransportDuplicates(in)
+	in = dropJunkDataDeps(in)
+	in = canonicalizeDataNames(in)
+	in = collapseQueueDependencyVariants(in)
 	in = dedupeDependenciesSemantic(in)
 	byID := map[string]model.Dependency{}
 	for _, e := range in {
@@ -49,6 +54,157 @@ func DedupeDependencies(in []model.Dependency) []model.Dependency {
 		out = append(out, e)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// dropJunkDataDeps removes db/cache dependencies whose resource is an obvious
+// non-table artifact (sequences, the JPA entity_manager handle). The
+// deterministic path already filters these, but LLM-discovered db ops can leak
+// e.g. a *_id_seq sequence; applying the filter to ALL data deps closes that
+// gap (Item 7).
+func dropJunkDataDeps(in []model.Dependency) []model.Dependency {
+	out := make([]model.Dependency, 0, len(in))
+	for _, d := range in {
+		if (d.Type == "db_operation" || d.Type == "cache_operation") && isJunkDataResource(rawResourceDetailOrName(d)) {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+func isJunkDataResource(resource string) bool {
+	t := strings.ToLower(strings.TrimSpace(resource))
+	if t == "" {
+		return false // empty handled elsewhere; don't drop unknown-resource deps
+	}
+	if t == "entity_manager" {
+		return true
+	}
+	// Strip a schema qualifier before the suffix check (public.foo_id_seq).
+	if _, base := splitSchemaQualified(t); base != "" {
+		t = base
+	}
+	return strings.HasSuffix(t, "_seq") || strings.HasSuffix(t, "_id_seq") || strings.HasSuffix(t, "_sequence")
+}
+
+func rawResourceDetailOrName(d model.Dependency) string {
+	if _, v := rawResourceDetail(d.BaseEntity); v != "" {
+		return v
+	}
+	return d.Name
+}
+
+// canonicalizeDataNames rewrites a db/cache dependency name that is actually a
+// caller symbol (Class.method, no spaces) into the data-fact form
+// "<operation_kind> <resource>", so e.g.
+// "AthenaDebugController.campaignDeliveredQuantityDebug" becomes
+// "read agg_catalogue_campaign_stats" (Item 9). Names that already read like a
+// data fact are left untouched.
+func canonicalizeDataNames(in []model.Dependency) []model.Dependency {
+	out := make([]model.Dependency, len(in))
+	copy(out, in)
+	for i := range out {
+		d := &out[i]
+		if d.Type != "db_operation" && d.Type != "cache_operation" {
+			continue
+		}
+		name := strings.TrimSpace(d.Name)
+		looksLikeSymbol := name != "" && !strings.Contains(name, " ") && strings.Contains(name, ".")
+		if !looksLikeSymbol {
+			continue
+		}
+		res := strings.ToLower(rawResourceDetailOrName(*d))
+		op := dataOperation(d.BaseEntity)
+		if res == "" || op == "" || res == strings.ToLower(name) {
+			continue
+		}
+		d.Name = op + " " + res
+	}
+	return out
+}
+
+// collapseJobEntrypoints removes a cli_command exposure when a scheduled_job is
+// declared in the SAME source file. A profile-gated CommandLineRunner batch job
+// is otherwise discovered twice — once as scheduled_job (by handler name) and
+// once as cli_command (by profile/command string) — and the two never dedup
+// because their names differ. The scheduled_job is kept (higher priority); a
+// genuine standalone CLI (e.g. the app's main launcher, in its own file) is
+// unaffected (Item 4).
+func collapseJobEntrypoints(in []model.Exposure) []model.Exposure {
+	schedFiles := map[string]struct{}{}
+	for _, e := range in {
+		if e.Type == "scheduled_job" {
+			for _, l := range e.Locations {
+				if l.File != "" {
+					schedFiles[l.File] = struct{}{}
+				}
+			}
+		}
+	}
+	if len(schedFiles) == 0 {
+		return in
+	}
+	out := make([]model.Exposure, 0, len(in))
+	for _, e := range in {
+		if e.Type == "cli_command" {
+			drop := false
+			for _, l := range e.Locations {
+				if _, ok := schedFiles[l.File]; ok {
+					drop = true
+					break
+				}
+			}
+			if drop {
+				continue
+			}
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// collapseQueueExposureVariants collapses queue_consumer exposures whose
+// destination matches after suffix-normalization, so an LLM's "<queue>" and
+// "<queue>-consumer" variants become one (Item 5). The higher-confidence entry
+// is kept. Other exposure types are untouched.
+func collapseQueueExposureVariants(in []model.Exposure) []model.Exposure {
+	idxByKey := map[string]int{}
+	out := make([]model.Exposure, 0, len(in))
+	for _, e := range in {
+		if e.Type != "queue_consumer" {
+			out = append(out, e)
+			continue
+		}
+		key := strings.ToLower(e.Platform) + "|" + NormalizeQueueDest(queueDestOf(e.BaseEntity))
+		if i, ok := idxByKey[key]; ok {
+			out[i] = chooseExposure(out[i], e)
+			continue
+		}
+		idxByKey[key] = len(out)
+		out = append(out, e)
+	}
+	return out
+}
+
+// collapseQueueDependencyVariants is the dependency-side counterpart for
+// queue_publish / stream_consume (Item 5).
+func collapseQueueDependencyVariants(in []model.Dependency) []model.Dependency {
+	idxByKey := map[string]int{}
+	out := make([]model.Dependency, 0, len(in))
+	for _, d := range in {
+		if d.Type != "queue_publish" && d.Type != "stream_consume" {
+			out = append(out, d)
+			continue
+		}
+		key := d.Type + "|" + strings.ToLower(d.Platform) + "|" + NormalizeQueueDest(queueDestOf(d.BaseEntity))
+		if i, ok := idxByKey[key]; ok {
+			out[i] = chooseDependency(out[i], d)
+			continue
+		}
+		idxByKey[key] = len(out)
+		out = append(out, d)
+	}
 	return out
 }
 
@@ -372,6 +528,30 @@ func semanticIdentity(b model.BaseEntity, withLoc bool) string {
 	return genericSemanticKey(b, withLoc)
 }
 
+// queueDestOf returns the queue/topic/stream destination of a messaging entity,
+// from details first, then the classified instance, then the name.
+func queueDestOf(b model.BaseEntity) string {
+	dest := firstDetail(b, "queue", "topic", "destination", "stream")
+	if dest == "" {
+		dest = strings.ToLower(strings.TrimSpace(b.Instance))
+	}
+	if dest == "" {
+		dest = strings.ToLower(strings.TrimSpace(b.Name))
+	}
+	return dest
+}
+
+// NormalizeQueueDest lower-cases a queue/topic/stream name and strips a trailing
+// consumer/listener suffix, so a destination and its "<name>-consumer" variant
+// collapse to one identity. Exported so the eval matcher keys identically.
+func NormalizeQueueDest(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	for _, suf := range []string{"-consumer", "_consumer", ".consumer", "-listener", "_listener", ".listener"} {
+		s = strings.TrimSuffix(s, suf)
+	}
+	return strings.TrimRight(s, "-_.")
+}
+
 // routeMethodPath extracts the HTTP method and path from a route-shaped entity,
 // preferring explicit details and falling back to parsing the name ("GET /x").
 func routeMethodPath(b model.BaseEntity) (method, path string) {
@@ -507,9 +687,27 @@ func normalizeDBOp(op string) string {
 		return "read"
 	case hasAnyPrefix(op, "write", "insert", "update", "save", "upsert", "delete", "remove", "put", "merge", "persist", "store"):
 		return "write"
-	default:
-		return op
 	}
+	// Fallback for custom method names where the verb is embedded mid-name
+	// (e.g. hardDeleteAllSubTargets, batchInsert). Write verbs are checked first
+	// so a mixed name like "deleteAndReindex" classes as write. Genuinely opaque
+	// names (nextLocalId, unknown) pass through unchanged.
+	if containsAny(op, "delete", "insert", "update", "upsert", "remove", "persist", "truncate", "merge") {
+		return "write"
+	}
+	if containsAny(op, "select", "findby", "fetch", "search", "exists", "query") {
+		return "read"
+	}
+	return op
+}
+
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasAnyPrefix(s string, prefixes ...string) bool {
