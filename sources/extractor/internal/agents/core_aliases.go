@@ -107,6 +107,26 @@ var (
 	KeySegmentName          = core.KeySegmentName
 )
 
+// identity.go (shared identity / detail-derivation helpers)
+var (
+	shouldReexamine             = core.ShouldReexamine
+	missingRequiredDetails      = core.MissingRequiredDetails
+	deriveDetailsFromName       = core.DeriveDetailsFromName
+	splitMethodPath             = core.SplitMethodPath
+	splitServiceMethod          = core.SplitServiceMethod
+	looksLikeIdentifier         = core.LooksLikeIdentifier
+	looksLikeCommand            = core.LooksLikeCommand
+	guessOperation              = core.GuessOperation
+	extractCronLike             = core.ExtractCronLike
+	hasDetailKey                = core.HasDetailKey
+	discoverySemanticKey        = core.DiscoverySemanticKey
+	normalizePathForKey         = core.NormalizePathForKey
+	isCompleteDeterministicSeed = core.IsCompleteDeterministicSeed
+	hasDeterministicEvidence    = core.HasDeterministicEvidence
+	shardEntityKey              = core.ShardEntityKey
+	httpMethods                 = core.HTTPMethods
+)
+
 // paths.go
 var NewPathMapper = core.NewPathMapper
 

@@ -216,15 +216,6 @@ func mergeShardEntities(obj objectives.Objective, in [][]llmEntity) []llmEntity 
 	return out
 }
 
-func shardEntityKey(e llmEntity) string {
-	file, line := "", 0
-	if len(e.Locations) > 0 {
-		file = e.Locations[0].File
-		line = e.Locations[0].StartLine
-	}
-	return strings.ToLower(e.Type) + "|" + strings.ToLower(e.Name) + "|" + file + ":" + Itoa(line)
-}
-
 func unionLocations(a, b []llmLocation) []llmLocation {
 	seen := map[string]struct{}{}
 	var out []llmLocation
