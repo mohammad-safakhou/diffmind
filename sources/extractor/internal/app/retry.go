@@ -3,19 +3,17 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/mohammad-safakhou/diffmind/internal/artifacts"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/extraction"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
-	"github.com/mohammad-safakhou/diffmind/internal/opencode"
-	"github.com/mohammad-safakhou/diffmind/internal/pipeline"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -144,72 +142,26 @@ func RetryRun(ctx context.Context, in RetryInput) (RunOutput, error) {
 		"snapshot_path": snapshotPath,
 	})
 
-	// Reuse the run's existing prompts/state/events directory layout.
-	captureDir := filepath.Join(runDir, "prompts")
 	stateDirPath := filepath.Join(runDir, "state")
-
-	// Re-build OpenCode client with the CURRENT config. Credentials
-	// can change between runs — that's the whole point of "retry".
-	oc := opencode.New(
-		in.Config.OpenCode.BaseURL,
-		in.Config.OpenCode.ProviderID,
-		in.Config.OpenCode.ModelID,
-		in.Config.OpenCode.ModelVariant,
-		in.Config.OpenCode.Username,
-		in.Config.OpenCode.Password,
-		time.Duration(in.Config.OpenCode.TimeoutSec)*time.Second,
-	)
-	if !oc.Enabled() {
-		return fail(fmt.Errorf("retry: opencode-url is required"))
-	}
-	if err := oc.Health(ctx); err != nil {
-		return fail(fmt.Errorf("retry: opencode health check failed at %s: %w", in.Config.OpenCode.BaseURL, err))
-	}
-
-	result, err := pipeline.New(in.Config, oc, in.Sink).Run(ctx, extraction.Request{
-		RepoPath:      repoPath,
-		CaptureDir:    captureDir,
-		RunDir:        runDir,
-		ResumeFromDir: stateDirPath,
-		SnapshotPath:  snapshotPath,
+	out, err := execute(ctx, executionInput{
+		Config: in.Config, Sink: in.Sink,
+		RunID: runID, RunDir: runDir, BaseDir: in.BaseDir,
+		RepoPath: repoPath, SnapshotPath: snapshotPath, ResumeFromDir: stateDirPath,
+		StartedAt: started, Component: "app.retry", ErrorPrefix: "retry: ",
+		ClearFailure: true, FailureLogText: "retry failed; new failure report written",
 	})
 	if err != nil {
-		util.Error("app.retry", "retry failed; new failure report written", map[string]any{
-			"error":         err,
-			"run_id":        runID,
-			"run_dir":       runDir,
-			"snapshot_path": result.SnapshotPath,
-		})
-		return RunOutput{RunID: runID, RunDir: runDir, Failure: result.Failure}, err
-	}
-
-	// Success: clear the old failure report and overwrite the manifest.
-	_ = os.Remove(filepath.Join(runDir, "run_failure.json"))
-	_ = os.Remove(filepath.Join(runDir, "run_failure.md"))
-
-	if _, err := artifacts.Write(artifacts.WriteInput{
-		RunID:         runID,
-		BaseDir:       in.BaseDir,
-		RepoPath:      repoPath,
-		OpenCodeURL:   in.Config.OpenCode.BaseURL,
-		MinConfidence: in.Config.Quality.MinConfidence,
-		Exposures:     result.Exposures,
-		Dependencies:  result.Dependencies,
-		Connections:   result.Connections,
-		Unresolved:    result.Unresolved,
-		Warnings:      result.Warnings,
-		StartedAt:     started, // start of THIS retry; keeps things consistent
-		FinishedAt:    time.Now().UTC(),
-		TokenTotals:   result.Tokens,
-	}); err != nil {
-		util.Error("app.retry", "artifact write failed", map[string]any{"error": err})
-		return RunOutput{}, err
+		var executionErr *executionError
+		if errors.As(err, &executionErr) && executionErr.phase == "bootstrap" {
+			return fail(err)
+		}
+		return out, err
 	}
 	util.Info("app.retry", "retry succeeded", map[string]any{
 		"run_id": runID, "run_dir": runDir,
 		"duration_ms": time.Since(started).Milliseconds(),
 	})
-	return RunOutput{RunID: runID, RunDir: runDir, Warning: result.Warnings}, nil
+	return out, nil
 }
 
 // scanRunStartedFromEvents pulls the repo path and snapshot path out
