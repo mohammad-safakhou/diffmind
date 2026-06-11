@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +14,7 @@ import (
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
+	"github.com/mohammad-safakhou/diffmind/internal/llmrun"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	"github.com/mohammad-safakhou/diffmind/internal/opencode"
@@ -54,7 +54,7 @@ type orchestrator struct {
 	// every promptAgent call's final /session/{id} read. Updated
 	// from the orchestrator's main goroutine after each prompt
 	// completes; no synchronisation needed.
-	tokenAgg tokenTotals
+	tokenAgg llmrun.TokenTotals
 
 	// astIndex is set by the ast_index stage and holds the tree-sitter
 	// project analysis used by the connections stage and discovery hints.
@@ -1036,7 +1036,7 @@ func (o *orchestrator) handlePromptError(ctx context.Context, role, sessionID, p
 	// (the canonical "no structured payload" error) re-issue the same
 	// logical request as plain text with a strict "respond ONLY with valid
 	// JSON" footer, then scrape the JSON out.
-	if isNoStructuredPayload(err) {
+	if llmrun.IsNoStructuredPayload(err) {
 		fallback, fbErr := o.fallbackPromptText(ctx, role, sessionID, prompt, schema)
 		if fbErr == nil && fallback != nil {
 			dur := time.Since(started)
@@ -1050,7 +1050,7 @@ func (o *orchestrator) handlePromptError(ctx context.Context, role, sessionID, p
 					"max_attempts":  attempts,
 					"duration_ms":   dur.Milliseconds(),
 					"prompt_len":    len(prompt),
-					"response_keys": mapKeys(fallback),
+					"response_keys": llmrun.MapKeys(fallback),
 					"fallback":      "text",
 				},
 			})
@@ -1079,8 +1079,8 @@ func (o *orchestrator) handlePromptError(ctx context.Context, role, sessionID, p
 			"attempt":      attempt,
 			"max_attempts": attempts,
 			"duration_ms":  time.Since(started).Milliseconds(),
-			"raw_preview":  previewBytes(rawBody, 360),
-			"text_preview": previewString(textBody, 360),
+			"raw_preview":  llmrun.PreviewBytes(rawBody, 360),
+			"text_preview": llmrun.PreviewString(textBody, 360),
 		},
 	})
 	return nil, fmt.Errorf("%s prompt: %w", role, err)
@@ -1100,7 +1100,7 @@ func (o *orchestrator) emitPromptSuccess(ctx context.Context, role, sessionID st
 		"max_attempts":  attempts,
 		"duration_ms":   time.Since(started).Milliseconds(),
 		"prompt_len":    promptLen,
-		"response_keys": mapKeys(payload),
+		"response_keys": llmrun.MapKeys(payload),
 	}
 	if tokens != nil {
 		payloadOut["tokens"] = map[string]any{
@@ -1134,141 +1134,16 @@ func (o *orchestrator) fallbackPromptText(ctx context.Context, role, sessionID, 
 	if err != nil {
 		return nil, err
 	}
-	parsed := scrapeJSONObject(text)
+	parsed := llmrun.ScrapeJSONObject(text)
 	if parsed == nil {
-		return nil, fmt.Errorf("free-text reply did not contain a JSON object (preview=%s)", previewString(text, 240))
+		return nil, fmt.Errorf("free-text reply did not contain a JSON object (preview=%s)", llmrun.PreviewString(text, 240))
 	}
 	_ = schema // schema is unused in fallback parsing; kept for parity.
 	return parsed, nil
 }
 
-// scrapeJSONObject pulls the first JSON object out of arbitrary text.
-// Tries a direct unmarshal, fenced ```json blocks, then a brace-balanced
-// scan. Returns nil if no object can be recovered.
-func scrapeJSONObject(text string) map[string]any {
-	t := strings.TrimSpace(text)
-	if t == "" {
-		return nil
-	}
-	if m, ok := tryJSONObject(t); ok {
-		return m
-	}
-	for _, block := range extractFencedBlocks(t) {
-		if m, ok := tryJSONObject(block); ok {
-			return m
-		}
-	}
-	if candidate, ok := scanBalancedObject(t); ok {
-		if m, ok := tryJSONObject(candidate); ok {
-			return m
-		}
-	}
-	return nil
-}
-
-func tryJSONObject(s string) (map[string]any, bool) {
-	var m map[string]any
-	if err := json.Unmarshal([]byte(s), &m); err == nil {
-		return m, true
-	}
-	return nil, false
-}
-
-func extractFencedBlocks(s string) []string {
-	out := []string{}
-	for _, sep := range []string{"```json", "```"} {
-		i := 0
-		for {
-			start := strings.Index(s[i:], sep)
-			if start < 0 {
-				break
-			}
-			start += i + len(sep)
-			// Skip optional newline immediately after the fence.
-			if start < len(s) && s[start] == '\n' {
-				start++
-			}
-			end := strings.Index(s[start:], "```")
-			if end < 0 {
-				break
-			}
-			out = append(out, strings.TrimSpace(s[start:start+end]))
-			i = start + end + 3
-		}
-		if len(out) > 0 {
-			break
-		}
-	}
-	return out
-}
-
-func scanBalancedObject(s string) (string, bool) {
-	start := strings.Index(s, "{")
-	if start < 0 {
-		return "", false
-	}
-	depth := 0
-	inString := false
-	esc := false
-	for i := start; i < len(s); i++ {
-		ch := s[i]
-		if inString {
-			if esc {
-				esc = false
-				continue
-			}
-			if ch == '\\' {
-				esc = true
-				continue
-			}
-			if ch == '"' {
-				inString = false
-			}
-			continue
-		}
-		if ch == '"' {
-			inString = true
-			continue
-		}
-		if ch == '{' {
-			depth++
-		} else if ch == '}' {
-			depth--
-			if depth == 0 {
-				return s[start : i+1], true
-			}
-		}
-	}
-	return "", false
-}
-
-func isNoStructuredPayload(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "no structured payload")
-}
-
-func previewBytes(b []byte, n int) string { return previewString(string(b), n) }
-func previewString(s string, n int) string {
-	s = strings.ReplaceAll(s, "\n", "\\n")
-	s = strings.ReplaceAll(s, "\t", "\\t")
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "\u2026"
-}
-
-// persistPrompt writes the prompt text to <captureDir>/<role>.prompt.txt
-// (best-effort). Filenames mirror the role so the dashboard can fetch them
-// later via /api/runs/{id}/job/{jobID}.
 func (o *orchestrator) persistPrompt(role, prompt string) {
-	if o.captureDir == "" || role == "" {
-		return
-	}
-	path := filepath.Join(o.captureDir, SafeJobID(role)+".prompt.txt")
-	_ = os.WriteFile(path, []byte(prompt), 0o644)
+	llmrun.CaptureStore{Dir: o.captureDir}.Prompt(role, prompt)
 }
 
 // captureFilePath returns the absolute path where a prompt/response
@@ -1277,10 +1152,7 @@ func (o *orchestrator) persistPrompt(role, prompt string) {
 // path so the operator can find the exact bytes the LLM saw and
 // returned even before the file lands on disk.
 func (o *orchestrator) captureFilePath(jobID, kind, ext string) string {
-	if o.captureDir == "" || jobID == "" {
-		return ""
-	}
-	return filepath.Join(o.captureDir, SafeJobID(jobID)+"."+kind+"."+ext)
+	return (llmrun.CaptureStore{Dir: o.captureDir}).Path(jobID, kind, ext)
 }
 
 func (o *orchestrator) persistResponse(role string, payload map[string]any) {
@@ -1299,33 +1171,7 @@ func (o *orchestrator) persistResponse(role string, payload map[string]any) {
 // All writes are best-effort; capture is a debugging aid and must never
 // take down a run.
 func (o *orchestrator) persistResponseBundle(role string, payload map[string]any, raw []byte, text string) {
-	if o.captureDir == "" || role == "" {
-		return
-	}
-	base := filepath.Join(o.captureDir, SafeJobID(role))
-	if payload != nil {
-		if b, err := json.MarshalIndent(payload, "", "  "); err == nil {
-			_ = os.WriteFile(base+".response.json", b, 0o644)
-		}
-	}
-	if len(raw) > 0 {
-		_ = os.WriteFile(base+".response.raw", raw, 0o644)
-	}
-	if strings.TrimSpace(text) != "" {
-		_ = os.WriteFile(base+".response.text", []byte(text), 0o644)
-	}
-}
-
-func mapKeys(m map[string]any) []string {
-	if m == nil {
-		return nil
-	}
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
+	llmrun.CaptureStore{Dir: o.captureDir}.Response(role, payload, raw, text)
 }
 
 // bestEffortAbort tries to abort a session via the pause handler. We use a
