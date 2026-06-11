@@ -1,4 +1,4 @@
-package pipeline
+package discovery
 
 import (
 	"path"
@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
+	"github.com/mohammad-safakhou/diffmind/internal/extraction"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 )
 
@@ -31,9 +32,9 @@ import (
 // objective, else in source files. Private consts (same deliberate-tradeoff
 // convention as grouping.go): changing them is a real cost/quality decision.
 const (
-	discoveryShardSoftTarget = 40 // at/below this estimate: one call, no sharding
-	discoveryShardHardCap    = 60 // max candidate weight packed into a single shard
-	maxShardFiles            = 60 // hard ceiling on files listed in one shard's SCOPE
+	discoveryShardSoftTarget = 40
+	DiscoveryShardHardCap    = 60
+	maxShardFiles            = 60
 )
 
 // discoveryShard is one scoped sub-task of an objective's discovery. Files is
@@ -41,7 +42,7 @@ const (
 // tree), so shards never overlap and a single fat directory can still be split
 // across shards. Dirs is the deduped directory list, for the SCOPE line and
 // event display.
-type discoveryShard struct {
+type Shard struct {
 	Index int            // 0-based; used for jobID + checkpoint key
 	Files []string       // exact source files this shard covers
 	Dirs  []string       // distinct directories of Files (display/scope summary)
@@ -80,7 +81,7 @@ type discoveryShard struct {
 // accepted cost of evidence-gating — it only applies to high-evidence
 // objectives (whose reflection tail is small), and low-evidence objectives
 // still get a single whole-repo call that searches everything.
-func planDiscoveryShards(idx *astpkg.ProjectIndex, obj objectives.Objective, subDir string) []discoveryShard {
+func PlanShards(idx *astpkg.ProjectIndex, obj objectives.Objective, subDir string) []Shard {
 	if idx == nil || len(idx.Files) == 0 {
 		return nil
 	}
@@ -120,14 +121,14 @@ func planDiscoveryShards(idx *astpkg.ProjectIndex, obj objectives.Objective, sub
 	// absolute ceiling. A file heavier than the soft target on its own still
 	// starts (and immediately closes) a shard — we never split below file
 	// granularity.
-	var shards []discoveryShard
+	var shards []Shard
 	var cur []string
 	curWeight := 0
 	flush := func() {
 		if len(cur) == 0 {
 			return
 		}
-		shards = append(shards, discoveryShard{Files: append([]string(nil), cur...)})
+		shards = append(shards, Shard{Files: append([]string(nil), cur...)})
 		cur = nil
 		curWeight = 0
 	}
@@ -149,10 +150,10 @@ func planDiscoveryShards(idx *astpkg.ProjectIndex, obj objectives.Objective, sub
 
 	for i := range shards {
 		shards[i].Index = i
-		shards[i].Dirs = distinctDirs(shards[i].Files)
+		shards[i].Dirs = DistinctDirs(shards[i].Files)
 		// Hint scope = exact files (an exact path is a prefix of itself), so a
 		// shard's hints cover only its own files even when a directory is split.
-		shards[i].Hints = buildObjectiveHints(idx, obj, subDir, shards[i].Files)
+		shards[i].Hints = BuildObjectiveHints(idx, obj, subDir, shards[i].Files)
 	}
 	return shards
 }
@@ -165,7 +166,7 @@ func fileInSubDir(file, subDir string) bool {
 }
 
 // distinctDirs returns the sorted, deduped set of directories of the files.
-func distinctDirs(files []string) []string {
+func DistinctDirs(files []string) []string {
 	seen := map[string]struct{}{}
 	var out []string
 	for _, f := range files {
@@ -190,21 +191,21 @@ func distinctDirs(files []string) []string {
 //
 // This is a cheap pre-convert merge only; the authoritative semantic dedup is
 // the later Stage-5 reconcile pass (which needs post-convert model.* types).
-func mergeShardEntities(obj objectives.Objective, in [][]llmEntity) []llmEntity {
-	var out []llmEntity
+func MergeShardEntities(obj objectives.Objective, in [][]extraction.Candidate) []extraction.Candidate {
+	var out []extraction.Candidate
 	index := map[string]int{} // key -> position in out
 	for _, batch := range in {
 		for _, e := range batch {
-			k := discoverySemanticKey(obj, e)
+			k := extraction.DiscoverySemanticKey(obj, e)
 			if pos, ok := index[k]; ok {
 				if e.Confidence > out[pos].Confidence {
 					// Keep the higher-confidence base, but union locations/evidence.
 					merged := e
-					merged.Locations = unionLocations(out[pos].Locations, e.Locations)
-					merged.Evidence = append(append([]llmEvidence(nil), out[pos].Evidence...), e.Evidence...)
+					merged.Locations = UnionLocations(out[pos].Locations, e.Locations)
+					merged.Evidence = append(append([]extraction.Evidence(nil), out[pos].Evidence...), e.Evidence...)
 					out[pos] = merged
 				} else {
-					out[pos].Locations = unionLocations(out[pos].Locations, e.Locations)
+					out[pos].Locations = UnionLocations(out[pos].Locations, e.Locations)
 					out[pos].Evidence = append(out[pos].Evidence, e.Evidence...)
 				}
 				continue
@@ -216,12 +217,12 @@ func mergeShardEntities(obj objectives.Objective, in [][]llmEntity) []llmEntity 
 	return out
 }
 
-func unionLocations(a, b []llmLocation) []llmLocation {
+func UnionLocations(a, b []extraction.Location) []extraction.Location {
 	seen := map[string]struct{}{}
-	var out []llmLocation
-	add := func(locs []llmLocation) {
+	var out []extraction.Location
+	add := func(locs []extraction.Location) {
 		for _, l := range locs {
-			k := l.File + ":" + Itoa(l.StartLine) + ":" + Itoa(l.EndLine)
+			k := l.File + ":" + extraction.Itoa(l.StartLine) + ":" + extraction.Itoa(l.EndLine)
 			if _, ok := seen[k]; ok {
 				continue
 			}

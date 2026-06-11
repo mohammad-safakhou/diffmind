@@ -7,7 +7,7 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 )
 
-type Runner struct{}
+type Policy struct{}
 
 type Input struct {
 	Objective     objectives.Objective
@@ -22,7 +22,7 @@ type Output struct {
 	Needed     bool
 }
 
-func (Runner) Run(input Input) Output {
+func (Policy) Run(input Input) Output {
 	candidate := input.Candidate
 	code, reason, needed := extraction.ShouldReexamine(input.Objective, &candidate, input.MinConfidence)
 	return Output{Candidate: candidate, ReasonCode: code, Reason: reason, Needed: needed}

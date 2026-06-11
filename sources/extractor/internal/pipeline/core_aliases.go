@@ -5,6 +5,7 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/llmrun"
 	detailstage "github.com/mohammad-safakhou/diffmind/internal/stage/detail"
 	discoverystage "github.com/mohammad-safakhou/diffmind/internal/stage/discovery"
+	reexaminestage "github.com/mohammad-safakhou/diffmind/internal/stage/reexamine"
 	"github.com/mohammad-safakhou/diffmind/internal/stage/repofacts"
 )
 
@@ -13,8 +14,12 @@ import (
 
 // types
 type (
-	StuckError = llmrun.StuckError
-	PathMapper = extraction.PathMapper
+	StuckError     = llmrun.StuckError
+	PathMapper     = extraction.PathMapper
+	objectiveHints = extraction.ObjectiveHints
+	symbolHint     = extraction.SymbolHint
+	bindingHint    = extraction.BindingHint
+	configHint     = extraction.ConfigHint
 )
 
 // sentinel
@@ -22,6 +27,8 @@ var ErrStuck = llmrun.ErrStuck
 
 // grouping.go consts (referenced by agents tests)
 const detailBatchHardCap = detailstage.DetailBatchHardCap
+const maxSymbolHints = discoverystage.MaxSymbolHints
+const discoveryShardHardCap = discoverystage.DiscoveryShardHardCap
 
 // convert.go
 var (
@@ -99,6 +106,9 @@ var (
 	CommonPrefixLen     = detailstage.CommonPrefixLen
 	TokenOverlap        = detailstage.TokenOverlap
 	NameTokens          = detailstage.NameTokens
+	mergeEnrichment     = detailstage.MergeEnrichment
+	pinIdentityDetails  = detailstage.PinIdentityDetails
+	identityDetailKeys  = detailstage.IdentityDetailKeys
 )
 
 // config_resolve.go
@@ -110,26 +120,36 @@ var (
 	ConfigValue             = discoverystage.ConfigValue
 	TrailingResourceSegment = discoverystage.TrailingResourceSegment
 	KeySegmentName          = discoverystage.KeySegmentName
+	buildObjectiveHints     = discoverystage.BuildObjectiveHints
+	planDiscoveryShards     = discoverystage.PlanShards
+	mergeShardEntities      = discoverystage.MergeShardEntities
+	unionLocations          = discoverystage.UnionLocations
+	distinctDirs            = discoverystage.DistinctDirs
 )
+
+type discoveryShard = discoverystage.Shard
 
 // identity.go (shared identity / detail-derivation helpers)
 var (
-	shouldReexamine             = extraction.ShouldReexamine
-	missingRequiredDetails      = extraction.MissingRequiredDetails
-	deriveDetailsFromName       = extraction.DeriveDetailsFromName
-	splitMethodPath             = extraction.SplitMethodPath
-	splitServiceMethod          = extraction.SplitServiceMethod
-	looksLikeIdentifier         = extraction.LooksLikeIdentifier
-	looksLikeCommand            = extraction.LooksLikeCommand
-	guessOperation              = extraction.GuessOperation
-	extractCronLike             = extraction.ExtractCronLike
-	hasDetailKey                = extraction.HasDetailKey
-	discoverySemanticKey        = extraction.DiscoverySemanticKey
-	normalizePathForKey         = extraction.NormalizePathForKey
-	isCompleteDeterministicSeed = extraction.IsCompleteDeterministicSeed
-	hasDeterministicEvidence    = extraction.HasDeterministicEvidence
-	shardEntityKey              = extraction.ShardEntityKey
-	httpMethods                 = extraction.HTTPMethods
+	shouldReexamine              = extraction.ShouldReexamine
+	missingRequiredDetails       = extraction.MissingRequiredDetails
+	deriveDetailsFromName        = extraction.DeriveDetailsFromName
+	splitMethodPath              = extraction.SplitMethodPath
+	splitServiceMethod           = extraction.SplitServiceMethod
+	looksLikeIdentifier          = extraction.LooksLikeIdentifier
+	looksLikeCommand             = extraction.LooksLikeCommand
+	guessOperation               = extraction.GuessOperation
+	extractCronLike              = extraction.ExtractCronLike
+	hasDetailKey                 = extraction.HasDetailKey
+	discoverySemanticKey         = extraction.DiscoverySemanticKey
+	normalizePathForKey          = extraction.NormalizePathForKey
+	isCompleteDeterministicSeed  = extraction.IsCompleteDeterministicSeed
+	hasDeterministicEvidence     = extraction.HasDeterministicEvidence
+	shardEntityKey               = extraction.ShardEntityKey
+	httpMethods                  = extraction.HTTPMethods
+	seedStructurallyUnverifiable = reexaminestage.SeedStructurallyUnverifiable
+	downgradeConfidence          = reexaminestage.DowngradeConfidence
+	appendUniqueTag              = reexaminestage.AppendUniqueTag
 )
 
 // paths.go

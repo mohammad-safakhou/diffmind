@@ -9,7 +9,7 @@ import (
 )
 
 func TestRunnerReturnsEnrichedCandidate(t *testing.T) {
-	out := (Runner{}).Run(Input{
+	out := (Policy{}).Run(Input{
 		Objective: objectives.Objective{Kind: model.KindExposure, Type: "http_route"},
 		Candidate: extraction.Candidate{
 			Type: "http_route", Name: "GET /orders", Confidence: 0.9,
