@@ -54,7 +54,9 @@ type orchestrator struct {
 	// every promptAgent call's final /session/{id} read. Updated
 	// from the orchestrator's main goroutine after each prompt
 	// completes; no synchronisation needed.
-	tokenAgg llmrun.TokenTotals
+	tokenAgg  llmrun.TokenTotals
+	sessionMu sync.Mutex
+	sessions  *llmrun.SessionManager
 
 	// astIndex is set by the ast_index stage and holds the tree-sitter
 	// project analysis used by the connections stage and discovery hints.
@@ -66,9 +68,6 @@ type orchestrator struct {
 	pipelineCancel context.CancelFunc
 
 	discoveryConfirmed map[string][]llmEntity
-
-	sessionMu       sync.Mutex
-	sharedSessionID string
 }
 
 // emit is the convenience wrapper used by every stage to publish a single
@@ -261,12 +260,13 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		o.wd.SetSink(sink)
 		o.wd.Start(ctx)
 	}
+	o.sessionManager()
 	defer func() {
 		if o.wd != nil {
 			o.wd.Stop()
 		}
 	}()
-	defer o.closeSharedSession()
+	defer o.sessionManager().Close()
 	defer func() {
 		if err := snap.Close(); err != nil {
 			util.Warn("agents.orchestrator", "snapshot close failed", map[string]any{"error": err})
@@ -772,6 +772,24 @@ func (o *orchestrator) wireBridges(oc openCodeAPI) {
 	}
 }
 
+func (o *orchestrator) sessionManager() *llmrun.SessionManager {
+	o.sessionMu.Lock()
+	defer o.sessionMu.Unlock()
+	if o.sessions == nil {
+		o.sessions = llmrun.NewSessionManager(llmrun.SessionOptions{
+			Client:      o.oc,
+			Pauser:      o.pauser,
+			Tracker:     o.wd,
+			Sink:        o.sink,
+			Directory:   o.sessionDir,
+			Reuse:       o.cfg.Runtime.ReuseOpenCodeSession,
+			Cleanup:     o.cfg.Runtime.CleanupOpenCodeSessions,
+			DeleteDelay: time.Duration(o.cfg.Runtime.OpenCodeDeleteDelaySec) * time.Second,
+		})
+	}
+	return o.sessions
+}
+
 // buildFailure builds the partial result we hand back to internal/app when a
 // stage fails. It preserves the snapshot path and the state captured up to (but
 // not including) the failing stage so `diffmind retry` has a consistent base to
@@ -903,7 +921,7 @@ func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, sch
 			return nil, err
 		}
 
-		o.resetSharedSessionAfterStuckRetry()
+		o.sessionManager().ResetAfterStuck()
 		o.emit(events.Event{
 			Kind: events.KindLog, JobID: role,
 			Message: "prompt stuck; retrying",
@@ -929,7 +947,7 @@ func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, sch
 // json_schema) we fall back to a plain-text prompt and JSON-scrape the
 // reply.
 func (o *orchestrator) promptAgentOnce(ctx context.Context, role, prompt string, schema map[string]any, attempt, attempts int) (map[string]any, error) {
-	sessionID, cleanupFn, err := o.acquireSession(ctx, role)
+	sessionID, cleanupFn, err := o.sessionManager().Acquire(ctx, role)
 	if err != nil {
 		return nil, err
 	}
@@ -1067,7 +1085,7 @@ func (o *orchestrator) handlePromptError(ctx context.Context, role, sessionID, p
 	// Best-effort abort: a timed-out/cancelled call may leave the
 	// server-side session running (or paused on a permission request).
 	// Aborting frees server resources and lets the watchdog reclaim it.
-	o.bestEffortAbort(role, sessionID)
+	o.sessionManager().Abort(role, sessionID)
 	if cleanupFn != nil {
 		cleanupFn()
 	}
@@ -1172,122 +1190,6 @@ func (o *orchestrator) persistResponse(role string, payload map[string]any) {
 // take down a run.
 func (o *orchestrator) persistResponseBundle(role string, payload map[string]any, raw []byte, text string) {
 	llmrun.CaptureStore{Dir: o.captureDir}.Response(role, payload, raw, text)
-}
-
-// bestEffortAbort tries to abort a session via the pause handler. We use a
-// fresh, short-lived context so a cancelled parent context doesn't prevent
-// us from cleaning up.
-func (o *orchestrator) bestEffortAbort(role, sessionID string) {
-	if o.pauser == nil || sessionID == "" {
-		return
-	}
-	abortCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := o.pauser.AbortSession(abortCtx, sessionID, o.sessionDir); err != nil {
-		util.Debug("agents.agent", "abort session failed", map[string]any{"role": role, "session_id": sessionID, "error": err})
-		return
-	}
-	o.emit(events.Event{
-		Kind: events.KindSessionAborted, JobID: role,
-		Payload: map[string]any{"session_id": sessionID},
-	})
-	util.Trace("agents.agent", "session aborted", map[string]any{"role": role, "session_id": sessionID})
-}
-
-// acquireSession returns a session id and an optional cleanup function.
-// Cleanup is a no-op for shared sessions; per-call sessions are deleted by a
-// deferred goroutine (with configurable delay) when cleanup is enabled.
-// New session ids are registered with the watchdog so it can auto-reply to
-// any permission / clarification prompt the agent might emit.
-func (o *orchestrator) acquireSession(ctx context.Context, role string) (string, func(), error) {
-	if o.cfg.Runtime.ReuseOpenCodeSession {
-		o.sessionMu.Lock()
-		defer o.sessionMu.Unlock()
-		if strings.TrimSpace(o.sharedSessionID) != "" {
-			return o.sharedSessionID, nil, nil
-		}
-		sid, err := o.oc.CreateSession(ctx, o.sessionDir)
-		if err != nil {
-			return "", nil, fmt.Errorf("%s create shared session: %w", role, err)
-		}
-		o.sharedSessionID = sid
-		if o.wd != nil {
-			o.wd.Track(sid)
-		}
-		o.emit(events.Event{
-			Kind: events.KindSessionCreated, JobID: role,
-			Payload: map[string]any{"session_id": sid, "shared": true, "directory": o.sessionDir},
-		})
-		util.Debug("agents.agent", "shared session created", map[string]any{"role": role, "session_id": sid})
-		return sid, nil, nil
-	}
-	sid, err := o.oc.CreateSession(ctx, o.sessionDir)
-	if err != nil {
-		return "", nil, fmt.Errorf("%s create session: %w", role, err)
-	}
-	if o.wd != nil {
-		o.wd.Track(sid)
-	}
-	o.emit(events.Event{
-		Kind: events.KindSessionCreated, JobID: role,
-		Payload: map[string]any{"session_id": sid, "shared": false, "directory": o.sessionDir},
-	})
-	cleanup := func() { o.maybeScheduleDelete(role, sid) }
-	return sid, cleanup, nil
-}
-
-func (o *orchestrator) maybeScheduleDelete(role, sessionID string) {
-	if !o.cfg.Runtime.CleanupOpenCodeSessions || strings.TrimSpace(sessionID) == "" {
-		return
-	}
-	delay := o.cfg.Runtime.OpenCodeDeleteDelaySec
-	if delay <= 0 {
-		delay = 5
-	}
-	go func() {
-		time.Sleep(time.Duration(delay) * time.Second)
-		if err := o.oc.DeleteSession(context.Background(), sessionID, o.sessionDir); err != nil {
-			util.Warn("agents.agent", "session delete failed", map[string]any{"role": role, "session_id": sessionID, "error": err})
-			return
-		}
-		if o.wd != nil {
-			o.wd.Untrack(sessionID)
-		}
-		util.Trace("agents.agent", "session deleted", map[string]any{"role": role, "session_id": sessionID})
-	}()
-}
-
-func (o *orchestrator) resetSharedSessionAfterStuckRetry() {
-	if !o.cfg.Runtime.ReuseOpenCodeSession {
-		return
-	}
-	o.sessionMu.Lock()
-	sid := strings.TrimSpace(o.sharedSessionID)
-	o.sharedSessionID = ""
-	o.sessionMu.Unlock()
-	if sid == "" || o.wd == nil {
-		return
-	}
-	if o.wd != nil {
-		o.wd.Untrack(sid)
-	}
-}
-
-func (o *orchestrator) closeSharedSession() {
-	if !o.cfg.Runtime.ReuseOpenCodeSession || !o.cfg.Runtime.CleanupOpenCodeSessions {
-		return
-	}
-	o.sessionMu.Lock()
-	sid := strings.TrimSpace(o.sharedSessionID)
-	o.sharedSessionID = ""
-	o.sessionMu.Unlock()
-	if sid == "" {
-		return
-	}
-	if err := o.oc.DeleteSession(context.Background(), sid, o.sessionDir); err != nil {
-		util.Warn("agents.agent", "shared session delete failed", map[string]any{"session_id": sid, "error": err})
-	}
-	o.wd.Untrack(sid)
 }
 
 // ----------------------------------------------------------------------------
