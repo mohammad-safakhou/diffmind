@@ -8,7 +8,8 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
-	"github.com/mohammad-safakhou/diffmind/internal/reconcile"
+	connectionstage "github.com/mohammad-safakhou/diffmind/internal/stage/connections"
+	reconcile "github.com/mohammad-safakhou/diffmind/internal/stage/reconcile"
 )
 
 // DeterministicFloor runs ONLY the LLM-free stages of the pipeline over a
@@ -95,7 +96,7 @@ func DeterministicFloor(ctx context.Context, idx *astpkg.ProjectIndex, repoPath 
 	dependencies = reconcile.DedupeDependencies(dependencies)
 
 	// AST-derived db augmentation (the same step the pipeline runs)
-	dependencies = augmentDependenciesFromAST(idx, exposures, dependencies, minConf)
+	dependencies = connectionstage.AugmentDependencies(idx, exposures, dependencies, minConf)
 	stampInferredDBPlatform(idx, dependencies) // P7: give deterministic db ops the configured platform
 	dependencies = reconcile.DedupeDependencies(dependencies)
 
@@ -103,7 +104,11 @@ func DeterministicFloor(ctx context.Context, idx *astpkg.ProjectIndex, repoPath 
 	var conns []model.Connection
 	var unresolved []model.UnresolvedItem
 	if len(exposures) > 0 && len(dependencies) > 0 && (len(idx.Symbols) > 0 || len(idx.Frameworks) > 0) {
-		conns, unresolved = runASTConnections(ctx, idx, exposures, dependencies, minConf, workers, nil)
+		out := (connectionstage.Runner{}).Run(ctx, connectionstage.Input{
+			Index: idx, Exposures: exposures, Dependencies: dependencies,
+			MinConfidence: minConf, Workers: workers,
+		})
+		conns, unresolved = out.Connections, out.Unresolved
 	}
 	conns, orphan := reconcile.FilterConnections(conns, exposures, dependencies)
 	unresolved = append(unresolved, orphan...)

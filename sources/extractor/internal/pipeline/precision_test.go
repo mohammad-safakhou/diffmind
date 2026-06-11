@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
+	connectionstage "github.com/mohammad-safakhou/diffmind/internal/stage/connections"
 )
 
 // ── D1: junk-table / generic-owner denylist ─────────────────────────────────
@@ -19,7 +20,7 @@ func TestIsLowSignalRepositoryOwner(t *testing.T) {
 		"UserDao":                     false,
 	}
 	for in, want := range cases {
-		if got := isLowSignalRepositoryOwner(in); got != want {
+		if got := connectionstage.IsLowSignalRepositoryOwner(in); got != want {
 			t.Errorf("isLowSignalRepositoryOwner(%q)=%v want %v", in, got, want)
 		}
 	}
@@ -37,17 +38,17 @@ func TestIsJunkTableName(t *testing.T) {
 		"account_assignments":   false,
 	}
 	for in, want := range cases {
-		if got := isJunkTableName(in); got != want {
+		if got := connectionstage.IsJunkTableName(in); got != want {
 			t.Errorf("isJunkTableName(%q)=%v want %v", in, got, want)
 		}
 	}
 }
 
 func TestIsRepositoryOperationSymbolRejectsEntityManager(t *testing.T) {
-	if isRepositoryOperationSymbol("EntityManager.persist") {
+	if connectionstage.IsRepositoryOperationSymbol("EntityManager.persist") {
 		t.Error("EntityManager.persist must not be a repository operation")
 	}
-	if !isRepositoryOperationSymbol("OrderRepository.save") {
+	if !connectionstage.IsRepositoryOperationSymbol("OrderRepository.save") {
 		t.Error("OrderRepository.save should be a repository operation")
 	}
 }
@@ -75,7 +76,7 @@ func TestInferDBOperationKindAST(t *testing.T) {
 		"OrderRepository.frobnicate": "unknown",
 	}
 	for sym, want := range cases {
-		if got := inferDBOperationKindAST(idx, sym); got != want {
+		if got := connectionstage.InferDBOperationKind(idx, sym); got != want {
 			t.Errorf("inferDBOperationKindAST(%q)=%q want %q", sym, got, want)
 		}
 	}

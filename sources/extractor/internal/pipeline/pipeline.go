@@ -18,10 +18,10 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	"github.com/mohammad-safakhou/diffmind/internal/opencode"
-	"github.com/mohammad-safakhou/diffmind/internal/reconcile"
 	"github.com/mohammad-safakhou/diffmind/internal/runstate"
 	"github.com/mohammad-safakhou/diffmind/internal/snapshot"
-	reconcilestage "github.com/mohammad-safakhou/diffmind/internal/stage/reconcile"
+	connectionstage "github.com/mohammad-safakhou/diffmind/internal/stage/connections"
+	reconcile "github.com/mohammad-safakhou/diffmind/internal/stage/reconcile"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -615,7 +615,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	state.DetailExposures = append([]model.Exposure(nil), exposures...)
 	state.DetailDependency = append([]model.Dependency(nil), dependencies...)
 	if o.astIndex != nil {
-		dependencies = augmentDependenciesFromAST(o.astIndex, exposures, dependencies, o.cfg.Quality.MinConfidence)
+		dependencies = connectionstage.AugmentDependencies(o.astIndex, exposures, dependencies, o.cfg.Quality.MinConfidence)
 		stampInferredDBPlatform(o.astIndex, dependencies) // P7: configured platform for deterministic db ops
 		dependencies = reconcile.DedupeDependencies(dependencies)
 		state.DetailDependency = append([]model.Dependency(nil), dependencies...)
@@ -641,7 +641,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	// --- Stage 5: reconcile/filter ---
 	progress.StartPhase("reconcile", 1, 90, 98, "Reconciling entities and dropping orphan connections.")
 	o.emit(events.Event{Kind: events.KindStageStarted, Stage: "reconcile", Status: events.StatusRunning, Payload: map[string]any{"total": 1, "tip": "Reconciling entities and dropping orphan connections."}})
-	reconciled := (reconcilestage.Runner{}).Run(reconcilestage.Input{
+	reconciled := (reconcile.Runner{}).Run(reconcile.Input{
 		Exposures: exposures, Dependencies: dependencies, Connections: conns, Unresolved: unresolved,
 	})
 	exposures = reconciled.Exposures

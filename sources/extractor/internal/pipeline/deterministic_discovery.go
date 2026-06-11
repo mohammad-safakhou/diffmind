@@ -12,6 +12,7 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	"github.com/mohammad-safakhou/diffmind/internal/runstate"
+	connectionstage "github.com/mohammad-safakhou/diffmind/internal/stage/connections"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -230,14 +231,14 @@ func deterministicDBOperations(idx *astpkg.ProjectIndex) []llmEntity {
 	var order []string
 
 	consider := func(target string, cs astpkg.CallSite) {
-		if !isRepositoryOperationSymbol(target) {
+		if !connectionstage.IsRepositoryOperationSymbol(target) {
 			return
 		}
-		owner, _, ok := splitOwnerMethod(normalizeRepositoryOperationName(target))
+		owner, _, ok := connectionstage.SplitOwnerMethod(connectionstage.NormalizeRepositoryOperationName(target))
 		if !ok || owner == "" {
 			return
 		}
-		entity, table := tableEntityFromRepository(owner)
+		entity, table := connectionstage.TableEntityFromRepository(owner)
 		if table == "" {
 			table = entity
 		}
@@ -247,10 +248,10 @@ func deterministicDBOperations(idx *astpkg.ProjectIndex) []llmEntity {
 		// Precision guard: never emit a generic-handle / sequence table as a
 		// deterministic db_operation (see isJunkTableName). A wrong fact poisons
 		// downstream; the LLM recovers the real table from argument types.
-		if isJunkTableName(table) {
+		if connectionstage.IsJunkTableName(table) {
 			return
 		}
-		opKind := inferDBOperationKindAST(idx, target)
+		opKind := connectionstage.InferDBOperationKind(idx, target)
 		key := strings.ToLower(table + "|" + opKind)
 		a, ok := seen[key]
 		if !ok {

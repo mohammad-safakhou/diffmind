@@ -1,4 +1,4 @@
-package pipeline
+package connections
 
 import (
 	"context"
@@ -483,7 +483,7 @@ public interface TrafficConfigurationHistoryRepository {
 	}
 	exp := model.Exposure{BaseEntity: model.BaseEntity{ID: "exp", Type: "http_route", Name: "GET /target-history", Locations: []model.Location{{File: "TrafficConfigurationController.java", StartLine: 4, EndLine: 6}}}}
 	existing := []model.Dependency{{BaseEntity: model.BaseEntity{ID: "existing", Type: "db_operation", Name: "OtherRepository.findAll", Platform: "postgres", Instance: "routing_db", Details: map[string]any{"database_type": "PostgreSQL", "database_name": "routing_db"}}}}
-	deps := augmentDependenciesFromAST(idx, []model.Exposure{exp}, existing, 0.7)
+	deps := AugmentDependencies(idx, []model.Exposure{exp}, existing, 0.7)
 	if len(deps) != 2 {
 		t.Fatalf("expected existing plus one AST-derived dependency, got %d", len(deps))
 	}

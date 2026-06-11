@@ -5,7 +5,6 @@ import (
 	"sort"
 
 	"github.com/mohammad-safakhou/diffmind/internal/model"
-	reconcilepolicy "github.com/mohammad-safakhou/diffmind/internal/reconcile"
 )
 
 type Runner struct{}
@@ -25,9 +24,9 @@ type Output struct {
 }
 
 func (Runner) Run(input Input) Output {
-	exposures := reconcilepolicy.DedupeExposures(input.Exposures)
-	dependencies := reconcilepolicy.DedupeDependencies(input.Dependencies)
-	connections, orphaned := reconcilepolicy.FilterConnections(input.Connections, exposures, dependencies)
+	exposures := DedupeExposures(input.Exposures)
+	dependencies := DedupeDependencies(input.Dependencies)
+	connections, orphaned := FilterConnections(input.Connections, exposures, dependencies)
 	unresolved := append(append([]model.UnresolvedItem(nil), input.Unresolved...), orphaned...)
 
 	sort.Slice(exposures, func(i, j int) bool { return exposures[i].ID < exposures[j].ID })

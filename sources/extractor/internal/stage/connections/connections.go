@@ -11,14 +11,10 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
-type ASTBuilder func(context.Context, *ast.ProjectIndex, []model.Exposure, []model.Dependency, float64, int, func()) ([]model.Connection, []model.UnresolvedItem)
-type ShallowBuilder func([]model.Exposure, []model.Dependency, float64) ([]model.Connection, []model.UnresolvedItem)
 type AggregateReporter func(totalExposures, connections, withoutPaths int, mode string)
 
 type Runner struct {
-	BuildAST     ASTBuilder
-	BuildShallow ShallowBuilder
-	Report       AggregateReporter
+	Report AggregateReporter
 }
 
 type Input struct {
@@ -40,13 +36,13 @@ func (r Runner) Run(ctx context.Context, input Input) Output {
 		return Output{}
 	}
 	if input.Index != nil && (len(input.Index.Symbols) > 0 || len(input.Index.Frameworks) > 0) {
-		connections, unresolved := r.BuildAST(
+		connections, unresolved := runASTConnections(
 			ctx, input.Index, input.Exposures, input.Dependencies,
 			input.MinConfidence, input.Workers, input.Progress,
 		)
 		withoutPaths := exposuresWithoutConnections(input.Exposures, connections)
 		if len(connections) > 0 || len(unresolved) > 0 {
-			r.Report(len(input.Exposures), len(connections), withoutPaths, "ast")
+			r.report(len(input.Exposures), len(connections), withoutPaths, "ast")
 			sort.Slice(connections, func(i, j int) bool { return connections[i].ID < connections[j].ID })
 			return Output{Connections: connections, Unresolved: unresolved}
 		}
@@ -54,14 +50,20 @@ func (r Runner) Run(ctx context.Context, input Input) Output {
 	}
 
 	util.Warn("agents.connections", "no ast index available; using shallow name matcher", nil)
-	connections, unresolved := r.BuildShallow(input.Exposures, input.Dependencies, input.MinConfidence)
-	r.Report(len(input.Exposures), len(connections), 0, "no_index")
+	connections, unresolved := buildShallowConnections(input.Exposures, input.Dependencies, input.MinConfidence)
+	r.report(len(input.Exposures), len(connections), 0, "no_index")
 	if input.Progress != nil {
 		for range input.Exposures {
 			input.Progress()
 		}
 	}
 	return Output{Connections: connections, Unresolved: unresolved}
+}
+
+func (r Runner) report(totalExposures, connections, withoutPaths int, mode string) {
+	if r.Report != nil {
+		r.Report(totalExposures, connections, withoutPaths, mode)
+	}
 }
 
 func exposuresWithoutConnections(exposures []model.Exposure, connections []model.Connection) int {
