@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/mohammad-safakhou/diffmind/internal/entitykey"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
-	"github.com/mohammad-safakhou/diffmind/internal/reconcile"
 )
 
 // identityKey is the architectural identity of an exposure/dependency for
@@ -32,7 +32,7 @@ func identityKey(b model.BaseEntity) string {
 		}
 		// Suffix-normalize so "<queue>" and "<queue>-consumer" are one fact,
 		// identical to reconcile dedup (Item 5).
-		return strings.Join([]string{t, lc(b.Platform), reconcile.NormalizeQueueDest(dest)}, "|")
+		return strings.Join([]string{t, lc(b.Platform), entitykey.QueueDestination(dest)}, "|")
 	case "rpc_endpoint", "outbound_rpc":
 		return strings.Join([]string{t, lc(detail(b, "service")), lc(detail(b, "method"))}, "|")
 	case "cli_command", "command_exec":
@@ -43,7 +43,7 @@ func identityKey(b model.BaseEntity) string {
 		return strings.Join([]string{t, cmd}, "|")
 	default:
 		// scheduled_job, db_operation, cache_operation, and anything else.
-		return reconcile.SemanticKeyLoose(b)
+		return entitykey.SemanticLoose(b)
 	}
 }
 
@@ -90,7 +90,7 @@ func firstNonEmpty(vals ...string) string {
 // paths (incl. parameter syntax {id}/:id/<int:id>/*) exactly as the pipeline's
 // dedup does (C1).
 func normPath(p string) string {
-	return reconcile.CanonicalizeRoutePath(p)
+	return entitykey.CanonicalRoutePath(p)
 }
 
 // methodPathFromName splits a name like "GET /orders" into ("get","/orders").

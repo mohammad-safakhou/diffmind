@@ -47,7 +47,7 @@ tradeoff is visible.
 
 Today: `internal/eval/` is well-built — `identityKey` (`identity.go:18`) already
 keys **every** objective type and connections (`score.go:186-214`), cheap mode
-**does** score connections, and matching reuses `reconcile.SemanticKeyLoose` so
+**does** score connections, and matching reuses `entitykey.SemanticLoose` so
 "correct" == "duplicate". The gap is **not** matcher code — it's fixtures,
 labels, and missing measurement modes.
 
@@ -109,7 +109,7 @@ Shipped: `eval --mode floor-coverage --run <id> [--repo path]` → per-objective
 floor/llm/covered/floor_only/coverage; N/A when the LLM found nothing of a type;
 reuses identityKey/connectionPairKey; connections first-class; `--json`. Original
 spec below.
-`--mode floor-coverage`: run `DeterministicFloor` and load the full LLM run for
+`--mode floor-coverage`: run `floor.Run` and load the full LLM run for
 the same repo; per type compute `|floor_keys ∩ llm_keys| / |llm_keys|`. **This is
 NOT recall** — the LLM run is not ground truth, so this measures floor↔LLM
 *overlap*, a cheap operational signal available before labels exist. **True floor
@@ -383,7 +383,7 @@ or some cron boundaries.
   LLM picks targets from a **closed set** of existing dependency IDs
   (hallucinations rejected, orphan-dropped by `reconcile.FilterConnections`).
   confidence-clamped, checkpointed, fail-soft. New
-  `internal/agents/connection_repair.go`; integrate before reconcile
+  `internal/stage/connections/repair.go`; integrate before reconcile
   (`pipeline.go:~800`). *(Safe to measure once C1/C2 fix identity.)*
   **Schema change required (reviewer, verified):** `model.Connection`
   (`model:70`) has **no provenance field** today — add one, e.g.
@@ -459,7 +459,7 @@ shards** (2.7× the call count of one-per-objective).
 - **X5 — Cross-objective detail batching** for tiny same-`kind` leftovers
   (`grouping.go:24`) — minor; only matters on sparse-objective monorepos.
 - **X6 — Infrastructure stage: NOT fully dead (reviewer correction).**
-  `runInfrastructureStage` (`ast_stage.go:154`) persists `state/infrastructure.json`,
+  `runInfrastructureStage` (`internal/pipeline/stage_registry.go`) persists `state/infrastructure.json`,
   which the **UI reads** — so it's not dead, just unused by *core extraction*
   (`pipeline.go:509` `_ = infra`). **Fix:** make it optional (skip when the UI
   isn't needed / behind a flag) OR wire it into the detail stage for endpoint
@@ -695,7 +695,7 @@ refuted (investigated, not a bug) / done. Update Status as work lands.
 | X2 | Prompts volatile-first → ~250-token cacheable prefix | `prompts.go:327` | MED | C | open |
 | X3 | `MaxCatalogItems` dead config; no global token/time budget | `config.go:24`, `pipeline.go:180`, `persist.go:549` | MED | C | open |
 | X4 | No per-stage model tiering (one ModelID) | `config.go:8` | LOW | C | open |
-| X6 | Infra-stage output unused by core extraction but consumed by the UI → make optional or wire in (not "dead") | `ast_stage.go:154`, `pipeline.go:509` | LOW | C | open (reframed) |
+| X6 | Infra-stage output unused by core extraction but consumed by the UI → make optional or wire in (not "dead") | `internal/pipeline/stage_registry.go`, `pipeline.go` | LOW | C | open (reframed) |
 | V3a | Nondeterministic cross-file config resolution (map order) | `config_resolve.go:90` | HIGH | V,A | open |
 | V3b | YAML list-of-mappings mis-keyed/collapsed | `parser.go:994,1022` | HIGH | A | open |
 | V3c | YAML lists: inline `[a,b]` kept as one opaque string; block scalar seq dropped | `parser.go:994` | MED | A | open (corrected) |

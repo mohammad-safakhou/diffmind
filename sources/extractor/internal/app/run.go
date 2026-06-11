@@ -7,11 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mohammad-safakhou/diffmind/internal/agents"
-	"github.com/mohammad-safakhou/diffmind/internal/artifacts"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
-	"github.com/mohammad-safakhou/diffmind/internal/opencode"
+	"github.com/mohammad-safakhou/diffmind/internal/extraction"
 	"github.com/mohammad-safakhou/diffmind/internal/preflight"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
@@ -35,7 +33,7 @@ type RunOutput struct {
 	// Failure, when non-nil, captures why the pipeline halted. It is
 	// only set when Run returns an error and the orchestrator made it
 	// far enough to identify a single root cause.
-	Failure *agents.Failure
+	Failure *extraction.Failure
 }
 
 func Run(ctx context.Context, in RunInput) (RunOutput, error) {
@@ -86,97 +84,44 @@ func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 		}
 	}
 
-	oc := opencode.New(
-		in.Config.OpenCode.BaseURL,
-		in.Config.OpenCode.ProviderID,
-		in.Config.OpenCode.ModelID,
-		in.Config.OpenCode.ModelVariant,
-		in.Config.OpenCode.Username,
-		in.Config.OpenCode.Password,
-		time.Duration(in.Config.OpenCode.TimeoutSec)*time.Second,
-	)
-	warnings := make([]string, 0)
-	if !oc.Enabled() {
-		return RunOutput{}, fmt.Errorf("opencode-url is required; static/regex extraction path has been removed")
-	}
-	util.Info("app.run", "checking opencode health", map[string]any{"base_url": in.Config.OpenCode.BaseURL})
-	// Pre-flight: hit /global/health to confirm the server is reachable
-	// and the auth credentials are correct. We surface this as a hard
-	// failure (not a warning) because every downstream call would fail
-	// otherwise and the user gets no actionable signal.
-	if err := oc.Health(ctx); err != nil {
-		util.Error("app.run", "opencode health failed", map[string]any{"error": err})
-		return RunOutput{}, fmt.Errorf("opencode health check failed at %s: %w", in.Config.OpenCode.BaseURL, err)
-	}
-	if strings.TrimSpace(in.Config.OpenCode.ProviderID) == "" || strings.TrimSpace(in.Config.OpenCode.ModelID) == "" {
-		return RunOutput{}, fmt.Errorf("opencode provider_id and model_id are required (got provider=%q model=%q); did you run `opencode auth login`?", in.Config.OpenCode.ProviderID, in.Config.OpenCode.ModelID)
-	}
-	util.Info("app.run", "opencode health ok", map[string]any{"base_url": in.Config.OpenCode.BaseURL})
-	logProgress("bootstrap", 10, "OpenCode health check completed.")
-
 	runID := strings.TrimSpace(in.RunID)
 	if runID == "" {
 		runID = started.Format("20060102T150405Z")
 	}
 	runDir := filepath.Join(in.Config.Artifacts.BaseDir, runID)
-	captureDir := filepath.Join(runDir, "prompts")
-	result, err := agents.RunWith(ctx, in.Config, repo, oc, agents.RunOptions{
-		Sink:       in.Sink,
-		CaptureDir: captureDir,
-		RunDir:     runDir,
-		RunID:      runID,
+	out, err := execute(ctx, executionInput{
+		Config: in.Config, Sink: in.Sink,
+		RunID: runID, RunDir: runDir, BaseDir: in.Config.Artifacts.BaseDir,
+		RepoPath: repo, StartedAt: started,
+		Component: "app.run", RequireModel: true,
+		FailureLogText: "agent pipeline failed; see failure report",
+		AfterHealth: func() {
+			logProgress("bootstrap", 10, "OpenCode health check completed.")
+		},
+		AfterPipeline: func(result extraction.Result) {
+			util.Info("app.run", "agent pipeline completed", map[string]any{
+				"exposures":    len(result.Exposures),
+				"dependencies": len(result.Dependencies),
+				"connections":  len(result.Connections),
+				"unresolved":   len(result.Unresolved),
+			})
+			logProgress("pipeline", 90, "Extraction pipeline completed. Preparing artifacts.")
+		},
 	})
 	if err != nil {
-		// On a hard pipeline failure the orchestrator already wrote the
-		// failure report and persisted intermediate state to runDir
-		// (and retained the snapshot). Surface a clear log line that
-		// points the operator at the report so they know where to look.
-		failureReport := filepath.Join(runDir, "run_failure.md")
-		util.Error("app.run", "agent pipeline failed; see failure report", map[string]any{
-			"error":         err,
-			"run_id":        runID,
-			"run_dir":       runDir,
-			"failure_md":    failureReport,
-			"snapshot_path": result.SnapshotPath,
-		})
-		return RunOutput{RunID: runID, RunDir: runDir, Warning: result.Warnings, Failure: result.Failure}, err
-	}
-	util.Info("app.run", "agent pipeline completed", map[string]any{
-		"exposures":    len(result.Exposures),
-		"dependencies": len(result.Dependencies),
-		"connections":  len(result.Connections),
-		"unresolved":   len(result.Unresolved),
-	})
-	logProgress("pipeline", 90, "Extraction pipeline completed. Preparing artifacts.")
-	warnings = append(warnings, result.Warnings...)
-
-	writtenRunDir, err := artifacts.Write(artifacts.WriteInput{
-		RunID:         runID,
-		BaseDir:       in.Config.Artifacts.BaseDir,
-		RepoPath:      repo,
-		OpenCodeURL:   in.Config.OpenCode.BaseURL,
-		MinConfidence: in.Config.Quality.MinConfidence,
-		Exposures:     result.Exposures,
-		Dependencies:  result.Dependencies,
-		Connections:   result.Connections,
-		Unresolved:    result.Unresolved,
-		Warnings:      warnings,
-		StartedAt:     started,
-		FinishedAt:    time.Now().UTC(),
-		TokenTotals:   result.Tokens,
-	})
-	if err != nil {
-		util.Error("app.run", "artifact write failed", map[string]any{"error": err})
-		return RunOutput{}, err
+		if strings.Contains(err.Error(), "opencode-url is required") {
+			return RunOutput{}, fmt.Errorf("opencode-url is required; static/regex extraction path has been removed")
+		}
+		return out, err
 	}
 	logProgress("artifacts", 100, "Artifacts written successfully.")
 	util.Info("app.run", "run completed", map[string]any{
 		"run_id":      runID,
-		"run_dir":     writtenRunDir,
+		"run_dir":     out.RunDir,
 		"duration_ms": time.Since(started).Milliseconds(),
-		"warnings":    len(warnings),
+		"warnings":    len(out.Warning),
 	})
-	return RunOutput{RunID: runID, RunDir: writtenRunDir, Warning: warnings}, nil
+	return out, nil
 }
 
 func logProgress(phase string, percent int, tip string) {

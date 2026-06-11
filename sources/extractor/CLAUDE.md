@@ -40,22 +40,26 @@ go run ./cmd/diffmind eval --mode cheap --fixtures testdata/eval   # per-objecti
 go run ./cmd/diffmind eval --mode score-run --run <run-id> --fixture testdata/eval/<name>  # grade a real run
 ```
 
-`SemanticKey`/`SemanticKeyLoose` (reconcile) are the shared identity the matcher
+`entitykey.SemanticKey`/`SemanticKeyLoose` are the shared identity the matcher
 uses, so "correct" is judged exactly as the pipeline judges "duplicate". See
 `testdata/eval/README.md` for the label format.
 
 ## Code map
 
 - `internal/objectives/registry.go` — objective definitions + prompts.
-- `internal/agents/pipeline.go` — orchestrator / stage sequencing.
-- `internal/agents/{discovery,deterministic_discovery,sharding,grounding,detail,reexamine,connections}.go`
-- `internal/agents/deterministic_floor.go` — LLM-free projection of the pipeline
+- `internal/extraction/` — shared pipeline requests, results, candidates, and intermediate DTOs.
+- `internal/pipeline/` — orchestrator, stage sequencing, resume, and terminal assembly.
+- `internal/stage/` — typed stage boundaries; stages never import one another.
+- `internal/pipeline/deterministic_floor.go` — LLM-free projection of the pipeline
   (deterministic discovery → reconcile → AST connections); powers cheap-mode eval.
-- `internal/agents/config_resolve.go` — `${...}` property-placeholder resolver
+- `internal/stage/discovery/config_resolve.go` — `${...}` property-placeholder resolver
   (queue/topic names) against the parsed config index.
+- `internal/llmrun/` — sessions, retries, watchdogs, captures, and token accounting.
+- `internal/runstate/` — checkpoints, failures, and backward-compatible readers.
+- `internal/entitykey/` — canonical identity and normalization used by reconcile and eval.
 - `internal/ast/` + `internal/ast/framework/` — tree-sitter engine + framework detectors.
-- `internal/reconcile/` — final dedup / sort / orphan-drop; `SemanticKey(Loose)`
-  is the exported identity the eval matcher reuses.
+- `internal/stage/reconcile/` — final-stage contract plus named deduplication,
+  sorting, normalization, and orphan policies.
 - `internal/eval/` — golden-set accuracy harness (label loader, identity keying,
   P/R/F1 scorer, cheap + score-run modes). Fixtures under `testdata/eval/`.
 - `internal/ui/` — dashboard (Go server + SPA under `web/`).
