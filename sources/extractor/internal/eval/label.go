@@ -2,7 +2,7 @@
 // extractor's output (exposures / dependencies / connections) against
 // hand-labeled ground truth, computing per-objective and overall
 // precision/recall/F1. Matching uses the SAME architectural-identity keys the
-// pipeline dedups with (see internal/reconcile.SemanticKeyLoose), so LLM
+// pipeline dedups with (see internal/entitykey.SemanticLoose), so LLM
 // phrasing differences ("orders" vs "order", "SELECT" vs "read") never count as
 // misses. The harness has two modes: a hermetic deterministic-floor mode
 // (RunCheap, no LLM) for CI, and a full-pipeline mode for measured accuracy +

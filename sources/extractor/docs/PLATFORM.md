@@ -148,7 +148,8 @@ DONE (June 2026):
 - ✅ **Junk-table filter** for the deterministic db deriver (`entity_manager`,
   `*_id_seq`/`*_seq`, generic JPA handles).
 - ✅ **Config placeholder resolution** — `${...}` queue/topic names in framework
-  bindings resolve to the real resource (`internal/agents/config_resolve.go`).
+  bindings resolve to the real resource
+  (`internal/stage/discovery/config_resolve.go`).
 
 Near-term (the highest-leverage gaps, in priority order):
 1. **LLM connection verify/repair pass** — add an LLM *tail* after the
@@ -189,13 +190,16 @@ Longer-term (product):
 ## 7. Where things live
 
 - `internal/objectives/registry.go` — the objective map + prompts.
-- `internal/agents/` — orchestrator (`pipeline.go`), discovery, sharding,
-  grounding, deterministic discovery, detail, connections, watchdog, liveness.
-  `deterministic_floor.go` (LLM-free projection for eval), `config_resolve.go`
-  (placeholder resolver).
+- `internal/pipeline/` — orchestration, lifecycle, resume, events, and terminal
+  result assembly.
+- `internal/floor/` — LLM-free deterministic-floor projection used by eval.
+- `internal/stage/` — stage-owned extraction logic.
+- `internal/extraction/`, `internal/llmrun/`, `internal/runstate/`, and
+  `internal/entitykey/` — domain contracts, LLM runtime, persisted checkpoints,
+  and canonical identities. See `docs/ARCHITECTURE.md`.
 - `internal/ast/` — tree-sitter engine; `framework/` — per-framework detectors.
-- `internal/reconcile/` — final dedup / sort / orphan-drop; exports
-  `SemanticKey`/`SemanticKeyLoose` (the eval matcher's identity).
+- `internal/stage/reconcile/` — final deduplication, normalization, sorting,
+  and orphan filtering. `internal/entitykey/` owns the identity reused by eval.
 - `internal/eval/` — golden-set accuracy harness; fixtures + label format under
   `testdata/eval/` (see its `README.md`).
 - `internal/ui/` — dashboard server + SPA (`web/`).
@@ -212,7 +216,7 @@ Longer-term (product):
    labeled fixtures (`testdata/eval/`) — a regression in any deterministic stage
    drops a fixture's F1. Add/extend a fixture when you touch a detector or ORM
    deriver. To grade a full LLM run, `diffmind eval --mode score-run --run <id>
-   --fixture <dir>`. The matcher keys on `reconcile.SemanticKey(Loose)`, so it
+   --fixture <dir>`. The matcher keys on `entitykey.Semantic(Loose)`, so it
    judges "correct" exactly as the pipeline judges "duplicate".
 2. **Real-run diff (behavioral).** Run a real extraction (see README) and compare
    artifacts + per-objective counts against a prior run in `~/.diffmind/runs/` —

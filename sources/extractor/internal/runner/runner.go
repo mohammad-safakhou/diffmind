@@ -73,6 +73,7 @@ type run struct {
 type Runner struct {
 	bus     *events.Bus
 	baseDir string
+	app     Application
 
 	mu   sync.RWMutex
 	runs map[string]*run
@@ -81,12 +82,38 @@ type Runner struct {
 	subs   map[chan LifecycleEvent]struct{}
 }
 
+// Application is the execution boundary owned by Runner. Tests and alternate
+// frontends can provide an implementation without coupling lifecycle
+// management to the concrete app package.
+type Application interface {
+	Run(context.Context, app.RunInput) (app.RunOutput, error)
+	Retry(context.Context, app.RetryInput) (app.RunOutput, error)
+}
+
+type defaultApplication struct{}
+
+func (defaultApplication) Run(ctx context.Context, input app.RunInput) (app.RunOutput, error) {
+	return app.Run(ctx, input)
+}
+
+func (defaultApplication) Retry(ctx context.Context, input app.RetryInput) (app.RunOutput, error) {
+	return app.RetryRun(ctx, input)
+}
+
 // New constructs a Runner. baseDir is the artifacts root (where each run gets
 // its own subdirectory).
 func New(baseDir string, bus *events.Bus) *Runner {
+	return NewWithApplication(baseDir, bus, defaultApplication{})
+}
+
+func NewWithApplication(baseDir string, bus *events.Bus, application Application) *Runner {
+	if application == nil {
+		application = defaultApplication{}
+	}
 	return &Runner{
 		bus:     bus,
 		baseDir: baseDir,
+		app:     application,
 		runs:    map[string]*run{},
 		subs:    map[chan LifecycleEvent]struct{}{},
 	}
@@ -181,7 +208,7 @@ func (r *Runner) Retry(parent context.Context, p RetryParams) (string, error) {
 func (r *Runner) execute(ctx context.Context, rn *run, runID string, sink events.Sink, p StartParams) {
 	defer close(rn.doneCh)
 
-	out, err := app.Run(ctx, app.RunInput{
+	out, err := r.app.Run(ctx, app.RunInput{
 		RepoPath: p.RepoPath,
 		Config:   p.Config,
 		Sink:     sink,
@@ -194,7 +221,7 @@ func (r *Runner) execute(ctx context.Context, rn *run, runID string, sink events
 func (r *Runner) executeRetry(ctx context.Context, rn *run, runID string, sink events.Sink, p RetryParams) {
 	defer close(rn.doneCh)
 
-	out, err := app.RetryRun(ctx, app.RetryInput{
+	out, err := r.app.Retry(ctx, app.RetryInput{
 		BaseDir: r.baseDir,
 		RunID:   runID,
 		Config:  p.Config,
