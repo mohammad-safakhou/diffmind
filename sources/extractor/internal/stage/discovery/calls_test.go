@@ -1,4 +1,4 @@
-package pipeline
+package discovery
 
 import (
 	"context"
@@ -47,7 +47,7 @@ func Run() {
 }
 `,
 	})
-	got := deterministicCommandExec(idx)
+	got := DeterministicCommandExec(idx)
 	if len(got) == 0 {
 		t.Fatalf("expected a command_exec from exec.Command; got none (symbols=%d)", len(idx.Symbols))
 	}
@@ -67,37 +67,37 @@ func Run() {
 
 func TestMatchCommandExecPrecision(t *testing.T) {
 	// A bare .send()/.exec() on an unrelated receiver must NOT match.
-	if matchCommandExec(astpkg.CallSite{ReceiverRaw: "httpClient", CalleeRaw: "exec"}) {
+	if MatchCommandExec(astpkg.CallSite{ReceiverRaw: "httpClient", CalleeRaw: "exec"}) {
 		t.Error("httpClient.exec should not match command_exec")
 	}
-	if !matchCommandExec(astpkg.CallSite{ReceiverRaw: "exec", CalleeRaw: "Command"}) {
+	if !MatchCommandExec(astpkg.CallSite{ReceiverRaw: "exec", CalleeRaw: "Command"}) {
 		t.Error("exec.Command should match")
 	}
-	if !matchCommandExec(astpkg.CallSite{ReceiverRaw: "subprocess", CalleeRaw: "run"}) {
+	if !MatchCommandExec(astpkg.CallSite{ReceiverRaw: "subprocess", CalleeRaw: "run"}) {
 		t.Error("subprocess.run should match")
 	}
 }
 
 func TestMatchQueuePublishPrecision(t *testing.T) {
-	if p, ok := matchQueuePublish(astpkg.CallSite{ReceiverRaw: "kafkaTemplate", CalleeRaw: "send"}); !ok || p != "kafka" {
+	if p, ok := MatchQueuePublish(astpkg.CallSite{ReceiverRaw: "kafkaTemplate", CalleeRaw: "send"}); !ok || p != "kafka" {
 		t.Errorf("kafkaTemplate.send should be kafka, got %q,%v", p, ok)
 	}
-	if p, ok := matchQueuePublish(astpkg.CallSite{ReceiverRaw: "sqsTemplate", CalleeRaw: "send"}); !ok || p != "sqs" {
+	if p, ok := MatchQueuePublish(astpkg.CallSite{ReceiverRaw: "sqsTemplate", CalleeRaw: "send"}); !ok || p != "sqs" {
 		t.Errorf("sqsTemplate.send should be sqs, got %q,%v", p, ok)
 	}
 	// A generic websocket.send must NOT be a publish.
-	if _, ok := matchQueuePublish(astpkg.CallSite{ReceiverRaw: "webSocket", CalleeRaw: "send"}); ok {
+	if _, ok := MatchQueuePublish(astpkg.CallSite{ReceiverRaw: "webSocket", CalleeRaw: "send"}); ok {
 		t.Error("webSocket.send should not match queue_publish")
 	}
 }
 
 func TestMatchGRPCStubCall(t *testing.T) {
-	svc, m, ok := matchGRPCStubCall(astpkg.CallSite{ReceiverRaw: "fooServiceBlockingStub", CalleeRaw: "getThing"})
+	svc, m, ok := MatchGRPCStubCall(astpkg.CallSite{ReceiverRaw: "fooServiceBlockingStub", CalleeRaw: "getThing"})
 	if !ok || svc != "fooService" || m != "getThing" {
 		t.Errorf("gRPC stub call mis-parsed: svc=%q m=%q ok=%v", svc, m, ok)
 	}
 	// A plain variable named "stub" must NOT match (gRPC stubs are *BlockingStub/*FutureStub).
-	if _, _, ok := matchGRPCStubCall(astpkg.CallSite{ReceiverRaw: "stub", CalleeRaw: "doThing"}); ok {
+	if _, _, ok := MatchGRPCStubCall(astpkg.CallSite{ReceiverRaw: "stub", CalleeRaw: "doThing"}); ok {
 		t.Error("plain 'stub' receiver should not match gRPC")
 	}
 }
@@ -110,7 +110,7 @@ func F(items []int) { _ = items }
 `,
 	})
 	// streamsBuilder gating is unit-tested via matcher; ensure a non-streams call yields nothing.
-	if got := deterministicStreamConsume(idx); len(got) != 0 {
+	if got := DeterministicStreamConsume(idx); len(got) != 0 {
 		t.Errorf("expected no stream_consume, got %v", entityNames(got))
 	}
 }
@@ -127,7 +127,7 @@ public class Publisher {
 }
 `,
 	})
-	got := deterministicQueuePublish(idx)
+	got := DeterministicQueuePublish(idx)
 	// Tolerant: the Java call-graph must record kafkaTemplate.send with a literal
 	// destination for this to fire. If the parser didn't, skip rather than fail
 	// on a parser-coverage gap unrelated to the detector logic.

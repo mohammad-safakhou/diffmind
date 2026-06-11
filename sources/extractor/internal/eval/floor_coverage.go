@@ -7,7 +7,7 @@ import (
 
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
-	"github.com/mohammad-safakhou/diffmind/internal/pipeline"
+	"github.com/mohammad-safakhou/diffmind/internal/floor"
 )
 
 // floor_coverage.go answers "what fraction of what the full LLM run found could
@@ -88,7 +88,7 @@ func RunFloorCoverage(ctx context.Context, repo, runDir string, cfg config.Confi
 	if err != nil {
 		return FloorCoverageReport{}, fmt.Errorf("ast build %s: %w", repo, err)
 	}
-	res := pipeline.DeterministicFloor(ctx, idx, repo, cfg)
+	res := floor.Run(ctx, idx, repo, cfg)
 	floor := Extracted{Exposures: res.Exposures, Dependencies: res.Dependencies, Connections: res.Connections}
 	llm, err := LoadRunArtifacts(runDir)
 	if err != nil {

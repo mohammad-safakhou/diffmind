@@ -1,4 +1,4 @@
-package pipeline
+package llmrun
 
 import (
 	"context"
@@ -65,7 +65,7 @@ func (f *stickyPauseAPI) responseCount(id string) int {
 // subsequent ticks.
 func TestWatchdogDedupsWhenServerKeepsListingPermission(t *testing.T) {
 	api := &stickyPauseAPI{}
-	wd := newWatchdog(api, "/snap", 10*time.Millisecond)
+	wd := NewWatchdog(api, "/snap", 10*time.Millisecond)
 	wd.Track("s1")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

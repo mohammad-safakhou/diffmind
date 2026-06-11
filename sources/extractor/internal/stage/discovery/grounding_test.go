@@ -1,11 +1,14 @@
-package pipeline
+package discovery
 
 import (
+	"strconv"
 	"testing"
 
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 )
+
+func Itoa(i int) string { return strconv.Itoa(i) }
 
 func objByType(t *testing.T, typ string) objectives.Objective {
 	t.Helper()
@@ -57,7 +60,7 @@ func fixtureIndex() *astpkg.ProjectIndex {
 
 func TestBuildObjectiveHints_HTTPRoute(t *testing.T) {
 	idx := fixtureIndex()
-	h := buildObjectiveHints(idx, objByType(t, "http_route"), "", nil)
+	h := BuildObjectiveHints(idx, objByType(t, "http_route"), "", nil)
 
 	gotFiles := map[string]bool{}
 	for _, s := range h.Symbols {
@@ -81,7 +84,7 @@ func TestBuildObjectiveHints_HTTPRoute(t *testing.T) {
 
 func TestBuildObjectiveHints_DBOperation(t *testing.T) {
 	idx := fixtureIndex()
-	h := buildObjectiveHints(idx, objByType(t, "db_operation"), "", nil)
+	h := BuildObjectiveHints(idx, objByType(t, "db_operation"), "", nil)
 	found := false
 	for _, s := range h.Symbols {
 		if s.Qualified == "OrderRepository.save" {
@@ -102,7 +105,7 @@ func TestBuildObjectiveHints_DBOperation(t *testing.T) {
 
 func TestBuildObjectiveHints_ScheduledBinding(t *testing.T) {
 	idx := fixtureIndex()
-	h := buildObjectiveHints(idx, objByType(t, "scheduled_job"), "", nil)
+	h := BuildObjectiveHints(idx, objByType(t, "scheduled_job"), "", nil)
 	if len(h.Bindings) != 1 || h.Bindings[0].Kind != "scheduled" {
 		t.Fatalf("expected the scheduled binding, got %+v", h.Bindings)
 	}
@@ -110,7 +113,7 @@ func TestBuildObjectiveHints_ScheduledBinding(t *testing.T) {
 
 func TestBuildObjectiveHints_SubDirFilter(t *testing.T) {
 	idx := fixtureIndex()
-	h := buildObjectiveHints(idx, objByType(t, "http_route"), "src", nil)
+	h := BuildObjectiveHints(idx, objByType(t, "http_route"), "src", nil)
 	for _, s := range h.Symbols {
 		if s.Qualified == "OtherModule.handler" {
 			t.Fatalf("subDir=src should exclude other/api/...: %+v", h.Symbols)
@@ -124,7 +127,7 @@ func TestBuildObjectiveHints_SubDirFilter(t *testing.T) {
 
 func TestBuildObjectiveHints_FileScope(t *testing.T) {
 	idx := fixtureIndex()
-	h := buildObjectiveHints(idx, objByType(t, "http_route"), "", []string{"other/"})
+	h := BuildObjectiveHints(idx, objByType(t, "http_route"), "", []string{"other/"})
 	for _, s := range h.Symbols {
 		if s.File != "" && s.File[:6] != "other/" {
 			t.Fatalf("fileScope=other/ leaked %s", s.File)
@@ -136,24 +139,24 @@ func TestBuildObjectiveHints_FileScope(t *testing.T) {
 }
 
 func TestBuildObjectiveHints_NilIndexAndUnknownType(t *testing.T) {
-	if h := buildObjectiveHints(nil, objByType(t, "http_route"), "", nil); !h.Empty() {
+	if h := BuildObjectiveHints(nil, objByType(t, "http_route"), "", nil); !h.Empty() {
 		t.Fatalf("nil index should yield empty hints, got %+v", h)
 	}
 	// Unknown objective type → no matcher → empty.
-	if h := buildObjectiveHints(fixtureIndex(), objectives.Objective{Type: "totally_unknown"}, "", nil); !h.Empty() {
+	if h := BuildObjectiveHints(fixtureIndex(), objectives.Objective{Type: "totally_unknown"}, "", nil); !h.Empty() {
 		t.Fatalf("unknown type should yield empty hints, got %+v", h)
 	}
 }
 
 func TestBuildObjectiveHints_CapAndTruncate(t *testing.T) {
 	idx := &astpkg.ProjectIndex{Symbols: map[string][]astpkg.SymbolDef{}}
-	for i := 0; i < maxSymbolHints+25; i++ {
+	for i := 0; i < MaxSymbolHints+25; i++ {
 		q := "Ctl.m" + Itoa(i)
 		idx.Symbols[q] = []astpkg.SymbolDef{sym(q, "m"+Itoa(i), "OrderController", "src/api/C"+Itoa(i)+".java", uint32(i), "GetMapping")}
 	}
-	h := buildObjectiveHints(idx, objByType(t, "http_route"), "", nil)
-	if len(h.Symbols) != maxSymbolHints {
-		t.Fatalf("expected cap at %d, got %d", maxSymbolHints, len(h.Symbols))
+	h := BuildObjectiveHints(idx, objByType(t, "http_route"), "", nil)
+	if len(h.Symbols) != MaxSymbolHints {
+		t.Fatalf("expected cap at %d, got %d", MaxSymbolHints, len(h.Symbols))
 	}
 	if !h.Truncated {
 		t.Fatal("Truncated should be true when capped")
@@ -162,8 +165,8 @@ func TestBuildObjectiveHints_CapAndTruncate(t *testing.T) {
 
 func TestBuildObjectiveHints_Deterministic(t *testing.T) {
 	idx := fixtureIndex()
-	a := buildObjectiveHints(idx, objByType(t, "http_route"), "", nil)
-	b := buildObjectiveHints(idx, objByType(t, "http_route"), "", nil)
+	a := BuildObjectiveHints(idx, objByType(t, "http_route"), "", nil)
+	b := BuildObjectiveHints(idx, objByType(t, "http_route"), "", nil)
 	if len(a.Symbols) != len(b.Symbols) {
 		t.Fatalf("non-deterministic length")
 	}

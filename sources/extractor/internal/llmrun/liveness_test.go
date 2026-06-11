@@ -1,4 +1,4 @@
-package pipeline
+package llmrun
 
 import (
 	"context"
@@ -18,15 +18,15 @@ import (
 // the test needing to be exact about iteration count.
 type scriptedProbe struct {
 	mu  sync.Mutex
-	seq []probeSnapshot
+	seq []ProbeSnapshot
 	pos int
 }
 
-func newScriptedProbe(seq ...probeSnapshot) *scriptedProbe {
+func newScriptedProbe(seq ...ProbeSnapshot) *scriptedProbe {
 	return &scriptedProbe{seq: seq}
 }
 
-func (p *scriptedProbe) Snapshot(ctx context.Context) (probeSnapshot, error) {
+func (p *scriptedProbe) Snapshot(ctx context.Context) (ProbeSnapshot, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.pos < len(p.seq) {
@@ -35,7 +35,7 @@ func (p *scriptedProbe) Snapshot(ctx context.Context) (probeSnapshot, error) {
 		return s, nil
 	}
 	if len(p.seq) == 0 {
-		return probeSnapshot{}, nil
+		return ProbeSnapshot{}, nil
 	}
 	return p.seq[len(p.seq)-1], nil
 }
@@ -50,7 +50,7 @@ func (c *countingAborter) Abort(ctx context.Context) error {
 	return nil
 }
 
-// snap is a builder for a probeSnapshot. We use it to keep test
+// snap is a builder for a ProbeSnapshot. We use it to keep test
 // bodies readable.
 type snap struct {
 	parts    []opencode.MessagePart
@@ -58,13 +58,13 @@ type snap struct {
 	pending  bool
 }
 
-func (s snap) build() probeSnapshot {
+func (s snap) build() ProbeSnapshot {
 	session := opencode.SessionState{ID: "ses_test"}
 	session.Time.Updated = s.activity
 	msg := opencode.Message{}
 	msg.Info.ID = "msg_test"
 	msg.Parts = s.parts
-	return probeSnapshot{
+	return ProbeSnapshot{
 		Session:        session,
 		Latest:         msg,
 		PermissionWait: s.pending,
@@ -105,19 +105,19 @@ func toolPart(name, status string, start int64) opencode.MessagePart {
 }
 
 // When the call completes (watchCtx is cancelled) before any
-// idle/ceiling threshold trips, runLiveness must return nil — the
+// idle/ceiling threshold trips, RunLiveness must return nil — the
 // orchestrator interprets that as "no abort needed".
 func TestLivenessReturnsNilWhenCancelled(t *testing.T) {
 	probe := newScriptedProbe()
 	abort := &countingAborter{}
 	ctx, cancel := context.WithCancel(context.Background())
-	cfg := livenessConfig{
+	cfg := LivenessConfig{
 		IdleTimeout:  100 * time.Millisecond,
 		MaxCall:      10 * time.Second,
 		PollInterval: 10 * time.Millisecond,
 	}
-	done := make(chan *livenessReport, 1)
-	go func() { done <- runLiveness(ctx, cfg, probe, abort, "test", nil) }()
+	done := make(chan *LivenessReport, 1)
+	go func() { done <- RunLiveness(ctx, cfg, probe, abort, "test", nil) }()
 
 	// Cancel immediately; watchdog must exit cleanly.
 	time.Sleep(20 * time.Millisecond)
@@ -139,7 +139,7 @@ func TestLivenessReturnsNilWhenCancelled(t *testing.T) {
 // and the watchdog stays running indefinitely.
 func TestLivenessDoesNotAbortOnSteadyProgress(t *testing.T) {
 	// Build a script where each poll sees one more part.
-	seq := []probeSnapshot{}
+	seq := []ProbeSnapshot{}
 	for i := 1; i <= 30; i++ {
 		seq = append(seq, snap{
 			parts: append([]opencode.MessagePart{}, textPart("part", int64(i))),
@@ -149,13 +149,13 @@ func TestLivenessDoesNotAbortOnSteadyProgress(t *testing.T) {
 	abort := &countingAborter{}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cfg := livenessConfig{
+	cfg := LivenessConfig{
 		IdleTimeout:  50 * time.Millisecond,
 		MaxCall:      10 * time.Second,
 		PollInterval: 10 * time.Millisecond,
 	}
-	done := make(chan *livenessReport, 1)
-	go func() { done <- runLiveness(ctx, cfg, probe, abort, "test", nil) }()
+	done := make(chan *LivenessReport, 1)
+	go func() { done <- RunLiveness(ctx, cfg, probe, abort, "test", nil) }()
 
 	// Run for well past one idle window with continuous progress
 	// (each poll sees a new part), then cancel.
@@ -183,7 +183,7 @@ func TestLivenessAbortsOnIdle(t *testing.T) {
 	probe := newScriptedProbe(frozen)
 	abort := &countingAborter{}
 
-	cfg := livenessConfig{
+	cfg := LivenessConfig{
 		IdleTimeout:  60 * time.Millisecond,
 		MaxCall:      10 * time.Second,
 		PollInterval: 15 * time.Millisecond,
@@ -191,8 +191,8 @@ func TestLivenessAbortsOnIdle(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	done := make(chan *livenessReport, 1)
-	go func() { done <- runLiveness(ctx, cfg, probe, abort, "test", nil) }()
+	done := make(chan *LivenessReport, 1)
+	go func() { done <- RunLiveness(ctx, cfg, probe, abort, "test", nil) }()
 
 	select {
 	case rep := <-done:
@@ -222,15 +222,15 @@ func TestLivenessAbortsWhenToolRunningWithoutProgress(t *testing.T) {
 	probe := newScriptedProbe(frozen)
 	abort := &countingAborter{}
 
-	cfg := livenessConfig{
+	cfg := LivenessConfig{
 		IdleTimeout:  40 * time.Millisecond,
 		MaxCall:      10 * time.Second,
 		PollInterval: 15 * time.Millisecond,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	done := make(chan *livenessReport, 1)
-	go func() { done <- runLiveness(ctx, cfg, probe, abort, "test", nil) }()
+	done := make(chan *LivenessReport, 1)
+	go func() { done <- RunLiveness(ctx, cfg, probe, abort, "test", nil) }()
 
 	select {
 	case rep := <-done:
@@ -258,14 +258,14 @@ func TestLivenessPausesWhilePermissionPending(t *testing.T) {
 	probe := newScriptedProbe(frozen)
 	abort := &countingAborter{}
 
-	cfg := livenessConfig{
+	cfg := LivenessConfig{
 		IdleTimeout:  40 * time.Millisecond,
 		MaxCall:      10 * time.Second,
 		PollInterval: 15 * time.Millisecond,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan *livenessReport, 1)
-	go func() { done <- runLiveness(ctx, cfg, probe, abort, "test", nil) }()
+	done := make(chan *LivenessReport, 1)
+	go func() { done <- RunLiveness(ctx, cfg, probe, abort, "test", nil) }()
 
 	time.Sleep(200 * time.Millisecond)
 	cancel()
@@ -287,22 +287,22 @@ func TestLivenessPausesWhilePermissionPending(t *testing.T) {
 // new part every second forever; this guards against that.
 func TestLivenessAbortsOnHardCeiling(t *testing.T) {
 	// Continuous progress: each poll sees a brand new part.
-	seq := []probeSnapshot{}
+	seq := []ProbeSnapshot{}
 	for i := 1; i <= 100; i++ {
 		seq = append(seq, snap{parts: []opencode.MessagePart{textPart("p", int64(i))}}.build())
 	}
 	probe := newScriptedProbe(seq...)
 	abort := &countingAborter{}
 
-	cfg := livenessConfig{
+	cfg := LivenessConfig{
 		IdleTimeout:  10 * time.Second, // idle would never trip in this test
 		MaxCall:      80 * time.Millisecond,
 		PollInterval: 15 * time.Millisecond,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	done := make(chan *livenessReport, 1)
-	go func() { done <- runLiveness(ctx, cfg, probe, abort, "test", nil) }()
+	done := make(chan *LivenessReport, 1)
+	go func() { done <- RunLiveness(ctx, cfg, probe, abort, "test", nil) }()
 
 	select {
 	case rep := <-done:
@@ -322,23 +322,23 @@ func TestLivenessAbortsOnHardCeiling(t *testing.T) {
 // ticking, but only the genuine idle threshold will trip.
 type erroringProbe struct{ n atomic.Int32 }
 
-func (e *erroringProbe) Snapshot(ctx context.Context) (probeSnapshot, error) {
+func (e *erroringProbe) Snapshot(ctx context.Context) (ProbeSnapshot, error) {
 	e.n.Add(1)
-	return probeSnapshot{}, errors.New("network blip")
+	return ProbeSnapshot{}, errors.New("network blip")
 }
 
 func TestLivenessTreatsProbeErrorAsNoInfo(t *testing.T) {
 	probe := &erroringProbe{}
 	abort := &countingAborter{}
-	cfg := livenessConfig{
+	cfg := LivenessConfig{
 		IdleTimeout:  60 * time.Millisecond,
 		MaxCall:      10 * time.Second,
 		PollInterval: 15 * time.Millisecond,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	done := make(chan *livenessReport, 1)
-	go func() { done <- runLiveness(ctx, cfg, probe, abort, "test", nil) }()
+	done := make(chan *LivenessReport, 1)
+	go func() { done <- RunLiveness(ctx, cfg, probe, abort, "test", nil) }()
 
 	select {
 	case rep := <-done:

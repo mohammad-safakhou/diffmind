@@ -1,4 +1,4 @@
-package pipeline
+package detail
 
 import "testing"
 
@@ -14,7 +14,7 @@ func TestMergeEnrichmentPrefersEnrichedNonEmpty(t *testing.T) {
 		Actions: []string{"enriched action"},
 		Details: map[string]any{"path": "/x"},
 	}
-	out := mergeEnrichment(seed, enriched)
+	out := MergeEnrichment(seed, enriched)
 	if out.Summary != "enriched summary" {
 		t.Fatalf("expected enriched summary, got %q", out.Summary)
 	}
@@ -35,7 +35,7 @@ func TestMergeEnrichmentPrefersEnrichedNonEmpty(t *testing.T) {
 func TestMergeEnrichmentKeepsSeedWhenEnrichedEmpty(t *testing.T) {
 	seed := llmEntity{Type: "t", Name: "n", Summary: "seed", Confidence: 0.9}
 	enriched := llmEntity{}
-	out := mergeEnrichment(seed, enriched)
+	out := MergeEnrichment(seed, enriched)
 	if out.Summary != "seed" {
 		t.Fatalf("empty enriched should leave seed summary intact, got %q", out.Summary)
 	}
