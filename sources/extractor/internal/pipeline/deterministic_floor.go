@@ -9,6 +9,7 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	connectionstage "github.com/mohammad-safakhou/diffmind/internal/stage/connections"
+	discoverystage "github.com/mohammad-safakhou/diffmind/internal/stage/discovery"
 	reconcile "github.com/mohammad-safakhou/diffmind/internal/stage/reconcile"
 )
 
@@ -37,50 +38,16 @@ func DeterministicFloor(ctx context.Context, idx *astpkg.ProjectIndex, repoPath 
 	// entities, plus call-graph-derived db operations. The orchestrator method
 	// adds event emission and snapshot→source path mapping on top; neither is
 	// needed here because the floor runs against the real repo, not a snapshot.
-	byObjective := supportedDeterministicObjectives(objs)
-	outMap := map[string][]llmEntity{}
-	for _, b := range idx.Frameworks {
-		obj, ok := objectiveForBinding(byObjective, b)
-		if !ok {
-			continue
-		}
-		e, ok := entityFromFrameworkBinding(idx, obj, b)
-		if !ok {
-			continue
-		}
-		outMap[obj.ID] = append(outMap[obj.ID], e)
-	}
-	if dbObj, ok := objectiveByTypeIn(objs, "db_operation"); ok {
-		for _, e := range deterministicDBOperations(idx) {
-			outMap[dbObj.ID] = append(outMap[dbObj.ID], e)
-		}
-	}
-	if obj, ok := objectiveByTypeIn(objs, "command_exec"); ok {
-		for _, e := range deterministicCommandExec(idx) {
-			outMap[obj.ID] = append(outMap[obj.ID], e)
-		}
-	}
-	if obj, ok := objectiveByTypeIn(objs, "queue_publish"); ok {
-		for _, e := range deterministicQueuePublish(idx) {
-			outMap[obj.ID] = append(outMap[obj.ID], e)
-		}
-	}
-	if obj, ok := objectiveByTypeIn(objs, "outbound_rpc"); ok {
-		for _, e := range deterministicOutboundRPC(idx) {
-			outMap[obj.ID] = append(outMap[obj.ID], e)
-		}
-	}
-	if obj, ok := objectiveByTypeIn(objs, "stream_consume"); ok {
-		for _, e := range deterministicStreamConsume(idx) {
-			outMap[obj.ID] = append(outMap[obj.ID], e)
-		}
-	}
+	deterministic := (discoverystage.DeterministicRunner{}).Run(discoverystage.DeterministicInput{
+		Index: idx, Objectives: objs,
+	})
 
 	// Convert to model entities (same confidence/location gate as detail)
 	var exposures []model.Exposure
 	var dependencies []model.Dependency
-	for _, obj := range objs {
-		for _, e := range outMap[obj.ID] {
+	for _, result := range deterministic.Results {
+		obj := result.Objective
+		for _, e := range result.Items {
 			base, ur := ToBase(repoPath, obj, e, minConf)
 			if ur != nil {
 				continue
