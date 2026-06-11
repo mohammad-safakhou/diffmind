@@ -42,8 +42,8 @@ func TestStageFromJob_Mapping(t *testing.T) {
 // invariants the dashboard depends on.
 func TestTokenBucket_AddAndTotal(t *testing.T) {
 	var b tokenBucket
-	b.add(sessionState{Input: 100, Output: 50, Reasoning: 10, CacheRead: 9000, CacheWrite: 200, Cost: 0.0012})
-	b.add(sessionState{Input: 200, Output: 75, Reasoning: 20, CacheRead: 9000, CacheWrite: 0, Cost: 0.0018})
+	b.Add(sessionState{Input: 100, Output: 50, Reasoning: 10, CacheRead: 9000, CacheWrite: 200, Cost: 0.0012})
+	b.Add(sessionState{Input: 200, Output: 75, Reasoning: 20, CacheRead: 9000, CacheWrite: 0, Cost: 0.0018})
 	if b.Calls != 2 {
 		t.Errorf("Calls = %d, want 2", b.Calls)
 	}
