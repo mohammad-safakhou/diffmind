@@ -7,6 +7,7 @@ import (
 
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
+	"github.com/mohammad-safakhou/diffmind/internal/stage/repofacts"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -263,16 +264,5 @@ func ParseSingleEntity(v any) *LLMEntity {
 // no LLM connection JSON is ever produced, so this helper is removed.
 
 func ParseRepoFacts(v map[string]any) *RepoFacts {
-	if v == nil {
-		return nil
-	}
-	b, err := json.Marshal(v)
-	if err != nil {
-		return nil
-	}
-	var rf RepoFacts
-	if err := json.Unmarshal(b, &rf); err != nil {
-		return nil
-	}
-	return &rf
+	return repofacts.Parse(v)
 }

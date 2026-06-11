@@ -7,11 +7,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mohammad-safakhou/diffmind/internal/agents"
 	"github.com/mohammad-safakhou/diffmind/internal/artifacts"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
+	"github.com/mohammad-safakhou/diffmind/internal/extraction"
 	"github.com/mohammad-safakhou/diffmind/internal/opencode"
+	"github.com/mohammad-safakhou/diffmind/internal/pipeline"
 	"github.com/mohammad-safakhou/diffmind/internal/preflight"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
@@ -35,7 +36,7 @@ type RunOutput struct {
 	// Failure, when non-nil, captures why the pipeline halted. It is
 	// only set when Run returns an error and the orchestrator made it
 	// far enough to identify a single root cause.
-	Failure *agents.Failure
+	Failure *extraction.Failure
 }
 
 func Run(ctx context.Context, in RunInput) (RunOutput, error) {
@@ -120,8 +121,8 @@ func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 	}
 	runDir := filepath.Join(in.Config.Artifacts.BaseDir, runID)
 	captureDir := filepath.Join(runDir, "prompts")
-	result, err := agents.RunWith(ctx, in.Config, repo, oc, agents.RunOptions{
-		Sink:       in.Sink,
+	result, err := pipeline.New(in.Config, oc, in.Sink).Run(ctx, extraction.Request{
+		RepoPath:   repo,
 		CaptureDir: captureDir,
 		RunDir:     runDir,
 		RunID:      runID,

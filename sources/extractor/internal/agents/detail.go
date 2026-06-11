@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mohammad-safakhou/diffmind/internal/agents/core"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
+	"github.com/mohammad-safakhou/diffmind/internal/runstate"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -50,7 +50,7 @@ func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []detailJob, rf 
 	// fresh run; on a retry it contains every entity that was
 	// successfully enriched (or explicitly skipped by the model) on
 	// the previous attempt.
-	checkpoint := map[string]core.DetailCheckpointEntry{}
+	checkpoint := map[string]runstate.DetailCheckpointEntry{}
 	if o.runDir != "" {
 		checkpoint = o.store.LoadDetailCheckpoint(o.runDir + "/" + stateDir)
 	}
@@ -82,11 +82,11 @@ func (o *orchestrator) runDetailBatch(ctx context.Context, jobs []detailJob, rf 
 // checkpoint, plus complete deterministic seeds usable without an LLM call.
 // carriedMessages records why each carried entry was carried (for the skip
 // event). Complete deterministic seeds are also appended to the checkpoint.
-func (o *orchestrator) partitionDetailJobs(jobs []detailJob, checkpoint map[string]core.DetailCheckpointEntry) (pending []detailJob, carried []detailResult, carriedMessages map[string]string) {
+func (o *orchestrator) partitionDetailJobs(jobs []detailJob, checkpoint map[string]runstate.DetailCheckpointEntry) (pending []detailJob, carried []detailResult, carriedMessages map[string]string) {
 	carried = make([]detailResult, 0, len(checkpoint))
 	carriedMessages = map[string]string{}
 	for _, j := range jobs {
-		key := core.DetailEntityKey(j.Objective.ID, j.Seed.Name)
+		key := runstate.DetailEntityKey(j.Objective.ID, j.Seed.Name)
 		entry, ok := checkpoint[key]
 		if !ok {
 			if isCompleteDeterministicSeed(j.Objective, &j.Seed) {
@@ -135,7 +135,7 @@ func (o *orchestrator) partitionDetailJobs(jobs []detailJob, checkpoint map[stri
 func (o *orchestrator) emitCarriedSkips(carried []detailResult, carriedMessages map[string]string, onResult func()) {
 	for _, r := range carried {
 		jobID := "detail." + r.Objective.ID + "." + SafeJobID(r.SeedName)
-		key := core.DetailEntityKey(r.Objective.ID, r.SeedName)
+		key := runstate.DetailEntityKey(r.Objective.ID, r.SeedName)
 		message := carriedMessages[key]
 		if message == "" {
 			message = "resumed from per-entity checkpoint"
@@ -295,8 +295,8 @@ func (o *orchestrator) checkpointDetailResult(r detailResult) {
 	if r.Err != nil {
 		return
 	}
-	entry := core.DetailCheckpointEntry{
-		Key:         core.DetailEntityKey(r.Objective.ID, r.SeedName),
+	entry := runstate.DetailCheckpointEntry{
+		Key:         runstate.DetailEntityKey(r.Objective.ID, r.SeedName),
 		ObjectiveID: r.Objective.ID,
 		SeedName:    r.SeedName,
 	}

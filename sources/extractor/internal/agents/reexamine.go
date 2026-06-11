@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mohammad-safakhou/diffmind/internal/agents/core"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
+	"github.com/mohammad-safakhou/diffmind/internal/runstate"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -59,7 +59,7 @@ func (o *orchestrator) runReexamination(
 			continue
 		}
 
-		key := core.ReexamKey(seeds[i].Objective.ID, seeds[i].Seed.Name)
+		key := runstate.ReexamKey(seeds[i].Objective.ID, seeds[i].Seed.Name)
 		if entry, done := checkpoint[key]; done {
 			// This suspect was already resolved in a prior run.
 			// Restore the outcome without re-asking the model.
@@ -197,8 +197,8 @@ func (o *orchestrator) runReexamination(
 					Evidence:   ToEvidence(seed.Evidence),
 				}
 				unresolved = append(unresolved, u)
-				o.store.AppendReexamEntity(core.ReexamCheckpointEntry{
-					Key:        core.ReexamKey(r.Trigger.Obj.ID, seed.Name),
+				o.store.AppendReexamEntity(runstate.ReexamCheckpointEntry{
+					Key:        runstate.ReexamKey(r.Trigger.Obj.ID, seed.Name),
 					Outcome:    "rejected",
 					Unresolved: &u,
 				})
@@ -209,8 +209,8 @@ func (o *orchestrator) runReexamination(
 			retained.Confidence = downgradeConfidence(seed.Confidence, o.cfg.Quality.MinConfidence)
 			retained.Tags = appendUniqueTag(retained.Tags, "reexamination_doubted")
 			cleanJobs = append(cleanJobs, detailJob{Objective: r.Trigger.Obj, Seed: retained})
-			o.store.AppendReexamEntity(core.ReexamCheckpointEntry{
-				Key:     core.ReexamKey(r.Trigger.Obj.ID, seed.Name),
+			o.store.AppendReexamEntity(runstate.ReexamCheckpointEntry{
+				Key:     runstate.ReexamKey(r.Trigger.Obj.ID, seed.Name),
 				Outcome: "confirmed",
 				Seed:    &retained,
 			})
@@ -221,8 +221,8 @@ func (o *orchestrator) runReexamination(
 			r.Item.Confidence = r.Trigger.Seed.Confidence
 		}
 		cleanJobs = append(cleanJobs, detailJob{Objective: r.Trigger.Obj, Seed: *r.Item})
-		o.store.AppendReexamEntity(core.ReexamCheckpointEntry{
-			Key:     core.ReexamKey(r.Trigger.Obj.ID, r.Trigger.Seed.Name),
+		o.store.AppendReexamEntity(runstate.ReexamCheckpointEntry{
+			Key:     runstate.ReexamKey(r.Trigger.Obj.ID, r.Trigger.Seed.Name),
 			Outcome: "confirmed",
 			Seed:    r.Item,
 		})

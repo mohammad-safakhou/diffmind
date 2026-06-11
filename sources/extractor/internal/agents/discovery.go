@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mohammad-safakhou/diffmind/internal/agents/core"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
-	"github.com/mohammad-safakhou/diffmind/internal/langdetect"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
+	"github.com/mohammad-safakhou/diffmind/internal/runstate"
+	"github.com/mohammad-safakhou/diffmind/internal/stage/repofacts"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -19,47 +19,13 @@ import (
 // stages will still run, they will just receive a nil repoFacts and have to
 // rediscover the tech stack themselves.
 func (o *orchestrator) runRepoFacts(ctx context.Context) (*repoFacts, error) {
-	prompt := BuildRepoFactsPrompt(o.subDir)
-	schema := RepoFactsSchema()
-	payload, err := o.promptAgent(ctx, "repo_facts", prompt, schema)
+	out, err := (repofacts.Runner{Prompt: o.promptAgent}).Run(ctx, repofacts.Input{
+		SubDir: o.subDir, SessionDir: o.sessionDir,
+	})
 	if err != nil {
-		util.Warn("agents.repo_facts", "repo facts extraction failed", map[string]any{"error": err})
 		return nil, err
 	}
-	rf := ParseRepoFacts(payload)
-
-	// Augment the LLM-derived facts with deterministic marker-
-	// file inspection. The result feeds the parallel image build:
-	// if the LLM forgot to mention a language version (which
-	// happens regularly) the marker scan picks it up.
-	//
-	// Failures here are non-fatal — we just leave LanguageFacts
-	// empty and let the index stage's recipe fall back to
-	// language defaults.
-	if rf != nil {
-		facts, derr := langdetect.Inspect(ctx, o.sessionDir)
-		if derr != nil {
-			util.Warn("agents.repo_facts", "marker-file language detection failed", map[string]any{"error": derr})
-		} else {
-			for _, f := range facts {
-				rf.LanguageFacts = append(rf.LanguageFacts, langFact{
-					Language:         string(f.Language),
-					Version:          f.Version,
-					BuildTool:        f.BuildTool,
-					BuildToolVersion: f.BuildToolVersion,
-					Sources:          f.Sources,
-				})
-			}
-		}
-		util.Info("agents.repo_facts", "repo facts gathered", map[string]any{
-			"languages":      len(rf.Languages),
-			"frameworks":     len(rf.Frameworks),
-			"build_files":    len(rf.BuildFiles),
-			"config_files":   len(rf.ConfigFiles),
-			"language_facts": len(rf.LanguageFacts),
-		})
-	}
-	return rf, nil
+	return out.Facts, nil
 }
 
 // runDiscovery executes Stage 1: one LLM call per objective in parallel.
@@ -139,7 +105,7 @@ func (o *orchestrator) runDiscovery(ctx context.Context, objs []objectives.Objec
 				if err == nil {
 					// Checkpoint the success immediately so a mid-stage
 					// failure on a later objective won't re-run this one.
-					o.store.AppendDiscoveryObjective(core.DiscoveryCheckpointEntry{
+					o.store.AppendDiscoveryObjective(runstate.DiscoveryCheckpointEntry{
 						ObjectiveID: obj.ID,
 						Items:       items,
 					})

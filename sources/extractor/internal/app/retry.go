@@ -9,12 +9,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mohammad-safakhou/diffmind/internal/agents"
 	"github.com/mohammad-safakhou/diffmind/internal/artifacts"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
+	"github.com/mohammad-safakhou/diffmind/internal/extraction"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/opencode"
+	"github.com/mohammad-safakhou/diffmind/internal/pipeline"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -81,7 +82,7 @@ func RetryRun(ctx context.Context, in RetryInput) (RunOutput, error) {
 	if err != nil {
 		return fail(fmt.Errorf("retry: %w (no run_failure.json — run did not fail or has been cleaned up)", err))
 	}
-	var prior agents.Failure
+	var prior extraction.Failure
 	if err := json.Unmarshal(failureBytes, &prior); err != nil {
 		return fail(fmt.Errorf("retry: failed to parse run_failure.json: %w", err))
 	}
@@ -165,8 +166,8 @@ func RetryRun(ctx context.Context, in RetryInput) (RunOutput, error) {
 		return fail(fmt.Errorf("retry: opencode health check failed at %s: %w", in.Config.OpenCode.BaseURL, err))
 	}
 
-	result, err := agents.RunWith(ctx, in.Config, repoPath, oc, agents.RunOptions{
-		Sink:          in.Sink,
+	result, err := pipeline.New(in.Config, oc, in.Sink).Run(ctx, extraction.Request{
+		RepoPath:      repoPath,
 		CaptureDir:    captureDir,
 		RunDir:        runDir,
 		ResumeFromDir: stateDirPath,

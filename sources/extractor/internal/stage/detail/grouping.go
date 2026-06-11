@@ -1,10 +1,12 @@
-package core
+package detail
 
 import (
 	"path/filepath"
 	"sort"
 	"strings"
 	"unicode"
+
+	"github.com/mohammad-safakhou/diffmind/internal/extraction"
 )
 
 // Detail-stage batch sizing. We treat the soft target as the natural
@@ -55,13 +57,13 @@ const (
 // The algorithm is O(n²) over the seeds in each objective bucket.
 // That is fine: n is small (typical bucket sizes 1-70) and we run
 // this once per run, not per LLM call.
-func DetailGroups(jobs []DetailJob) [][]DetailJob {
+func DetailGroups(jobs []extraction.DetailJob) [][]extraction.DetailJob {
 	if len(jobs) == 0 {
 		return nil
 	}
 	// Bucket by (objective.Kind, objective.Type).
 	type bucketKey struct{ kind, typ string }
-	buckets := map[bucketKey][]DetailJob{}
+	buckets := map[bucketKey][]extraction.DetailJob{}
 	keys := []bucketKey{} // insertion order for deterministic output
 	for _, j := range jobs {
 		k := bucketKey{string(j.Objective.Kind), j.Objective.Type}
@@ -79,7 +81,7 @@ func DetailGroups(jobs []DetailJob) [][]DetailJob {
 		})
 	}
 	// Build batches one bucket at a time.
-	var batches [][]DetailJob
+	var batches [][]extraction.DetailJob
 	for _, k := range keys {
 		batches = append(batches, PartitionByAffinity(buckets[k])...)
 	}
@@ -100,14 +102,14 @@ func DetailGroups(jobs []DetailJob) [][]DetailJob {
 //
 // Returns nil for an empty input, [[singleton]] for a 1-job input,
 // and a list of batches for larger inputs.
-func PartitionByAffinity(jobs []DetailJob) [][]DetailJob {
+func PartitionByAffinity(jobs []extraction.DetailJob) [][]extraction.DetailJob {
 	if len(jobs) == 0 {
 		return nil
 	}
 	if len(jobs) == 1 {
-		return [][]DetailJob{{jobs[0]}}
+		return [][]extraction.DetailJob{{jobs[0]}}
 	}
-	batches := [][]DetailJob{{jobs[0]}}
+	batches := [][]extraction.DetailJob{{jobs[0]}}
 	for _, j := range jobs[1:] {
 		bestBatch := -1
 		bestScore := -1
@@ -126,7 +128,7 @@ func PartitionByAffinity(jobs []DetailJob) [][]DetailJob {
 		}
 		// If no batch has affinity OR all batches are full, start a new one.
 		if bestBatch < 0 || bestScore <= 0 {
-			batches = append(batches, []DetailJob{j})
+			batches = append(batches, []extraction.DetailJob{j})
 			continue
 		}
 		batches[bestBatch] = append(batches[bestBatch], j)
@@ -138,7 +140,7 @@ func PartitionByAffinity(jobs []DetailJob) [][]DetailJob {
 // every existing member of `batch`. Average rather than max so a
 // large batch dominated by unrelated entities doesn't keep
 // attracting more on the strength of one match.
-func BatchAffinity(j DetailJob, batch []DetailJob) int {
+func BatchAffinity(j extraction.DetailJob, batch []extraction.DetailJob) int {
 	if len(batch) == 0 {
 		return 0
 	}
@@ -167,7 +169,7 @@ func BatchAffinity(j DetailJob, batch []DetailJob) int {
 //
 // Zero score means "unrelated by any signal we trust". Such pairs
 // land in separate batches.
-func AffinityScore(a, b DetailJob) int {
+func AffinityScore(a, b extraction.DetailJob) int {
 	score := 0
 	fa, fb := PrimaryFile(a.Seed), PrimaryFile(b.Seed)
 	switch {
@@ -207,7 +209,7 @@ func AffinityScore(a, b DetailJob) int {
 // primaryFile returns the first source_location.file of a seed
 // (the file the model is most likely to open first), or "" if
 // none exists.
-func PrimaryFile(seed LLMEntity) string {
+func PrimaryFile(seed extraction.Candidate) string {
 	if len(seed.Locations) == 0 {
 		return ""
 	}

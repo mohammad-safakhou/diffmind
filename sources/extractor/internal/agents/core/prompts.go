@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
+	"github.com/mohammad-safakhou/diffmind/internal/stage/repofacts"
 )
 
 // readOnlyPreamble is prepended to every stage prompt. It tells the agent
@@ -28,34 +29,7 @@ const readOnlyPreamble = `OPERATIONAL RULES (apply to the entire response):
 // ---- Stage 0 ----
 
 func BuildRepoFactsPrompt(subDir string) string {
-	var sb strings.Builder
-	sb.WriteString("AGENT ROLE: repo-facts\n")
-	sb.WriteString(readOnlyPreamble)
-	sb.WriteString("TASK: Produce a compact, evidence-backed snapshot of this repository so that\n")
-	sb.WriteString("downstream extraction agents do not have to re-discover the tech stack.\n\n")
-	if subDir != "" {
-		sb.WriteString("IMPORTANT: This is a monorepo. ONLY analyze files under the '")
-		sb.WriteString(subDir)
-		sb.WriteString("/' subdirectory. All file paths in your answer must be relative to the repo root and start with '")
-		sb.WriteString(subDir)
-		sb.WriteString("/'.\n\n")
-	}
-	sb.WriteString(`STEPS:
-1. Read build files that exist (pom.xml, build.gradle, package.json, go.mod, pyproject.toml, requirements.txt, setup.py, Cargo.toml).
-2. Read application config (application.yml, application.properties, application-*.yml) if present.
-3. Read deployment/infrastructure config (helm values, Chart.yaml, serverless.yml, template.yaml, any *values.yaml or config/*.yaml in the repo).
-4. Identify declared languages, frameworks, main module layout, and service name.
-5. List environment-specific URLs, queue names, DB config you observe for downstream agents.
-
-RULES:
-- Do NOT invent. Only list what you can confirm by reading a file.
-- Return an empty array for any category that is not present.
-- Keep every list short (max 25 items). Prefer the most representative entries.
-- "probable_tech_hints" should capture cues like: "Spring Boot", "@SqsListener present", "Retrofit interface used", "DynamoDBMapper usage", "Redis via Jedis", "AWS Lambda handler".
-- "deployment_hints" captures things like "ingress host X", "SQS queue my-service-prod", "DB host X", "Feature flag X".
-
-OUTPUT: Return a single JSON object matching the provided schema.`)
-	return sb.String()
+	return repofacts.BuildPrompt(subDir)
 }
 
 // ---- Shared REPO_FACTS injection ----

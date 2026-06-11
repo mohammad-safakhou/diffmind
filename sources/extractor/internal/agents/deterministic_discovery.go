@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mohammad-safakhou/diffmind/internal/agents/core"
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
+	"github.com/mohammad-safakhou/diffmind/internal/runstate"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -650,13 +650,13 @@ func mergeDeterministicDuplicate(llm, det llmEntity) llmEntity {
 	return out
 }
 
-func (o *orchestrator) detailCheckpointForSeed(j detailJob) (core.DetailCheckpointEntry, bool) {
+func (o *orchestrator) detailCheckpointForSeed(j detailJob) (runstate.DetailCheckpointEntry, bool) {
 	base, ur := ToBase(o.repoPath, j.Objective, j.Seed, o.cfg.Quality.MinConfidence)
 	if ur != nil {
-		return core.DetailCheckpointEntry{}, false
+		return runstate.DetailCheckpointEntry{}, false
 	}
-	entry := core.DetailCheckpointEntry{
-		Key:         core.DetailEntityKey(j.Objective.ID, j.Seed.Name),
+	entry := runstate.DetailCheckpointEntry{
+		Key:         runstate.DetailEntityKey(j.Objective.ID, j.Seed.Name),
 		ObjectiveID: j.Objective.ID,
 		SeedName:    j.Seed.Name,
 	}

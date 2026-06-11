@@ -6,12 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
-	"time"
 
 	"github.com/mohammad-safakhou/diffmind/internal/ast"
-	_ "github.com/mohammad-safakhou/diffmind/internal/ast/framework" // register all detectors
 	"github.com/mohammad-safakhou/diffmind/internal/events"
+	"github.com/mohammad-safakhou/diffmind/internal/stage/astindex"
+	infrastructurestage "github.com/mohammad-safakhou/diffmind/internal/stage/infrastructure"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -48,7 +47,6 @@ func (o *orchestrator) runASTIndexStage(ctx context.Context) error {
 		}
 	}
 
-	started := time.Now()
 	o.emit(events.Event{
 		Kind: events.KindStageStarted, Stage: "ast_index",
 		Status: events.StatusRunning,
@@ -57,11 +55,6 @@ func (o *orchestrator) runASTIndexStage(ctx context.Context) error {
 			"tip":      "Building language-agnostic AST index of the project source.",
 		},
 	})
-
-	workers := o.cfg.Runtime.Workers
-	if workers <= 0 {
-		workers = 8
-	}
 
 	progressFn := func(done, total int) {
 		if done%50 == 0 || done == total {
@@ -78,7 +71,10 @@ func (o *orchestrator) runASTIndexStage(ctx context.Context) error {
 	if len(o.cfg.Indexer.Languages) > 0 {
 		primaryLang = o.cfg.Indexer.Languages[0]
 	}
-	idx, err := ast.Build(ctx, o.sessionDir, primaryLang, workers, progressFn)
+	out, err := (astindex.Runner{}).Run(ctx, astindex.Input{
+		SnapshotPath: o.sessionDir, PrimaryLanguage: primaryLang,
+		Workers: o.cfg.Runtime.Workers, Progress: progressFn,
+	})
 	if err != nil {
 		o.emit(events.Event{
 			Kind: events.KindStageCompleted, Stage: "ast_index",
@@ -86,66 +82,43 @@ func (o *orchestrator) runASTIndexStage(ctx context.Context) error {
 		})
 		return fmt.Errorf("ast_index: %w", err)
 	}
-
-	o.astIndex = idx
+	o.astIndex = out.Index
 
 	// Write completion marker and summary.
-	dur := time.Since(started)
 	if o.runDir != "" {
 		if err := os.MkdirAll(filepath.Join(o.runDir, stateDir), 0o755); err == nil {
-			summary := astIndexSummary{
-				Files:      len(idx.Files),
-				Symbols:    len(idx.Symbols),
-				CallEdges:  countCallEdges(idx),
-				Configs:    len(idx.Configs),
-				Frameworks: len(idx.Frameworks),
-				DurationMs: dur.Milliseconds(),
-			}
-			if b, err := json.Marshal(summary); err == nil {
+			if b, err := json.Marshal(out.Summary); err == nil {
 				_ = os.WriteFile(filepath.Join(o.runDir, stateDir, astIndexStateFile), b, 0o644)
 			}
 		}
 	}
 
 	util.Info("agents.ast_index", "index built", map[string]any{
-		"files":       len(idx.Files),
-		"symbols":     len(idx.Symbols),
-		"call_edges":  countCallEdges(idx),
-		"configs":     len(idx.Configs),
-		"frameworks":  len(idx.Frameworks),
-		"duration_ms": dur.Milliseconds(),
+		"files":       out.Summary.Files,
+		"symbols":     out.Summary.Symbols,
+		"call_edges":  out.Summary.CallEdges,
+		"configs":     out.Summary.Configs,
+		"frameworks":  out.Summary.Frameworks,
+		"duration_ms": out.Summary.DurationMs,
 	})
 
 	o.emit(events.Event{
 		Kind: events.KindStageCompleted, Stage: "ast_index",
 		Status: events.StatusSuccess,
 		Payload: map[string]any{
-			"files":       len(idx.Files),
-			"symbols":     len(idx.Symbols),
-			"call_edges":  countCallEdges(idx),
-			"configs":     len(idx.Configs),
-			"frameworks":  len(idx.Frameworks),
-			"duration_ms": dur.Milliseconds(),
+			"files":       out.Summary.Files,
+			"symbols":     out.Summary.Symbols,
+			"call_edges":  out.Summary.CallEdges,
+			"configs":     out.Summary.Configs,
+			"frameworks":  out.Summary.Frameworks,
+			"duration_ms": out.Summary.DurationMs,
 		},
 	})
 	return nil
 }
 
-type astIndexSummary struct {
-	Files      int   `json:"files"`
-	Symbols    int   `json:"symbols"`
-	CallEdges  int   `json:"call_edges"`
-	Configs    int   `json:"configs"`
-	Frameworks int   `json:"frameworks"`
-	DurationMs int64 `json:"duration_ms"`
-}
-
 func countCallEdges(idx *ast.ProjectIndex) int {
-	total := 0
-	for _, calls := range idx.CallGraph {
-		total += len(calls)
-	}
-	return total
+	return astindex.CountCallEdges(idx)
 }
 
 // runInfrastructureStage uses the config files already parsed by ast_index to
@@ -163,24 +136,9 @@ func (o *orchestrator) runInfrastructureStage(ctx context.Context, rf *repoFacts
 		Payload: map[string]any{"config_files": len(o.astIndex.Configs)},
 	})
 
-	// Flatten all config entries into a concise text representation for the LLM.
-	var sb strings.Builder
-	sb.WriteString("Configuration entries found in this project:\n\n")
-	for path, cf := range o.astIndex.Configs {
-		if len(cf.Entries) == 0 {
-			continue
-		}
-		sb.WriteString("--- " + path + " ---\n")
-		for _, e := range cf.Entries {
-			sb.WriteString(fmt.Sprintf("  %s = %s\n", e.Key, e.Value))
-		}
-		sb.WriteString("\n")
-	}
-
-	prompt := buildInfrastructurePrompt(sb.String(), rf)
-	schema := infrastructureSchema()
-
-	payload, err := o.promptAgent(ctx, "infrastructure", prompt, schema)
+	inv, err := (infrastructurestage.Runner{Prompt: o.promptAgent}).Run(ctx, infrastructurestage.Input{
+		Index: o.astIndex, Facts: rf,
+	})
 	if err != nil {
 		// Infrastructure inventory is best-effort; don't halt the run.
 		util.Warn("agents.infrastructure", "inventory LLM call failed; continuing without inventory", map[string]any{"error": err.Error()})
@@ -190,8 +148,6 @@ func (o *orchestrator) runInfrastructureStage(ctx context.Context, rf *repoFacts
 		})
 		return &InfrastructureInventory{}, nil
 	}
-
-	inv := parseInfrastructureInventory(payload)
 
 	// Persist to state/.
 	if o.runDir != "" {
@@ -214,104 +170,7 @@ func (o *orchestrator) runInfrastructureStage(ctx context.Context, rf *repoFacts
 // Infrastructure types
 
 // InfrastructureInventory is the project-level list of external systems.
-type InfrastructureInventory struct {
-	Databases []InfraSystem `json:"databases"`
-	Topics    []InfraSystem `json:"topics"`
-	Queues    []InfraSystem `json:"queues"`
-	Services  []InfraSystem `json:"services"`
-	Caches    []InfraSystem `json:"caches"`
-}
+type InfrastructureInventory = infrastructurestage.Inventory
 
 // InfraSystem is one external infrastructure system.
-type InfraSystem struct {
-	Name         string   `json:"name"`
-	Kind         string   `json:"kind"`   // "database" | "topic" | "queue" | "http_service" | "cache" | ...
-	System       string   `json:"system"` // "postgres" | "mysql" | "mongodb" | "kafka" | "sns" | "redis" | ...
-	ConfigKeys   []string `json:"config_keys,omitempty"`
-	EndpointHint string   `json:"endpoint_hint,omitempty"`
-}
-
-func buildInfrastructurePrompt(configEntries string, rf *repoFacts) string {
-	var sb strings.Builder
-	sb.WriteString("AGENT ROLE: infrastructure-analyst\n\n")
-	sb.WriteString("You are analysing a software project's configuration files to identify every external infrastructure system the project interacts with.\n\n")
-	if rf != nil && rf.ServiceName != "" {
-		sb.WriteString("Service name: " + rf.ServiceName + "\n\n")
-	}
-	sb.WriteString(configEntries)
-	sb.WriteString("\nBased on the configuration entries above, identify every external infrastructure system.\n")
-	sb.WriteString("For each system provide: name (human-readable identifier), kind (database/topic/queue/http_service/cache/object_store/secret_store/other), system (postgres/mysql/mongodb/redis/kafka/sns/sqs/rabbitmq/elasticsearch/s3/http/grpc/ldap/other), the config keys that reference it, and a sample endpoint/connection string hint.\n")
-	sb.WriteString("\nReturn ONLY a JSON object matching the schema. Do not include systems that are purely for metrics/logs/tracing (observability) unless they are the primary data store.\n")
-	return sb.String()
-}
-
-func infrastructureSchema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"databases": listOfInfraSystems(),
-			"topics":    listOfInfraSystems(),
-			"queues":    listOfInfraSystems(),
-			"services":  listOfInfraSystems(),
-			"caches":    listOfInfraSystems(),
-		},
-	}
-}
-
-func listOfInfraSystems() map[string]any {
-	return map[string]any{
-		"type": "array",
-		"items": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"name":          map[string]any{"type": "string"},
-				"kind":          map[string]any{"type": "string"},
-				"system":        map[string]any{"type": "string"},
-				"config_keys":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-				"endpoint_hint": map[string]any{"type": "string"},
-			},
-		},
-	}
-}
-
-func parseInfrastructureInventory(payload map[string]any) *InfrastructureInventory {
-	inv := &InfrastructureInventory{}
-	parse := func(key string) []InfraSystem {
-		arr, _ := payload[key].([]any)
-		var out []InfraSystem
-		for _, item := range arr {
-			m, ok := item.(map[string]any)
-			if !ok {
-				continue
-			}
-			sys := InfraSystem{
-				Name:         stringVal(m, "name"),
-				Kind:         stringVal(m, "kind"),
-				System:       stringVal(m, "system"),
-				EndpointHint: stringVal(m, "endpoint_hint"),
-			}
-			if keys, ok := m["config_keys"].([]any); ok {
-				for _, k := range keys {
-					if s, ok := k.(string); ok {
-						sys.ConfigKeys = append(sys.ConfigKeys, s)
-					}
-				}
-			}
-			if sys.Name != "" {
-				out = append(out, sys)
-			}
-		}
-		return out
-	}
-	inv.Databases = parse("databases")
-	inv.Topics = parse("topics")
-	inv.Queues = parse("queues")
-	inv.Services = parse("services")
-	inv.Caches = parse("caches")
-	return inv
-}
-
-func stringVal(m map[string]any, key string) string {
-	v, _ := m[key].(string)
-	return v
-}
+type InfraSystem = infrastructurestage.System

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mohammad-safakhou/diffmind/internal/agents/core"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
+	"github.com/mohammad-safakhou/diffmind/internal/runstate"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -31,7 +31,7 @@ func fileExists(path string) bool {
 // without re-running everything that already worked. The canonical
 // definition lives in core.StateDir; this alias keeps the
 // orchestrator-side call sites terse.
-const stateDir = core.StateDir
+const stateDir = runstate.StateDir
 
 // resumeState is the bundle returned by loadResumeState. The struct
 // (rather than a positional return) makes new fields backwards-
@@ -44,7 +44,7 @@ type resumeState struct {
 	Reexam           []detailJob
 	Exposures        []model.Exposure
 	Dependencies     []model.Dependency
-	DetailCheckpoint map[string]core.DetailCheckpointEntry
+	DetailCheckpoint map[string]runstate.DetailCheckpointEntry
 }
 
 // loadResumeState reads previously-saved per-stage outputs from
