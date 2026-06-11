@@ -131,8 +131,8 @@ func ToEvidence(in []Evidence) []model.Evidence {
 // toConnectionPaths was the LLM→model.ConnectionPath converter used by
 // the old connections stage. The SCIP-driven stage builds
 // model.ConnectionPath directly from scip.Path, so this helper is
-// obsolete and has been removed. See internal/pipeline/connections.go's
-// convertPath function for the replacement.
+// obsolete and has been removed. See internal/stage/connections/path.go's
+// convertASTPath function for the replacement.
 
 func FillCondition(c model.Condition, fallbackExplanation string) model.Condition {
 	if strings.TrimSpace(c.Kind) == "" {

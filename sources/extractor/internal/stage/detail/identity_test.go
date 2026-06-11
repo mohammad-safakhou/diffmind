@@ -1,4 +1,4 @@
-package pipeline
+package detail
 
 import "testing"
 
@@ -22,7 +22,7 @@ func TestPinIdentityDetailsKeepsSeedRoute(t *testing.T) {
 			"response_type": "UserDTO",     // legitimate enrichment
 		},
 	}
-	pinIdentityDetails(item, seed)
+	PinIdentityDetails(item, seed)
 
 	if item.Details["path"] != "/api/users/{id}" {
 		t.Errorf("path not pinned to seed: %v", item.Details["path"])
@@ -40,7 +40,7 @@ func TestPinIdentityDetailsKeepsSeedRoute(t *testing.T) {
 func TestPinIdentityDetailsFillsWhenSeedEmpty(t *testing.T) {
 	seed := llmEntity{Type: "db_operation", Name: "read orders", Details: map[string]any{"operation": "read"}}
 	item := &llmEntity{Type: "db_operation", Details: map[string]any{"operation": "read", "table": "orders"}}
-	pinIdentityDetails(item, seed)
+	PinIdentityDetails(item, seed)
 	if item.Details["table"] != "orders" {
 		t.Errorf("detail should establish table the seed lacked: %v", item.Details["table"])
 	}
@@ -50,10 +50,10 @@ func TestPinIdentityDetailsFillsWhenSeedEmpty(t *testing.T) {
 }
 
 func TestIdentityDetailKeys(t *testing.T) {
-	if got := identityDetailKeys("HTTP_ROUTE"); len(got) != 2 || got[0] != "method" || got[1] != "path" {
+	if got := IdentityDetailKeys("HTTP_ROUTE"); len(got) != 2 || got[0] != "method" || got[1] != "path" {
 		t.Errorf("http_route identity keys wrong: %v", got)
 	}
-	if identityDetailKeys("unknown_type") != nil {
+	if IdentityDetailKeys("unknown_type") != nil {
 		t.Error("unknown type should have no identity detail keys")
 	}
 }

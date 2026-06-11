@@ -1,4 +1,4 @@
-package pipeline
+package floor
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 	reconcile "github.com/mohammad-safakhou/diffmind/internal/stage/reconcile"
 )
 
-// DeterministicFloor runs ONLY the LLM-free stages of the pipeline over a
+// Run executes ONLY the LLM-free extraction path over a
 // prebuilt AST index and returns the same reconciled Result the full pipeline
 // would produce minus anything that needs the model. It exists so the eval
 // harness can score the deterministic recall floor cheaply, hermetically and
@@ -26,9 +26,9 @@ import (
 // LLM on top of this floor. This is a read-only projection of the floor, used
 // only by eval and its own test. It mirrors RunWith's deterministic path
 // exactly — keep the two in sync when that path changes.
-func DeterministicFloor(ctx context.Context, idx *astpkg.ProjectIndex, repoPath string, cfg config.Config) Result {
+func Run(ctx context.Context, idx *astpkg.ProjectIndex, repoPath string, cfg config.Config) extraction.Result {
 	if idx == nil {
-		return Result{}
+		return extraction.Result{}
 	}
 	objs := objectives.Default()
 	minConf := cfg.Quality.MinConfidence
@@ -86,7 +86,7 @@ func DeterministicFloor(ctx context.Context, idx *astpkg.ProjectIndex, repoPath 
 	sort.Slice(dependencies, func(i, j int) bool { return dependencies[i].ID < dependencies[j].ID })
 	sort.Slice(conns, func(i, j int) bool { return conns[i].ID < conns[j].ID })
 
-	return Result{
+	return extraction.Result{
 		Exposures:    exposures,
 		Dependencies: dependencies,
 		Connections:  conns,

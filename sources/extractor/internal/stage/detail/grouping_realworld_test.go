@@ -1,4 +1,4 @@
-package pipeline
+package detail
 
 import (
 	"encoding/json"
@@ -42,8 +42,8 @@ func TestDetailGroups_RealWorldCatalogueAPI(t *testing.T) {
 
 	// No batch may exceed the hard cap.
 	for i, bch := range batches {
-		if len(bch) > detailBatchHardCap {
-			t.Errorf("batch %d has %d entities; hard cap is %d", i, len(bch), detailBatchHardCap)
+		if len(bch) > DetailBatchHardCap {
+			t.Errorf("batch %d has %d entities; hard cap is %d", i, len(bch), DetailBatchHardCap)
 		}
 	}
 

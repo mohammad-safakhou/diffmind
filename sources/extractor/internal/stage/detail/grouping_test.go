@@ -1,4 +1,4 @@
-package pipeline
+package detail
 
 import (
 	"testing"
@@ -95,8 +95,8 @@ func TestDetailGroups_HardCap(t *testing.T) {
 	}
 	batches := DetailGroups(jobs)
 	for i, b := range batches {
-		if len(b) > detailBatchHardCap {
-			t.Errorf("batch %d has %d entities; hard cap is %d", i, len(b), detailBatchHardCap)
+		if len(b) > DetailBatchHardCap {
+			t.Errorf("batch %d has %d entities; hard cap is %d", i, len(b), DetailBatchHardCap)
 		}
 	}
 }

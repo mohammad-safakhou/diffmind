@@ -1,4 +1,4 @@
-package pipeline
+package floor
 
 import (
 	"context"
@@ -7,10 +7,11 @@ import (
 
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
+	"github.com/mohammad-safakhou/diffmind/internal/extraction"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 )
 
-func buildFloorForFixture(t *testing.T, rel string) Result {
+func buildFloorForFixture(t *testing.T, rel string) extraction.Result {
 	t.Helper()
 	repo, err := filepath.Abs(filepath.Join("..", "..", rel))
 	if err != nil {
@@ -23,7 +24,7 @@ func buildFloorForFixture(t *testing.T, rel string) Result {
 	cfg := config.Default()
 	cfg.Quality.MinConfidence = 0.7
 	cfg.Runtime.Workers = 4
-	return DeterministicFloor(context.Background(), idx, repo, cfg)
+	return Run(context.Background(), idx, repo, cfg)
 }
 
 // TestDeterministicFloorSpringCRUD locks the cheap-mode entry point: the floor

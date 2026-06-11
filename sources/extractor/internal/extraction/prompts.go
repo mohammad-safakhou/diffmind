@@ -561,5 +561,5 @@ func Itoa(n int) string {
 // The connections stage is now deterministic and SCIP-driven. No LLM
 // prompt is built or sent. The old buildConnectionPrompt /
 // connectionCatalogItem types have been removed. See
-// internal/pipeline/connections.go for the new pipeline and
+// internal/stage/connections/ for the current implementation and
 // internal/scip/ for the underlying call-graph walker.

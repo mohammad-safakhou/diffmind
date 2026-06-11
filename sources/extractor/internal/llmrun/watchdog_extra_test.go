@@ -1,4 +1,4 @@
-package pipeline
+package llmrun
 
 import (
 	"context"
@@ -141,7 +141,7 @@ func (f *fakePauseAPI) snapshot() (perms []string, qs []string, aborts []string,
 
 func TestWatchdogAutoDeniesOwnedPermissions(t *testing.T) {
 	api := &fakePauseAPI{}
-	wd := newWatchdog(api, "/snap", 10*time.Millisecond)
+	wd := NewWatchdog(api, "/snap", 10*time.Millisecond)
 	wd.Track("s1")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -160,7 +160,7 @@ func TestWatchdogAutoDeniesOwnedPermissions(t *testing.T) {
 
 func TestWatchdogIgnoresUntrackedSessionPermissions(t *testing.T) {
 	api := &fakePauseAPI{}
-	wd := newWatchdog(api, "/snap", 10*time.Millisecond)
+	wd := NewWatchdog(api, "/snap", 10*time.Millisecond)
 	wd.Track("s1")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -179,7 +179,7 @@ func TestWatchdogIgnoresUntrackedSessionPermissions(t *testing.T) {
 
 func TestWatchdogAutoRejectsOwnedQuestions(t *testing.T) {
 	api := &fakePauseAPI{}
-	wd := newWatchdog(api, "/snap", 10*time.Millisecond)
+	wd := NewWatchdog(api, "/snap", 10*time.Millisecond)
 	wd.Track("s1")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -207,7 +207,7 @@ func TestWatchdogAutoRejectsOwnedQuestions(t *testing.T) {
 // roots in an owned session.
 func TestWatchdogAutoDeniesPermissionFromSubagentOfTrackedSession(t *testing.T) {
 	api := &fakePauseAPI{}
-	wd := newWatchdog(api, "/snap", 10*time.Millisecond)
+	wd := NewWatchdog(api, "/snap", 10*time.Millisecond)
 	wd.Track("parent-s1")
 	api.setParent("sub-1", "parent-s1")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -245,7 +245,7 @@ func TestWatchdogAutoDeniesPermissionFromSubagentOfTrackedSession(t *testing.T) 
 // recognise sub-2 as ours by following ParentID twice.
 func TestWatchdogAutoDeniesPermissionFromGrandchildSubagent(t *testing.T) {
 	api := &fakePauseAPI{}
-	wd := newWatchdog(api, "/snap", 10*time.Millisecond)
+	wd := NewWatchdog(api, "/snap", 10*time.Millisecond)
 	wd.Track("parent-s1")
 	api.setParent("sub-1", "parent-s1")
 	api.setParent("sub-2", "sub-1")
@@ -274,7 +274,7 @@ func TestWatchdogAutoDeniesPermissionFromGrandchildSubagent(t *testing.T) {
 // preserves the original "stay out of other clients' way" property.
 func TestWatchdogIgnoresSubagentPermissionWhenChainRootIsForeign(t *testing.T) {
 	api := &fakePauseAPI{}
-	wd := newWatchdog(api, "/snap", 10*time.Millisecond)
+	wd := NewWatchdog(api, "/snap", 10*time.Millisecond)
 	wd.Track("parent-s1")
 	api.setParent("foreign-sub", "FOREIGN-PARENT")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -304,7 +304,7 @@ func TestWatchdogIgnoresSubagentPermissionWhenChainRootIsForeign(t *testing.T) {
 // resolve to one of ours.
 func TestWatchdogCachesParentLookupForUntrackedSession(t *testing.T) {
 	api := &fakePauseAPI{}
-	wd := newWatchdog(api, "/snap", 5*time.Millisecond)
+	wd := NewWatchdog(api, "/snap", 5*time.Millisecond)
 	wd.Track("parent-s1")
 	// foreign-sub's parent is "" (no parent), so the cache stores
 	// a negative result on the first lookup.
@@ -331,7 +331,7 @@ func TestWatchdogCachesParentLookupForUntrackedSession(t *testing.T) {
 // regressing the common case while we add the subagent walk.
 func TestWatchdogDoesNotLookUpParentForDirectlyOwnedSession(t *testing.T) {
 	api := &fakePauseAPI{}
-	wd := newWatchdog(api, "/snap", 5*time.Millisecond)
+	wd := NewWatchdog(api, "/snap", 5*time.Millisecond)
 	wd.Track("s1")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -362,7 +362,7 @@ func TestWatchdogDoesNotLookUpParentForDirectlyOwnedSession(t *testing.T) {
 // like the /tmp/* permission did.
 func TestWatchdogAutoRejectsQuestionFromSubagentOfTrackedSession(t *testing.T) {
 	api := &fakePauseAPI{}
-	wd := newWatchdog(api, "/snap", 10*time.Millisecond)
+	wd := NewWatchdog(api, "/snap", 10*time.Millisecond)
 	wd.Track("parent-s1")
 	api.setParent("sub-1", "parent-s1")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -382,7 +382,7 @@ func TestWatchdogAutoRejectsQuestionFromSubagentOfTrackedSession(t *testing.T) {
 
 func TestWatchdogStopIsIdempotent(t *testing.T) {
 	api := &fakePauseAPI{}
-	wd := newWatchdog(api, "/snap", 10*time.Millisecond)
+	wd := NewWatchdog(api, "/snap", 10*time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	wd.Start(ctx)
@@ -391,7 +391,7 @@ func TestWatchdogStopIsIdempotent(t *testing.T) {
 }
 
 func TestWatchdogNilAPIIsNoop(t *testing.T) {
-	wd := newWatchdog(nil, "/snap", 10*time.Millisecond)
+	wd := NewWatchdog(nil, "/snap", 10*time.Millisecond)
 	wd.Start(context.Background())
 	wd.Track("s1")
 	wd.Untrack("s1")

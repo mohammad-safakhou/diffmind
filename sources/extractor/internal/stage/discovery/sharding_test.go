@@ -1,4 +1,4 @@
-package pipeline
+package discovery
 
 import (
 	"strings"
@@ -28,13 +28,13 @@ func bigIndex(modules []string, perModule int) *astpkg.ProjectIndex {
 func TestPlanShards_NilBelowSoftTarget(t *testing.T) {
 	// 2 modules × 5 = 10 candidates, below soft target → single call (nil).
 	idx := bigIndex([]string{"src/api/orders", "src/api/users"}, 5)
-	if shards := planDiscoveryShards(idx, objByType(t, "http_route"), ""); shards != nil {
+	if shards := PlanShards(idx, objByType(t, "http_route"), ""); shards != nil {
 		t.Fatalf("expected nil (single call) below soft target, got %d shards", len(shards))
 	}
 }
 
 func TestPlanShards_NilIndex(t *testing.T) {
-	if shards := planDiscoveryShards(nil, objByType(t, "http_route"), ""); shards != nil {
+	if shards := PlanShards(nil, objByType(t, "http_route"), ""); shards != nil {
 		t.Fatalf("nil index must yield nil shards")
 	}
 }
@@ -43,7 +43,7 @@ func TestPlanShards_SplitsAboveTarget(t *testing.T) {
 	// 6 dirs × 20 = 120 candidates → must shard, each shard's candidate weight ≤ hard cap.
 	modules := []string{"src/api/a", "src/api/b", "src/api/c", "src/api/d", "src/api/e", "src/api/f"}
 	idx := bigIndex(modules, 20)
-	shards := planDiscoveryShards(idx, objByType(t, "http_route"), "")
+	shards := PlanShards(idx, objByType(t, "http_route"), "")
 	if len(shards) < 2 {
 		t.Fatalf("expected multiple shards, got %d", len(shards))
 	}
@@ -55,8 +55,8 @@ func TestPlanShards_SplitsAboveTarget(t *testing.T) {
 			seen[f]++
 			w++
 		}
-		if w > discoveryShardHardCap {
-			t.Fatalf("shard %d has %d files, exceeds hard cap %d", sh.Index, w, discoveryShardHardCap)
+		if w > DiscoveryShardHardCap {
+			t.Fatalf("shard %d has %d files, exceeds hard cap %d", sh.Index, w, DiscoveryShardHardCap)
 		}
 		// Each shard's hints must be scoped to its own files.
 		fileSet := map[string]bool{}
@@ -87,7 +87,7 @@ func TestPlanShards_SplitsAboveTarget(t *testing.T) {
 func TestPlanShards_SplitsSingleFatDirectory(t *testing.T) {
 	// All candidates in ONE directory (the heavy-CRUD case) must still split.
 	idx := bigIndex([]string{"src/api"}, 120)
-	shards := planDiscoveryShards(idx, objByType(t, "http_route"), "")
+	shards := PlanShards(idx, objByType(t, "http_route"), "")
 	if len(shards) < 2 {
 		t.Fatalf("a single fat directory of 120 candidates must split, got %d shards", len(shards))
 	}
@@ -108,7 +108,7 @@ func TestPlanShards_NilWithoutASTCandidates(t *testing.T) {
 			idx.Files[f] = &astpkg.FileAST{Path: f}
 		}
 	}
-	if shards := planDiscoveryShards(idx, objByType(t, "http_route"), ""); shards != nil {
+	if shards := PlanShards(idx, objByType(t, "http_route"), ""); shards != nil {
 		t.Fatalf("expected nil (single call) when AST has no candidates, got %d shards", len(shards))
 	}
 }
@@ -130,7 +130,7 @@ func TestPlanShards_OnlyClustersCandidateFiles(t *testing.T) {
 		f := "src/controller/Ctrl" + Itoa(i) + ".java"
 		idx.Files[f] = &astpkg.FileAST{Path: f}
 	}
-	shards := planDiscoveryShards(idx, objByType(t, "db_operation"), "")
+	shards := PlanShards(idx, objByType(t, "db_operation"), "")
 	if len(shards) < 2 {
 		t.Fatalf("100 repository candidates must shard, got %d", len(shards))
 	}
@@ -150,7 +150,7 @@ func TestMergeShardEntities_CollapsesBoundaryDupes(t *testing.T) {
 		{{Type: "http_route", Name: "GET /x", Confidence: 0.9, Locations: loc, Evidence: []llmEvidence{{}}}},
 		{{Type: "http_route", Name: "GET /y", Confidence: 0.8, Locations: []llmLocation{{File: "b.go", StartLine: 1}}}},
 	}
-	out := mergeShardEntities(objByType(t, "http_route"), in)
+	out := MergeShardEntities(objByType(t, "http_route"), in)
 	if len(out) != 2 {
 		t.Fatalf("expected 2 deduped entities, got %d: %+v", len(out), out)
 	}
@@ -163,7 +163,7 @@ func TestMergeShardEntities_CollapsesBoundaryDupes(t *testing.T) {
 }
 
 func TestDistinctDirs(t *testing.T) {
-	got := distinctDirs([]string{"src/api/a/X.java", "src/api/a/Y.java", "src/api/b/Z.java"})
+	got := DistinctDirs([]string{"src/api/a/X.java", "src/api/a/Y.java", "src/api/b/Z.java"})
 	if len(got) != 2 || got[0] != "src/api/a" || got[1] != "src/api/b" {
 		t.Fatalf("distinctDirs = %v", got)
 	}

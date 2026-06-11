@@ -6,7 +6,7 @@ DiffMind's backend follows a one-way dependency flow:
 cmd / ui
    -> app / runner
    -> pipeline
-   -> stage packages
+   -> floor / stage packages
    -> extraction contracts and focused services
 ```
 
@@ -16,6 +16,8 @@ cmd / ui
   semantic candidate rules, prompt contracts, schemas, and path mapping.
 - `internal/pipeline`: lifecycle, snapshot ownership, stage sequencing,
   progress/events, cancellation, resume decisions, and terminal assembly.
+- `internal/floor`: eval-facing deterministic projection of the LLM-free path.
+  This is not a runtime mode.
 - `internal/stage/*`: stage-owned deterministic or LLM work. Stage packages
   never import the pipeline or another stage package.
 - `internal/llmrun`: sessions, watchdog/liveness, prompt runtime capabilities,

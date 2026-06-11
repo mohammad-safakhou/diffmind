@@ -190,8 +190,9 @@ Longer-term (product):
 ## 7. Where things live
 
 - `internal/objectives/registry.go` — the objective map + prompts.
-- `internal/pipeline/` — orchestration, lifecycle, resume, events, and the
-  deterministic-floor projection used by eval.
+- `internal/pipeline/` — orchestration, lifecycle, resume, events, and terminal
+  result assembly.
+- `internal/floor/` — LLM-free deterministic-floor projection used by eval.
 - `internal/stage/` — stage-owned extraction logic.
 - `internal/extraction/`, `internal/llmrun/`, `internal/runstate/`, and
   `internal/entitykey/` — domain contracts, LLM runtime, persisted checkpoints,

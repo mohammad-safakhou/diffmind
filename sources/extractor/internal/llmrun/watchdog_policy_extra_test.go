@@ -1,4 +1,4 @@
-package pipeline
+package llmrun
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 const snapshotDir = "/private/var/folders/c6/abc/T/diffmind-snap-22d5d5ce287e8f1c"
 
 func TestDecidePermission_ReadIsAlwaysAllowed(t *testing.T) {
-	d := decidePermission(PendingPermission{Permission: "read"}, snapshotDir)
+	d := DecidePermission(PendingPermission{Permission: "read"}, snapshotDir)
 	if d.Response != "allow" {
 		t.Fatalf("read should allow, got %q (%s)", d.Response, d.Reason)
 	}
@@ -19,7 +19,7 @@ func TestDecidePermission_ReadIsAlwaysAllowed(t *testing.T) {
 
 func TestDecidePermission_GlobAndGrepAreAllowed(t *testing.T) {
 	for _, kind := range []string{"glob", "grep", "webfetch"} {
-		d := decidePermission(PendingPermission{Permission: kind}, snapshotDir)
+		d := DecidePermission(PendingPermission{Permission: kind}, snapshotDir)
 		if d.Response != "allow" {
 			t.Fatalf("%s should allow, got %q", kind, d.Response)
 		}
@@ -27,7 +27,7 @@ func TestDecidePermission_GlobAndGrepAreAllowed(t *testing.T) {
 }
 
 func TestDecidePermission_TaskIsDenied(t *testing.T) {
-	d := decidePermission(PendingPermission{Permission: "task"}, snapshotDir)
+	d := DecidePermission(PendingPermission{Permission: "task"}, snapshotDir)
 	if d.Response != "deny" {
 		t.Fatalf("task should deny, got %q (%s)", d.Response, d.Reason)
 	}
@@ -36,7 +36,7 @@ func TestDecidePermission_TaskIsDenied(t *testing.T) {
 func TestDecidePermission_ExternalDirectoryInsideSnapshotIsAllowed(t *testing.T) {
 	// Even with a hallucinated parent path, as long as the asked pattern
 	// contains the snapshot's basename, the agent is reading our sandbox.
-	d := decidePermission(PendingPermission{
+	d := DecidePermission(PendingPermission{
 		Permission: "external_directory",
 		Patterns:   []string{"/private/var/folders/c6/HALLUCINATED/T/diffmind-snap-22d5d5ce287e8f1c/src/main/*"},
 	}, snapshotDir)
@@ -46,7 +46,7 @@ func TestDecidePermission_ExternalDirectoryInsideSnapshotIsAllowed(t *testing.T)
 }
 
 func TestDecidePermission_ExternalDirectoryOutsideSnapshotIsDenied(t *testing.T) {
-	d := decidePermission(PendingPermission{
+	d := DecidePermission(PendingPermission{
 		Permission: "external_directory",
 		Patterns:   []string{"/Users/somebody/secrets/*"},
 	}, snapshotDir)
@@ -56,7 +56,7 @@ func TestDecidePermission_ExternalDirectoryOutsideSnapshotIsDenied(t *testing.T)
 }
 
 func TestDecidePermission_EditIsAlwaysDenied(t *testing.T) {
-	d := decidePermission(PendingPermission{
+	d := DecidePermission(PendingPermission{
 		Permission: "edit",
 		Patterns:   []string{snapshotDir + "/main.go"}, // even inside the snapshot
 	}, snapshotDir)
@@ -67,7 +67,7 @@ func TestDecidePermission_EditIsAlwaysDenied(t *testing.T) {
 
 func TestDecidePermission_BashIsDenied(t *testing.T) {
 	for _, kind := range []string{"bash", "shell", "write", "patch"} {
-		d := decidePermission(PendingPermission{Permission: kind}, snapshotDir)
+		d := DecidePermission(PendingPermission{Permission: kind}, snapshotDir)
 		if d.Response != "deny" {
 			t.Fatalf("%s should deny, got %q", kind, d.Response)
 		}
@@ -75,7 +75,7 @@ func TestDecidePermission_BashIsDenied(t *testing.T) {
 }
 
 func TestDecidePermission_UnknownInsideSnapshotAllows(t *testing.T) {
-	d := decidePermission(PendingPermission{
+	d := DecidePermission(PendingPermission{
 		Permission: "wholeNewKind",
 		Patterns:   []string{snapshotDir + "/x"},
 	}, snapshotDir)
@@ -85,7 +85,7 @@ func TestDecidePermission_UnknownInsideSnapshotAllows(t *testing.T) {
 }
 
 func TestDecidePermission_UnknownOutsideSnapshotDenies(t *testing.T) {
-	d := decidePermission(PendingPermission{
+	d := DecidePermission(PendingPermission{
 		Permission: "wholeNewKind",
 		Patterns:   []string{"/elsewhere/x"},
 	}, snapshotDir)
@@ -97,7 +97,7 @@ func TestDecidePermission_UnknownOutsideSnapshotDenies(t *testing.T) {
 func TestDecidePermission_PermissionFallsBackToType(t *testing.T) {
 	// Older OpenCode releases don't fill Permission; only Type. We must
 	// still use that to make a decision.
-	d := decidePermission(PendingPermission{Type: "read"}, snapshotDir)
+	d := DecidePermission(PendingPermission{Type: "read"}, snapshotDir)
 	if d.Response != "allow" {
 		t.Fatalf("Type=read should still allow, got %q", d.Response)
 	}
@@ -107,7 +107,7 @@ func TestDecidePermission_PermissionFallsBackToType(t *testing.T) {
 // permission whose pattern is inside the snapshot, instead of denying it.
 func TestWatchdogAllowsExternalDirectoryInSnapshot(t *testing.T) {
 	api := &fakePauseAPI{}
-	wd := newWatchdog(api, snapshotDir, 10*time.Millisecond)
+	wd := NewWatchdog(api, snapshotDir, 10*time.Millisecond)
 	wd.Track("s1")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -136,7 +136,7 @@ func TestWatchdogAllowsExternalDirectoryInSnapshot(t *testing.T) {
 // the watchdog to send dozens of duplicate responses.
 func TestWatchdogDoesNotRepeatResponses(t *testing.T) {
 	api := &fakePauseAPI{}
-	wd := newWatchdog(api, snapshotDir, 10*time.Millisecond)
+	wd := NewWatchdog(api, snapshotDir, 10*time.Millisecond)
 	wd.Track("s1")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

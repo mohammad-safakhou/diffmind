@@ -1,4 +1,4 @@
-package pipeline
+package discovery
 
 import (
 	"testing"
@@ -20,7 +20,7 @@ func TestInferConfigDBPlatform(t *testing.T) {
 	idx := &astpkg.ProjectIndex{Configs: map[string]*astpkg.ConfigFile{
 		"application.yml": cfg("application.yml", "spring.datasource.url", "jdbc:postgresql://db:5432/ats"),
 	}}
-	if got := inferConfigDBPlatform(idx); got != "postgres" {
+	if got := InferConfigDBPlatform(idx); got != "postgres" {
 		t.Errorf("want postgres, got %q", got)
 	}
 	// Two distinct platforms -> ambiguous -> "".
@@ -28,11 +28,11 @@ func TestInferConfigDBPlatform(t *testing.T) {
 		"a.yml": cfg("a.yml", "x", "jdbc:postgresql://h/d"),
 		"b.yml": cfg("b.yml", "y", "jdbc:mysql://h/d"),
 	}}
-	if got := inferConfigDBPlatform(idx2); got != "" {
+	if got := InferConfigDBPlatform(idx2); got != "" {
 		t.Errorf("ambiguous should be empty, got %q", got)
 	}
 	// No datasource -> "".
-	if got := inferConfigDBPlatform(&astpkg.ProjectIndex{}); got != "" {
+	if got := InferConfigDBPlatform(&astpkg.ProjectIndex{}); got != "" {
 		t.Errorf("none should be empty, got %q", got)
 	}
 }
@@ -46,7 +46,7 @@ func TestStampInferredDBPlatform(t *testing.T) {
 		{BaseEntity: model.BaseEntity{Type: "db_operation", Name: "read events", Platform: "athena"}},   // specific -> untouched
 		{BaseEntity: model.BaseEntity{Type: "outbound_http", Name: "GET /x", Platform: "http"}},         // non-db -> untouched
 	}
-	stampInferredDBPlatform(idx, deps)
+	StampInferredDBPlatform(idx, deps)
 	if deps[0].Platform != "postgres" {
 		t.Errorf("generic db op should be stamped postgres, got %q", deps[0].Platform)
 	}
