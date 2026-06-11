@@ -62,7 +62,7 @@ All emitted entries include source locations, bounded evidence snippets, and det
 - Precision-first: uncertain findings go to `unresolved/`.
 - Main artifacts require source-backed evidence.
 - Connections include normalised condition objects (`if_guard`, `loop`, `try_block`, etc.) and per-hop call paths with file:line.
-- Accuracy is measured, not assumed: `internal/eval` scores artifacts against hand-labeled fixtures (`testdata/eval/`) with per-objective precision/recall/F1, matching on `reconcile.SemanticKey(Loose)` so phrasing variance (orders/order, SELECT/read) does not count as a miss. Items the deterministic floor cannot recover are labeled `deterministic:false` and excluded from cheap-mode scoring.
+- Accuracy is measured, not assumed: `internal/eval` scores artifacts against hand-labeled fixtures (`testdata/eval/`) with per-objective precision/recall/F1, matching on `entitykey.Semantic(Loose)` so phrasing variance (orders/order, SELECT/read) does not count as a miss. Items the deterministic floor cannot recover are labeled `deterministic:false` and excluded from cheap-mode scoring.
 
 ## Performance Model
 - Fresh OpenCode sessions per prompt by default to avoid context-growth costs.

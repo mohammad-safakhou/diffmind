@@ -197,8 +197,8 @@ Longer-term (product):
   `internal/entitykey/` — domain contracts, LLM runtime, persisted checkpoints,
   and canonical identities. See `docs/ARCHITECTURE.md`.
 - `internal/ast/` — tree-sitter engine; `framework/` — per-framework detectors.
-- `internal/reconcile/` — final dedup / sort / orphan-drop; exports
-  `SemanticKey`/`SemanticKeyLoose` (the eval matcher's identity).
+- `internal/stage/reconcile/` — final deduplication, normalization, sorting,
+  and orphan filtering. `internal/entitykey/` owns the identity reused by eval.
 - `internal/eval/` — golden-set accuracy harness; fixtures + label format under
   `testdata/eval/` (see its `README.md`).
 - `internal/ui/` — dashboard server + SPA (`web/`).
@@ -215,7 +215,7 @@ Longer-term (product):
    labeled fixtures (`testdata/eval/`) — a regression in any deterministic stage
    drops a fixture's F1. Add/extend a fixture when you touch a detector or ORM
    deriver. To grade a full LLM run, `diffmind eval --mode score-run --run <id>
-   --fixture <dir>`. The matcher keys on `reconcile.SemanticKey(Loose)`, so it
+   --fixture <dir>`. The matcher keys on `entitykey.Semantic(Loose)`, so it
    judges "correct" exactly as the pipeline judges "duplicate".
 2. **Real-run diff (behavioral).** Run a real extraction (see README) and compare
    artifacts + per-objective counts against a prior run in `~/.diffmind/runs/` —

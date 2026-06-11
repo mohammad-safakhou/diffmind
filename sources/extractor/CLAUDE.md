@@ -58,8 +58,8 @@ uses, so "correct" is judged exactly as the pipeline judges "duplicate". See
 - `internal/runstate/` — checkpoints, failures, and backward-compatible readers.
 - `internal/entitykey/` — canonical identity and normalization used by reconcile and eval.
 - `internal/ast/` + `internal/ast/framework/` — tree-sitter engine + framework detectors.
-- `internal/stage/reconcile/` + `internal/reconcile/` — final-stage contract and
-  named deduplication, sorting, and orphan policies.
+- `internal/stage/reconcile/` — final-stage contract plus named deduplication,
+  sorting, normalization, and orphan policies.
 - `internal/eval/` — golden-set accuracy harness (label loader, identity keying,
   P/R/F1 scorer, cheap + score-run modes). Fixtures under `testdata/eval/`.
 - `internal/ui/` — dashboard (Go server + SPA under `web/`).

@@ -47,7 +47,7 @@ tradeoff is visible.
 
 Today: `internal/eval/` is well-built — `identityKey` (`identity.go:18`) already
 keys **every** objective type and connections (`score.go:186-214`), cheap mode
-**does** score connections, and matching reuses `reconcile.SemanticKeyLoose` so
+**does** score connections, and matching reuses `entitykey.SemanticLoose` so
 "correct" == "duplicate". The gap is **not** matcher code — it's fixtures,
 labels, and missing measurement modes.
 

@@ -100,7 +100,7 @@ func TestDataNameCanonicalized(t *testing.T) {
 func TestNormalizeQueueDest(t *testing.T) {
 	cases := map[string]string{
 		"foo-sqs":          "foo-sqs",
-		"foo-sqs-consumer":  "foo-sqs",
+		"foo-sqs-consumer": "foo-sqs",
 		"Foo_LISTENER":     "foo",
 		"bar-queue":        "bar-queue", // -queue is part of the real name, not stripped
 	}
