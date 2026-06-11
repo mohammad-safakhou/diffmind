@@ -11,7 +11,6 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
-	"github.com/mohammad-safakhou/diffmind/internal/runstate"
 	connectionstage "github.com/mohammad-safakhou/diffmind/internal/stage/connections"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
@@ -649,24 +648,4 @@ func mergeDeterministicDuplicate(llm, det llmEntity) llmEntity {
 		}
 	}
 	return out
-}
-
-func (o *orchestrator) detailCheckpointForSeed(j detailJob) (runstate.DetailCheckpointEntry, bool) {
-	base, ur := ToBase(o.repoPath, j.Objective, j.Seed, o.cfg.Quality.MinConfidence)
-	if ur != nil {
-		return runstate.DetailCheckpointEntry{}, false
-	}
-	entry := runstate.DetailCheckpointEntry{
-		Key:         runstate.DetailEntityKey(j.Objective.ID, j.Seed.Name),
-		ObjectiveID: j.Objective.ID,
-		SeedName:    j.Seed.Name,
-	}
-	if j.Objective.Kind == model.KindExposure {
-		exp := model.Exposure{BaseEntity: base}
-		entry.Exposure = &exp
-	} else {
-		dep := model.Dependency{BaseEntity: base}
-		entry.Dependency = &dep
-	}
-	return entry, true
 }
