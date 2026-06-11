@@ -113,18 +113,31 @@ var (
 
 // config_resolve.go
 var (
-	ResolveResourceName     = discoverystage.ResolveResourceName
-	IsPlaceholder           = discoverystage.IsPlaceholder
-	SplitPlaceholder        = discoverystage.SplitPlaceholder
-	ResolvePlaceholder      = discoverystage.ResolvePlaceholder
-	ConfigValue             = discoverystage.ConfigValue
-	TrailingResourceSegment = discoverystage.TrailingResourceSegment
-	KeySegmentName          = discoverystage.KeySegmentName
-	buildObjectiveHints     = discoverystage.BuildObjectiveHints
-	planDiscoveryShards     = discoverystage.PlanShards
-	mergeShardEntities      = discoverystage.MergeShardEntities
-	unionLocations          = discoverystage.UnionLocations
-	distinctDirs            = discoverystage.DistinctDirs
+	ResolveResourceName        = discoverystage.ResolveResourceName
+	IsPlaceholder              = discoverystage.IsPlaceholder
+	SplitPlaceholder           = discoverystage.SplitPlaceholder
+	ResolvePlaceholder         = discoverystage.ResolvePlaceholder
+	ConfigValue                = discoverystage.ConfigValue
+	TrailingResourceSegment    = discoverystage.TrailingResourceSegment
+	KeySegmentName             = discoverystage.KeySegmentName
+	buildObjectiveHints        = discoverystage.BuildObjectiveHints
+	planDiscoveryShards        = discoverystage.PlanShards
+	mergeShardEntities         = discoverystage.MergeShardEntities
+	unionLocations             = discoverystage.UnionLocations
+	distinctDirs               = discoverystage.DistinctDirs
+	deterministicCommandExec   = discoverystage.DeterministicCommandExec
+	deterministicQueuePublish  = discoverystage.DeterministicQueuePublish
+	deterministicOutboundRPC   = discoverystage.DeterministicOutboundRPC
+	deterministicStreamConsume = discoverystage.DeterministicStreamConsume
+	deterministicDBOperations  = discoverystage.DeterministicDBOperations
+	inferConfigDBPlatform      = discoverystage.InferConfigDBPlatform
+	stampInferredDBPlatform    = discoverystage.StampInferredDBPlatform
+	entityFromFrameworkBinding = discoverystage.EntityFromFrameworkBinding
+	mergeDiscoveryResults      = discoverystage.MergeDiscoveryResults
+	matchGRPCStubCall          = discoverystage.MatchGRPCStubCall
+	matchCommandExec           = discoverystage.MatchCommandExec
+	matchQueuePublish          = discoverystage.MatchQueuePublish
+	deterministicByObjective   = discoverystage.DeterministicByObjective
 )
 
 type discoveryShard = discoverystage.Shard

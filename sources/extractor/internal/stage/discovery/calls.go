@@ -1,4 +1,4 @@
-package pipeline
+package discovery
 
 import (
 	"fmt"
@@ -13,16 +13,16 @@ import (
 // set of (receiver, callee) patterns tied to a known library/template, so a
 // generic ".send()" or ".exec()" is never mistaken for one (invariant #6).
 
-// deterministicCommandExec finds process-execution dependencies (Runtime.exec,
+// DeterministicCommandExec finds process-execution dependencies (Runtime.exec,
 // ProcessBuilder, Go os/exec.Command, Python subprocess/os.system).
-func deterministicCommandExec(idx *astpkg.ProjectIndex) []llmEntity {
+func DeterministicCommandExec(idx *astpkg.ProjectIndex) []llmEntity {
 	if idx == nil {
 		return nil
 	}
 	seen := map[string]struct{}{}
 	var out []llmEntity
 	forEachCall(idx, func(cs astpkg.CallSite) {
-		if !matchCommandExec(cs) {
+		if !MatchCommandExec(cs) {
 			return
 		}
 		cmd := firstLiteralArg(cs.Arguments)
@@ -59,19 +59,19 @@ func deterministicCommandExec(idx *astpkg.ProjectIndex) []llmEntity {
 	return out
 }
 
-// deterministicQueuePublish finds message-publish dependencies through known
+// DeterministicQueuePublish finds message-publish dependencies through known
 // publisher templates/clients (Spring Sqs/Sns/Kafka/Rabbit templates,
 // StreamBridge, AWS SDK SQS/SNS clients). Only emitted when the destination is
 // resolvable from a literal argument (or a ${...} config placeholder), so the
 // emitted name is a real queue/topic, never a guess.
-func deterministicQueuePublish(idx *astpkg.ProjectIndex) []llmEntity {
+func DeterministicQueuePublish(idx *astpkg.ProjectIndex) []llmEntity {
 	if idx == nil {
 		return nil
 	}
 	seen := map[string]struct{}{}
 	var out []llmEntity
 	forEachCall(idx, func(cs astpkg.CallSite) {
-		platform, ok := matchQueuePublish(cs)
+		platform, ok := MatchQueuePublish(cs)
 		if !ok {
 			return
 		}
@@ -106,17 +106,17 @@ func deterministicQueuePublish(idx *astpkg.ProjectIndex) []llmEntity {
 	return out
 }
 
-// deterministicOutboundRPC finds gRPC client calls through generated blocking/
+// DeterministicOutboundRPC finds gRPC client calls through generated blocking/
 // future stubs (e.g. fooServiceBlockingStub.getThing(req)). Matched on the
 // generated stub naming convention, which is gRPC-specific (never a plain var).
-func deterministicOutboundRPC(idx *astpkg.ProjectIndex) []llmEntity {
+func DeterministicOutboundRPC(idx *astpkg.ProjectIndex) []llmEntity {
 	if idx == nil {
 		return nil
 	}
 	seen := map[string]struct{}{}
 	var out []llmEntity
 	forEachCall(idx, func(cs astpkg.CallSite) {
-		service, method, ok := matchGRPCStubCall(cs)
+		service, method, ok := MatchGRPCStubCall(cs)
 		if !ok {
 			return
 		}
@@ -148,10 +148,10 @@ func deterministicOutboundRPC(idx *astpkg.ProjectIndex) []llmEntity {
 	return out
 }
 
-// deterministicStreamConsume finds Kafka Streams sources (streamsBuilder.stream
+// DeterministicStreamConsume finds Kafka Streams sources (streamsBuilder.stream
 // ("topic")). Gated on a StreamsBuilder receiver so the ubiquitous Java
 // Collection.stream() never matches, and only when the topic is a literal.
-func deterministicStreamConsume(idx *astpkg.ProjectIndex) []llmEntity {
+func DeterministicStreamConsume(idx *astpkg.ProjectIndex) []llmEntity {
 	if idx == nil {
 		return nil
 	}
@@ -192,10 +192,10 @@ func deterministicStreamConsume(idx *astpkg.ProjectIndex) []llmEntity {
 	return out
 }
 
-// matchGRPCStubCall returns (service, method) when the call is on a generated
+// MatchGRPCStubCall returns (service, method) when the call is on a generated
 // gRPC blocking/future stub. The "BlockingStub"/"FutureStub" naming is specific
 // to gRPC codegen, so this stays high-precision.
-func matchGRPCStubCall(cs astpkg.CallSite) (service, method string, ok bool) {
+func MatchGRPCStubCall(cs astpkg.CallSite) (service, method string, ok bool) {
 	r, m := splitCall(cs)
 	rl := strings.ToLower(r)
 	if !strings.Contains(rl, "blockingstub") && !strings.Contains(rl, "futurestub") {
@@ -219,10 +219,10 @@ func deriveGRPCService(stub string) string {
 	return s
 }
 
-// matchCommandExec reports whether a call site is a process execution, by a
+// MatchCommandExec reports whether a call site is a process execution, by a
 // curated (receiver, callee) set. High precision: the receiver must tie to a
 // known exec API, never a bare ".exec"/".run".
-func matchCommandExec(cs astpkg.CallSite) bool {
+func MatchCommandExec(cs astpkg.CallSite) bool {
 	rr, cc := splitCall(cs)
 	r := strings.ToLower(rr)
 	c := strings.ToLower(cc)
@@ -241,9 +241,9 @@ func matchCommandExec(cs astpkg.CallSite) bool {
 	return false
 }
 
-// matchQueuePublish reports the messaging platform when a call site is a publish
+// MatchQueuePublish reports the messaging platform when a call site is a publish
 // through a known template/client, else ("", false).
-func matchQueuePublish(cs astpkg.CallSite) (string, bool) {
+func MatchQueuePublish(cs astpkg.CallSite) (string, bool) {
 	rr, cc := splitCall(cs)
 	r := strings.ToLower(rr)
 	c := strings.ToLower(cc)
