@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/mohammad-safakhou/diffmind/internal/agents"
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
+	"github.com/mohammad-safakhou/diffmind/internal/pipeline"
 )
 
 // RunCheap scores the deterministic floor of one fixture against its label.
@@ -24,7 +24,7 @@ func RunCheap(ctx context.Context, fixtureDir string, cfg config.Config) (Report
 	if err != nil {
 		return Report{}, fmt.Errorf("ast build %s: %w", repo, err)
 	}
-	res := agents.DeterministicFloor(ctx, idx, repo, cfg)
+	res := pipeline.DeterministicFloor(ctx, idx, repo, cfg)
 	ext := Extracted{
 		Exposures:    res.Exposures,
 		Dependencies: res.Dependencies,

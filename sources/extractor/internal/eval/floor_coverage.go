@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/mohammad-safakhou/diffmind/internal/agents"
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
+	"github.com/mohammad-safakhou/diffmind/internal/pipeline"
 )
 
 // floor_coverage.go answers "what fraction of what the full LLM run found could
@@ -22,12 +22,12 @@ import (
 // FloorCoverage is the floor↔LLM overlap for one objective.
 type FloorCoverage struct {
 	Objective  string  `json:"objective"`
-	FloorKeys  int     `json:"floor_keys"`         // distinct identity keys the floor produced
-	LLMKeys    int     `json:"llm_keys"`           // distinct identity keys the LLM run produced
-	Covered    int     `json:"covered"`            // |floor ∩ llm|
-	FloorOnly  int     `json:"floor_only"`         // floor keys absent from the LLM run (floor FP or LLM miss)
-	Coverage   float64 `json:"coverage"`           // Covered/LLMKeys when Applicable, else 0
-	Applicable bool    `json:"applicable"`         // false when LLMKeys == 0 (coverage is N/A, never 1.0)
+	FloorKeys  int     `json:"floor_keys"` // distinct identity keys the floor produced
+	LLMKeys    int     `json:"llm_keys"`   // distinct identity keys the LLM run produced
+	Covered    int     `json:"covered"`    // |floor ∩ llm|
+	FloorOnly  int     `json:"floor_only"` // floor keys absent from the LLM run (floor FP or LLM miss)
+	Coverage   float64 `json:"coverage"`   // Covered/LLMKeys when Applicable, else 0
+	Applicable bool    `json:"applicable"` // false when LLMKeys == 0 (coverage is N/A, never 1.0)
 }
 
 // FloorCoverageReport is the per-objective coverage of one repo's floor against
@@ -88,7 +88,7 @@ func RunFloorCoverage(ctx context.Context, repo, runDir string, cfg config.Confi
 	if err != nil {
 		return FloorCoverageReport{}, fmt.Errorf("ast build %s: %w", repo, err)
 	}
-	res := agents.DeterministicFloor(ctx, idx, repo, cfg)
+	res := pipeline.DeterministicFloor(ctx, idx, repo, cfg)
 	floor := Extracted{Exposures: res.Exposures, Dependencies: res.Dependencies, Connections: res.Connections}
 	llm, err := LoadRunArtifacts(runDir)
 	if err != nil {
