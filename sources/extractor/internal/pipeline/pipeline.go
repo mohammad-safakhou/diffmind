@@ -3,7 +3,6 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -54,9 +53,11 @@ type orchestrator struct {
 	// every promptAgent call's final /session/{id} read. Updated
 	// from the orchestrator's main goroutine after each prompt
 	// completes; no synchronisation needed.
-	tokenAgg  llmrun.TokenTotals
-	sessionMu sync.Mutex
-	sessions  *llmrun.SessionManager
+	tokenAgg   llmrun.TokenTotals
+	sessionMu  sync.Mutex
+	sessions   *llmrun.SessionManager
+	executorMu sync.Mutex
+	llm        *llmrun.Executor
 
 	// astIndex is set by the ast_index stage and holds the tree-sitter
 	// project analysis used by the connections stage and discovery hints.
@@ -790,6 +791,30 @@ func (o *orchestrator) sessionManager() *llmrun.SessionManager {
 	return o.sessions
 }
 
+func (o *orchestrator) executor() *llmrun.Executor {
+	o.executorMu.Lock()
+	defer o.executorMu.Unlock()
+	if o.llm == nil {
+		o.llm = llmrun.NewExecutor(llmrun.ExecutorOptions{
+			Client:     o.oc,
+			Verbose:    o.verbose,
+			Tokens:     o.tokens,
+			Sessions:   o.sessionManager(),
+			Captures:   llmrun.CaptureStore{Dir: o.captureDir},
+			Totals:     &o.tokenAgg,
+			Sink:       o.sink,
+			Directory:  o.sessionDir,
+			RetryCount: o.cfg.Runtime.PromptRetryCount,
+			Liveness: llmrun.LivenessConfig{
+				IdleTimeout:  time.Duration(o.cfg.Runtime.IdleTimeoutSec) * time.Second,
+				MaxCall:      time.Duration(o.cfg.Runtime.MaxCallSeconds) * time.Second,
+				PollInterval: time.Duration(o.cfg.Runtime.LivenessPollSec) * time.Second,
+			},
+		})
+	}
+	return o.llm
+}
+
 // buildFailure builds the partial result we hand back to internal/app when a
 // stage fails. It preserves the snapshot path and the state captured up to (but
 // not including) the failing stage so `diffmind retry` has a consistent base to
@@ -894,274 +919,8 @@ func (o *orchestrator) PathMapper() *PathMapper {
 	return NewPathMapper(o.snap.Path, o.snap.SourcePath)
 }
 
-// promptAgent is the single point where every stage talks to the OpenCode
-// server. It owns session lifecycle (shared vs per-call) and logs role+size
-// metrics so the run is observable. On prompt failure (timeout, context
-// cancel, or server error) it best-effort aborts the session so the server
-// is not left holding a paused agent.
-//
-// promptAgent retries only liveness-stuck prompts. Auth/schema/quota/provider
-// failures still propagate immediately because re-issuing those calls burns
-// money and masks the real cause. RetryCount is the number of retries AFTER
-// the initial attempt.
 func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, schema map[string]any) (map[string]any, error) {
-	retries := o.cfg.Runtime.PromptRetryCount
-	if retries < 0 {
-		retries = 0
-	}
-	attempts := retries + 1
-	var lastErr error
-	for attempt := 1; attempt <= attempts; attempt++ {
-		payload, err := o.promptAgentOnce(ctx, role, prompt, schema, attempt, attempts)
-		if err == nil {
-			return payload, nil
-		}
-		lastErr = err
-		if !errors.Is(err, ErrStuck) || attempt == attempts || ctx.Err() != nil {
-			return nil, err
-		}
-
-		o.sessionManager().ResetAfterStuck()
-		o.emit(events.Event{
-			Kind: events.KindLog, JobID: role,
-			Message: "prompt stuck; retrying",
-			Payload: map[string]any{
-				"attempt":      attempt,
-				"next_attempt": attempt + 1,
-				"max_attempts": attempts,
-				"error":        err.Error(),
-			},
-		})
-		util.Warn("agents.agent", "prompt stuck; retrying", map[string]any{
-			"role": role, "attempt": attempt, "max_attempts": attempts, "error": err.Error(),
-		})
-	}
-	return nil, lastErr
-}
-
-// promptAgentOnce emits an llm_call_started/llm_call_completed pair around
-// the PromptStructured call and persists the prompt + response under
-// captureDir/<role>.{prompt,response}.{txt,json,raw} so the dashboard
-// can show the full payloads on demand. When the structured slot is
-// missing from the OpenCode response (some providers don't honor
-// json_schema) we fall back to a plain-text prompt and JSON-scrape the
-// reply.
-func (o *orchestrator) promptAgentOnce(ctx context.Context, role, prompt string, schema map[string]any, attempt, attempts int) (map[string]any, error) {
-	sessionID, cleanupFn, err := o.sessionManager().Acquire(ctx, role)
-	if err != nil {
-		return nil, err
-	}
-	o.emit(events.Event{
-		Kind: events.KindLLMCallStarted, JobID: role, Status: events.StatusRunning,
-		Payload: map[string]any{
-			"session_id":   sessionID,
-			"attempt":      attempt,
-			"max_attempts": attempts,
-			"prompt_len":   len(prompt),
-			"snapshot_dir": o.sessionDir,
-		},
-	})
-	o.persistPrompt(role, prompt)
-	util.Trace("agents.agent", "prompt start", map[string]any{"role": role, "session_id": sessionID, "prompt_len": len(prompt)})
-	started := time.Now()
-
-	stopWatch, watchDone := o.startLivenessWatch(ctx, role, sessionID)
-
-	var payload map[string]any
-	var rawBody []byte
-	var textBody string
-	if o.verbose != nil {
-		payload, rawBody, textBody, err = o.verbose.PromptStructuredVerboseRaw(ctx, sessionID, o.sessionDir, prompt, schema)
-	} else {
-		payload, err = o.oc.PromptStructured(ctx, sessionID, o.sessionDir, prompt, schema)
-	}
-
-	// Stop the watchdog and collect its verdict synchronously.
-	stopWatch()
-	report := <-watchDone
-	err = o.relabelIfStuck(err, report, role, sessionID, len(prompt))
-
-	// Always persist whatever we got — successful payload, raw bytes, or the
-	// parsed-text remnants. Gold for diagnosing why a run produced nothing.
-	o.persistResponseBundle(role, payload, rawBody, textBody)
-
-	if err != nil {
-		return o.handlePromptError(ctx, role, sessionID, prompt, schema, err, started, rawBody, textBody, attempt, attempts, cleanupFn)
-	}
-	o.emitPromptSuccess(ctx, role, sessionID, payload, len(prompt), started, attempt, attempts, cleanupFn)
-	return payload, nil
-}
-
-// startLivenessWatch wires the liveness watchdog around an in-flight prompt
-// POST: it polls OpenCode and, if the agent stops making progress (and is not
-// waiting on a permission), aborts the session so the POST returns a
-// cancellation error we re-label as ErrStuck. It only runs against the real
-// *opencode.Client (gated on o.verbose, like the pause-bridge); test fakes
-// return synchronously and never trigger liveness. The returned channel is
-// always drainable — a non-watchdogged call receives a nil report — so the
-// caller can unconditionally `<-watchDone`.
-func (o *orchestrator) startLivenessWatch(ctx context.Context, role, sessionID string) (context.CancelFunc, chan *livenessReport) {
-	watchCtx, stopWatch := context.WithCancel(ctx)
-	watchDone := make(chan *livenessReport, 1)
-	watchStarted := false
-	if o.verbose != nil {
-		if client, ok := o.oc.(livenessClient); ok {
-			if ab, ok := o.oc.(livenessAborter); ok {
-				probe := newOpenCodeLivenessProbe(client, sessionID, o.sessionDir)
-				abort := newOpenCodeAborter(ab, sessionID, o.sessionDir)
-				cfg := livenessConfig{
-					IdleTimeout:  time.Duration(o.cfg.Runtime.IdleTimeoutSec) * time.Second,
-					MaxCall:      time.Duration(o.cfg.Runtime.MaxCallSeconds) * time.Second,
-					PollInterval: time.Duration(o.cfg.Runtime.LivenessPollSec) * time.Second,
-				}
-				go func() { watchDone <- runLiveness(watchCtx, cfg, probe, abort, role, o.sink) }()
-				watchStarted = true
-			}
-		}
-	}
-	if !watchStarted {
-		watchDone <- nil
-	}
-	return stopWatch, watchDone
-}
-
-// relabelIfStuck rewrites the prompt error to ErrStuck when the liveness
-// watchdog aborted the call, so the failure report shows class=stuck instead
-// of cancelled/timeout. Returns err unchanged when there was no abort.
-func (o *orchestrator) relabelIfStuck(err error, report *livenessReport, role, sessionID string, promptLen int) error {
-	if report == nil || !report.Aborted {
-		return err
-	}
-	stuckCause := report.Reason
-	util.Warn("agents.agent", "prompt declared stuck by liveness watchdog", map[string]any{
-		"role":         role,
-		"session_id":   sessionID,
-		"prompt_len":   promptLen,
-		"reason":       stuckCause,
-		"last_tool":    report.LastTool,
-		"original_err": ErrString(err),
-	})
-	return NewStuckError(stuckCause)
-}
-
-// handlePromptError runs the failure path: free-text fallback (for providers
-// that drop the json_schema slot), best-effort session abort, cleanup, and the
-// failed-call event. Returns (fallback, nil) when the fallback recovered a
-// payload, else (nil, wrapped error).
-func (o *orchestrator) handlePromptError(ctx context.Context, role, sessionID, prompt string, schema map[string]any, err error, started time.Time, rawBody []byte, textBody string, attempt, attempts int, cleanupFn func()) (map[string]any, error) {
-	// Free-text fallback: many providers either don't honor the json_schema
-	// slot or strip it before returning. If the structured slot was empty
-	// (the canonical "no structured payload" error) re-issue the same
-	// logical request as plain text with a strict "respond ONLY with valid
-	// JSON" footer, then scrape the JSON out.
-	if llmrun.IsNoStructuredPayload(err) {
-		fallback, fbErr := o.fallbackPromptText(ctx, role, sessionID, prompt, schema)
-		if fbErr == nil && fallback != nil {
-			dur := time.Since(started)
-			o.persistResponseBundle(role, fallback, rawBody, textBody)
-			o.emit(events.Event{
-				Kind: events.KindLLMCallCompleted, JobID: role, Status: events.StatusSuccess,
-				Message: "structured slot empty; recovered via free-text fallback",
-				Payload: map[string]any{
-					"session_id":    sessionID,
-					"attempt":       attempt,
-					"max_attempts":  attempts,
-					"duration_ms":   dur.Milliseconds(),
-					"prompt_len":    len(prompt),
-					"response_keys": llmrun.MapKeys(fallback),
-					"fallback":      "text",
-				},
-			})
-			if cleanupFn != nil {
-				cleanupFn()
-			}
-			return fallback, nil
-		}
-		if fbErr != nil {
-			err = fmt.Errorf("%w; text fallback also failed: %v", err, fbErr)
-		}
-	}
-
-	// Best-effort abort: a timed-out/cancelled call may leave the
-	// server-side session running (or paused on a permission request).
-	// Aborting frees server resources and lets the watchdog reclaim it.
-	o.sessionManager().Abort(role, sessionID)
-	if cleanupFn != nil {
-		cleanupFn()
-	}
-	o.emit(events.Event{
-		Kind: events.KindLLMCallCompleted, JobID: role, Status: events.StatusFailed,
-		Message: err.Error(),
-		Payload: map[string]any{
-			"session_id":   sessionID,
-			"attempt":      attempt,
-			"max_attempts": attempts,
-			"duration_ms":  time.Since(started).Milliseconds(),
-			"raw_preview":  llmrun.PreviewBytes(rawBody, 360),
-			"text_preview": llmrun.PreviewString(textBody, 360),
-		},
-	})
-	return nil, fmt.Errorf("%s prompt: %w", role, err)
-}
-
-// emitPromptSuccess records token totals and emits the successful-call event.
-// Token totals are read BEFORE cleanupFn() — cleanup may delete the session
-// server-side, after which /session/{id} would 404. The read is bounded to 3s.
-func (o *orchestrator) emitPromptSuccess(ctx context.Context, role, sessionID string, payload map[string]any, promptLen int, started time.Time, attempt, attempts int, cleanupFn func()) {
-	tokens := o.recordPromptTokens(ctx, sessionID, role)
-	if cleanupFn != nil {
-		cleanupFn()
-	}
-	payloadOut := map[string]any{
-		"session_id":    sessionID,
-		"attempt":       attempt,
-		"max_attempts":  attempts,
-		"duration_ms":   time.Since(started).Milliseconds(),
-		"prompt_len":    promptLen,
-		"response_keys": llmrun.MapKeys(payload),
-	}
-	if tokens != nil {
-		payloadOut["tokens"] = map[string]any{
-			"input":       tokens.Input,
-			"output":      tokens.Output,
-			"reasoning":   tokens.Reasoning,
-			"cache_read":  tokens.CacheRead,
-			"cache_write": tokens.CacheWrite,
-			"total":       tokens.Total(),
-			"cost":        tokens.Cost,
-		}
-	}
-	o.emit(events.Event{
-		Kind: events.KindLLMCallCompleted, JobID: role, Status: events.StatusSuccess,
-		Payload: payloadOut,
-	})
-	util.Trace("agents.agent", "prompt ok", map[string]any{"role": role, "session_id": sessionID})
-}
-
-// fallbackPromptText re-asks the same prompt without json_schema constraints
-// and parses JSON out of the free-text reply. The model is given an
-// explicit suffix demanding pure JSON. Returns (parsed, nil) on success.
-func (o *orchestrator) fallbackPromptText(ctx context.Context, role, sessionID, prompt string, schema map[string]any) (map[string]any, error) {
-	textPrompt := prompt + "\n\nIMPORTANT FORMAT REQUIREMENT:\n" +
-		"Reply with a SINGLE JSON object that matches the structure described above.\n" +
-		"Do NOT include any explanatory prose before or after the JSON.\n" +
-		"Do NOT wrap the JSON in markdown code fences.\n" +
-		"If you have nothing to report, reply with: {\"items\": []}\n"
-
-	text, err := o.oc.PromptText(ctx, sessionID, o.sessionDir, textPrompt)
-	if err != nil {
-		return nil, err
-	}
-	parsed := llmrun.ScrapeJSONObject(text)
-	if parsed == nil {
-		return nil, fmt.Errorf("free-text reply did not contain a JSON object (preview=%s)", llmrun.PreviewString(text, 240))
-	}
-	_ = schema // schema is unused in fallback parsing; kept for parity.
-	return parsed, nil
-}
-
-func (o *orchestrator) persistPrompt(role, prompt string) {
-	llmrun.CaptureStore{Dir: o.captureDir}.Prompt(role, prompt)
+	return o.executor().Prompt(ctx, role, prompt, schema)
 }
 
 // captureFilePath returns the absolute path where a prompt/response
@@ -1171,25 +930,6 @@ func (o *orchestrator) persistPrompt(role, prompt string) {
 // returned even before the file lands on disk.
 func (o *orchestrator) captureFilePath(jobID, kind, ext string) string {
 	return (llmrun.CaptureStore{Dir: o.captureDir}).Path(jobID, kind, ext)
-}
-
-func (o *orchestrator) persistResponse(role string, payload map[string]any) {
-	o.persistResponseBundle(role, payload, nil, "")
-}
-
-// persistResponseBundle writes any combination of (parsed payload, raw HTTP
-// body, free-text reply) we managed to capture for a single LLM call.
-// Each artifact lands in <captureDir>/<role>.<suffix>:
-//   - .response.json — the parsed structured payload (success path)
-//   - .response.raw  — the entire HTTP body, used for debugging when
-//     structured parsing fails
-//   - .response.text — the concatenated text parts, useful when the
-//     provider returned prose instead of JSON
-//
-// All writes are best-effort; capture is a debugging aid and must never
-// take down a run.
-func (o *orchestrator) persistResponseBundle(role string, payload map[string]any, raw []byte, text string) {
-	llmrun.CaptureStore{Dir: o.captureDir}.Response(role, payload, raw, text)
 }
 
 // ----------------------------------------------------------------------------
