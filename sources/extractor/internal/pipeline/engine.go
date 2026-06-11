@@ -4,7 +4,6 @@ package pipeline
 import (
 	"context"
 
-	"github.com/mohammad-safakhou/diffmind/internal/agents"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/extraction"
@@ -26,7 +25,7 @@ func New(cfg config.Config, client llmrun.Client, sink events.Sink) *Engine {
 }
 
 func (e *Engine) Run(ctx context.Context, request extraction.Request) (extraction.Result, error) {
-	return agents.RunWith(ctx, e.config, request.RepoPath, e.client, agents.RunOptions{
+	return RunWith(ctx, e.config, request.RepoPath, e.client, RunOptions{
 		Sink:          e.sink,
 		CaptureDir:    request.CaptureDir,
 		RunDir:        request.RunDir,
