@@ -28,9 +28,8 @@ func fileExists(path string) bool {
 // stateDir is the subdirectory under runDir where each stage's
 // intermediate output is persisted on its way to the next stage. The
 // retry command reads these files to fast-forward to the failed stage
-// without re-running everything that already worked. The canonical
-// definition lives in core.StateDir; this alias keeps the
-// orchestrator-side call sites terse.
+// without re-running everything that already worked. The canonical definition
+// lives in runstate; this alias keeps orchestration call sites terse.
 const stateDir = runstate.StateDir
 
 // resumeState is the bundle returned by loadResumeState. The struct

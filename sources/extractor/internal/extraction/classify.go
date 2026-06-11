@@ -1,4 +1,4 @@
-package core
+package extraction
 
 import (
 	"fmt"
@@ -48,7 +48,7 @@ func NormalizeType(s string) string {
 	return s
 }
 
-func ForceObjectiveType(obj objectives.Objective, e *LLMEntity) bool {
+func ForceObjectiveType(obj objectives.Objective, e *Candidate) bool {
 	if e == nil {
 		return true
 	}
@@ -270,6 +270,6 @@ func ContainingName(name string) string {
 	return name
 }
 
-func SortLLMEntities(in []LLMEntity) {
+func SortLLMEntities(in []Candidate) {
 	sort.SliceStable(in, func(i, j int) bool { return in[i].Name < in[j].Name })
 }

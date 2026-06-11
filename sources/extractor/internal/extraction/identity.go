@@ -1,4 +1,4 @@
-package core
+package extraction
 
 // identity.go holds the shared identity / detail-derivation helpers used across
 // pipeline stages (discovery, reexamination, sharding). They are PURE free
@@ -7,6 +7,7 @@ package core
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/mohammad-safakhou/diffmind/internal/entitykey"
@@ -29,7 +30,7 @@ import (
 // {method, path}). The mutation is the cheap fix for the previous
 // reexamination flood: most LLM responses already encode the required
 // fields in the name, just not in the details object.
-func ShouldReexamine(obj objectives.Objective, e *LLMEntity, minConfidence float64) (string, string, bool) {
+func ShouldReexamine(obj objectives.Objective, e *Candidate, minConfidence float64) (string, string, bool) {
 	if strings.TrimSpace(e.Name) == "" || strings.TrimSpace(e.Type) == "" {
 		return "missing_name_or_type", "Candidate is missing name or type fields.", true
 	}
@@ -96,7 +97,7 @@ var HTTPMethods = map[string]struct{}{
 //
 // Mutations are conservative: we only fill fields that are clearly
 // implied by the name's syntax for that objective type.
-func DeriveDetailsFromName(objType string, e *LLMEntity) {
+func DeriveDetailsFromName(objType string, e *Candidate) {
 	if e == nil {
 		return
 	}
@@ -346,7 +347,7 @@ func HasDetailKey(details map[string]any, key string) bool {
 // objective's semantic key (method+path for routes, resource+operation for db
 // ops, ...), falling back to ShardEntityKey for objectives without a semantic
 // identity.
-func DiscoverySemanticKey(obj objectives.Objective, e LLMEntity) string {
+func DiscoverySemanticKey(obj objectives.Objective, e Candidate) string {
 	DeriveDetailsFromName(obj.Type, &e)
 	get := func(key string) string {
 		if e.Details == nil {
@@ -418,7 +419,7 @@ func NormalizePathForKey(path string) string {
 // IsCompleteDeterministicSeed reports whether a deterministic exposure seed is
 // complete enough to bypass re-examination (high-confidence, located, with all
 // required detail fields present or derivable from its name).
-func IsCompleteDeterministicSeed(obj objectives.Objective, e *LLMEntity) bool {
+func IsCompleteDeterministicSeed(obj objectives.Objective, e *Candidate) bool {
 	if e == nil {
 		return false
 	}
@@ -451,7 +452,7 @@ func IsCompleteDeterministicSeed(obj objectives.Objective, e *LLMEntity) bool {
 
 // HasDeterministicEvidence reports whether an entity carries a deterministic
 // evidence source or the "deterministic" tag.
-func HasDeterministicEvidence(e LLMEntity) bool {
+func HasDeterministicEvidence(e Candidate) bool {
 	for _, ev := range e.Evidence {
 		if strings.HasPrefix(strings.TrimSpace(ev.Source), "deterministic_") {
 			return true
@@ -467,11 +468,11 @@ func HasDeterministicEvidence(e LLMEntity) bool {
 
 // ShardEntityKey is the fallback identity for an entity without an
 // objective-specific semantic key: type|name|firstLocation.
-func ShardEntityKey(e LLMEntity) string {
+func ShardEntityKey(e Candidate) string {
 	file, line := "", 0
 	if len(e.Locations) > 0 {
 		file = e.Locations[0].File
 		line = e.Locations[0].StartLine
 	}
-	return strings.ToLower(e.Type) + "|" + strings.ToLower(e.Name) + "|" + file + ":" + Itoa(line)
+	return strings.ToLower(e.Type) + "|" + strings.ToLower(e.Name) + "|" + file + ":" + strconv.Itoa(line)
 }

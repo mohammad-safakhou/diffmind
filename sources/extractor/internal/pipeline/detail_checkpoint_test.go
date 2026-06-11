@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/mohammad-safakhou/diffmind/internal/agents/core"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
+	"github.com/mohammad-safakhou/diffmind/internal/runstate"
 )
 
 // REGRESSION (run 20260518T122739Z): when the detail stage failed
@@ -130,7 +130,7 @@ func TestDetailCheckpoint_WrittenOnSuccess(t *testing.T) {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		var entry core.DetailCheckpointEntry
+		var entry runstate.DetailCheckpointEntry
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			t.Errorf("malformed checkpoint line: %v", err)
 			continue
@@ -201,9 +201,9 @@ func TestDetailCheckpoint_RetrySkipsCompletedEntities(t *testing.T) {
 func TestAppendDetailEntity_AppendsMultipleRows(t *testing.T) {
 	runDir := t.TempDir()
 	o := &orchestrator{runDir: runDir}
-	o.store = &core.CheckpointStore{RunDir: runDir}
+	o.store = &runstate.CheckpointStore{RunDir: runDir}
 	for i := 0; i < 3; i++ {
-		o.store.AppendDetailEntity(core.DetailCheckpointEntry{
+		o.store.AppendDetailEntity(runstate.DetailCheckpointEntry{
 			Key:         "k" + string(rune('0'+i)),
 			ObjectiveID: "exposure.http_route",
 			SeedName:    "GET /x" + string(rune('0'+i)),
@@ -229,15 +229,15 @@ func TestLoadDetailCheckpoint_TornLastLine(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Write 2 valid lines + 1 truncated.
-	good1, _ := json.Marshal(core.DetailCheckpointEntry{Key: "a"})
-	good2, _ := json.Marshal(core.DetailCheckpointEntry{Key: "b"})
+	good1, _ := json.Marshal(runstate.DetailCheckpointEntry{Key: "a"})
+	good2, _ := json.Marshal(runstate.DetailCheckpointEntry{Key: "b"})
 	torn := `{"key":"c","obj`
 	content := string(good1) + "\n" + string(good2) + "\n" + torn + "\n"
 	if err := os.WriteFile(filepath.Join(stateDir, "detail_entities.jsonl"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	o := &orchestrator{runDir: runDir}
-	o.store = &core.CheckpointStore{RunDir: runDir}
+	o.store = &runstate.CheckpointStore{RunDir: runDir}
 	got := o.store.LoadDetailCheckpoint(stateDir)
 	if _, ok := got["a"]; !ok {
 		t.Errorf("missing valid entry 'a' (torn line confused the loader)")

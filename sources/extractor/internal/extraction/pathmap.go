@@ -1,4 +1,4 @@
-package core
+package extraction
 
 import (
 	"path/filepath"
@@ -51,7 +51,7 @@ func (m *PathMapper) MapFile(p string) string {
 }
 
 // applyToEntity rewrites all path-bearing fields on an llmEntity in place.
-func (m *PathMapper) ApplyToEntity(e *LLMEntity) {
+func (m *PathMapper) ApplyToEntity(e *Candidate) {
 	if e == nil || m == nil {
 		return
 	}
@@ -64,7 +64,7 @@ func (m *PathMapper) ApplyToEntity(e *LLMEntity) {
 }
 
 // applyToEntities is a convenience for slices of llmEntity.
-func (m *PathMapper) ApplyToEntities(es []LLMEntity) {
+func (m *PathMapper) ApplyToEntities(es []Candidate) {
 	for i := range es {
 		m.ApplyToEntity(&es[i])
 	}

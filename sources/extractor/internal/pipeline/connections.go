@@ -13,6 +13,7 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
+	connectionstage "github.com/mohammad-safakhou/diffmind/internal/stage/connections"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -33,47 +34,15 @@ func (o *orchestrator) runConnectionsBatch(
 	_ *repoFacts,
 	onResult func(),
 ) ([]model.Connection, []model.UnresolvedItem, error, string) {
-	if len(exposures) == 0 || len(dependencies) == 0 {
-		return nil, nil, nil, ""
-	}
-
-	// AST path (preferred)
-	if o.astIndex != nil && (len(o.astIndex.Symbols) > 0 || len(o.astIndex.Frameworks) > 0) {
-		conns, unresolved := runASTConnections(ctx, o.astIndex, exposures, dependencies,
-			o.cfg.Quality.MinConfidence, o.cfg.Runtime.Workers, onResult)
-		exposuresWithoutPaths := 0
-		for _, exp := range exposures {
-			found := false
-			for _, c := range conns {
-				if c.FromExposureID == exp.ID {
-					found = true
-					break
-				}
-			}
-			if !found {
-				exposuresWithoutPaths++
-			}
-		}
-		// Only fall through to shallow matcher when the AST walk produced
-		// absolutely nothing — empty index or fully unsupported language.
-		if len(conns) > 0 || len(unresolved) > 0 {
-			o.emitConnectionsAggregate(len(exposures), len(conns), exposuresWithoutPaths, "ast")
-			sort.Slice(conns, func(i, j int) bool { return conns[i].ID < conns[j].ID })
-			return conns, unresolved, nil, ""
-		}
-		util.Warn("agents.connections", "ast walk produced no connections; falling back to shallow matcher", nil)
-	}
-
-	// Shallow name-based fallback
-	util.Warn("agents.connections", "no ast index available; using shallow name matcher", nil)
-	conns, unresolved := buildShallowConnections(exposures, dependencies, o.cfg.Quality.MinConfidence)
-	o.emitConnectionsAggregate(len(exposures), len(conns), 0, "no_index")
-	if onResult != nil {
-		for range exposures {
-			onResult()
-		}
-	}
-	return conns, unresolved, nil, ""
+	out := (connectionstage.Runner{
+		BuildAST: runASTConnections, BuildShallow: buildShallowConnections,
+		Report: o.emitConnectionsAggregate,
+	}).Run(ctx, connectionstage.Input{
+		Index: o.astIndex, Exposures: exposures, Dependencies: dependencies,
+		MinConfidence: o.cfg.Quality.MinConfidence, Workers: o.cfg.Runtime.Workers,
+		Progress: onResult,
+	})
+	return out.Connections, out.Unresolved, nil, ""
 }
 
 // dedupeLocations removes duplicate file:line entries from the slice

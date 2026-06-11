@@ -81,5 +81,5 @@ All emitted entries include source locations, bounded evidence snippets, and det
 - AST unit tests for each language grammar, walker BFS, condition derivation, method reference capture.
 - Agent integration tests for discovery checkpoints, detail checkpoints, retry skipping, and AST connection correctness.
 - Mock OpenCode server tests for HTTP contract handling, watchdog, and liveness.
-- Deterministic-precision tests for the junk-table filter, placeholder resolution, and operation-kind inference (`internal/agents/precision_test.go`).
+- Deterministic-precision tests for the junk-table filter, placeholder resolution, and operation-kind inference (`internal/pipeline/precision_test.go`).
 - Accuracy guardrail: `go test ./internal/eval/...` runs cheap-mode scoring (deterministic floor vs. labeled fixtures) hermetically in CI; synthetic scorer tests cover phrasing-collapse, FP/FN attribution, multi-platform datastores, and connection endpoint translation.

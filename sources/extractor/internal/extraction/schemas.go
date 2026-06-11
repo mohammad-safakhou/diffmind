@@ -1,6 +1,4 @@
-package core
-
-import "github.com/mohammad-safakhou/diffmind/internal/stage/repofacts"
+package extraction
 
 // JSON schemas used with OpenCode PromptStructured calls. The server enforces
 // these so the resulting payloads we parse back are already validated.
@@ -97,7 +95,3 @@ func ConditionSchema() map[string]any {
 // connectionStepSchema, connectionPathSchema) were used by the LLM-based
 // connections stage to validate model output. With the deterministic
 // SCIP path no LLM JSON is produced; these schemas were removed.
-
-func RepoFactsSchema() map[string]any {
-	return repofacts.Schema()
-}
