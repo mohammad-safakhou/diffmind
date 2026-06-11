@@ -1,6 +1,11 @@
 package agents
 
-import "github.com/mohammad-safakhou/diffmind/internal/agents/core"
+import (
+	"github.com/mohammad-safakhou/diffmind/internal/agents/core"
+	"github.com/mohammad-safakhou/diffmind/internal/llmrun"
+	detailstage "github.com/mohammad-safakhou/diffmind/internal/stage/detail"
+	discoverystage "github.com/mohammad-safakhou/diffmind/internal/stage/discovery"
+)
 
 // transitional shims so the orchestrator keeps terse names; stage packages use
 // core.* directly.
@@ -8,15 +13,15 @@ import "github.com/mohammad-safakhou/diffmind/internal/agents/core"
 // types
 type (
 	PathMapper       = core.PathMapper
-	StuckError       = core.StuckError
+	StuckError       = llmrun.StuckError
 	ProgressReporter = core.ProgressReporter
 )
 
 // sentinel
-var ErrStuck = core.ErrStuck
+var ErrStuck = llmrun.ErrStuck
 
 // grouping.go consts (referenced by agents tests)
-const detailBatchHardCap = core.DetailBatchHardCap
+const detailBatchHardCap = detailstage.DetailBatchHardCap
 
 // convert.go
 var (
@@ -86,25 +91,25 @@ var (
 
 // grouping.go
 var (
-	DetailGroups        = core.DetailGroups
-	PartitionByAffinity = core.PartitionByAffinity
-	BatchAffinity       = core.BatchAffinity
-	AffinityScore       = core.AffinityScore
-	PrimaryFile         = core.PrimaryFile
-	CommonPrefixLen     = core.CommonPrefixLen
-	TokenOverlap        = core.TokenOverlap
-	NameTokens          = core.NameTokens
+	DetailGroups        = detailstage.DetailGroups
+	PartitionByAffinity = detailstage.PartitionByAffinity
+	BatchAffinity       = detailstage.BatchAffinity
+	AffinityScore       = detailstage.AffinityScore
+	PrimaryFile         = detailstage.PrimaryFile
+	CommonPrefixLen     = detailstage.CommonPrefixLen
+	TokenOverlap        = detailstage.TokenOverlap
+	NameTokens          = detailstage.NameTokens
 )
 
 // config_resolve.go
 var (
-	ResolveResourceName     = core.ResolveResourceName
-	IsPlaceholder           = core.IsPlaceholder
-	SplitPlaceholder        = core.SplitPlaceholder
-	ResolvePlaceholder      = core.ResolvePlaceholder
-	ConfigValue             = core.ConfigValue
-	TrailingResourceSegment = core.TrailingResourceSegment
-	KeySegmentName          = core.KeySegmentName
+	ResolveResourceName     = discoverystage.ResolveResourceName
+	IsPlaceholder           = discoverystage.IsPlaceholder
+	SplitPlaceholder        = discoverystage.SplitPlaceholder
+	ResolvePlaceholder      = discoverystage.ResolvePlaceholder
+	ConfigValue             = discoverystage.ConfigValue
+	TrailingResourceSegment = discoverystage.TrailingResourceSegment
+	KeySegmentName          = discoverystage.KeySegmentName
 )
 
 // identity.go (shared identity / detail-derivation helpers)
@@ -132,12 +137,12 @@ var NewPathMapper = core.NewPathMapper
 
 // failure.go
 var (
-	ClassifyError          = core.ClassifyError
-	ExtractHTTPStatus      = core.ExtractHTTPStatus
-	ShouldReportHTTPStatus = core.ShouldReportHTTPStatus
-	IsAuthFailure          = core.IsAuthFailure
-	IsQuotaFailure         = core.IsQuotaFailure
-	NewStuckError          = core.NewStuckError
+	ClassifyError          = llmrun.ClassifyError
+	ExtractHTTPStatus      = llmrun.ExtractHTTPStatus
+	ShouldReportHTTPStatus = llmrun.ShouldReportHTTPStatus
+	IsAuthFailure          = llmrun.IsAuthFailure
+	IsQuotaFailure         = llmrun.IsQuotaFailure
+	NewStuckError          = llmrun.NewStuckError
 )
 
 // progress.go
@@ -148,29 +153,29 @@ var (
 
 // resilience (watchdog / liveness / bridges)
 type (
-	watchdog              = core.Watchdog
-	livenessConfig        = core.LivenessConfig
-	livenessReport        = core.LivenessReport
-	livenessProbe         = core.LivenessProbe
-	aborter               = core.Aborter
-	probeSnapshot         = core.ProbeSnapshot
-	livenessClient        = core.LivenessClient
-	livenessAborter       = core.LivenessAborter
-	openCodeLivenessProbe = core.OpenCodeLivenessProbe
-	openCodeAborter       = core.OpenCodeAborter
-	pauseBridge           = core.PauseBridge
-	verboseBridge         = core.VerboseBridge
-	tokenBridge           = core.TokenBridge
-	permissionDecision    = core.PermissionDecision
+	watchdog              = llmrun.Watchdog
+	livenessConfig        = llmrun.LivenessConfig
+	livenessReport        = llmrun.LivenessReport
+	livenessProbe         = llmrun.LivenessProbe
+	aborter               = llmrun.Aborter
+	probeSnapshot         = llmrun.ProbeSnapshot
+	livenessClient        = llmrun.LivenessClient
+	livenessAborter       = llmrun.LivenessAborter
+	openCodeLivenessProbe = llmrun.OpenCodeLivenessProbe
+	openCodeAborter       = llmrun.OpenCodeAborter
+	pauseBridge           = llmrun.PauseBridge
+	verboseBridge         = llmrun.VerboseBridge
+	tokenBridge           = llmrun.TokenBridge
+	permissionDecision    = llmrun.PermissionDecision
 )
 
 var (
-	newWatchdog              = core.NewWatchdog
-	runLiveness              = core.RunLiveness
-	decidePermission         = core.DecidePermission
-	newOpenCodeLivenessProbe = core.NewOpenCodeLivenessProbe
-	newOpenCodeAborter       = core.NewOpenCodeAborter
-	newPauseBridge           = core.NewPauseBridge
-	newVerboseBridge         = core.NewVerboseBridge
-	newTokenBridge           = core.NewTokenBridge
+	newWatchdog              = llmrun.NewWatchdog
+	runLiveness              = llmrun.RunLiveness
+	decidePermission         = llmrun.DecidePermission
+	newOpenCodeLivenessProbe = llmrun.NewOpenCodeLivenessProbe
+	newOpenCodeAborter       = llmrun.NewOpenCodeAborter
+	newPauseBridge           = llmrun.NewPauseBridge
+	newVerboseBridge         = llmrun.NewVerboseBridge
+	newTokenBridge           = llmrun.NewTokenBridge
 )

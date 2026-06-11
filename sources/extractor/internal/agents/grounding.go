@@ -4,9 +4,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mohammad-safakhou/diffmind/internal/agents/core"
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
+	discoverystage "github.com/mohammad-safakhou/diffmind/internal/stage/discovery"
 )
 
 // grounding.go turns the deterministic tree-sitter AST index into compact,
@@ -35,10 +35,10 @@ const (
 // move to core) can render them without depending on the orchestrator. These
 // aliases keep grounding.go's existing names working.
 type (
-	objectiveHints = core.ObjectiveHints
-	symbolHint     = core.SymbolHint
-	bindingHint    = core.BindingHint
-	configHint     = core.ConfigHint
+	objectiveHints = discoverystage.ObjectiveHints
+	symbolHint     = discoverystage.SymbolHint
+	bindingHint    = discoverystage.BindingHint
+	configHint     = discoverystage.ConfigHint
 )
 
 // objectiveMatcher declares what AST facts are relevant to one objective type.

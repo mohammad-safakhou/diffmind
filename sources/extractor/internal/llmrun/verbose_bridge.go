@@ -1,4 +1,4 @@
-package core
+package llmrun
 
 import (
 	"context"

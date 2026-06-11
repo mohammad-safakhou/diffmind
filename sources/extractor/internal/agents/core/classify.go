@@ -8,9 +8,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mohammad-safakhou/diffmind/internal/entitykey"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
-	"github.com/mohammad-safakhou/diffmind/internal/reconcile"
 )
 
 var typeAliases = map[model.EntityKind]map[string]string{
@@ -139,7 +139,7 @@ func DeriveGrouping(b model.BaseEntity) (platform, instance, operation, opKind s
 		// emitted operation_kind is genuinely read/write (delete/insert/saveAll
 		// -> write, findBy/select -> read) and not a raw verb. The raw verb is
 		// preserved in details["operation"] (C5).
-		opKind = reconcile.NormalizeDBOp(operation)
+		opKind = entitykey.NormalizeDBOperation(operation)
 	case "outbound_http", "outbound_rpc":
 		platform = map[bool]string{true: "rpc", false: "http"}[b.Type == "outbound_rpc"]
 		instance = OutboundInstance(get("target_service", "service", "host", "target_host", "base_url", "target_url", "default_url", "production_url", "base_url_property", "client_class"), b.Name)

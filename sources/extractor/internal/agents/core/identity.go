@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/mohammad-safakhou/diffmind/internal/entitykey"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
-	"github.com/mohammad-safakhou/diffmind/internal/reconcile"
 )
 
 // ShouldReexamine decides whether a seed needs Stage 2 re-examination.
@@ -412,7 +412,7 @@ func DiscoverySemanticKey(obj objectives.Objective, e LLMEntity) string {
 // discovery-merge key canonicalizes paths (incl. parameter syntax
 // {id}/:id/<int:id>/*) identically to reconcile dedup and the eval matcher (C1).
 func NormalizePathForKey(path string) string {
-	return reconcile.CanonicalizeRoutePath(path)
+	return entitykey.CanonicalRoutePath(path)
 }
 
 // IsCompleteDeterministicSeed reports whether a deterministic exposure seed is

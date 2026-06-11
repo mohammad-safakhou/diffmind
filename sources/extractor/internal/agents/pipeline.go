@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mohammad-safakhou/diffmind/internal/agents/core"
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
@@ -20,7 +19,9 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	"github.com/mohammad-safakhou/diffmind/internal/opencode"
 	"github.com/mohammad-safakhou/diffmind/internal/reconcile"
+	"github.com/mohammad-safakhou/diffmind/internal/runstate"
 	"github.com/mohammad-safakhou/diffmind/internal/snapshot"
+	reconcilestage "github.com/mohammad-safakhou/diffmind/internal/stage/reconcile"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -48,7 +49,7 @@ type orchestrator struct {
 	sink             events.Sink     // never nil (NoopSink fallback)
 	captureDir       string          // optional: dir where prompt/response files are written
 	runDir           string          // optional: artifact root for state + failure report
-	store            *core.CheckpointStore
+	store            *runstate.CheckpointStore
 	// tokenAgg accumulates per-stage and per-run token totals from
 	// every promptAgent call's final /session/{id} read. Updated
 	// from the orchestrator's main goroutine after each prompt
@@ -247,7 +248,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		runDir:           opts.RunDir,
 		pipelineCancel:   pipelineCancel,
 	}
-	o.store = &core.CheckpointStore{RunDir: opts.RunDir}
+	o.store = &runstate.CheckpointStore{RunDir: opts.RunDir}
 	// All stages read `ctx`; alias the cancellable child so the
 	// existing call sites stay untouched.
 	ctx = pipelineCtx
@@ -495,7 +496,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 			if len(checkpoint) > 0 {
 				filtered := make([]detailJob, 0, len(reexamined))
 				for _, j := range reexamined {
-					if _, ok := checkpoint[core.DetailEntityKey(j.Objective.ID, j.Seed.Name)]; ok {
+					if _, ok := checkpoint[runstate.DetailEntityKey(j.Objective.ID, j.Seed.Name)]; ok {
 						continue
 					}
 					filtered = append(filtered, j)
@@ -566,10 +567,10 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		// identity stable across runs regardless of detail-stage variance.
 		seedByKey := make(map[string]llmEntity, len(reexamined))
 		for _, j := range reexamined {
-			seedByKey[core.DetailEntityKey(j.Objective.ID, j.Seed.Name)] = j.Seed
+			seedByKey[runstate.DetailEntityKey(j.Objective.ID, j.Seed.Name)] = j.Seed
 		}
 		for _, d := range details {
-			seed, hasSeed := seedByKey[core.DetailEntityKey(d.Objective.ID, d.SeedName)]
+			seed, hasSeed := seedByKey[runstate.DetailEntityKey(d.Objective.ID, d.SeedName)]
 			item := d.Item
 			if item == nil {
 				if !hasSeed {
@@ -640,12 +641,13 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	// --- Stage 5: reconcile/filter ---
 	progress.StartPhase("reconcile", 1, 90, 98, "Reconciling entities and dropping orphan connections.")
 	o.emit(events.Event{Kind: events.KindStageStarted, Stage: "reconcile", Status: events.StatusRunning, Payload: map[string]any{"total": 1, "tip": "Reconciling entities and dropping orphan connections."}})
-	conns, orphanUnresolved := reconcile.FilterConnections(conns, exposures, dependencies)
-	unresolved = append(unresolved, orphanUnresolved...)
-	// Final ordering for determinism.
-	sort.Slice(exposures, func(i, j int) bool { return exposures[i].ID < exposures[j].ID })
-	sort.Slice(dependencies, func(i, j int) bool { return dependencies[i].ID < dependencies[j].ID })
-	sort.Slice(conns, func(i, j int) bool { return conns[i].ID < conns[j].ID })
+	reconciled := (reconcilestage.Runner{}).Run(reconcilestage.Input{
+		Exposures: exposures, Dependencies: dependencies, Connections: conns, Unresolved: unresolved,
+	})
+	exposures = reconciled.Exposures
+	dependencies = reconciled.Dependencies
+	conns = reconciled.Connections
+	unresolved = reconciled.Unresolved
 	progress.Advance()
 	progress.CompletePhase()
 	o.emitStageCompleted("reconcile", events.StatusSuccess, nil)
