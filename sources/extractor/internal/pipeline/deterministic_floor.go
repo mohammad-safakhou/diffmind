@@ -6,6 +6,7 @@ import (
 
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
+	"github.com/mohammad-safakhou/diffmind/internal/extraction"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	connectionstage "github.com/mohammad-safakhou/diffmind/internal/stage/connections"
@@ -48,7 +49,7 @@ func DeterministicFloor(ctx context.Context, idx *astpkg.ProjectIndex, repoPath 
 	for _, result := range deterministic.Results {
 		obj := result.Objective
 		for _, e := range result.Items {
-			base, ur := ToBase(repoPath, obj, e, minConf)
+			base, ur := extraction.ToBase(repoPath, obj, e, minConf)
 			if ur != nil {
 				continue
 			}
@@ -64,7 +65,7 @@ func DeterministicFloor(ctx context.Context, idx *astpkg.ProjectIndex, repoPath 
 
 	// AST-derived db augmentation (the same step the pipeline runs)
 	dependencies = connectionstage.AugmentDependencies(idx, exposures, dependencies, minConf)
-	stampInferredDBPlatform(idx, dependencies) // P7: give deterministic db ops the configured platform
+	discoverystage.StampInferredDBPlatform(idx, dependencies) // P7: give deterministic db ops the configured platform
 	dependencies = reconcile.DedupeDependencies(dependencies)
 
 	// Connections (AST walk only; no shallow fallback, no LLM repair)

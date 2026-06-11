@@ -13,6 +13,9 @@ type (
 	verbosePrompter = llmrun.VerbosePrompter
 	tokenReader     = llmrun.TokenReader
 	sessionState    = llmrun.SessionState
+	watchdog        = llmrun.Watchdog
+	PathMapper      = extraction.PathMapper
+	objectiveHints  = extraction.ObjectiveHints
 
 	PendingPermission = llmrun.PendingPermission
 	PendingQuestion   = llmrun.PendingQuestion
