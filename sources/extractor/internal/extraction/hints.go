@@ -1,4 +1,4 @@
-package discovery
+package extraction
 
 // ObjectiveHints is the compact, token-bounded AST context for one objective,
 // rendered into the discovery/reexamine/detail prompts. The hints are advisory

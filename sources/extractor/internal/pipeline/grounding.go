@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
+	"github.com/mohammad-safakhou/diffmind/internal/extraction"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
-	discoverystage "github.com/mohammad-safakhou/diffmind/internal/stage/discovery"
 )
 
 // grounding.go turns the deterministic tree-sitter AST index into compact,
@@ -31,14 +31,12 @@ const (
 	maxConfigHints = 40
 )
 
-// The hint DTOs live in internal/agents/core so the prompt builders (which
-// move to core) can render them without depending on the orchestrator. These
-// aliases keep grounding.go's existing names working.
+// Hint DTOs are extraction contracts shared with prompt rendering.
 type (
-	objectiveHints = discoverystage.ObjectiveHints
-	symbolHint     = discoverystage.SymbolHint
-	bindingHint    = discoverystage.BindingHint
-	configHint     = discoverystage.ConfigHint
+	objectiveHints = extraction.ObjectiveHints
+	symbolHint     = extraction.SymbolHint
+	bindingHint    = extraction.BindingHint
+	configHint     = extraction.ConfigHint
 )
 
 // objectiveMatcher declares what AST facts are relevant to one objective type.

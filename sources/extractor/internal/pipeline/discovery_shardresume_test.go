@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mohammad-safakhou/diffmind/internal/agents/core"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
+	"github.com/mohammad-safakhou/diffmind/internal/runstate"
 )
 
 // TestShardedDiscoveryResumesCheckpointedShards verifies that shards already
@@ -20,7 +20,7 @@ func TestShardedDiscoveryResumesCheckpointedShards(t *testing.T) {
 	fake := &scopeFake{}
 	idx := bigIndex([]string{"src/api/a", "src/api/b", "src/api/c", "src/api/d", "src/api/e", "src/api/f"}, 20)
 	o := &orchestrator{cfg: cfg, oc: fake, sink: sink, astIndex: idx, runDir: runDir}
-	o.store = &core.CheckpointStore{RunDir: runDir}
+	o.store = &runstate.CheckpointStore{RunDir: runDir}
 
 	obj := objByType(t, "http_route")
 	shards := planDiscoveryShards(idx, obj, "")
@@ -53,7 +53,7 @@ func TestShardedDiscoveryResumesCheckpointedShards(t *testing.T) {
 func TestLegacyCheckpointLineLoads(t *testing.T) {
 	runDir := t.TempDir()
 	o := &orchestrator{runDir: runDir}
-	o.store = &core.CheckpointStore{RunDir: runDir}
+	o.store = &runstate.CheckpointStore{RunDir: runDir}
 	dir := filepath.Join(runDir, stateDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)

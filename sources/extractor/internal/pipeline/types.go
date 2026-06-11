@@ -5,10 +5,8 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/llmrun"
 )
 
-// The shared DTOs and client interfaces live in internal/agents/core so every
-// stage package can depend on them without depending on the orchestrator.
-// These aliases keep the orchestrator's existing (lower-case) names working;
-// stage packages reference the core.* names directly.
+// Shared DTOs and client interfaces live in extraction and llmrun so stages do
+// not depend on the orchestrator. These aliases keep pipeline code concise.
 type (
 	openCodeAPI     = llmrun.Client
 	pauseHandler    = llmrun.PauseHandler

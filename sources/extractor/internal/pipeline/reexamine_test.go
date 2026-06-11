@@ -6,10 +6,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/mohammad-safakhou/diffmind/internal/agents/core"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
+	"github.com/mohammad-safakhou/diffmind/internal/runstate"
 )
 
 func httpRouteObjective() objectives.Objective {
@@ -177,10 +177,10 @@ func TestReexaminationCheckpointSkipsCompletedSuspects(t *testing.T) {
 	// Pre-populate the checkpoint as if A (confirmed) and B (rejected) already ran.
 	cfg := config.Default()
 	o := &orchestrator{cfg: cfg, runDir: runDir}
-	o.store = &core.CheckpointStore{RunDir: runDir}
+	o.store = &runstate.CheckpointStore{RunDir: runDir}
 
-	o.store.AppendReexamEntity(core.ReexamCheckpointEntry{
-		Key:     core.ReexamKey(obj.ID, "GET /a"),
+	o.store.AppendReexamEntity(runstate.ReexamCheckpointEntry{
+		Key:     runstate.ReexamKey(obj.ID, "GET /a"),
 		Outcome: "confirmed",
 		Seed: &llmEntity{
 			Type: "http_route", Name: "GET /a", Confidence: 0.85,
@@ -188,8 +188,8 @@ func TestReexaminationCheckpointSkipsCompletedSuspects(t *testing.T) {
 			Details:   map[string]any{"method": "GET", "path": "/a"},
 		},
 	})
-	o.store.AppendReexamEntity(core.ReexamCheckpointEntry{
-		Key:     core.ReexamKey(obj.ID, "GET /b"),
+	o.store.AppendReexamEntity(runstate.ReexamCheckpointEntry{
+		Key:     runstate.ReexamKey(obj.ID, "GET /b"),
 		Outcome: "rejected",
 		Unresolved: &model.UnresolvedItem{
 			Kind: model.KindExposure, Type: "http_route", Name: "GET /b",

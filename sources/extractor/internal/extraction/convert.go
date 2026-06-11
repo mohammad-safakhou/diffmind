@@ -1,4 +1,4 @@
-package core
+package extraction
 
 import (
 	"encoding/json"
@@ -7,7 +7,6 @@ import (
 
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
-	"github.com/mohammad-safakhou/diffmind/internal/stage/repofacts"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -15,7 +14,7 @@ import (
 // populated entity or an UnresolvedItem describing why the candidate was
 // dropped. It is the single gate where confidence + source-location rules are
 // enforced on converted results.
-func ToBase(repoPath string, obj objectives.Objective, e LLMEntity, minConfidence float64) (model.BaseEntity, *model.UnresolvedItem) {
+func ToBase(repoPath string, obj objectives.Objective, e Candidate, minConfidence float64) (model.BaseEntity, *model.UnresolvedItem) {
 	name := strings.TrimSpace(e.Name)
 	typ, typeOK := CanonicalObjectiveType(obj, e.Type)
 	if name == "" || typ == "" {
@@ -91,7 +90,7 @@ func ToBase(repoPath string, obj objectives.Objective, e LLMEntity, minConfidenc
 	return base, nil
 }
 
-func ToLocations(in []LLMLocation) []model.Location {
+func ToLocations(in []Location) []model.Location {
 	out := make([]model.Location, 0, len(in))
 	for _, v := range in {
 		if strings.TrimSpace(v.File) == "" || v.StartLine <= 0 {
@@ -106,7 +105,7 @@ func ToLocations(in []LLMLocation) []model.Location {
 	return out
 }
 
-func ToEvidence(in []LLMEvidence) []model.Evidence {
+func ToEvidence(in []Evidence) []model.Evidence {
 	out := make([]model.Evidence, 0, len(in))
 	for _, v := range in {
 		if strings.TrimSpace(v.File) == "" || v.StartLine <= 0 {
@@ -132,7 +131,7 @@ func ToEvidence(in []LLMEvidence) []model.Evidence {
 // toConnectionPaths was the LLM→model.ConnectionPath converter used by
 // the old connections stage. The SCIP-driven stage builds
 // model.ConnectionPath directly from scip.Path, so this helper is
-// obsolete and has been removed. See internal/agents/connections.go's
+// obsolete and has been removed. See internal/pipeline/connections.go's
 // convertPath function for the replacement.
 
 func FillCondition(c model.Condition, fallbackExplanation string) model.Condition {
@@ -220,7 +219,7 @@ func DedupeStrings(in []string) []string {
 	return out
 }
 
-func ParseEntities(v any) []LLMEntity {
+func ParseEntities(v any) []Candidate {
 	if v == nil {
 		return nil
 	}
@@ -228,12 +227,12 @@ func ParseEntities(v any) []LLMEntity {
 	if err != nil {
 		return nil
 	}
-	var out []LLMEntity
+	var out []Candidate
 	_ = json.Unmarshal(b, &out)
 	return out
 }
 
-func ParseSingleEntity(v any) *LLMEntity {
+func ParseSingleEntity(v any) *Candidate {
 	if v == nil {
 		return nil
 	}
@@ -249,7 +248,7 @@ func ParseSingleEntity(v any) *LLMEntity {
 	if err != nil {
 		return nil
 	}
-	var e LLMEntity
+	var e Candidate
 	if err := json.Unmarshal(b, &e); err != nil {
 		return nil
 	}
@@ -264,5 +263,16 @@ func ParseSingleEntity(v any) *LLMEntity {
 // no LLM connection JSON is ever produced, so this helper is removed.
 
 func ParseRepoFacts(v map[string]any) *RepoFacts {
-	return repofacts.Parse(v)
+	if v == nil {
+		return nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	var facts RepoFacts
+	if err := json.Unmarshal(b, &facts); err != nil {
+		return nil
+	}
+	return &facts
 }

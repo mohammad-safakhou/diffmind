@@ -383,7 +383,7 @@ or some cron boundaries.
   LLM picks targets from a **closed set** of existing dependency IDs
   (hallucinations rejected, orphan-dropped by `reconcile.FilterConnections`).
   confidence-clamped, checkpointed, fail-soft. New
-  `internal/agents/connection_repair.go`; integrate before reconcile
+  `internal/stage/connections/repair.go`; integrate before reconcile
   (`pipeline.go:~800`). *(Safe to measure once C1/C2 fix identity.)*
   **Schema change required (reviewer, verified):** `model.Connection`
   (`model:70`) has **no provenance field** today — add one, e.g.

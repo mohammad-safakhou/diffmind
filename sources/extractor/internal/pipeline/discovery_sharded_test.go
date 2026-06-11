@@ -6,9 +6,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/mohammad-safakhou/diffmind/internal/agents/core"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
+	"github.com/mohammad-safakhou/diffmind/internal/runstate"
 )
 
 // recordSink captures emitted events for assertions.
@@ -77,7 +77,7 @@ func TestShardedDiscoveryRunsAllShards(t *testing.T) {
 	fake := &scopeFake{}
 	idx := bigIndex([]string{"src/api/a", "src/api/b", "src/api/c", "src/api/d", "src/api/e", "src/api/f"}, 20)
 	o := &orchestrator{cfg: cfg, oc: fake, sink: sink, astIndex: idx, runDir: t.TempDir()}
-	o.store = &core.CheckpointStore{RunDir: o.runDir}
+	o.store = &runstate.CheckpointStore{RunDir: o.runDir}
 
 	obj := objByType(t, "http_route")
 	shards := planDiscoveryShards(idx, obj, "")
@@ -138,7 +138,7 @@ func TestSmallObjectiveStaysSingleCall(t *testing.T) {
 	fake := &scopeFake{}
 	idx := bigIndex([]string{"src/api"}, 5) // 5 candidates, below soft target
 	o := &orchestrator{cfg: cfg, oc: fake, sink: sink, astIndex: idx, runDir: t.TempDir()}
-	o.store = &core.CheckpointStore{RunDir: o.runDir}
+	o.store = &runstate.CheckpointStore{RunDir: o.runDir}
 
 	obj := objByType(t, "http_route")
 	if _, err := o.runDiscoveryOne(context.Background(), obj, &repoFacts{}); err != nil {

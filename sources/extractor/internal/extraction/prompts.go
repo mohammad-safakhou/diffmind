@@ -1,4 +1,4 @@
-package core
+package extraction
 
 import (
 	"encoding/json"
@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
-	"github.com/mohammad-safakhou/diffmind/internal/stage/repofacts"
 )
 
 // readOnlyPreamble is prepended to every stage prompt. It tells the agent
@@ -27,10 +26,6 @@ const readOnlyPreamble = `OPERATIONAL RULES (apply to the entire response):
 `
 
 // ---- Stage 0 ----
-
-func BuildRepoFactsPrompt(subDir string) string {
-	return repofacts.BuildPrompt(subDir)
-}
 
 // ---- Shared REPO_FACTS injection ----
 
@@ -298,7 +293,7 @@ func BulletLanguages(line string) (langs []string, ok bool) {
 
 // ---- Stage 1: per-objective discovery ----
 
-func BuildDiscoveryPrompt(obj objectives.Objective, rf *RepoFacts, subDir string, hints ObjectiveHints, scopeDirs []string, confirmed []LLMEntity) string {
+func BuildDiscoveryPrompt(obj objectives.Objective, rf *RepoFacts, subDir string, hints ObjectiveHints, scopeDirs []string, confirmed []Candidate) string {
 	var sb strings.Builder
 	sb.WriteString("AGENT ROLE: objective-extractor\n")
 	sb.WriteString(readOnlyPreamble)
@@ -335,7 +330,7 @@ OUTPUT: Return a single JSON object {"items": [...]} matching the provided schem
 	return sb.String()
 }
 
-func ConfirmedDiscoveryBlock(items []LLMEntity) string {
+func ConfirmedDiscoveryBlock(items []Candidate) string {
 	if len(items) == 0 {
 		return ""
 	}
@@ -368,7 +363,7 @@ func ConfirmedDiscoveryBlock(items []LLMEntity) string {
 
 // ---- Stage 2: re-examination ----
 
-func BuildReexaminePrompt(obj objectives.Objective, seed LLMEntity, triggerReason string, rf *RepoFacts, subDir string, hints ObjectiveHints) string {
+func BuildReexaminePrompt(obj objectives.Objective, seed Candidate, triggerReason string, rf *RepoFacts, subDir string, hints ObjectiveHints) string {
 	seedJSON, _ := json.MarshalIndent(seed, "", "  ")
 	var sb strings.Builder
 	sb.WriteString("AGENT ROLE: reexaminer\n")
@@ -410,7 +405,7 @@ OUTPUT: Return {"items": [correctedItem]} on confirmation, or {"items": []} on r
 
 // ---- Stage 3: detail enrichment ----
 
-func BuildDetailPrompt(obj objectives.Objective, seed LLMEntity, rf *RepoFacts, subDir string, hints ObjectiveHints) string {
+func BuildDetailPrompt(obj objectives.Objective, seed Candidate, rf *RepoFacts, subDir string, hints ObjectiveHints) string {
 	seedJSON, _ := json.MarshalIndent(seed, "", "  ")
 	var sb strings.Builder
 	sb.WriteString("AGENT ROLE: detail-extractor\n")
@@ -467,7 +462,7 @@ OUTPUT: Return a single JSON object {"item": {...}} matching the provided schema
 // "model deliberately marked it incomplete" — the orchestrator
 // treats the former as an error (re-batch later) and the latter as
 // a normal "not enough info" outcome.
-func BuildDetailBatchPrompt(obj objectives.Objective, seeds []LLMEntity, rf *RepoFacts, subDir string, hints ObjectiveHints) string {
+func BuildDetailBatchPrompt(obj objectives.Objective, seeds []Candidate, rf *RepoFacts, subDir string, hints ObjectiveHints) string {
 	var sb strings.Builder
 	sb.WriteString("AGENT ROLE: detail-extractor (BATCH)\n")
 	sb.WriteString(readOnlyPreamble)
@@ -566,5 +561,5 @@ func Itoa(n int) string {
 // The connections stage is now deterministic and SCIP-driven. No LLM
 // prompt is built or sent. The old buildConnectionPrompt /
 // connectionCatalogItem types have been removed. See
-// internal/agents/connections.go for the new pipeline and
+// internal/pipeline/connections.go for the new pipeline and
 // internal/scip/ for the underlying call-graph walker.

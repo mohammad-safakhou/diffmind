@@ -1,20 +1,20 @@
 package pipeline
 
 import (
-	"github.com/mohammad-safakhou/diffmind/internal/agents/core"
+	"github.com/mohammad-safakhou/diffmind/internal/extraction"
 	"github.com/mohammad-safakhou/diffmind/internal/llmrun"
 	detailstage "github.com/mohammad-safakhou/diffmind/internal/stage/detail"
 	discoverystage "github.com/mohammad-safakhou/diffmind/internal/stage/discovery"
+	"github.com/mohammad-safakhou/diffmind/internal/stage/repofacts"
 )
 
-// transitional shims so the orchestrator keeps terse names; stage packages use
-// core.* directly.
+// Package-local aliases keep orchestration code concise while domain and stage
+// packages retain descriptive exported names.
 
 // types
 type (
-	PathMapper       = core.PathMapper
-	StuckError       = llmrun.StuckError
-	ProgressReporter = core.ProgressReporter
+	StuckError = llmrun.StuckError
+	PathMapper = extraction.PathMapper
 )
 
 // sentinel
@@ -25,68 +25,68 @@ const detailBatchHardCap = detailstage.DetailBatchHardCap
 
 // convert.go
 var (
-	ToBase            = core.ToBase
-	ToLocations       = core.ToLocations
-	ToEvidence        = core.ToEvidence
-	FillCondition     = core.FillCondition
-	DefaultStr        = core.DefaultStr
-	ErrString         = core.ErrString
-	SafeJobID         = core.SafeJobID
-	DedupeUnresolved  = core.DedupeUnresolved
-	DedupeStrings     = core.DedupeStrings
-	ParseEntities     = core.ParseEntities
-	ParseSingleEntity = core.ParseSingleEntity
-	ParseRepoFacts    = core.ParseRepoFacts
+	ToBase            = extraction.ToBase
+	ToLocations       = extraction.ToLocations
+	ToEvidence        = extraction.ToEvidence
+	FillCondition     = extraction.FillCondition
+	DefaultStr        = extraction.DefaultStr
+	ErrString         = extraction.ErrString
+	SafeJobID         = extraction.SafeJobID
+	DedupeUnresolved  = extraction.DedupeUnresolved
+	DedupeStrings     = extraction.DedupeStrings
+	ParseEntities     = extraction.ParseEntities
+	ParseSingleEntity = extraction.ParseSingleEntity
+	ParseRepoFacts    = extraction.ParseRepoFacts
 )
 
 // classify.go
 var (
-	CanonicalObjectiveType       = core.CanonicalObjectiveType
-	NormalizeType                = core.NormalizeType
-	ForceObjectiveType           = core.ForceObjectiveType
-	EntitySchemaForObjective     = core.EntitySchemaForObjective
-	EntityListSchemaForObjective = core.EntityListSchemaForObjective
-	EnrichEntityGrouping         = core.EnrichEntityGrouping
-	DeriveGrouping               = core.DeriveGrouping
-	FirstNonEmpty                = core.FirstNonEmpty
-	DBPlatform                   = core.DBPlatform
-	QueuePlatform                = core.QueuePlatform
-	OutboundInstance             = core.OutboundInstance
-	NormalizeOperationKind       = core.NormalizeOperationKind
-	SanitizeGroup                = core.SanitizeGroup
-	SemanticEntityKey            = core.SemanticEntityKey
-	ContainingName               = core.ContainingName
-	SortLLMEntities              = core.SortLLMEntities
+	CanonicalObjectiveType       = extraction.CanonicalObjectiveType
+	NormalizeType                = extraction.NormalizeType
+	ForceObjectiveType           = extraction.ForceObjectiveType
+	EntitySchemaForObjective     = extraction.EntitySchemaForObjective
+	EntityListSchemaForObjective = extraction.EntityListSchemaForObjective
+	EnrichEntityGrouping         = extraction.EnrichEntityGrouping
+	DeriveGrouping               = extraction.DeriveGrouping
+	FirstNonEmpty                = extraction.FirstNonEmpty
+	DBPlatform                   = extraction.DBPlatform
+	QueuePlatform                = extraction.QueuePlatform
+	OutboundInstance             = extraction.OutboundInstance
+	NormalizeOperationKind       = extraction.NormalizeOperationKind
+	SanitizeGroup                = extraction.SanitizeGroup
+	SemanticEntityKey            = extraction.SemanticEntityKey
+	ContainingName               = extraction.ContainingName
+	SortLLMEntities              = extraction.SortLLMEntities
 )
 
 // schemas.go
 var (
-	EntitySchema       = core.EntitySchema
-	EntityListSchema   = core.EntityListSchema
-	EntitySingleSchema = core.EntitySingleSchema
-	ConditionSchema    = core.ConditionSchema
-	RepoFactsSchema    = core.RepoFactsSchema
+	EntitySchema       = extraction.EntitySchema
+	EntityListSchema   = extraction.EntityListSchema
+	EntitySingleSchema = extraction.EntitySingleSchema
+	ConditionSchema    = extraction.ConditionSchema
+	RepoFactsSchema    = repofacts.Schema
 )
 
 // prompts.go
 var (
-	BuildRepoFactsPrompt    = core.BuildRepoFactsPrompt
-	RepoFactsBlock          = core.RepoFactsBlock
-	MonorepoScopeLine       = core.MonorepoScopeLine
-	AstHintsBlock           = core.AstHintsBlock
-	DiscoveryScopeBlock     = core.DiscoveryScopeBlock
-	ExampleBlock            = core.ExampleBlock
-	DetailKeysLine          = core.DetailKeysLine
-	DetectedLanguageSet     = core.DetectedLanguageSet
-	CanonicalLanguage       = core.CanonicalLanguage
-	ScopeFrameworkPatterns  = core.ScopeFrameworkPatterns
-	BulletLanguages         = core.BulletLanguages
-	BuildDiscoveryPrompt    = core.BuildDiscoveryPrompt
-	ConfirmedDiscoveryBlock = core.ConfirmedDiscoveryBlock
-	BuildReexaminePrompt    = core.BuildReexaminePrompt
-	BuildDetailPrompt       = core.BuildDetailPrompt
-	BuildDetailBatchPrompt  = core.BuildDetailBatchPrompt
-	Itoa                    = core.Itoa
+	BuildRepoFactsPrompt    = repofacts.BuildPrompt
+	RepoFactsBlock          = extraction.RepoFactsBlock
+	MonorepoScopeLine       = extraction.MonorepoScopeLine
+	AstHintsBlock           = extraction.AstHintsBlock
+	DiscoveryScopeBlock     = extraction.DiscoveryScopeBlock
+	ExampleBlock            = extraction.ExampleBlock
+	DetailKeysLine          = extraction.DetailKeysLine
+	DetectedLanguageSet     = extraction.DetectedLanguageSet
+	CanonicalLanguage       = extraction.CanonicalLanguage
+	ScopeFrameworkPatterns  = extraction.ScopeFrameworkPatterns
+	BulletLanguages         = extraction.BulletLanguages
+	BuildDiscoveryPrompt    = extraction.BuildDiscoveryPrompt
+	ConfirmedDiscoveryBlock = extraction.ConfirmedDiscoveryBlock
+	BuildReexaminePrompt    = extraction.BuildReexaminePrompt
+	BuildDetailPrompt       = extraction.BuildDetailPrompt
+	BuildDetailBatchPrompt  = extraction.BuildDetailBatchPrompt
+	Itoa                    = extraction.Itoa
 )
 
 // grouping.go
@@ -114,26 +114,26 @@ var (
 
 // identity.go (shared identity / detail-derivation helpers)
 var (
-	shouldReexamine             = core.ShouldReexamine
-	missingRequiredDetails      = core.MissingRequiredDetails
-	deriveDetailsFromName       = core.DeriveDetailsFromName
-	splitMethodPath             = core.SplitMethodPath
-	splitServiceMethod          = core.SplitServiceMethod
-	looksLikeIdentifier         = core.LooksLikeIdentifier
-	looksLikeCommand            = core.LooksLikeCommand
-	guessOperation              = core.GuessOperation
-	extractCronLike             = core.ExtractCronLike
-	hasDetailKey                = core.HasDetailKey
-	discoverySemanticKey        = core.DiscoverySemanticKey
-	normalizePathForKey         = core.NormalizePathForKey
-	isCompleteDeterministicSeed = core.IsCompleteDeterministicSeed
-	hasDeterministicEvidence    = core.HasDeterministicEvidence
-	shardEntityKey              = core.ShardEntityKey
-	httpMethods                 = core.HTTPMethods
+	shouldReexamine             = extraction.ShouldReexamine
+	missingRequiredDetails      = extraction.MissingRequiredDetails
+	deriveDetailsFromName       = extraction.DeriveDetailsFromName
+	splitMethodPath             = extraction.SplitMethodPath
+	splitServiceMethod          = extraction.SplitServiceMethod
+	looksLikeIdentifier         = extraction.LooksLikeIdentifier
+	looksLikeCommand            = extraction.LooksLikeCommand
+	guessOperation              = extraction.GuessOperation
+	extractCronLike             = extraction.ExtractCronLike
+	hasDetailKey                = extraction.HasDetailKey
+	discoverySemanticKey        = extraction.DiscoverySemanticKey
+	normalizePathForKey         = extraction.NormalizePathForKey
+	isCompleteDeterministicSeed = extraction.IsCompleteDeterministicSeed
+	hasDeterministicEvidence    = extraction.HasDeterministicEvidence
+	shardEntityKey              = extraction.ShardEntityKey
+	httpMethods                 = extraction.HTTPMethods
 )
 
 // paths.go
-var NewPathMapper = core.NewPathMapper
+var NewPathMapper = extraction.NewPathMapper
 
 // failure.go
 var (
@@ -146,11 +146,6 @@ var (
 )
 
 // progress.go
-var (
-	NewProgressReporter = core.NewProgressReporter
-	RenderProgressBar   = core.RenderProgressBar
-)
-
 // resilience (watchdog / liveness / bridges)
 type (
 	watchdog              = llmrun.Watchdog

@@ -11,6 +11,7 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	"github.com/mohammad-safakhou/diffmind/internal/runstate"
+	reexaminestage "github.com/mohammad-safakhou/diffmind/internal/stage/reexamine"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -53,8 +54,12 @@ func (o *orchestrator) runReexamination(
 		// shouldReexamine MUTATES seeds[i].Seed.Details when it can
 		// derive missing fields from the name/summary. Take a pointer so
 		// the cleanJobs slice carries the enriched entity forward.
-		reasonID, reason, needs := shouldReexamine(seeds[i].Objective, &seeds[i].Seed, o.cfg.Quality.MinConfidence)
-		if !needs {
+		decision := (reexaminestage.Runner{}).Run(reexaminestage.Input{
+			Objective: seeds[i].Objective, Candidate: seeds[i].Seed,
+			MinConfidence: o.cfg.Quality.MinConfidence,
+		})
+		seeds[i].Seed = decision.Candidate
+		if !decision.Needed {
 			cleanJobs = append(cleanJobs, seeds[i])
 			continue
 		}
@@ -82,8 +87,8 @@ func (o *orchestrator) runReexamination(
 		suspect = append(suspect, reexamineTrigger{
 			Seed:     seeds[i].Seed,
 			Obj:      seeds[i].Objective,
-			Reason:   reason,
-			ReasonID: reasonID,
+			Reason:   decision.Reason,
+			ReasonID: decision.ReasonCode,
 		})
 	}
 
