@@ -13,6 +13,7 @@ import (
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
+	"github.com/mohammad-safakhou/diffmind/internal/extraction"
 	"github.com/mohammad-safakhou/diffmind/internal/llmrun"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
@@ -20,6 +21,8 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/runstate"
 	"github.com/mohammad-safakhou/diffmind/internal/snapshot"
 	connectionstage "github.com/mohammad-safakhou/diffmind/internal/stage/connections"
+	detailstage "github.com/mohammad-safakhou/diffmind/internal/stage/detail"
+	discoverystage "github.com/mohammad-safakhou/diffmind/internal/stage/discovery"
 	reconcile "github.com/mohammad-safakhou/diffmind/internal/stage/reconcile"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
@@ -257,7 +260,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	}
 	o.wireBridges(oc)
 	if o.pauser != nil {
-		o.wd = newWatchdog(o.pauser, o.sessionDir, 2*time.Second)
+		o.wd = llmrun.NewWatchdog(o.pauser, o.sessionDir, 2*time.Second)
 		o.wd.SetSink(sink)
 		o.wd.Start(ctx)
 	}
@@ -371,7 +374,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		// re-enumerating the mechanical bulk, and (b) are merged into the final
 		// discovery set below. Safe no-op when the AST index is unavailable.
 		deterministic := o.runDeterministicDiscovery(ctx, allObjectives)
-		o.discoveryConfirmed = deterministicByObjective(deterministic)
+		o.discoveryConfirmed = discoverystage.DeterministicByObjective(deterministic)
 		progress.StartPhase("discovery", len(allObjectives), 10, 35, "Discovering exposures and dependencies per objective in parallel.")
 		o.emit(events.Event{Kind: events.KindStageStarted, Stage: "discovery", Status: events.StatusRunning, Payload: map[string]any{"total": len(allObjectives), "tip": "Discovering exposures and dependencies per objective in parallel."}})
 		for _, obj := range allObjectives {
@@ -414,7 +417,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		}
 		// Merge the deterministic floor into the LLM's findings (semantic
 		// dedup per objective) to form the final discovery set.
-		discovery = mergeDiscoveryResults(discovery, deterministic)
+		discovery = discoverystage.MergeDiscoveryResults(discovery, deterministic)
 		o.emitStageCompleted("discovery", events.StatusSuccess, nil)
 
 		for _, d := range discovery {
@@ -447,7 +450,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		suspects := 0
 		for i := range seeds {
 			seedCopy := seeds[i].Seed
-			if _, _, needs := shouldReexamine(seeds[i].Objective, &seedCopy, o.cfg.Quality.MinConfidence); needs {
+			if _, _, needs := extraction.ShouldReexamine(seeds[i].Objective, &seedCopy, o.cfg.Quality.MinConfidence); needs {
 				suspects++
 			}
 		}
@@ -458,7 +461,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		if reexamErr != nil {
 			o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "reexamination", Status: events.StatusFailed})
 			return haltFailure("reexamination",
-				"reexamine."+reexamFailedSeed.Obj.ID+"."+SafeJobID(reexamFailedSeed.Seed.Name),
+				"reexamine."+reexamFailedSeed.Obj.ID+"."+extraction.SafeJobID(reexamFailedSeed.Seed.Name),
 				reexamFailedSeed.Obj.ID, reexamFailedSeed.Seed.Name, reexamErr, nil)
 		}
 		o.emitStageCompleted("reexamination", events.StatusSuccess, nil)
@@ -509,14 +512,14 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 			filtered := make([]detailJob, 0, len(previewPending))
 			for _, j := range previewPending {
 				seed := j.Seed
-				if isCompleteDeterministicSeed(j.Objective, &seed) {
+				if extraction.IsCompleteDeterministicSeed(j.Objective, &seed) {
 					continue
 				}
 				filtered = append(filtered, j)
 			}
 			previewPending = filtered
 		}
-		previewBatches := DetailGroups(previewPending)
+		previewBatches := detailstage.DetailGroups(previewPending)
 		o.emit(events.Event{
 			Kind: events.KindStageStarted, Stage: "detail", Status: events.StatusRunning,
 			Payload: map[string]any{
@@ -554,7 +557,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		if firstDetailErr != nil {
 			o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "detail", Status: events.StatusFailed})
 			return haltFailure("detail",
-				"detail."+firstDetailObjID+"."+SafeJobID(firstDetailSeed),
+				"detail."+firstDetailObjID+"."+extraction.SafeJobID(firstDetailSeed),
 				firstDetailObjID, firstDetailSeed, firstDetailErr, nil)
 		}
 		o.emitStageCompleted("detail", events.StatusSuccess, nil)
@@ -588,9 +591,9 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 				if strings.TrimSpace(seed.Name) != "" {
 					item.Name = seed.Name
 				}
-				pinIdentityDetails(item, seed)
+				detailstage.PinIdentityDetails(item, seed)
 			}
-			base, ur := ToBase(o.repoPath, d.Objective, *item, o.cfg.Quality.MinConfidence)
+			base, ur := extraction.ToBase(o.repoPath, d.Objective, *item, o.cfg.Quality.MinConfidence)
 			if ur != nil {
 				unresolved = append(unresolved, *ur)
 				continue
@@ -617,7 +620,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	state.DetailDependency = append([]model.Dependency(nil), dependencies...)
 	if o.astIndex != nil {
 		dependencies = connectionstage.AugmentDependencies(o.astIndex, exposures, dependencies, o.cfg.Quality.MinConfidence)
-		stampInferredDBPlatform(o.astIndex, dependencies) // P7: configured platform for deterministic db ops
+		discoverystage.StampInferredDBPlatform(o.astIndex, dependencies) // P7: configured platform for deterministic db ops
 		dependencies = reconcile.DedupeDependencies(dependencies)
 		state.DetailDependency = append([]model.Dependency(nil), dependencies...)
 		o.persistStageState("detail_dependencies.json", state.DetailDependency)
@@ -755,9 +758,9 @@ func (o *orchestrator) emitRunStarted() {
 func (o *orchestrator) wireBridges(oc openCodeAPI) {
 	switch v := oc.(type) {
 	case *opencode.Client:
-		o.pauser = newPauseBridge(v)
-		o.verbose = newVerboseBridge(v)
-		o.tokens = newTokenBridge(v)
+		o.pauser = llmrun.NewPauseBridge(v)
+		o.verbose = llmrun.NewVerboseBridge(v)
+		o.tokens = llmrun.NewTokenBridge(v)
 	case pauseHandler:
 		o.pauser = v
 	}
@@ -821,15 +824,15 @@ func (o *orchestrator) executor() *llmrun.Executor {
 // resume from. start/state/unresolved/warnings are passed by the caller so the
 // live accumulators are captured at the moment of the halt.
 func (o *orchestrator) buildFailure(ctx context.Context, start time.Time, state IntermediateState, unresolved []model.UnresolvedItem, warnings []string, stage, jobID, objectiveID, entityName string, err error, extra map[string]any) (Result, error) {
-	errClass := ClassifyError(err)
+	errClass := llmrun.ClassifyError(err)
 	// Only attach a numeric HTTP status when the error is actually
 	// HTTP-shaped (4xx/5xx/rate-limit). For schema/network/timeout
 	// failures the error message frequently includes 3-digit numbers in
 	// other contexts (token counts, byte sizes) the regex would otherwise
 	// pick up as a phantom status.
 	var httpStatus int
-	if ShouldReportHTTPStatus(errClass) {
-		httpStatus = ExtractHTTPStatus(err.Error())
+	if llmrun.ShouldReportHTTPStatus(errClass) {
+		httpStatus = llmrun.ExtractHTTPStatus(err.Error())
 	}
 	// `cancelled` means the run was halted by an external cancel (user
 	// clicked Cancel, parent context expired) — NOT a build-driven halt,
@@ -916,7 +919,7 @@ func (o *orchestrator) PathMapper() *PathMapper {
 	if o.snap == nil {
 		return nil
 	}
-	return NewPathMapper(o.snap.Path, o.snap.SourcePath)
+	return extraction.NewPathMapper(o.snap.Path, o.snap.SourcePath)
 }
 
 func (o *orchestrator) promptAgent(ctx context.Context, role, prompt string, schema map[string]any) (map[string]any, error) {
