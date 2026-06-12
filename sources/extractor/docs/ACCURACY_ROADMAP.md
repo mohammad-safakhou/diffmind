@@ -687,7 +687,7 @@ refuted (investigated, not a bug) / done. Update Status as work lands.
 | F4 | outbound_rpc deterministic detector (gRPC *BlockingStub/*FutureStub calls) | `deterministic_calls.go` | MED | A,C | DONE |
 | F4b | stream_consume deterministic detector (Kafka Streams streamsBuilder.stream) | `deterministic_calls.go` | MED | A,C | DONE |
 | F5 | rpc_endpoint (gRPC server) — needs class-extends-*ImplBase, not in the AST yet (parser work) | `ast/index.go:160` | MED | A | open (needs parser support) |
-| F6 | non-JVM db_operation (GORM/Django ORM/Sequelize) + multi-lang routes (Go stdlib net/http, Django urls.py, Flask, JAX-RS) | `connections.go:737`, `web.go` | HIGH | A,V,C | PARTIAL (54a37b0, 0811201) — Go net/http + Django urls.py routes, SQL-literal db deriver; ORM-inference legs (GORM/Django ORM/Sequelize) still open |
+| F6 | non-JVM db_operation (GORM/Django ORM/Sequelize) + multi-lang routes (Go stdlib net/http, Django urls.py, Flask, JAX-RS) | `connections.go:737`, `web.go` | HIGH | A,V,C | DONE (54a37b0, 0811201, + ORM leg) — Go net/http + Django urls.py routes; SQL-literal db deriver; ORM deriver for GORM/Django ORM/Prisma/Sequelize/ActiveRecord (corroboration-gated). Flask/JAX-RS routes + TypeORM still open as smaller follow-ups |
 | S1 | Sharding packs files alphabetically, not by cohesion | `sharding.go:83,103,134` | MED | A,C | open |
 | S2 | Detector-less objectives never shard (no candidates) | `sharding.go:90`, `grounding.go:72` | MED | A,V | DONE (3919a53) — clientLibs seeding: imports +2, call receivers +1 |
 | S3 | rpc_endpoint fanned into 11 shards (2.7× calls) | `sharding.go:33` | MED | C | open |
