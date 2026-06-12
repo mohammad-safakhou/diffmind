@@ -667,16 +667,16 @@ refuted (investigated, not a bug) / done. Update Status as work lands.
 | C3 | Reexamination deleted true positives on one LLM "no" | `reexamine.go` | MED | A | DONE (75084f0) |
 | C4 | Schema-qualified resource false-split (`public.orders`) — datastore-aware unique-candidate merge | `reconcile.go` | LOW | A | DONE (C4 commit) |
 | C5 | Emit canonical `operation_kind∈{read,write}` via reconcile.NormalizeDBOp; raw verb kept in `operation` | `classify.go`, `reconcile.go` | MED | A | DONE (C5 commit); P1 schema-enum needs LLM run |
-| P1 | Enforce enum on `operation_kind` (NOT `operation`); `platform` open/`other`+`raw_platform`; ~17 op spellings today | `schemas.go:16`, `classify.go:59`, `registry.go:253,260` | HIGH | A,V | open (unblocked) |
+| P1 | Enforce enum on `operation_kind` (NOT `operation`); `platform` open/`other`+`raw_platform`; ~17 op spellings today | `schemas.go:16`, `classify.go:59`, `registry.go:253,260` | HIGH | A,V | DONE (892e5bd) — schema enum on operation_kind for db/cache; details stays open |
 | P2 | queue_publish key contract mismatch (queue vs destination) | `registry.go:473`, `reexamine.go:73,334` | MED | A | open |
 | P3 | No objective-boundary disambiguation (route/webhook, http/aws, db/cache redis, queue/stream) | `registry.go:65,255,367`, `discovery.go:120` | HIGH | A | open |
-| P3b | Wrong alias `sqs_consumer→stream_consume` | `classify.go:24` | MED | A | open |
+| P3b | Wrong alias `sqs_consumer→stream_consume` | `classify.go:24` | MED | A | DONE (892e5bd) — sqs_consumer → queue_consumer exposure |
 | P4 | Irrelevant AST hints + zero-candidate objectives sharded | `prompts.go:96`, `sharding.go` | MED | A,C | open |
 | P5 | Framework bullets not scoped to known frameworks | `prompts.go:279`, `registry.go:233` | LOW | C | open |
 | P6 | Empty-return ALREADY present (`prompts.go:356`); real fix = shard/retry, never truncate | `prompts.go:356` | MED | A,V | corrected |
 | P7 | Canonicalize op (add fields, keep raw); platform=database. outbound_http service already resolved — that part STALE | `reconcile.go`, `classify.go` | MED | A | partial |
-| A1 | 13 (not 18) exposures unconnected: 8 routes + 5 cron; queue consumers ALL connected | `connections.go:298` | MED-HIGH | A | open (numbers corrected) |
-| A1-schema | `model.Connection` has no provenance field — add `Source∈{ast,llm_repair}` (needed by output, eval, label init) | `model:70` | MED | A | open (model change) |
+| A1 | 13 (not 18) exposures unconnected: 8 routes + 5 cron; queue consumers ALL connected | `connections.go:298` | MED-HIGH | A | DONE (c87d924) — Stage 4.5 batched repair, closed-id set, evidence-validated, fail-soft; plus zero-hop direct-containment fix (0b42cf6) |
+| A1-schema | `model.Connection` has no provenance field — add `Source∈{ast,llm_repair}` (needed by output, eval, label init) | `model:70` | MED | A | DONE (c87d924) — Connection.Source ∈ {ast, shallow, llm_repair} |
 | F3-schema | DECIDED: `resolution_status` + unresolved keyed by file+enclosing-symbol+call-ordinal (line fallback), else UnresolvedItem | `model`, `reconcile` | MED | A | open (decided) |
 | GATES | Per-bucket P&R individually (not F1); empty buckets N/A; benchmark-specific budget (manifest field, configurable, explicit-fail). Numbers provisional → FREEZE + version thresholds/min-label-support/budgets after first labeled calibration runs, before any green-release decision | `internal/eval/` | — | A,V,C | approved (provisional, freeze post-calibration) |
 | V3a-rule | Base authoritative only if no profile override OR active profile known; else (unknown active + profile disagrees) → unresolved, retain base + all candidates; never lexical | `config_resolve.go:90` | HIGH | V,A | approved |
@@ -687,17 +687,17 @@ refuted (investigated, not a bug) / done. Update Status as work lands.
 | F4 | outbound_rpc deterministic detector (gRPC *BlockingStub/*FutureStub calls) | `deterministic_calls.go` | MED | A,C | DONE |
 | F4b | stream_consume deterministic detector (Kafka Streams streamsBuilder.stream) | `deterministic_calls.go` | MED | A,C | DONE |
 | F5 | rpc_endpoint (gRPC server) — needs class-extends-*ImplBase, not in the AST yet (parser work) | `ast/index.go:160` | MED | A | open (needs parser support) |
-| F6 | non-JVM db_operation (GORM/Django ORM/Sequelize) + multi-lang routes (Go stdlib net/http, Django urls.py, Flask, JAX-RS) | `connections.go:737`, `web.go` | HIGH | A,V,C | open (larger milestone) |
+| F6 | non-JVM db_operation (GORM/Django ORM/Sequelize) + multi-lang routes (Go stdlib net/http, Django urls.py, Flask, JAX-RS) | `connections.go:737`, `web.go` | HIGH | A,V,C | PARTIAL (54a37b0, 0811201) — Go net/http + Django urls.py routes, SQL-literal db deriver; ORM-inference legs (GORM/Django ORM/Sequelize) still open |
 | S1 | Sharding packs files alphabetically, not by cohesion | `sharding.go:83,103,134` | MED | A,C | open |
-| S2 | Detector-less objectives never shard (no candidates) | `sharding.go:90`, `grounding.go:72` | MED | A,V | open |
+| S2 | Detector-less objectives never shard (no candidates) | `sharding.go:90`, `grounding.go:72` | MED | A,V | DONE (3919a53) — clientLibs seeding: imports +2, call receivers +1 |
 | S3 | rpc_endpoint fanned into 11 shards (2.7× calls) | `sharding.go:33` | MED | C | open |
 | X1 | No cross-call caching; OpenCode 1.16.2 cacheKey is per-session (no breakpoint) → use X2 only, don't reuse sessions | `config.go:110`, `pipeline.go:1349` | MED | C | open (mechanism narrowed) |
 | X2 | Prompts volatile-first → ~250-token cacheable prefix | `prompts.go:327` | MED | C | open |
 | X3 | `MaxCatalogItems` dead config; no global token/time budget | `config.go:24`, `pipeline.go:180`, `persist.go:549` | MED | C | open |
 | X4 | No per-stage model tiering (one ModelID) | `config.go:8` | LOW | C | open |
 | X6 | Infra-stage output unused by core extraction but consumed by the UI → make optional or wire in (not "dead") | `internal/pipeline/stage_registry.go`, `pipeline.go` | LOW | C | open (reframed) |
-| V3a | Nondeterministic cross-file config resolution (map order) | `config_resolve.go:90` | HIGH | V,A | open |
-| V3b | YAML list-of-mappings mis-keyed/collapsed | `parser.go:994,1022` | HIGH | A | open |
+| V3a | Nondeterministic cross-file config resolution (map order) | `config_resolve.go:90` | HIGH | V,A | DONE (91c85cc) — approved precedence rule incl. in-file multi-doc profiles |
+| V3b | YAML list-of-mappings mis-keyed/collapsed | `parser.go:994,1022` | HIGH | A | DONE (79b3097) — yaml.v3 node flattening; closes V3c/V3e too |
 | V3c | YAML lists: inline `[a,b]` kept as one opaque string; block scalar seq dropped | `parser.go:994` | MED | A | open (corrected) |
 | V3d | Test-resource config files pollute the index | `index.go` | MED | A | DONE (9d68a01) |
 | V3e | Mis-indented YAML re-parented silently | `parser.go:1008` | LOW | A | open |
