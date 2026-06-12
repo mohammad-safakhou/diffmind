@@ -79,12 +79,15 @@ func singleDatastoreRef(idx *astpkg.ProjectIndex) *model.InstanceRef {
 		URLTemplate:  h.value,
 		ConfigSource: h.path + ": " + h.key,
 	}
-	ref.Database = databaseFromConnectionURL(idx, h.value)
+	// A value wrapped whole in "${VAR:jdbc:...}" parses via its inline default;
+	// the template field still carries the wrapper verbatim.
+	parsed := stripPlaceholderDefault(h.value)
+	ref.Database = databaseFromConnectionURL(idx, parsed)
 	ref.LogicalName = FirstNonEmptyName(ref.Database, KeySegmentName(h.key), ref.Kind)
-	if !containsPlaceholder(h.value) {
-		ref.ResolvedURL = h.value
+	if !containsPlaceholder(parsed) {
+		ref.ResolvedURL = parsed
 	}
-	if host := hostFromConnectionURL(h.value); host != "" && !containsPlaceholder(host) {
+	if host := hostFromConnectionURL(parsed); host != "" && !containsPlaceholder(host) {
 		ref.Host = host
 	}
 	return ref
@@ -107,13 +110,32 @@ func stampDatastoreInstance(idx *astpkg.ProjectIndex, ref *model.InstanceRef, d 
 		r := *ref
 		d.InstanceRef = &r
 	}
-	if genericInstance(idx, d.Instance, d.Platform) && ref.LogicalName != "" {
+	generic := genericInstance(idx, d.Instance, d.Platform) || instanceIsResourceFallback(d)
+	if generic && ref.LogicalName != "" {
 		d.Instance = ref.LogicalName
 		if d.Details == nil {
 			d.Details = map[string]any{}
 		}
 		d.Details["instance"] = ref.LogicalName
 	}
+}
+
+// instanceIsResourceFallback reports whether Instance merely repeats the
+// table/entity/cache resource (classify's last-resort fallback when no real
+// instance detail exists). The resource lives in the identity key already; as
+// an instance it would split services that share a database but were detected
+// via different tables.
+func instanceIsResourceFallback(d *model.BaseEntity) bool {
+	s := strings.ToLower(strings.TrimSpace(d.Instance))
+	if s == "" || d.Details == nil {
+		return false
+	}
+	for _, key := range []string{"table", "entity", "cache", "collection", "index"} {
+		if v, ok := d.Details[key].(string); ok && strings.ToLower(strings.TrimSpace(v)) == s {
+			return true
+		}
+	}
+	return false
 }
 
 // stampQueueInstance attaches broker identity to a queue/stream entity. The
