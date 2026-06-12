@@ -16,6 +16,19 @@
       "deterministic": true
     }
   ],
-  "dependencies": [],
-  "connections": []
+  "dependencies": [
+    {
+      "type": "db_operation",
+      "name": "read order",
+      "details": { "table": "order", "operation": "read" },
+      "deterministic": true
+    }
+  ],
+  "connections": [
+    {
+      "from": { "type": "http_route", "details": { "method": "ANY", "path": "/orders" } },
+      "to": { "type": "db_operation", "details": { "table": "order", "operation": "read" } },
+      "deterministic": true
+    }
+  ]
 }

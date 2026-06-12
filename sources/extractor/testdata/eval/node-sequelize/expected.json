@@ -1,0 +1,34 @@
+{
+  "fixture": "node-sequelize",
+  "repo_path": "repo",
+  "service_name": "node-sequelize",
+  "exposures": [
+    {
+      "type": "http_route",
+      "name": "GET /invoices/:id",
+      "details": { "method": "GET", "path": "/invoices/:id" },
+      "deterministic": true
+    },
+    {
+      "type": "http_route",
+      "name": "POST /invoices",
+      "details": { "method": "POST", "path": "/invoices" },
+      "deterministic": true
+    }
+  ],
+  "dependencies": [
+    {
+      "type": "db_operation",
+      "name": "read invoices",
+      "details": { "table": "invoices", "operation": "read" },
+      "deterministic": true
+    },
+    {
+      "type": "db_operation",
+      "name": "write invoices",
+      "details": { "table": "invoices", "operation": "write" },
+      "deterministic": true
+    }
+  ],
+  "connections": []
+}
