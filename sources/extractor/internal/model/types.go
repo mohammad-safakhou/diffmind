@@ -85,10 +85,19 @@ type Dependency struct {
 	BaseEntity
 }
 
+// Connection provenance values. Output, eval, and label tooling distinguish
+// deterministically-walked connections from LLM-repaired ones (A1-schema).
+const (
+	ConnectionSourceAST       = "ast"
+	ConnectionSourceShallow   = "shallow"
+	ConnectionSourceLLMRepair = "llm_repair"
+)
+
 type Connection struct {
 	ID             string           `json:"id"`
 	FromExposureID string           `json:"from_exposure_id"`
 	ToDependencyID string           `json:"to_dependency_id"`
+	Source         string           `json:"source,omitempty"`
 	Condition      Condition        `json:"condition"`
 	PathSignature  string           `json:"path_signature"`
 	Summary        string           `json:"summary"`
