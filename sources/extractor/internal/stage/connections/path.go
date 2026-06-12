@@ -192,7 +192,8 @@ func scoreASTConfidence(paths []astpkg.CallPath, minConfidence float64) float64 
 	if len(paths) == 0 {
 		return minConfidence
 	}
-	// Shorter paths = higher confidence.
+	// Shorter paths = higher confidence. Zero hops (the dependency's call site
+	// is inside the entry method itself) is the strongest evidence of all.
 	minHops := len(paths[0].Steps)
 	for _, p := range paths {
 		if len(p.Steps) < minHops {
@@ -200,6 +201,9 @@ func scoreASTConfidence(paths []astpkg.CallPath, minConfidence float64) float64 
 		}
 	}
 	score := 0.98 - float64(minHops-1)*0.04
+	if score > 0.99 {
+		score = 0.99
+	}
 	if score < 0.5 {
 		score = 0.5
 	}
