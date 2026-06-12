@@ -1,0 +1,2 @@
+database:
+  url: postgres://localhost:5432/orders_db

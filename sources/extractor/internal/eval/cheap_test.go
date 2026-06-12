@@ -18,6 +18,8 @@ func TestCheapAccuracyFloor(t *testing.T) {
 		"spring-crud":  1.0, // routes + JPA db ops + connections
 		"sqs-producer": 1.0, // route + SqsTemplate publish + connection
 		"sqs-consumer": 1.0, // @SqsListener + zero-hop db write + instances
+		"go-stdlib":    1.0, // net/http mux routes + raw-SQL db ops + connections
+		"django-app":   1.0, // urls.py routes
 	}
 	cfg := config.Default()
 	cfg.Quality.MinConfidence = 0.7

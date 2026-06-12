@@ -1,0 +1,21 @@
+{
+  "fixture": "django-app",
+  "repo_path": "repo",
+  "service_name": "django-app",
+  "exposures": [
+    {
+      "type": "http_route",
+      "name": "ANY /orders",
+      "details": { "method": "ANY", "path": "/orders" },
+      "deterministic": true
+    },
+    {
+      "type": "http_route",
+      "name": "ANY /orders/<int:pk>",
+      "details": { "method": "ANY", "path": "/orders/<int:pk>" },
+      "deterministic": true
+    }
+  ],
+  "dependencies": [],
+  "connections": []
+}
