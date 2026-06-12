@@ -63,6 +63,12 @@ func (DeterministicRunner) Run(input DeterministicInput) DeterministicOutput {
 		for _, e := range DeterministicDBOperations(input.Index) {
 			outMap[dbObj.ID] = append(outMap[dbObj.ID], e)
 		}
+		// Raw-SQL leg (F6): language-agnostic, covers stacks the repository
+		// deriver can't see. Same (table, operation) granularity, so the
+		// per-objective merge dedups overlap with the JVM deriver.
+		for _, e := range DeterministicSQLOperations(input.Index) {
+			outMap[dbObj.ID] = append(outMap[dbObj.ID], e)
+		}
 	}
 	if obj, ok := objectiveByTypeIn(input.Objectives, "command_exec"); ok {
 		for _, e := range DeterministicCommandExec(input.Index) {
