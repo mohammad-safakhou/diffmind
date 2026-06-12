@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"path/filepath"
 	"strings"
 
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
@@ -82,19 +83,113 @@ func ResolvePlaceholder(idx *astpkg.ProjectIndex, raw string, depth int) (string
 	return "", false
 }
 
+// ConfigValue resolves a property key across config files with profile-aware,
+// DETERMINISTIC precedence (V3a — the old map-order walk made the winner a
+// per-run coin flip when base and profile files disagreed, flipping resource
+// names and identity keys between runs):
+//
+//  1. every file agrees on the value → that value;
+//  2. the active profile is known (literal spring.profiles.active) and its
+//     overlay defines the key consistently → the overlay's value;
+//  3. the base (unprofiled) files define it and no profile file disagrees →
+//     the base value;
+//  4. otherwise (unknown active profile + a disagreeing override) → unresolved.
+//     Spring profile properties override base ones, so the base value cannot be
+//     trusted as the winner, and lexical precedence among profiles would surface
+//     an inactive profile's value as truth. Callers fall back to the raw
+//     placeholder / key segment, which is stable run-to-run.
 func ConfigValue(idx *astpkg.ProjectIndex, key string) (string, bool) {
 	key = strings.TrimSpace(key)
 	if idx == nil || key == "" {
 		return "", false
 	}
-	for _, cf := range idx.Configs {
-		for _, e := range cf.Entries {
-			if strings.EqualFold(strings.TrimSpace(e.Key), key) {
-				return strings.TrimSpace(e.Value), true
+	type match struct{ profile, value string }
+	var matches []match
+	distinct := map[string]struct{}{}
+	for _, path := range sortedConfigPaths(idx) {
+		profile := configProfile(path)
+		for _, e := range idx.Configs[path].Entries {
+			if !strings.EqualFold(strings.TrimSpace(e.Key), key) {
+				continue
 			}
+			v := strings.TrimSpace(e.Value)
+			matches = append(matches, match{profile: profile, value: v})
+			distinct[v] = struct{}{}
+		}
+	}
+	if len(matches) == 0 {
+		return "", false
+	}
+	if len(distinct) == 1 {
+		return matches[0].value, true
+	}
+	agreedValue := func(profile string) (string, bool) {
+		v, found := "", false
+		for _, m := range matches {
+			if m.profile != profile {
+				continue
+			}
+			if found && m.value != v {
+				return "", false // the profile disagrees with itself
+			}
+			v, found = m.value, true
+		}
+		return v, found
+	}
+	if active := activeConfigProfile(idx); active != "" {
+		if v, ok := agreedValue(active); ok {
+			return v, true
+		}
+	}
+	if base, ok := agreedValue(""); ok {
+		overridden := false
+		for _, m := range matches {
+			if m.profile != "" && m.value != base {
+				overridden = true
+				break
+			}
+		}
+		if !overridden {
+			return base, true
 		}
 	}
 	return "", false
+}
+
+// configProfile extracts the Spring-style profile from a config filename:
+// "application-prod.yml" → "prod", "application.yml" / unrelated files → ""
+// (base). Helm values files follow the same convention ("values-stage.yaml").
+func configProfile(path string) string {
+	name := strings.ToLower(filepath.Base(filepath.ToSlash(path)))
+	name = strings.TrimSuffix(name, filepath.Ext(name))
+	for _, stem := range []string{"application-", "bootstrap-", "values-"} {
+		if strings.HasPrefix(name, stem) {
+			return name[len(stem):]
+		}
+	}
+	return ""
+}
+
+// activeConfigProfile returns the literal active profile when the base config
+// pins exactly one ("spring.profiles.active: prod"). Placeholders, env-only
+// values, and comma lists stay "" — guessing an overlay would be V3a again.
+func activeConfigProfile(idx *astpkg.ProjectIndex) string {
+	for _, path := range sortedConfigPaths(idx) {
+		if configProfile(path) != "" {
+			continue // a profile file activating itself proves nothing about runtime
+		}
+		for _, e := range idx.Configs[path].Entries {
+			if !strings.EqualFold(strings.TrimSpace(e.Key), "spring.profiles.active") {
+				continue
+			}
+			v := strings.TrimSpace(e.Value)
+			if v == "" || IsPlaceholder(v) || strings.Contains(v, ",") {
+				return ""
+			}
+			return v
+		}
+	}
+	return ""
 }
 
 // trailingResourceSegment extracts the queue/topic name from a URL or ARN:
