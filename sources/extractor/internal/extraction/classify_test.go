@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/mohammad-safakhou/diffmind/internal/model"
+	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 )
 
 // Structured detail values must never be rendered into grouping fields: a real
@@ -38,6 +39,47 @@ func TestDeriveGroupingIgnoresStructuredDetails(t *testing.T) {
 	}
 	if opKind != "write" {
 		t.Errorf("operation_kind should be canonical write, got %q", opKind)
+	}
+}
+
+// P3b: an SQS consumer is a queue_consumer exposure; the old alias routed it
+// to the stream_consume dependency, mislabeling the architectural fact.
+func TestSQSConsumerAlias(t *testing.T) {
+	var queueConsumer, streamConsume objectives.Objective
+	for _, o := range objectives.Default() {
+		switch o.Type {
+		case "queue_consumer":
+			queueConsumer = o
+		case "stream_consume":
+			streamConsume = o
+		}
+	}
+	if _, ok := CanonicalObjectiveType(queueConsumer, "sqs_consumer"); !ok {
+		t.Errorf("sqs_consumer must canonicalize to queue_consumer")
+	}
+	if _, ok := CanonicalObjectiveType(streamConsume, "sqs_consumer"); ok {
+		t.Errorf("sqs_consumer must no longer alias to stream_consume")
+	}
+}
+
+// P1: the structured-output schema pins operation_kind to the closed enum for
+// db/cache objectives, so spelling variants are rejected server-side instead
+// of splitting identities downstream.
+func TestEntitySchemaOperationKindEnum(t *testing.T) {
+	var dbObj objectives.Objective
+	for _, o := range objectives.Default() {
+		if o.Type == "db_operation" {
+			dbObj = o
+		}
+	}
+	s := EntitySchemaForObjective(dbObj)
+	details := s["properties"].(map[string]any)["details"].(map[string]any)
+	enum := details["properties"].(map[string]any)["operation_kind"].(map[string]any)["enum"].([]string)
+	if len(enum) != 2 || enum[0] != "read" || enum[1] != "write" {
+		t.Errorf("db_operation operation_kind enum wrong: %v", enum)
+	}
+	if extra, ok := details["additionalProperties"].(bool); ok && !extra {
+		t.Errorf("details must stay open for other keys")
 	}
 }
 

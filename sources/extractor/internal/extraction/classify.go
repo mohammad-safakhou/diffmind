@@ -17,13 +17,16 @@ import (
 var typeAliases = map[model.EntityKind]map[string]string{
 	model.KindExposure: {
 		"http_endpoint": "http_route", "api_route": "http_route", "rest_endpoint": "http_route",
-		"sqs_listener": "queue_consumer", "message_listener": "queue_consumer", "event_listener": "queue_consumer",
+		// An SQS consumer is a queue_consumer exposure; the old dependency-side
+		// alias to stream_consume mislabeled it (P3b).
+		"sqs_listener": "queue_consumer", "sqs_consumer": "queue_consumer",
+		"message_listener": "queue_consumer", "event_listener": "queue_consumer",
 		"cron_job": "scheduled_job", "scheduler": "scheduled_job", "lambda_handler": "cli_command",
 	},
 	model.KindDependency: {
 		"outbound_http_service": "outbound_http", "external_service": "outbound_http", "http_client": "outbound_http", "api_client": "outbound_http",
 		"sqs_publish": "queue_publish", "queue_send": "queue_publish", "topic_publish": "queue_publish",
-		"stream_consumer": "stream_consume", "sqs_consumer": "stream_consume",
+		"stream_consumer": "stream_consume",
 		"database": "db_operation", "sql_query": "db_operation", "repository_operation": "db_operation",
 		"shell_command": "command_exec", "process_exec": "command_exec",
 	},
@@ -63,8 +66,33 @@ func EntitySchemaForObjective(obj objectives.Objective) map[string]any {
 	props, _ := s["properties"].(map[string]any)
 	if props != nil {
 		props["type"] = map[string]any{"type": "string", "enum": []string{obj.Type}}
+		if enum := OperationKindEnum(obj.Type); enum != nil {
+			props["details"] = map[string]any{
+				"type":                 "object",
+				"additionalProperties": true,
+				"properties": map[string]any{
+					"operation_kind": map[string]any{"type": "string", "enum": enum},
+				},
+			}
+		}
 	}
 	return s
+}
+
+// OperationKindEnum is the P1 closed contract: the canonical operation_kind a
+// db/cache fact may carry, enforced server-side in the structured-output
+// schema. The raw verb stays free text in details.operation; identity and
+// dedup key on the canonical kind, so the ~17 ad-hoc spellings observed in
+// real runs collapse here instead of splitting identities. Nil = objective has
+// no closed kind set.
+func OperationKindEnum(objType string) []string {
+	switch objType {
+	case "db_operation":
+		return []string{"read", "write"}
+	case "cache_operation":
+		return []string{"read", "write", "evict", "expire"}
+	}
+	return nil
 }
 
 func EntityListSchemaForObjective(obj objectives.Objective) map[string]any {
