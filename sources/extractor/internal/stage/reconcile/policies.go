@@ -827,6 +827,9 @@ func mergeBase(base, other model.BaseEntity) model.BaseEntity {
 	if strings.TrimSpace(base.Instance) == "" {
 		base.Instance = other.Instance
 	}
+	if base.InstanceRef == nil {
+		base.InstanceRef = other.InstanceRef
+	}
 	if strings.TrimSpace(base.Operation) == "" {
 		base.Operation = other.Operation
 	}

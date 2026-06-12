@@ -65,7 +65,8 @@ func Run(ctx context.Context, idx *astpkg.ProjectIndex, repoPath string, cfg con
 
 	// AST-derived db augmentation (the same step the pipeline runs)
 	dependencies = connectionstage.AugmentDependencies(idx, exposures, dependencies, minConf)
-	discoverystage.StampInferredDBPlatform(idx, dependencies) // P7: give deterministic db ops the configured platform
+	discoverystage.StampInferredDBPlatform(idx, dependencies)      // P7: give deterministic db ops the configured platform
+	discoverystage.StampInstanceRefs(idx, exposures, dependencies) // concrete instance identity (downstream contract)
 	dependencies = reconcile.DedupeDependencies(dependencies)
 
 	// Connections (AST walk only; no shallow fallback, no LLM repair)
