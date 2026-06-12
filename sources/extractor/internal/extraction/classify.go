@@ -118,7 +118,11 @@ func DeriveGrouping(b model.BaseEntity) (platform, instance, operation, opKind s
 		}
 		opKind = strings.ToLower(strings.Fields(operation)[0])
 	case "queue_consumer", "stream_consume":
-		platform = QueuePlatform(nameLower, get("queue", "stream", "topic", "queue_url", "queue_url_property"))
+		// details.platform leads: the framework binding knows the broker
+		// ("sqs: my-queue"); sniffing only the queue NAME made the consumer
+		// side key as generic "queue" while the publisher side said "sqs",
+		// splitting one physical queue across services downstream.
+		platform = QueuePlatform(nameLower, get("platform", "queue", "stream", "topic", "queue_url", "queue_url_property"))
 		instance = FirstNonEmpty(get("queue", "stream", "topic", "queue_name", "queue_url", "destination"), b.Name)
 		operation = "consume " + instance
 		opKind = "consume"
@@ -150,7 +154,7 @@ func DeriveGrouping(b model.BaseEntity) (platform, instance, operation, opKind s
 		}
 		opKind = NormalizeOperationKind(operation)
 	case "queue_publish":
-		platform = QueuePlatform(nameLower, get("destination", "queue", "topic", "queue_url"))
+		platform = QueuePlatform(nameLower, get("platform", "destination", "queue", "topic", "queue_url"))
 		instance = FirstNonEmpty(get("destination", "queue", "topic", "queue_name", "queue_url", "destination_queue"), b.Name)
 		operation = "publish " + instance
 		opKind = "publish"
