@@ -99,6 +99,7 @@ var objectiveMatchers = map[string]objectiveMatcher{
 		bindingKinds:   []string{"db_operation", "repository"},
 		classNameHints: []string{"repository", "dao", "mapper", "store", "entity"},
 		configKeyHints: []string{"datasource", "jdbc", "database", "db.", "dynamodb", "mongo", "elasticsearch", "redis"},
+		clientLibs:     []string{"gorm", "sqlx", "prisma", "sequelize", "typeorm", "mongoose", "sqlalchemy", "activerecord"},
 	},
 	"outbound_http": {
 		annPatterns:    []string{"feignclient", "httpexchange", "getexchange", "postexchange", "retrofit"},
