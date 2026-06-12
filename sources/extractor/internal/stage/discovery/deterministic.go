@@ -69,6 +69,11 @@ func (DeterministicRunner) Run(input DeterministicInput) DeterministicOutput {
 		for _, e := range DeterministicSQLOperations(input.Index) {
 			outMap[dbObj.ID] = append(outMap[dbObj.ID], e)
 		}
+		// ORM leg (F6): GORM/Django ORM/Sequelize/Prisma/ActiveRecord calls
+		// whose model is statically resolvable from the call itself.
+		for _, e := range DeterministicORMOperations(input.Index) {
+			outMap[dbObj.ID] = append(outMap[dbObj.ID], e)
+		}
 	}
 	if obj, ok := objectiveByTypeIn(input.Objectives, "command_exec"); ok {
 		for _, e := range DeterministicCommandExec(input.Index) {
