@@ -165,11 +165,16 @@ type ConfigFile struct {
 	Entries []ConfigEntry
 }
 
-// ConfigEntry is a single key-value pair from a configuration file.
+// ConfigEntry is a single key-value pair from a configuration file. Profile is
+// set when the entry comes from a profile-activated document inside a Spring
+// multi-doc YAML file ("spring.config.activate.on-profile"); "" means the base
+// document. File-level profiles (application-prod.yml) are derived from the
+// path by consumers instead.
 type ConfigEntry struct {
-	Key   string
-	Value string
-	Line  int
+	Key     string
+	Value   string
+	Line    int
+	Profile string
 }
 
 // Range is a source position (0-based, matching tree-sitter's convention).

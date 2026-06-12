@@ -107,10 +107,16 @@ func ConfigValue(idx *astpkg.ProjectIndex, key string) (string, bool) {
 	var matches []match
 	distinct := map[string]struct{}{}
 	for _, path := range sortedConfigPaths(idx) {
-		profile := configProfile(path)
+		fileProfile := configProfile(path)
 		for _, e := range idx.Configs[path].Entries {
 			if !strings.EqualFold(strings.TrimSpace(e.Key), key) {
 				continue
+			}
+			// A profile-activated document inside a multi-doc file overrides
+			// the file-level profile (it is more specific).
+			profile := fileProfile
+			if e.Profile != "" {
+				profile = e.Profile
 			}
 			v := strings.TrimSpace(e.Value)
 			matches = append(matches, match{profile: profile, value: v})
@@ -179,8 +185,8 @@ func activeConfigProfile(idx *astpkg.ProjectIndex) string {
 			continue // a profile file activating itself proves nothing about runtime
 		}
 		for _, e := range idx.Configs[path].Entries {
-			if !strings.EqualFold(strings.TrimSpace(e.Key), "spring.profiles.active") {
-				continue
+			if e.Profile != "" || !strings.EqualFold(strings.TrimSpace(e.Key), "spring.profiles.active") {
+				continue // an overlay document activating itself proves nothing
 			}
 			v := strings.TrimSpace(e.Value)
 			if v == "" || IsPlaceholder(v) || strings.Contains(v, ",") {
