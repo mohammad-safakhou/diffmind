@@ -39,6 +39,23 @@ type Condition struct {
 	Metadata    map[string]string `json:"metadata,omitempty"`
 }
 
+// InstanceRef is the cross-service-matchable identity of the concrete external
+// thing an entity talks to (a database, a broker queue, an HTTP service).
+// Downstream graph builders join "service A ↔ service B" on these fields, so
+// every value must be a config-derived fact: a resolved value or a verbatim
+// ${ENV:default} template — never a config property name and never a rendered
+// Go value. Fields are best-effort and individually optional; absence means
+// "not resolvable from this repo's config", not "unknown instance".
+type InstanceRef struct {
+	Kind         string `json:"kind,omitempty"`          // concrete platform: postgres, sqs, kafka, http, ...
+	LogicalName  string `json:"logical_name,omitempty"`  // queue name, database name, target service name
+	URLTemplate  string `json:"url_template,omitempty"`  // config value verbatim, placeholders preserved
+	ResolvedURL  string `json:"resolved_url,omitempty"`  // only when no unresolved placeholder remains
+	Host         string `json:"host,omitempty"`          // only when the host part is placeholder-free
+	Database     string `json:"database,omitempty"`      // database/schema name for datastores
+	ConfigSource string `json:"config_source,omitempty"` // "<config file>: <property key>"
+}
+
 type BaseEntity struct {
 	ID            string         `json:"id"`
 	Type          string         `json:"type"`
@@ -46,6 +63,7 @@ type BaseEntity struct {
 	Service       string         `json:"service"`
 	Platform      string         `json:"platform,omitempty"`
 	Instance      string         `json:"instance,omitempty"`
+	InstanceRef   *InstanceRef   `json:"instance_ref,omitempty"`
 	Operation     string         `json:"operation,omitempty"`
 	OperationKind string         `json:"operation_kind,omitempty"`
 	Inputs        []InputSpec    `json:"inputs,omitempty"`

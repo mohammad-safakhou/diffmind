@@ -620,7 +620,8 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	state.DetailDependency = append([]model.Dependency(nil), dependencies...)
 	if o.astIndex != nil {
 		dependencies = connectionstage.AugmentDependencies(o.astIndex, exposures, dependencies, o.cfg.Quality.MinConfidence)
-		discoverystage.StampInferredDBPlatform(o.astIndex, dependencies) // P7: configured platform for deterministic db ops
+		discoverystage.StampInferredDBPlatform(o.astIndex, dependencies)        // P7: configured platform for deterministic db ops
+		discoverystage.StampInstanceRefs(o.astIndex, exposures, dependencies) // concrete instance identity (downstream contract)
 		dependencies = reconcile.DedupeDependencies(dependencies)
 		state.DetailDependency = append([]model.Dependency(nil), dependencies...)
 		o.persistStageState("detail_dependencies.json", state.DetailDependency)

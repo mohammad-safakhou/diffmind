@@ -1,6 +1,7 @@
 package extraction
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -99,7 +100,7 @@ func DeriveGrouping(b model.BaseEntity) (platform, instance, operation, opKind s
 	get := func(keys ...string) string {
 		for _, k := range keys {
 			if v, ok := d[k]; ok {
-				if s := strings.TrimSpace(fmt.Sprint(v)); s != "" && s != "<nil>" {
+				if s, ok := scalarDetail(v); ok && s != "" {
 					return s
 				}
 			}
@@ -165,6 +166,20 @@ func DeriveGrouping(b model.BaseEntity) (platform, instance, operation, opKind s
 		opKind = "use"
 	}
 	return SanitizeGroup(platform), SanitizeGroup(instance), strings.TrimSpace(operation), SanitizeGroup(opKind)
+}
+
+// scalarDetail renders a detail value only when it is a scalar. Structured
+// values (maps, lists) carry no single identity — rendering them leaked Go
+// syntax ("map[url_template:...]") into Instance in real runs, splitting one
+// physical database into several downstream identities.
+func scalarDetail(v any) (string, bool) {
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t), true
+	case bool, int, int32, int64, float32, float64, json.Number:
+		return strings.TrimSpace(fmt.Sprint(t)), true
+	}
+	return "", false
 }
 
 func FirstNonEmpty(vals ...string) string {
