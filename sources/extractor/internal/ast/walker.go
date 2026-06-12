@@ -69,6 +69,14 @@ func NewWalker(idx *ProjectIndex) *Walker {
 	return &Walker{idx: idx}
 }
 
+// Index returns the project index the walker is bound to.
+func (w *Walker) Index() *ProjectIndex {
+	if w == nil {
+		return nil
+	}
+	return w.idx
+}
+
 // Walk performs a BFS from entrySymbol, collecting paths that reach any
 // symbol for which cfg.IsTarget returns true.
 //

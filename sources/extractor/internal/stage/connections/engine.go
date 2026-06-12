@@ -581,6 +581,27 @@ func buildASTConnectionsForExposure(
 
 	entryPrefixes := buildEntryPrefixes(entrySymbols, exposureClasses)
 
+	// Direct containment: the dependency's own call site sits INSIDE an entry
+	// method — a listener/cron/route handler doing the work itself. The BFS
+	// only reports targets reached via call edges, so a zero-hop dependency is
+	// otherwise invisible (a major cause of dangling exposures, A1). Gated on
+	// call-site-narrow dependency locations (directContainment), so an entity
+	// labeled with a whole class — e.g. the exposure itself re-reported as a
+	// dependency — never connects to itself.
+	for _, entry := range entrySymbols {
+		for _, dep := range chooseDepsForSymbol(entry, depBySymbol[entry]) {
+			if !directContainment(walker.Index(), entry, dep) {
+				continue
+			}
+			b, exists := byDep[dep.ID]
+			if !exists {
+				b = &bucket{dep: dep}
+				byDep[dep.ID] = b
+			}
+			b.paths = append(b.paths, astpkg.CallPath{EntrySymbol: entry, TargetSymbol: entry})
+		}
+	}
+
 	walkTruncated := false
 	for _, entry := range entrySymbols {
 		if ctx.Err() != nil {
@@ -638,6 +659,33 @@ func buildASTConnectionsForExposure(
 		})
 	}
 	return conns, unresolved
+}
+
+// directContainment reports whether one of the dependency's pinned locations is
+// a call-site-narrow range (≤3 lines) inside the entry method's own body. Wide
+// (class-level) locations and other files never qualify — only a located call
+// site is proof the entry itself performs the dependency.
+func directContainment(idx *astpkg.ProjectIndex, entry string, dep model.Dependency) bool {
+	if idx == nil {
+		return false
+	}
+	for _, def := range idx.Symbols[entry] {
+		switch def.Kind {
+		case astpkg.SymbolKindMethod, astpkg.SymbolKindFunction, astpkg.SymbolKindConstructor:
+		default:
+			continue
+		}
+		for _, loc := range dep.Locations {
+			if loc.File != def.File || loc.StartLine <= 0 || loc.EndLine-loc.StartLine > 2 {
+				continue
+			}
+			ls, le := uint32(loc.StartLine-1), uint32(loc.EndLine-1)
+			if def.Range.StartLine <= ls && def.Range.EndLine >= le {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // buildEntryPrefixes returns the set of "entry class prefixes" for an exposure:
