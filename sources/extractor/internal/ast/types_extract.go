@@ -85,6 +85,27 @@ func extractFieldTypes(src []byte, symbols []SymbolDef) map[string]string {
 
 func declaredVariable(line string) (name, typ string, ok bool) {
 	line = strings.TrimSpace(line)
+	// Go declarations (no semicolon, name-first): "var order Order" and the
+	// short composite-literal form "order := Order{...}" / "order := &Order{...}".
+	if rest, found := strings.CutPrefix(line, "var "); found && !strings.Contains(rest, "=") {
+		parts := strings.Fields(rest)
+		if len(parts) == 2 && !strings.ContainsAny(parts[0], "<>[]()=,") {
+			if typ = cleanTypeName(strings.TrimPrefix(parts[1], "*")); typ != "" {
+				return parts[0], typ, true
+			}
+		}
+		return "", "", false
+	}
+	if i := strings.Index(line, ":="); i > 0 {
+		name = strings.TrimSpace(line[:i])
+		rhs := strings.TrimPrefix(strings.TrimSpace(line[i+2:]), "&")
+		if brace := strings.IndexByte(rhs, '{'); brace > 0 && !strings.ContainsAny(name, " ,()") {
+			if typ = cleanTypeName(rhs[:brace]); typ != "" && !strings.ContainsAny(typ, "<>()") {
+				return name, typ, true
+			}
+		}
+		return "", "", false
+	}
 	if line == "" || !strings.Contains(line, ";") {
 		return "", "", false
 	}
