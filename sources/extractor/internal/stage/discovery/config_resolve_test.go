@@ -105,6 +105,27 @@ func TestConfigValueProfilePrecedence(t *testing.T) {
 	}
 }
 
+// Entry-level profiles (Spring multi-doc overlays) must participate in the
+// same precedence rule as profile-named files.
+func TestConfigValueMultiDocProfileEntries(t *testing.T) {
+	overlay := &astpkg.ProjectIndex{Configs: map[string]*astpkg.ConfigFile{
+		"application.yml": {Path: "application.yml", Entries: []astpkg.ConfigEntry{
+			{Key: "queue.name", Value: "orders-local"},
+			{Key: "queue.name", Value: "orders-prod", Profile: "prod"},
+		}},
+	}}
+	if _, ok := ConfigValue(overlay, "queue.name"); ok {
+		t.Errorf("disagreeing in-file overlay with unknown active profile must be unresolved")
+	}
+
+	overlay.Configs["application.yml"].Entries = append(overlay.Configs["application.yml"].Entries,
+		astpkg.ConfigEntry{Key: "spring.profiles.active", Value: "prod"})
+	got, ok := ConfigValue(overlay, "queue.name")
+	if !ok || got != "orders-prod" {
+		t.Errorf("pinned active profile should pick the overlay value, got (%q,%v)", got, ok)
+	}
+}
+
 func TestConfigProfile(t *testing.T) {
 	cases := []struct{ path, want string }{
 		{"application.yml", ""},
