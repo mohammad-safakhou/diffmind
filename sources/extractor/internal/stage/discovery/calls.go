@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
@@ -287,10 +288,22 @@ func splitCall(cs astpkg.CallSite) (receiver, method string) {
 	return receiver, method
 }
 
-// forEachCall visits every call site in the project's call graph.
+// forEachCall visits every recorded call site — including ones without an
+// enclosing named caller (top-level / arrow-function code, the norm in Node),
+// which idx.CallGraph drops — in sorted file order, so "first seen wins"
+// tie-breaks inside the derivers are stable run-to-run (the V3a lesson).
 func forEachCall(idx *astpkg.ProjectIndex, fn func(astpkg.CallSite)) {
-	for _, sites := range idx.CallGraph {
-		for _, cs := range sites {
+	paths := make([]string, 0, len(idx.Files))
+	for p := range idx.Files {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	for _, p := range paths {
+		fa := idx.Files[p]
+		if fa == nil {
+			continue
+		}
+		for _, cs := range fa.Calls {
 			fn(cs)
 		}
 	}

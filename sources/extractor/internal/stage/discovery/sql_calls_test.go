@@ -40,14 +40,14 @@ func TestDeterministicSQLOperations(t *testing.T) {
 		}
 		return cs
 	}
-	idx := &astpkg.ProjectIndex{CallGraph: map[string][]astpkg.CallSite{
-		"main.getOrder": {
+	idx := &astpkg.ProjectIndex{Files: map[string]*astpkg.FileAST{
+		"main.go": {Path: "main.go", Language: "go", Calls: []astpkg.CallSite{
 			call("main.go", "db.QueryContext", "ctx", `"SELECT id FROM orders WHERE id = $1"`),
 			call("main.go", "db.QueryContext", "ctx", `"SELECT total FROM orders WHERE id = $1"`), // same fact
 			call("main.go", "db.ExecContext", "ctx", `"INSERT INTO order_events (id) VALUES ($1)"`),
-			call("main.go", "log.Printf", `"select failed: %v"`, "err"),    // not a query API
+			call("main.go", "log.Printf", `"select failed: %v"`, "err"),      // not a query API
 			call("main.go", "db.QueryContext", "ctx", "buildQuery(filter)"), // not a literal
-		},
+		}},
 	}}
 	got := DeterministicSQLOperations(idx)
 	if len(got) != 2 {
