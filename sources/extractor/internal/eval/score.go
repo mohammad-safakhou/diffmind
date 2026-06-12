@@ -2,6 +2,7 @@ package eval
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 )
@@ -40,18 +41,32 @@ type ItemRef struct {
 	Key  string `json:"key"`
 }
 
+// InstanceMismatch is a MATCHED fact whose concrete instance differs from the
+// label. Identity matching deliberately ignores instance (an http route is its
+// method+path whatever broker config surrounds it); this is the separate
+// downstream-contract check: two services referencing the same physical
+// queue/database must emit the same instance, or the cross-service graph
+// splits one node into many.
+type InstanceMismatch struct {
+	Type string `json:"type"`
+	Key  string `json:"key"`
+	Want string `json:"want"`
+	Got  string `json:"got"`
+}
+
 // ObjectiveScore is the score for one objective (entity type) or the
 // "connections" pseudo-objective, or the micro-averaged overall.
 type ObjectiveScore struct {
-	Objective      string    `json:"objective"`
-	TP             int       `json:"tp"`
-	FP             int       `json:"fp"`
-	FN             int       `json:"fn"`
-	Precision      float64   `json:"precision"`
-	Recall         float64   `json:"recall"`
-	F1             float64   `json:"f1"`
-	FalsePositives []ItemRef `json:"false_positives,omitempty"`
-	FalseNegatives []ItemRef `json:"false_negatives,omitempty"`
+	Objective          string             `json:"objective"`
+	TP                 int                `json:"tp"`
+	FP                 int                `json:"fp"`
+	FN                 int                `json:"fn"`
+	Precision          float64            `json:"precision"`
+	Recall             float64            `json:"recall"`
+	F1                 float64            `json:"f1"`
+	FalsePositives     []ItemRef          `json:"false_positives,omitempty"`
+	FalseNegatives     []ItemRef          `json:"false_negatives,omitempty"`
+	InstanceMismatches []InstanceMismatch `json:"instance_mismatches,omitempty"`
 }
 
 // Report is the full scoring result for one fixture+mode.
@@ -63,8 +78,9 @@ type Report struct {
 }
 
 type keyed struct {
-	key string
-	ref ItemRef
+	key      string
+	ref      ItemRef
+	instance string // lowercased Instance, for the downstream-contract check
 }
 
 // matchByKey computes TP/FP/FN by multiset key match. Two items with the same
@@ -177,6 +193,7 @@ func ScoreAll(extracted Extracted, expected ExpectedSet, mode Mode) Report {
 	for _, t := range typeList {
 		tp, fps, fns := matchByKey(extByType[t], expByType[t])
 		os := buildScore(t, tp, fps, fns)
+		os.InstanceMismatches = instanceMismatches(extByType[t], expByType[t])
 		rep.Objectives = append(rep.Objectives, os)
 		micro.TP += os.TP
 		micro.FP += os.FP
@@ -220,7 +237,47 @@ func ScoreAll(extracted Extracted, expected ExpectedSet, mode Mode) Report {
 
 func keyedEntity(b model.BaseEntity) keyed {
 	k := identityKey(b)
-	return keyed{key: k, ref: ItemRef{Type: b.Type, Name: b.Name, Key: k}}
+	return keyed{key: k, ref: ItemRef{Type: b.Type, Name: b.Name, Key: k}, instance: lc(b.Instance)}
+}
+
+// instanceMismatches checks the matched pairs whose label pins an instance: at
+// least one extracted entity under the same identity key must carry it.
+// Unmatched keys are already FN/FP; this only grades identity-correct facts
+// with the wrong concrete instance.
+func instanceMismatches(extracted, expected []keyed) []InstanceMismatch {
+	var out []InstanceMismatch
+	reported := map[string]struct{}{}
+	for _, e := range expected {
+		if e.instance == "" {
+			continue
+		}
+		if _, done := reported[e.key]; done {
+			continue
+		}
+		var got []string
+		matched, instanceOK := false, false
+		for _, x := range extracted {
+			if x.key != e.key {
+				continue
+			}
+			matched = true
+			got = append(got, x.instance)
+			if x.instance == e.instance {
+				instanceOK = true
+			}
+		}
+		if !matched || instanceOK {
+			continue
+		}
+		reported[e.key] = struct{}{}
+		out = append(out, InstanceMismatch{
+			Type: e.ref.Type,
+			Key:  e.key,
+			Want: e.instance,
+			Got:  strings.Join(got, ", "),
+		})
+	}
+	return out
 }
 
 func buildScore(objective string, tp int, fps, fns []ItemRef) ObjectiveScore {

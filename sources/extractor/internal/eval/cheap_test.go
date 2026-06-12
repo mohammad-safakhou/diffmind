@@ -9,12 +9,15 @@ import (
 )
 
 // TestCheapAccuracyFloor is the hermetic CI guardrail: the deterministic floor
-// must perfectly recover the spring-crud fixture's labeled facts (2 routes, 2
-// db ops, 2 connections) with no LLM. A regression in any deterministic stage
-// drops F1 below the threshold and fails here.
+// must perfectly recover each fixture's labeled deterministic facts with no
+// LLM, including the labeled concrete instances (the downstream contract). A
+// regression in any deterministic stage drops F1 below the threshold or
+// produces an instance mismatch and fails here.
 func TestCheapAccuracyFloor(t *testing.T) {
 	fixtures := map[string]float64{
-		"spring-crud": 1.0, // floor should be perfect on this fixture
+		"spring-crud":  1.0, // routes + JPA db ops + connections
+		"sqs-producer": 1.0, // route + SqsTemplate publish + connection
+		"sqs-consumer": 1.0, // @SqsListener + zero-hop db write + instances
 	}
 	cfg := config.Default()
 	cfg.Quality.MinConfidence = 0.7
@@ -31,6 +34,11 @@ func TestCheapAccuracyFloor(t *testing.T) {
 		}
 		if rep.Overall.F1 < minF1 {
 			t.Errorf("%s: overall F1 %.3f below threshold %.3f\n%s", name, rep.Overall.F1, minF1, renderForTest(rep))
+		}
+		for _, o := range rep.Objectives {
+			for _, im := range o.InstanceMismatches {
+				t.Errorf("%s: %s %s: instance want %q got %q", name, o.Objective, im.Key, im.Want, im.Got)
+			}
 		}
 	}
 }
