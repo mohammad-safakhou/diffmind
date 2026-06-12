@@ -30,13 +30,28 @@ func parseArguments(argsText string) []ArgumentExpr {
 }
 
 // splitArgs splits a comma-separated argument list, respecting nested
-// brackets/parens/braces.
+// brackets/parens/braces AND string literals — a comma inside
+// "SELECT id, total FROM ..." is part of the literal, not a separator
+// (the old splitter sheared SQL/CSV literals into broken argument halves).
 func splitArgs(s string) []string {
 	var out []string
 	depth := 0
 	start := 0
-	for i, ch := range s {
+	var quote byte // active string delimiter, 0 = none
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if quote != 0 {
+			switch {
+			case ch == '\\' && quote != '`':
+				i++ // escaped char inside "..." / '...'
+			case ch == quote:
+				quote = 0
+			}
+			continue
+		}
 		switch ch {
+		case '"', '\'', '`':
+			quote = ch
 		case '(', '[', '{', '<':
 			depth++
 		case ')', ']', '}', '>':
