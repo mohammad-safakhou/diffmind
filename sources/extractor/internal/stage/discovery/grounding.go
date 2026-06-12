@@ -48,6 +48,14 @@ type objectiveMatcher struct {
 	bindingKinds   []string // matched against FrameworkBinding.Kind
 	classNameHints []string // matched against SymbolDef.Receiver / Name
 	configKeyHints []string // matched against ConfigEntry.Key
+	// clientLibs name the client libraries whose presence in a file marks it
+	// as candidate-bearing for SHARDING weights only (S2): imports +2, call
+	// receivers/callees +1. This lets objectives without framework detectors
+	// (queue_publish, command_exec, outbound_rpc, ...) accumulate evidence and
+	// shard, instead of one whole-repo "find ALL X" call — the highest-variance,
+	// truncation-prone prompt shape. Matched one-way (text contains lib), unlike
+	// the loose two-way hint matching.
+	clientLibs []string
 }
 
 // objectiveMatchers maps objective.Type -> its matcher. One entry per of the
@@ -67,11 +75,13 @@ var objectiveMatchers = map[string]objectiveMatcher{
 		annPatterns:    []string{"grpc", "grpcservice", "service", "rpc"},
 		bindingKinds:   []string{"rpc", "grpc", "rpc_endpoint"},
 		classNameHints: []string{"grpc", "service", "rpc", "servicegrpc"},
+		clientLibs:     []string{"grpc", "protobuf", "implbase", "twirp"},
 	},
 	"queue_consumer": {
 		annPatterns:    []string{"sqslistener", "kafkalistener", "rabbitlistener", "streamlistener", "jmslistener", "eventlistener", "listener", "subscribe"},
 		bindingKinds:   []string{"queue_consumer", "consumer", "listener", "subscriber"},
 		classNameHints: []string{"listener", "consumer", "subscriber", "handler"},
+		clientLibs:     []string{"sqsclient", "kafkaconsumer", "rabbitmq", "amqp", "pubsub", "nats"},
 	},
 	"scheduled_job": {
 		annPatterns:    []string{"scheduled", "schedule", "cron", "scheduledjob"},
@@ -82,6 +92,7 @@ var objectiveMatchers = map[string]objectiveMatcher{
 		annPatterns:    []string{"command", "cli", "requesthandler"},
 		bindingKinds:   []string{"cli_command", "command", "lambda_handler", "entrypoint"},
 		classNameHints: []string{"command", "handler", "main", "cli", "cmd"},
+		clientLibs:     []string{"cobra", "picocli", "click", "argparse", "commander", "yargs"},
 	},
 	"db_operation": {
 		annPatterns:    []string{"repository", "query", "mapper", "select", "insert", "update", "delete", "entity", "table", "cacheable", "cacheevict"},
@@ -99,29 +110,34 @@ var objectiveMatchers = map[string]objectiveMatcher{
 		annPatterns:    []string{"grpcclient", "grpc", "stub"},
 		bindingKinds:   []string{"outbound_rpc", "grpc_client"},
 		classNameHints: []string{"client", "stub", "grpc", "channel"},
+		clientLibs:     []string{"grpc", "protobuf", "stub", "twirp"},
 	},
 	"queue_publish": {
 		annPatterns:    []string{"sqstemplate", "kafkatemplate", "rabbittemplate", "publish", "send"},
 		bindingKinds:   []string{"queue_publish", "producer", "publisher"},
 		classNameHints: []string{"publisher", "producer", "sender", "template", "gateway"},
 		configKeyHints: []string{"queue", "topic", "sns", "sqs", "kafka", "exchange"},
+		clientLibs:     []string{"sqsclient", "sqstemplate", "kafkatemplate", "kafkaproducer", "rabbittemplate", "snsclient", "pubsub", "nats", "amqp", "jmstemplate"},
 	},
 	"command_exec": {
 		annPatterns:    []string{},
 		bindingKinds:   []string{"command_exec", "process"},
 		classNameHints: []string{"exec", "process", "shell", "runtime", "command"},
+		clientLibs:     []string{"processbuilder", "runtime.exec", "os/exec", "subprocess", "child_process"},
 	},
 	"cache_operation": {
 		annPatterns:    []string{"cacheable", "cacheevict", "cacheput", "cache"},
 		bindingKinds:   []string{"cache_operation", "cache"},
 		classNameHints: []string{"cache", "redis", "memcached"},
 		configKeyHints: []string{"redis", "cache", "memcached"},
+		clientLibs:     []string{"redis", "jedis", "lettuce", "memcached", "caffeine", "hazelcast"},
 	},
 	"stream_consume": {
 		annPatterns:    []string{"kinesis", "streamlistener", "streamconsumer"},
 		bindingKinds:   []string{"stream_consume", "stream"},
 		classNameHints: []string{"stream", "kinesis", "consumer", "processor"},
 		configKeyHints: []string{"kinesis", "stream"},
+		clientLibs:     []string{"kinesis", "kafkastreams", "kstream", "flink", "spark"},
 	},
 }
 
@@ -276,7 +292,43 @@ func objectiveCandidateWeights(idx *astpkg.ProjectIndex, obj objectives.Objectiv
 			out[b.File]++
 		}
 	}
+	// S2: keyword-seeded weights from client-library usage, so objectives the
+	// framework detectors don't cover still accumulate evidence and shard.
+	// Imports are the strongest signal (+2); call receivers/callees +1.
+	if len(m.clientLibs) > 0 {
+		for file, fa := range idx.Files {
+			if fa == nil || !inScope(file) {
+				continue
+			}
+			for _, imp := range fa.Imports {
+				if anyLibMatch(m.clientLibs, imp.Path) || anyLibMatch(m.clientLibs, imp.Alias) {
+					out[file] += 2
+				}
+			}
+			for _, cs := range fa.Calls {
+				if anyLibMatch(m.clientLibs, cs.ReceiverRaw) || anyLibMatch(m.clientLibs, cs.CalleeRaw) {
+					out[file]++
+				}
+			}
+		}
+	}
 	return out
+}
+
+// anyLibMatch reports whether the text mentions one of the library names.
+// One-way contains only — the two-way hint matching would let a one-letter
+// receiver match everything.
+func anyLibMatch(libs []string, s string) bool {
+	if s == "" {
+		return false
+	}
+	ls := strings.ToLower(s)
+	for _, lib := range libs {
+		if strings.Contains(ls, lib) {
+			return true
+		}
+	}
+	return false
 }
 
 func symbolMatches(def astpkg.SymbolDef, anns []string, m objectiveMatcher) bool {
