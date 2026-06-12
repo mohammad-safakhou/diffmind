@@ -1,0 +1,30 @@
+{
+  "fixture": "sqs-producer",
+  "repo_path": "repo",
+  "service_name": "sqs-producer",
+  "exposures": [
+    {
+      "type": "http_route",
+      "name": "POST /orders",
+      "details": { "method": "POST", "path": "/orders" },
+      "deterministic": true
+    }
+  ],
+  "dependencies": [
+    {
+      "type": "queue_publish",
+      "name": "order-events",
+      "platform": "sqs",
+      "instance": "order-events",
+      "details": { "queue": "order-events", "platform": "sqs" },
+      "deterministic": true
+    }
+  ],
+  "connections": [
+    {
+      "from": { "type": "http_route", "details": { "method": "POST", "path": "/orders" } },
+      "to": { "type": "queue_publish", "platform": "sqs", "details": { "queue": "order-events" } },
+      "deterministic": true
+    }
+  ]
+}

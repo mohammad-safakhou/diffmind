@@ -30,6 +30,9 @@ func RenderTable(w io.Writer, rep Report) {
 		for _, fn := range o.FalseNegatives {
 			fmt.Fprintf(w, "  FN %-14s %s\n", o.Objective, fpName(fn))
 		}
+		for _, im := range o.InstanceMismatches {
+			fmt.Fprintf(w, "  INSTANCE %-8s %s  want %q got %q\n", o.Objective, im.Key, im.Want, im.Got)
+		}
 	}
 }
 

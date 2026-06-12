@@ -1,0 +1,9 @@
+spring:
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/order_projections}
+
+services:
+  aws:
+    sqs:
+      order-events:
+        url: ${ORDER_EVENTS_SQS:http://localhost:4566/order-events}
