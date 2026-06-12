@@ -40,6 +40,7 @@ func buildShallowConnections(exposures []model.Exposure, deps []model.Dependency
 				ID:             util.StableID(exp.ID, dep.ID, pathSig),
 				FromExposureID: exp.ID,
 				ToDependencyID: dep.ID,
+				Source:         model.ConnectionSourceShallow,
 				Summary:        formatConnectionSummary(exp, dep, 0),
 				Locations:      exp.Locations,
 				Evidence: []model.Evidence{{

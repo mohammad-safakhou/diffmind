@@ -640,6 +640,34 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	}
 	o.emitStageCompleted("connections", events.StatusSuccess, map[string]any{"connections": len(conns)})
 	unresolved = append(unresolved, connUnresolved...)
+
+	// --- Stage 4.5: LLM connection repair (A1) ---
+	// Exposures the deterministic walk left with zero connections get one
+	// evidence-gated LLM pass over the closed set of existing dependency IDs.
+	// Strictly additive and fail-soft: a repair error degrades to the walk's
+	// result, never fails the run.
+	repairOut, repairErr := (connectionstage.RepairRunner{
+		Prompt:        o.promptAgent,
+		PathMapper:    o.PathMapper(),
+		MinConfidence: o.cfg.Quality.MinConfidence,
+	}).Run(ctx, connectionstage.RepairInput{
+		Index: o.astIndex, Exposures: exposures, Dependencies: dependencies,
+		Connections: conns, RepoFacts: rf, SubDir: o.subDir,
+	})
+	if repairErr != nil {
+		warnings = append(warnings, "connection repair failed (kept deterministic connections): "+repairErr.Error())
+	} else if repairOut.Dangling > 0 {
+		conns = append(conns, repairOut.Connections...)
+		unresolved = append(unresolved, repairOut.Rejected...)
+		o.emit(events.Event{
+			Kind: events.KindLog, Stage: "connections", JobID: "connections.repair",
+			Message: fmt.Sprintf("repair: %d dangling exposures, %d connections added, %d proposals rejected",
+				repairOut.Dangling, len(repairOut.Connections), len(repairOut.Rejected)),
+			Payload: map[string]any{
+				"dangling": repairOut.Dangling, "added": len(repairOut.Connections), "rejected": len(repairOut.Rejected),
+			},
+		})
+	}
 	state.Connections = append([]model.Connection(nil), conns...)
 	o.persistStageState("connections.json", state.Connections)
 

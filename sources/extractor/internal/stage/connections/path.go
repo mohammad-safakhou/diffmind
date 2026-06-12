@@ -52,6 +52,7 @@ func buildASTConnection(
 		ID:             connID,
 		FromExposureID: exposure.ID,
 		ToDependencyID: dep.ID,
+		Source:         model.ConnectionSourceAST,
 		Condition:      primaryCond,
 		PathSignature:  pathSig,
 		Summary:        fmt.Sprintf("%s → %s", exposure.Name, dep.Name),
