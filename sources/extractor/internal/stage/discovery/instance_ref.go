@@ -138,19 +138,18 @@ func instanceIsResourceFallback(d *model.BaseEntity) bool {
 	return false
 }
 
-// stampQueueInstance attaches broker identity to a queue/stream entity. The
-// Instance field already carries the resolved logical queue name (discovery
-// resolves ${...} triggers); here we find the config entry that wires that
-// queue to a concrete URL and preserve it verbatim.
+// stampQueueInstance attaches broker identity to a queue/stream entity and
+// converges Instance and details.queue onto the config-backed logical queue
+// name, so LLM spelling variants of one physical queue share identity and the
+// reconcile variant collapse can merge them. Prose never enters LogicalName;
+// when nothing resolves to a clean token the entity keeps its fields and gets
+// no ref (invariant #6).
 func stampQueueInstance(idx *astpkg.ProjectIndex, e *model.BaseEntity) {
-	name := strings.TrimSpace(e.Instance)
-	if IsPlaceholder(name) {
-		name = ResolveResourceName(idx, name)
-		if name != "" && !IsPlaceholder(name) {
-			e.Instance = name
-		}
+	if e.InstanceRef != nil {
+		return
 	}
-	if name == "" || e.InstanceRef != nil {
+	name := resolveQueueLogicalName(idx, e)
+	if name == "" {
 		return
 	}
 	ref := &model.InstanceRef{Kind: queueKind(e.Platform), LogicalName: name}
@@ -165,6 +164,186 @@ func stampQueueInstance(idx *astpkg.ProjectIndex, e *model.BaseEntity) {
 		}
 	}
 	e.InstanceRef = ref
+	convergeQueueIdentity(e, name)
+}
+
+// queueDestinationDetailKeys are the detail fields that may carry the queue
+// destination, in trust order (most identity-like first).
+var queueDestinationDetailKeys = []string{
+	"queue", "destination", "topic", "stream", "queue_name", "queue_url_property", "queue_url",
+}
+
+// resolveQueueLogicalName finds a clean queue name. Config-grounded candidates
+// win over free-text Instance so an LLM label such as
+// "target-calculation-events-sqs-consumer" converges onto the physical queue
+// named by its exact config property. A clean Instance remains the fallback
+// when config carries no stronger evidence.
+func resolveQueueLogicalName(idx *astpkg.ProjectIndex, e *model.BaseEntity) string {
+	candidates := []string{e.Instance}
+	for _, k := range queueDestinationDetailKeys {
+		if v, ok := e.Details[k].(string); ok {
+			candidates = append(candidates, v)
+		}
+	}
+	for _, c := range candidates {
+		if n := resolveConfigBackedQueueName(idx, c); n != "" {
+			return n
+		}
+	}
+	if cleanResourceToken(e.Instance) {
+		return strings.TrimSpace(e.Instance)
+	}
+	for _, c := range candidates[1:] {
+		if cleanResourceToken(c) {
+			return strings.TrimSpace(c)
+		}
+	}
+	return ""
+}
+
+func resolveConfigBackedQueueName(idx *astpkg.ProjectIndex, raw string) string {
+	candidate := strings.TrimSpace(raw)
+	if candidate == "" || noneSentinel(candidate) {
+		return ""
+	}
+	if !cleanResourceToken(candidate) {
+		candidate = firstProseToken(candidate)
+	}
+	switch {
+	case IsPlaceholder(candidate):
+		key, _, _ := SplitPlaceholder(candidate)
+		if v, ok := ResolvePlaceholder(idx, candidate, 0); ok {
+			if seg := TrailingResourceSegment(v); cleanResourceToken(seg) {
+				return seg
+			}
+			if cleanResourceToken(v) {
+				return v
+			}
+		}
+		if configKeyExists(idx, key) {
+			return KeySegmentName(key)
+		}
+	case looksLikePropertyKey(candidate):
+		if !configKeyExists(idx, candidate) {
+			return ""
+		}
+		if v, ok := ConfigValue(idx, candidate); ok {
+			if seg := TrailingResourceSegment(stripPlaceholderDefault(v)); cleanResourceToken(seg) {
+				return seg
+			}
+			if cleanResourceToken(v) {
+				return v
+			}
+		}
+		return KeySegmentName(candidate)
+	case strings.Contains(candidate, "://") || strings.HasPrefix(candidate, "arn:"):
+		if seg := configuredQueueURLSegment(idx, candidate); cleanResourceToken(seg) {
+			return seg
+		}
+	}
+	return ""
+}
+
+func configKeyExists(idx *astpkg.ProjectIndex, key string) bool {
+	if idx == nil || strings.TrimSpace(key) == "" {
+		return false
+	}
+	for _, path := range sortedConfigPaths(idx) {
+		for _, e := range idx.Configs[path].Entries {
+			if strings.EqualFold(strings.TrimSpace(e.Key), strings.TrimSpace(key)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// configuredQueueURLSegment accepts a URL/ARN only when it occurs in config
+// and every exact occurrence names the same trailing resource.
+func configuredQueueURLSegment(idx *astpkg.ProjectIndex, raw string) string {
+	raw = strings.TrimSpace(raw)
+	var found string
+	for _, path := range sortedConfigPaths(idx) {
+		for _, e := range idx.Configs[path].Entries {
+			v := strings.TrimSpace(stripPlaceholderDefault(e.Value))
+			if !strings.EqualFold(v, raw) {
+				continue
+			}
+			seg := TrailingResourceSegment(v)
+			if seg == "" || found != "" && !strings.EqualFold(found, seg) {
+				return ""
+			}
+			found = seg
+		}
+	}
+	return found
+}
+
+func cleanResourceToken(s string) bool {
+	s = strings.TrimSpace(s)
+	return s != "" &&
+		!noneSentinel(s) &&
+		!strings.ContainsAny(s, " \t\r\n") &&
+		!strings.Contains(s, "->") &&
+		!strings.Contains(s, "://") &&
+		!strings.HasPrefix(s, "arn:") &&
+		!IsPlaceholder(s)
+}
+
+func noneSentinel(s string) bool {
+	s = strings.ToLower(strings.TrimSpace(s))
+	normalized := strings.Trim(s, "_.- ")
+	switch normalized {
+	case "none", "n/a", "na", "null", "":
+		return true
+	}
+	normalized = strings.NewReplacer("_", "-", " ", "-").Replace(normalized)
+	return normalized == "not-found" ||
+		strings.HasSuffix(normalized, "-none") ||
+		strings.HasPrefix(normalized, "no-") && strings.HasSuffix(normalized, "-found")
+}
+
+func firstProseToken(s string) string {
+	fields := strings.Fields(strings.TrimSpace(s))
+	if len(fields) == 0 {
+		return ""
+	}
+	return strings.Trim(fields[0], ",;()")
+}
+
+func looksLikePropertyKey(s string) bool {
+	s = strings.TrimSpace(s)
+	return strings.Contains(s, ".") &&
+		!strings.ContainsAny(s, " \t\r\n/:") &&
+		!IsPlaceholder(s)
+}
+
+// convergeQueueIdentity rewrites the identity-bearing fields onto the resolved
+// logical name so dedup sees one spelling per physical queue. Original values
+// are preserved under *_raw / instance_note; the operation text is rebuilt
+// when it embedded the old spelling.
+func convergeQueueIdentity(e *model.BaseEntity, name string) {
+	if e.Details == nil {
+		e.Details = map[string]any{}
+	}
+	if old := strings.TrimSpace(e.Instance); old != name {
+		if !cleanResourceToken(old) && old != "" {
+			e.Details["instance_note"] = old
+		}
+		e.Instance = name
+	}
+	e.Details["instance"] = name
+	if old, ok := e.Details["queue"].(string); ok && strings.TrimSpace(old) != name {
+		e.Details["queue_raw"] = old
+		e.Details["queue"] = name
+	}
+	for _, verb := range []string{"consume ", "publish "} {
+		if strings.HasPrefix(e.Operation, verb) && e.Operation != verb+name {
+			e.Operation = verb + name
+			e.Details["operation_normalized"] = e.Operation
+			break
+		}
+	}
 }
 
 // stampOutboundHTTPInstance attaches the configured base URL of the target
