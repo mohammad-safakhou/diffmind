@@ -17,6 +17,7 @@ func atsIndex() *astpkg.ProjectIndex {
 		"application.yml": cfg("application.yml",
 			"spring.datasource.url", atsURLTemplate,
 			"services.aws.sqs.catalogue-target-request.url", "${CATALOG_SQS:http://localhost:4566/catalogue-target-request-sqs}",
+			"services.aws.sqs.catalog-target-response-sqs.url", "${CATALOG_RESPONSE_SQS:http://localhost:4566/catalogue-target-response-sqs}",
 			"services.salesforce-account-api.url", "https://salesforce-data-api.example.global",
 		),
 	}}
@@ -110,6 +111,102 @@ func TestStampInstanceRefsQueueConsumerExposure(t *testing.T) {
 	}
 }
 
+func TestResolveQueueLogicalNameHygiene(t *testing.T) {
+	idx := atsIndex()
+	cases := []struct {
+		name   string
+		entity model.BaseEntity
+		want   string
+	}{
+		{
+			name: "config property with prose",
+			entity: model.BaseEntity{
+				Instance: "services.aws.sqs.catalog-target-response-sqs.url (default local URL follows)",
+			},
+			want: "catalogue-target-response-sqs",
+		},
+		{
+			name: "config detail overrides clean LLM label",
+			entity: model.BaseEntity{
+				Instance: "target-calculation-events-sqs-consumer",
+				Details: map[string]any{
+					"queue": "services.aws.sqs.catalog-target-response-sqs.url (default local URL follows)",
+				},
+			},
+			want: "catalogue-target-response-sqs",
+		},
+		{
+			name:   "clean ungrounded instance fallback",
+			entity: model.BaseEntity{Instance: "orders-created"},
+			want:   "orders-created",
+		},
+		{
+			name:   "sentinel",
+			entity: model.BaseEntity{Instance: "_none_"},
+			want:   "",
+		},
+		{
+			name:   "ungrounded prose",
+			entity: model.BaseEntity{Instance: "some queue described in prose"},
+			want:   "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveQueueLogicalName(idx, &tc.entity); got != tc.want {
+				t.Fatalf("resolveQueueLogicalName() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStampQueueInstanceConvergesIdentity(t *testing.T) {
+	exposures := []model.Exposure{
+		{BaseEntity: model.BaseEntity{
+			ID: "deterministic", Type: "queue_consumer", Name: "catalogue-target-response-sqs",
+			Platform: "sqs", Instance: "catalogue-target-response-sqs", Operation: "consume catalogue-target-response-sqs",
+			Details: map[string]any{"queue": "catalogue-target-response-sqs"},
+		}},
+		{BaseEntity: model.BaseEntity{
+			ID: "llm", Type: "queue_consumer", Name: "target-calculation-events-sqs-consumer",
+			Platform: "sqs", Instance: "target-calculation-events-sqs-consumer",
+			Operation: "consume target-calculation-events-sqs-consumer",
+			Details: map[string]any{
+				"queue": "services.aws.sqs.catalog-target-response-sqs.url (default local URL follows)",
+			},
+		}},
+	}
+
+	StampInstanceRefs(atsIndex(), exposures, nil)
+	if got := exposures[1].Instance; got != "catalogue-target-response-sqs" {
+		t.Fatalf("LLM variant instance = %q, want physical queue name", got)
+	}
+	if got := exposures[1].Details["queue"]; got != "catalogue-target-response-sqs" {
+		t.Fatalf("LLM variant queue detail = %v, want physical queue name", got)
+	}
+	if got := exposures[1].Details["queue_raw"]; got == nil {
+		t.Fatal("original queue detail must be preserved")
+	}
+}
+
+func TestCleanResourceToken(t *testing.T) {
+	cases := map[string]bool{
+		"orders-created":   true,
+		"_none_":           false,
+		"stream-none":      false,
+		"not-found":        false,
+		"queue with prose": false,
+		"a -> b":           false,
+		"https://x/q":      false,
+		"${queue.url}":     false,
+	}
+	for in, want := range cases {
+		if got := cleanResourceToken(in); got != want {
+			t.Errorf("cleanResourceToken(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
 func TestStampOutboundHTTPInstance(t *testing.T) {
 	deps := []model.Dependency{
 		{BaseEntity: model.BaseEntity{Type: "outbound_http", Platform: "http", Instance: "salesforce-account-api"}},
@@ -146,12 +243,12 @@ func TestGenericInstance(t *testing.T) {
 	}{
 		{"", "postgres", true},
 		{"unknown", "postgres", true},
-		{"postgres", "postgres", true},               // bare platform word
-		{"spring.datasource.url", "postgres", true},  // config key present in index
-		{"app.db.primary.url", "postgres", true},     // dotted key-ish even when not indexed
+		{"postgres", "postgres", true},              // bare platform word
+		{"spring.datasource.url", "postgres", true}, // config key present in index
+		{"app.db.primary.url", "postgres", true},    // dotted key-ish even when not indexed
 		{"map[url_template:jdbc:x]", "postgres", true},
-		{"routing_db", "postgres", false},  // concrete database name
-		{"public.orders schema", "postgres", false},  // contains a space -> not a key
+		{"routing_db", "postgres", false}, // concrete database name
+		{"public.orders schema", "postgres", false}, // contains a space -> not a key
 	}
 	for _, c := range cases {
 		if got := genericInstance(idx, c.instance, c.platform); got != c.want {
@@ -163,12 +260,12 @@ func TestGenericInstance(t *testing.T) {
 func TestDatabaseFromConnectionURL(t *testing.T) {
 	idx := atsIndex()
 	cases := []struct{ url, want string }{
-		{atsURLTemplate, "routing_db"},                  // ${NAME:default} -> default
-		{"jdbc:postgresql://db:5432/ats", "ats"},                  // plain
-		{"jdbc:mysql://db/shop?useSSL=false", "shop"},             // query params stripped
-		{"mongodb://h:27017/catalog", "catalog"},                  // non-jdbc scheme
-		{"jdbc:postgresql://db:5432/", ""},                        // no db segment
-		{"redis://cache:6379", ""},                                // no path
+		{atsURLTemplate, "routing_db"},      // ${NAME:default} -> default
+		{"jdbc:postgresql://db:5432/ats", "ats"},      // plain
+		{"jdbc:mysql://db/shop?useSSL=false", "shop"}, // query params stripped
+		{"mongodb://h:27017/catalog", "catalog"},      // non-jdbc scheme
+		{"jdbc:postgresql://db:5432/", ""},            // no db segment
+		{"redis://cache:6379", ""},                    // no path
 	}
 	for _, c := range cases {
 		if got := databaseFromConnectionURL(idx, c.url); got != c.want {
