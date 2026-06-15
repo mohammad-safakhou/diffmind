@@ -104,7 +104,7 @@ export function LiveGraph() {
 }
 
 // Main pipeline row, in left-to-right execution order.
-const STAGES = ['repo_facts', 'discovery', 'reexamination', 'detail', 'index', 'connections', 'reconcile']
+const STAGES = ['repo_facts', 'index', 'deterministic_discovery', 'discovery', 'reexamination', 'connections', 'connection_repair', 'reconcile']
 // Parallel stages live ABOVE the main row. Today we have one
 // parallel stage: 'index.build' (the per-language Docker image
 // build that runs while Stages 1-3 LLM work happens). It has
@@ -193,7 +193,7 @@ function syncGraph(cy, stagesMap, jobsMap) {
         // The "kind" subtype lets the stylesheet pick a distinct
         // appearance for batch nodes vs single-entity jobs (bigger,
         // bolder, different border colour). The dashboard's
-        // detail stage is dominated by these, so making them
+        // sharded discovery uses these, so making them
         // visually distinct from their children is what makes the
         // batching legible at a glance.
         const subkind = isBatch ? 'batch' : 'job'

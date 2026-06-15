@@ -508,7 +508,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	}
 
 	// --- Stage 4: connection mapping ---
-	progress.StartPhase("connections", len(exposures), 70, 90, "Mapping conditional exposure-to-dependency paths per exposure.")
+	progress.StartPhase("connections", len(exposures), 70, 85, "Mapping conditional exposure-to-dependency paths per exposure.")
 	o.emit(events.Event{Kind: events.KindStageStarted, Stage: "connections", Status: events.StatusRunning, Payload: map[string]any{"total": len(exposures), "tip": "Mapping conditional exposure-to-dependency paths per exposure."}})
 	conns, connUnresolved, connErr, connFailedExposure := o.runConnectionsBatch(ctx, exposures, dependencies, exposureObjectives, rf, progress.Advance)
 	progress.CompletePhase()
@@ -525,7 +525,11 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	// Exposures the deterministic walk left with zero connections get one
 	// evidence-gated LLM pass over the closed set of existing dependency IDs.
 	// Strictly additive and fail-soft: a repair error degrades to the walk's
-	// result, never fails the run.
+	// result, never fails the run. It is its OWN visible stage (not folded into
+	// connections) because it makes an LLM call — surfacing it keeps the
+	// progress bar moving instead of appearing to stall after connections.
+	progress.StartPhase("connection_repair", 1, 85, 90, "Repairing exposures the deterministic walk left with no connections.")
+	o.emit(events.Event{Kind: events.KindStageStarted, Stage: "connection_repair", Status: events.StatusRunning, Payload: map[string]any{"total": 1, "tip": "Repairing exposures the deterministic walk left with no connections."}})
 	repairOut, repairErr := (connectionstage.RepairRunner{
 		Prompt:        o.promptAgent,
 		PathMapper:    o.PathMapper(),
@@ -539,15 +543,12 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	} else if repairOut.Dangling > 0 {
 		conns = append(conns, repairOut.Connections...)
 		unresolved = append(unresolved, repairOut.Rejected...)
-		o.emit(events.Event{
-			Kind: events.KindLog, Stage: "connections", JobID: "connections.repair",
-			Message: fmt.Sprintf("repair: %d dangling exposures, %d connections added, %d proposals rejected",
-				repairOut.Dangling, len(repairOut.Connections), len(repairOut.Rejected)),
-			Payload: map[string]any{
-				"dangling": repairOut.Dangling, "added": len(repairOut.Connections), "rejected": len(repairOut.Rejected),
-			},
-		})
 	}
+	progress.Advance()
+	progress.CompletePhase()
+	o.emitStageCompleted("connection_repair", events.StatusSuccess, map[string]any{
+		"dangling": repairOut.Dangling, "added": len(repairOut.Connections), "rejected": len(repairOut.Rejected),
+	})
 	state.Connections = append([]model.Connection(nil), conns...)
 	o.persistStageState("connections.json", state.Connections)
 
