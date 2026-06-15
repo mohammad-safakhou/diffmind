@@ -123,6 +123,68 @@ func TestSanitize_AllowsZeroRetryCount(t *testing.T) {
 	}
 }
 
+func TestSanitize_FloorsDiscoveryVerifySamples(t *testing.T) {
+	// Below the floor resets to default (2)...
+	c := Default()
+	c.Runtime.DiscoveryVerifySamples = 0
+	fixes := c.Sanitize()
+	if c.Runtime.DiscoveryVerifySamples != Default().Runtime.DiscoveryVerifySamples {
+		t.Fatalf("samples = %d, want default %d", c.Runtime.DiscoveryVerifySamples, Default().Runtime.DiscoveryVerifySamples)
+	}
+	if !hasFix(fixes, "runtime.discovery_verify_samples") {
+		t.Fatalf("expected discovery_verify_samples fix; got %+v", fixes)
+	}
+
+	// ...and above the ceiling caps at 5.
+	c = Default()
+	c.Runtime.DiscoveryVerifySamples = 99
+	fixes = c.Sanitize()
+	if c.Runtime.DiscoveryVerifySamples != 5 {
+		t.Fatalf("samples = %d, want capped 5", c.Runtime.DiscoveryVerifySamples)
+	}
+	if !hasFix(fixes, "runtime.discovery_verify_samples") {
+		t.Fatalf("expected discovery_verify_samples cap fix; got %+v", fixes)
+	}
+
+	// A valid value is left untouched and produces no fix.
+	c = Default()
+	c.Runtime.DiscoveryVerifySamples = 3
+	fixes = c.Sanitize()
+	if c.Runtime.DiscoveryVerifySamples != 3 {
+		t.Fatalf("valid samples clobbered: got %d", c.Runtime.DiscoveryVerifySamples)
+	}
+	if hasFix(fixes, "runtime.discovery_verify_samples") {
+		t.Fatalf("valid samples must not be sanitized: %+v", fixes)
+	}
+}
+
+func TestSanitize_CoercesUnknownVerifyMode(t *testing.T) {
+	c := Default()
+	c.Runtime.DiscoveryVerifyMode = "bogus"
+	c.Sanitize()
+	if c.Runtime.DiscoveryVerifyMode != "reask" {
+		t.Fatalf("unknown mode = %q, want coerced to reask", c.Runtime.DiscoveryVerifyMode)
+	}
+	// Both valid modes survive.
+	for _, m := range []string{"reask", "ksample"} {
+		c = Default()
+		c.Runtime.DiscoveryVerifyMode = m
+		c.Sanitize()
+		if c.Runtime.DiscoveryVerifyMode != m {
+			t.Fatalf("valid mode %q was coerced to %q", m, c.Runtime.DiscoveryVerifyMode)
+		}
+	}
+}
+
+func hasFix(fixes []SanitizationFix, field string) bool {
+	for _, f := range fixes {
+		if f.Field == field {
+			return true
+		}
+	}
+	return false
+}
+
 // User explicitly chose a transport timeout that's LARGER than
 // MaxCall. That's fine — no sanitization needed.
 func TestSanitize_RespectsExplicitlyLargerTransportTimeout(t *testing.T) {
@@ -138,4 +200,3 @@ func TestSanitize_RespectsExplicitlyLargerTransportTimeout(t *testing.T) {
 		t.Errorf("user value clobbered: got %d", c.OpenCode.TimeoutSec)
 	}
 }
-

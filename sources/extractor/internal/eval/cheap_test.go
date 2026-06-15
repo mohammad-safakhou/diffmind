@@ -15,13 +15,14 @@ import (
 // produces an instance mismatch and fails here.
 func TestCheapAccuracyFloor(t *testing.T) {
 	fixtures := map[string]float64{
-		"spring-crud":    1.0, // routes + JPA db ops + connections
-		"sqs-producer":   1.0, // route + SqsTemplate publish + connection
-		"sqs-consumer":   1.0, // @SqsListener + zero-hop db write + instances
-		"go-stdlib":      1.0, // net/http mux routes + raw-SQL db ops + connections
-		"django-app":     1.0, // urls.py routes + Django ORM read + connection
-		"go-gorm":        1.0, // net/http routes + GORM ops (literal + LocalTypes) + connections
-		"node-sequelize": 1.0, // express routes + corroborated Sequelize ops
+		"spring-crud":        1.0, // routes + JPA db ops + connections
+		"sqs-producer":       1.0, // route + SqsTemplate publish + connection
+		"sqs-consumer":       1.0, // @SqsListener + zero-hop db write + instances
+		"go-stdlib":          1.0, // net/http mux routes + raw-SQL db ops + connections
+		"django-app":         1.0, // urls.py routes + Django ORM read + connection
+		"go-gorm":            1.0, // net/http routes + GORM ops (literal + LocalTypes) + connections
+		"node-sequelize":     1.0, // express routes + corroborated Sequelize ops
+		"polyglot-go-python": 1.0, // Go net/http routes + Django routes/ORM in ONE repo (multi-language)
 	}
 	cfg := config.Default()
 	cfg.Quality.MinConfidence = 0.7

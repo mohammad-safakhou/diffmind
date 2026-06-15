@@ -7,6 +7,11 @@ type EntityKind string
 const (
 	KindExposure   EntityKind = "exposure"
 	KindDependency EntityKind = "dependency"
+	// KindClient is a connection backbone (see ConnectionClient). Clients are
+	// neither an exposure nor a dependency: they are resolved to instance
+	// identity and fanned out to the operations that use them, never emitted as
+	// graph nodes themselves.
+	KindClient EntityKind = "client"
 )
 
 type Location struct {
@@ -85,6 +90,27 @@ type Dependency struct {
 	BaseEntity
 }
 
+// ConnectionClient is a shared connection backbone — the ORM/repository base,
+// HTTP client bean, datasource, or messaging/cache client through which many
+// operations reach one external system — paired with the config property that
+// wires it. Discovery surfaces these once (instead of resolving an instance per
+// operation); the deterministic propagation pass resolves each client to an
+// InstanceRef from config and fans that identity to every operation using the
+// client. Like InstanceRef it is a config-derived, cross-service-joinable fact;
+// it is never emitted as an exposure/dependency graph node.
+type ConnectionClient struct {
+	ID           string       `json:"id"`
+	LogicalName  string       `json:"logical_name"`            // bean/var/field name, e.g. "orderRepository", "sqsClient"
+	Kind         string       `json:"kind"`                    // db | http | queue | cache | stream
+	Symbol       string       `json:"symbol,omitempty"`        // qualified declared type/bean
+	Framework    string       `json:"framework,omitempty"`     // spring-data, feign, aws-sdk, gorm, ...
+	ConfigAnchor string       `json:"config_anchor,omitempty"` // config property key that configures it
+	InstanceRef  *InstanceRef `json:"instance_ref,omitempty"`  // filled by deterministic propagation
+	Locations    []Location   `json:"source_locations,omitempty"`
+	Evidence     []Evidence   `json:"evidence,omitempty"`
+	Source       string       `json:"source,omitempty"` // "ast" | "llm" | "ast+llm"
+}
+
 // Connection provenance values. Output, eval, and label tooling distinguish
 // deterministically-walked connections from LLM-repaired ones (A1-schema).
 const (
@@ -138,10 +164,10 @@ type UnresolvedItem struct {
 }
 
 type RunManifest struct {
-	RunID             string            `json:"run_id"`
-	StartedAt         time.Time         `json:"started_at"`
-	FinishedAt        time.Time         `json:"finished_at"`
-	RepoPath          string            `json:"repo_path"`
+	RunID      string    `json:"run_id"`
+	StartedAt  time.Time `json:"started_at"`
+	FinishedAt time.Time `json:"finished_at"`
+	RepoPath   string    `json:"repo_path"`
 	// RepoGitSHA is the analyzed repo's HEAD commit (when it is a git repo), so a
 	// run can be pinned to the exact target revision. DiffMindVersion records the
 	// extractor build (set via -ldflags, else "dev") so output can be pinned to

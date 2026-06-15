@@ -20,6 +20,8 @@ func TestDefaultOrderAndCount(t *testing.T) {
 		"dependency.command_exec",
 		"dependency.cache_operation",
 		"dependency.stream_consume",
+		// connection_client is appended last (backbone clients, KindClient).
+		"client.connection_client",
 	}
 	if len(got) != len(wantIDs) {
 		t.Fatalf("Default() returned %d objectives, want %d", len(got), len(wantIDs))

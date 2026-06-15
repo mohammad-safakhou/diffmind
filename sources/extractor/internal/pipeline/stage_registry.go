@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mohammad-safakhou/diffmind/internal/ast"
+	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
@@ -74,8 +75,11 @@ func (o *orchestrator) runASTIndexStage(ctx context.Context) error {
 		}
 	}
 
-	// Determine primary language: use the first configured language if set,
-	// otherwise pass empty string and let langdetect within ast.Build handle it.
+	// AST parsing is extension-driven and inherently multi-language: every
+	// supported source file is parsed regardless of language, and the resulting
+	// index records ALL languages present (out.Summary.Languages). The
+	// configured Indexer.Languages no longer gates anything; we pass the first
+	// entry only as a fallback LABEL for the rare repo with no parseable source.
 	primaryLang := ""
 	if len(o.cfg.Indexer.Languages) > 0 {
 		primaryLang = o.cfg.Indexer.Languages[0]
@@ -104,6 +108,7 @@ func (o *orchestrator) runASTIndexStage(ctx context.Context) error {
 
 	util.Info("agents.ast_index", "index built", map[string]any{
 		"files":       out.Summary.Files,
+		"languages":   out.Summary.Languages,
 		"symbols":     out.Summary.Symbols,
 		"call_edges":  out.Summary.CallEdges,
 		"configs":     out.Summary.Configs,
@@ -116,6 +121,7 @@ func (o *orchestrator) runASTIndexStage(ctx context.Context) error {
 		Status: events.StatusSuccess,
 		Payload: map[string]any{
 			"files":       out.Summary.Files,
+			"languages":   out.Summary.Languages,
 			"symbols":     out.Summary.Symbols,
 			"call_edges":  out.Summary.CallEdges,
 			"configs":     out.Summary.Configs,
@@ -228,6 +234,26 @@ func (o *orchestrator) discoveryRunner() discoverystage.Runner {
 		Emit:            o.emit,
 		PathMapper:      o.PathMapper(),
 		Confirmed:       o.discoveryConfirmed,
+		FrameworkScope:  o.cfg.Runtime.DiscoveryFrameworkScope,
+		MinConfidence:   o.cfg.Quality.MinConfidence,
+		VerifyMode:      verifyMode(o.cfg),
+		VerifySamples:   o.cfg.Runtime.DiscoveryVerifySamples,
+	}
+}
+
+// verifyMode resolves the effective discovery-verification mode for the runner:
+// empty (the pass is off) unless DiscoveryVerify is enabled, in which case it is
+// the configured mode (Sanitize has already coerced any unknown value to a valid
+// one, with "reask" as the final fallback here for safety).
+func verifyMode(cfg config.Config) string {
+	if !cfg.Runtime.DiscoveryVerify {
+		return ""
+	}
+	switch cfg.Runtime.DiscoveryVerifyMode {
+	case "reask", "ksample":
+		return cfg.Runtime.DiscoveryVerifyMode
+	default:
+		return "reask"
 	}
 }
 
