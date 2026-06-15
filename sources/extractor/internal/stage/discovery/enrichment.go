@@ -7,10 +7,8 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 )
 
-// enrichment.go — deterministic, LLM-free recovery of the per-entity context the
-// (deprecated) detail stage used to extract, sourced directly from the AST. This
-// is the B′ backfill: when Stage 3 is skipped, the high-value fields that ARE
-// statically derivable are recovered here instead of via an LLM pass.
+// enrichment.go provides deterministic, LLM-free recovery of high-value
+// per-entity context directly from the AST.
 //
 // Two invariants govern it:
 //   - Additive (#4): only fills a detail that is empty; never overwrites a value
@@ -33,9 +31,8 @@ var authAnnotations = map[string]bool{
 
 // EnrichExposuresFromAnnotations stamps details.auth (rendered "Name(args)") and
 // details.authenticated on each exposure from its handler symbol's security
-// annotations in the AST index. It replaces the detail stage's auth extraction
-// on the --skip-detail path and is safe to run unconditionally (no-ops when the
-// field is already present, so detail-enabled runs are unaffected).
+// annotations in the AST index. It is safe to run unconditionally because it
+// does not overwrite a field discovery already populated.
 func EnrichExposuresFromAnnotations(idx *astpkg.ProjectIndex, exposures []model.Exposure) {
 	if idx == nil {
 		return
@@ -64,8 +61,7 @@ func EnrichExposuresFromAnnotations(idx *astpkg.ProjectIndex, exposures []model.
 var routeInputTypes = map[string]bool{"http_route": true, "webhook": true, "rpc_endpoint": true}
 
 // EnrichExposuresFromParams recovers an exposure's IO contract (Inputs) from its
-// handler's formal parameters in the AST — the B′ Tier 2 backfill replacing the
-// detail stage's `inputs` extraction. Only parameters with a recognised request
+// handler's formal parameters in the AST. Only parameters with a recognised request
 // binding annotation (Spring @PathVariable/@RequestParam/@RequestBody/...) are
 // emitted, so the fact is high-precision (infrastructure params like
 // HttpServletRequest are skipped). Additive: skips exposures that already carry

@@ -413,9 +413,8 @@ func TestRunReexaminationDropsUnverifiableSeed(t *testing.T) {
 	}
 }
 
-// When re-examination is explicitly skipped, low-confidence seeds fall through
-// to detail enrichment (where they continue to fail the toBase confidence
-// gate), producing low_confidence unresolved items.
+// When re-examination is explicitly skipped, low-confidence seeds reach the
+// deterministic conversion gate and become low_confidence unresolved items.
 func TestRunSkipReexaminationProducesLowConfidenceUnresolved(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.Workers = 2

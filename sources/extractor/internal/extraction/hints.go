@@ -1,7 +1,7 @@
 package extraction
 
 // ObjectiveHints is the compact, token-bounded AST context for one objective,
-// rendered into the discovery/reexamine/detail prompts. The hints are advisory
+// rendered into the discovery and reexamination prompts. The hints are advisory
 // only: the LLM remains the authority on what is a real entity.
 type ObjectiveHints struct {
 	Symbols   []SymbolHint

@@ -43,7 +43,7 @@ func Run(ctx context.Context, idx *astpkg.ProjectIndex, repoPath string, cfg con
 		Index: idx, Objectives: objs,
 	})
 
-	// Convert to model entities (same confidence/location gate as detail)
+	// Convert to model entities through the canonical confidence/location gate.
 	var exposures []model.Exposure
 	var dependencies []model.Dependency
 	for _, result := range deterministic.Results {

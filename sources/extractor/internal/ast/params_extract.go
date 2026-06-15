@@ -4,7 +4,7 @@ import sitter "github.com/smacker/go-tree-sitter"
 
 // params_extract.go pulls the formal parameters (name, type, parameter-level
 // annotations) off a function/method def node. These feed the deterministic
-// IO-contract backfill that replaces the detail stage's `inputs` extraction.
+// IO-contract backfill that recovers bound handler inputs directly from the AST.
 //
 // Implemented per-language and staged: Java (the primary stack) first; other
 // languages return nil until their formal-parameter shapes are added, so the
