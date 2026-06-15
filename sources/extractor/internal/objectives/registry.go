@@ -52,5 +52,9 @@ func defaultObjectives() []Objective {
 		objCommandExec,
 		objCacheOperation,
 		objStreamConsume,
+		// connection_client is appended LAST: defaultObjectives order is
+		// positional for failure attribution, so new objectives must not shift
+		// existing indices.
+		objConnectionClient,
 	}
 }
