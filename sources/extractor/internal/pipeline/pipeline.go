@@ -338,20 +338,6 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		// Non-fatal: allow the rest of the pipeline to proceed.
 	}
 
-	// --- Stage 0c: infrastructure inventory ---
-	// Its output is consumed only by the UI (state/infrastructure.json), not by
-	// core extraction, so it can be skipped to save a full LLM call (X6).
-	var infra *InfrastructureInventory
-	if o.astIndex != nil && len(o.astIndex.Configs) > 0 && !o.cfg.Runtime.SkipInfrastructure {
-		inv, err := o.runInfrastructureStage(ctx, rf)
-		if err != nil {
-			util.Warn("agents.orchestrator", "infrastructure stage failed; continuing", map[string]any{"error": err.Error()})
-		} else {
-			infra = inv
-		}
-	}
-	_ = infra // used later when we wire endpoint resolution into detail stage
-
 	// --- Stage 1: per-objective discovery ---
 	seeds := make([]detailJob, 0)
 	exposureObjectives := map[string]objectives.Objective{}

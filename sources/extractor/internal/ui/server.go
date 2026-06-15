@@ -646,14 +646,7 @@ func (s *Server) handleRunGraph(w http.ResponseWriter, r *http.Request, runID st
 		return
 	}
 
-	// Read infrastructure inventory if present.
-	var infra map[string]any
-	infraPath := filepath.Join(runDir, "state", "infrastructure.json")
-	if b, err := os.ReadFile(infraPath); err == nil {
-		_ = json.Unmarshal(b, &infra)
-	}
-
-	graph := buildGraphExport(runID, data, infra)
+	graph := buildGraphExport(runID, data)
 	if det := loadRunDeterministicReport(runDir); det != nil {
 		graph["deterministic"] = det
 	}
@@ -698,7 +691,7 @@ func readOptionalJSON(path string) any {
 }
 
 // buildGraphExport assembles the graph.v1 export from run artifacts.
-func buildGraphExport(runID string, data RunData, infra map[string]any) map[string]any {
+func buildGraphExport(runID string, data RunData) map[string]any {
 	// Flatten artifacts.
 	exposures := flattenObjArrayMap(data.Exposures)
 	deps := flattenObjArrayMap(data.Dependencies)
@@ -727,7 +720,6 @@ func buildGraphExport(runID string, data RunData, infra map[string]any) map[stri
 		"exposures":      exposures,
 		"dependencies":   deps,
 		"edges":          edges,
-		"infrastructure": infra,
 		"unresolved":     flattenObjArrayMap(data.Unresolved),
 	}
 }
