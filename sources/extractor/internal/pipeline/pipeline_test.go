@@ -269,8 +269,8 @@ func TestRunBuildsExposuresDependenciesAndConnections(t *testing.T) {
 	if fake.rec.roles["repo_facts"] != 1 {
 		t.Fatalf("expected 1 repo_facts call, got %d", fake.rec.roles["repo_facts"])
 	}
-	if fake.rec.roles["discovery"] != 13 {
-		t.Fatalf("expected 13 discovery calls (one per objective), got %d", fake.rec.roles["discovery"])
+	if fake.rec.roles["discovery"] != 14 {
+		t.Fatalf("expected 14 discovery calls (one per objective, incl. connection_client), got %d", fake.rec.roles["discovery"])
 	}
 	if fake.rec.roles["detail"] != 2 {
 		t.Fatalf("expected 2 detail calls, got %d", fake.rec.roles["detail"])
