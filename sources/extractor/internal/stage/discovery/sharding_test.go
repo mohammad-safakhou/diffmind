@@ -113,6 +113,47 @@ func TestPlanShards_NilWithoutASTCandidates(t *testing.T) {
 	}
 }
 
+func TestPlanShards_GenericSymbolsAreNotObjectiveEvidence(t *testing.T) {
+	tests := []struct {
+		name       string
+		objType    string
+		receiver   string
+		annotation string
+	}{
+		{name: "spring services are not rpc", objType: "rpc_endpoint", receiver: "CampaignService", annotation: "Service"},
+		{name: "ordinary routes are not webhooks", objType: "webhook", receiver: "CampaignController", annotation: "PostMapping"},
+		{name: "processors are not stream consumers", objType: "stream_consume", receiver: "CampaignProcessor", annotation: "Service"},
+		{name: "processors are not command execution", objType: "command_exec", receiver: "CampaignProcessor", annotation: "Service"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			idx := &astpkg.ProjectIndex{Symbols: map[string][]astpkg.SymbolDef{}, Files: map[string]*astpkg.FileAST{}}
+			for i := 0; i < 100; i++ {
+				file := "src/F" + Itoa(i) + ".java"
+				q := "pkg.F" + Itoa(i)
+				idx.Symbols[q] = []astpkg.SymbolDef{sym(q, "run", tc.receiver, file, uint32(i+1), tc.annotation)}
+				idx.Files[file] = &astpkg.FileAST{Path: file}
+			}
+			if shards := PlanShards(idx, objByType(t, tc.objType), ""); shards != nil {
+				t.Fatalf("generic symbols must not fan out %s, got %d shards", tc.objType, len(shards))
+			}
+		})
+	}
+}
+
+func TestPlanShards_StrongRPCEvidenceStillShards(t *testing.T) {
+	idx := &astpkg.ProjectIndex{Symbols: map[string][]astpkg.SymbolDef{}, Files: map[string]*astpkg.FileAST{}}
+	for i := 0; i < 100; i++ {
+		file := "src/grpc/F" + Itoa(i) + ".java"
+		q := "grpc.F" + Itoa(i)
+		idx.Symbols[q] = []astpkg.SymbolDef{sym(q, "call", "OrderServiceImplBase", file, uint32(i+1), "GrpcService")}
+		idx.Files[file] = &astpkg.FileAST{Path: file}
+	}
+	if shards := PlanShards(idx, objByType(t, "rpc_endpoint"), ""); len(shards) < 2 {
+		t.Fatalf("strong gRPC evidence must still shard, got %d", len(shards))
+	}
+}
+
 // TestPlanShards_OnlyClustersCandidateFiles proves shards cover candidate-
 // bearing files only — non-candidate files (controllers/enums/config for a
 // db objective) are never given dedicated shards, so cost tracks evidence.

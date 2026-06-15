@@ -10,7 +10,7 @@ import (
 )
 
 // grounding.go turns the deterministic tree-sitter AST index into compact,
-// objective-filtered HINTS for the discovery/reexamine/detail prompts.
+// objective-filtered HINTS for the discovery and reexamination prompts.
 //
 // These hints are ADVISORY ONLY. The LLM remains the authority on what is and
 // is not a real entity: we never filter the model's returned items against the
@@ -56,10 +56,15 @@ type objectiveMatcher struct {
 	// truncation-prone prompt shape. Matched one-way (text contains lib), unlike
 	// the loose two-way hint matching.
 	clientLibs []string
+
+	// shardEvidence overrides the deliberately loose prompt-hint matcher when
+	// deciding whether an objective may fan out. A generic @Service,
+	// @PostMapping, or *Processor is useful context to inspect, but it is not
+	// evidence that RPC, webhooks, streams, or process execution exist.
+	shardEvidence *objectiveMatcher
 }
 
-// objectiveMatchers maps objective.Type -> its matcher. One entry per of the
-// 13 objectives; adding a language/annotation is a one-line edit here.
+// objectiveMatchers maps objective.Type -> its matcher.
 var objectiveMatchers = map[string]objectiveMatcher{
 	"http_route": {
 		annPatterns:    []string{"requestmapping", "getmapping", "postmapping", "putmapping", "patchmapping", "deletemapping", "controller", "restcontroller", "path", "route", "app.get", "app.post", "router"},
@@ -70,12 +75,23 @@ var objectiveMatchers = map[string]objectiveMatcher{
 		annPatterns:    []string{"postmapping", "requestmapping", "path", "route"},
 		bindingKinds:   []string{"webhook", "http_route"},
 		classNameHints: []string{"webhook", "callback", "hook", "notify"},
+		shardEvidence: &objectiveMatcher{
+			annPatterns:    []string{"webhook"},
+			bindingKinds:   []string{"webhook"},
+			classNameHints: []string{"webhook", "callback", "hook"},
+		},
 	},
 	"rpc_endpoint": {
-		annPatterns:    []string{"grpc", "grpcservice", "service", "rpc"},
+		annPatterns:    []string{"grpc", "grpcservice", "rpc"},
 		bindingKinds:   []string{"rpc", "grpc", "rpc_endpoint"},
-		classNameHints: []string{"grpc", "service", "rpc", "servicegrpc"},
+		classNameHints: []string{"grpc", "rpc", "servicegrpc", "implbase"},
 		clientLibs:     []string{"grpc", "protobuf", "implbase", "twirp"},
+		shardEvidence: &objectiveMatcher{
+			annPatterns:    []string{"grpc", "grpcservice", "rpc"},
+			bindingKinds:   []string{"rpc", "grpc", "rpc_endpoint"},
+			classNameHints: []string{"grpc", "rpc", "servicegrpc", "implbase"},
+			clientLibs:     []string{"grpc", "protobuf", "implbase", "twirp"},
+		},
 	},
 	"queue_consumer": {
 		annPatterns:    []string{"sqslistener", "kafkalistener", "rabbitlistener", "streamlistener", "jmslistener", "eventlistener", "listener", "subscribe"},
@@ -125,6 +141,10 @@ var objectiveMatchers = map[string]objectiveMatcher{
 		bindingKinds:   []string{"command_exec", "process"},
 		classNameHints: []string{"exec", "process", "shell", "runtime", "command"},
 		clientLibs:     []string{"processbuilder", "runtime.exec", "os/exec", "subprocess", "child_process"},
+		shardEvidence: &objectiveMatcher{
+			bindingKinds: []string{"command_exec", "process"},
+			clientLibs:   []string{"processbuilder", "runtime.exec", "os/exec", "subprocess", "child_process"},
+		},
 	},
 	"cache_operation": {
 		annPatterns:    []string{"cacheable", "cacheevict", "cacheput", "cache"},
@@ -139,6 +159,12 @@ var objectiveMatchers = map[string]objectiveMatcher{
 		classNameHints: []string{"stream", "kinesis", "consumer", "processor"},
 		configKeyHints: []string{"kinesis", "stream"},
 		clientLibs:     []string{"kinesis", "kafkastreams", "kstream", "flink", "spark"},
+		shardEvidence: &objectiveMatcher{
+			annPatterns:    []string{"kinesis", "streamlistener", "streamconsumer"},
+			bindingKinds:   []string{"stream_consume", "stream"},
+			classNameHints: []string{"kinesis", "kafkastreams", "kstream"},
+			clientLibs:     []string{"kinesis", "kafkastreams", "kstream", "flink", "spark"},
+		},
 	},
 }
 
@@ -266,6 +292,10 @@ func objectiveCandidateWeights(idx *astpkg.ProjectIndex, obj objectives.Objectiv
 	if !ok {
 		return out
 	}
+	strictSymbols := m.shardEvidence != nil
+	if m.shardEvidence != nil {
+		m = *m.shardEvidence
+	}
 	inScope := func(file string) bool {
 		if file == "" {
 			return false
@@ -280,7 +310,8 @@ func objectiveCandidateWeights(idx *astpkg.ProjectIndex, obj objectives.Objectiv
 			if !inScope(def.File) {
 				continue
 			}
-			if symbolMatches(def, annotationNames(def.Annotations), m) {
+			if (strictSymbols && symbolMatchesOneWay(def, annotationNames(def.Annotations), m)) ||
+				(!strictSymbols && symbolMatches(def, annotationNames(def.Annotations), m)) {
 				out[def.File]++
 			}
 		}
@@ -340,6 +371,33 @@ func symbolMatches(def astpkg.SymbolDef, anns []string, m objectiveMatcher) bool
 	}
 	if anyContainsFold(m.classNameHints, def.Receiver) || anyContainsFold(m.classNameHints, def.Name) {
 		return true
+	}
+	return false
+}
+
+// symbolMatchesOneWay is the high-precision variant used for shard permission.
+// The prompt-hint matcher is intentionally two-way, but allowing a generic
+// annotation such as @Service to match "grpcservice" is enough to multiply one
+// empty RPC objective into many LLM calls.
+func symbolMatchesOneWay(def astpkg.SymbolDef, anns []string, m objectiveMatcher) bool {
+	for _, a := range anns {
+		if anyPatternInText(m.annPatterns, a) {
+			return true
+		}
+	}
+	return anyPatternInText(m.classNameHints, def.Receiver) ||
+		anyPatternInText(m.classNameHints, def.Name)
+}
+
+func anyPatternInText(patterns []string, text string) bool {
+	text = strings.ToLower(text)
+	if text == "" {
+		return false
+	}
+	for _, pattern := range patterns {
+		if pattern != "" && strings.Contains(text, pattern) {
+			return true
+		}
 	}
 	return false
 }

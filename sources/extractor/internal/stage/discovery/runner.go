@@ -260,7 +260,7 @@ func (r Runner) runShard(ctx context.Context, obj objectives.Objective, rf *extr
 	items := extraction.ParseEntities(payload["items"])
 	kept := items[:0]
 	for i := range items {
-		if extraction.ForceObjectiveType(obj, &items[i]) {
+		if extraction.ForceObjectiveType(obj, &items[i]) && !extraction.IsNoResultSentinel(obj, items[i]) {
 			kept = append(kept, items[i])
 		}
 	}
@@ -375,7 +375,7 @@ func (r Runner) verifyReask(ctx context.Context, obj objectives.Objective, rf *e
 	verified := extraction.ParseEntities(payload["items"])
 	kept := verified[:0]
 	for i := range verified {
-		if extraction.ForceObjectiveType(obj, &verified[i]) {
+		if extraction.ForceObjectiveType(obj, &verified[i]) && !extraction.IsNoResultSentinel(obj, verified[i]) {
 			kept = append(kept, verified[i])
 		}
 	}
