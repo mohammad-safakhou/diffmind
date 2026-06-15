@@ -5,14 +5,15 @@ import { stages, runMeta } from '../lib/store.js'
 // is shown inline; the parallel 'index.build' stage is exposed by the
 // LiveGraph in a separate top row, not here, so the strip mirrors only
 // the SEQUENTIAL pipeline.
-const ORDER = ['repo_facts', 'discovery', 'reexamination', 'detail', 'index', 'connections', 'reconcile']
+const ORDER = ['repo_facts', 'index', 'deterministic_discovery', 'discovery', 'reexamination', 'connections', 'connection_repair', 'reconcile']
 const PRETTY = {
   repo_facts: 'Repo Facts',
+  index: 'Index (SCIP)',
+  deterministic_discovery: 'Deterministic',
   discovery: 'Discovery',
   reexamination: 'Re-examination',
-  detail: 'Detail',
-  index: 'Index (SCIP)',
   connections: 'Connections',
+  connection_repair: 'Repair',
   reconcile: 'Reconcile',
 }
 
