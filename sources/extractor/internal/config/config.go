@@ -32,6 +32,16 @@ type Runtime struct {
 	// repos with config files when the UI inventory isn't needed (X6).
 	SkipInfrastructure bool `json:"skip_infrastructure"`
 
+	// SkipDetail skips Stage 3 (LLM detail enrichment) — the co-#1 token cost.
+	// Discovery (+reexamination) already decides WHAT exists and carries the
+	// identity-bearing details; detail only ADDS per-entity richness (IO
+	// contract, key_actions, prose). When skipped, verified seeds convert
+	// straight to entities and the high-value fields are recovered
+	// deterministically from the AST (auth from annotations, inputs from
+	// handler signatures). Phased rollout: default false until the eval A/B
+	// confirms the graph is unchanged, then flip to default-skip.
+	SkipDetail bool `json:"skip_detail"`
+
 	// PromptRetryCount is how many times DiffMind retries a prompt after
 	// the liveness watchdog declares it stuck. The initial attempt is not
 	// counted; default 3 means up to 4 total attempts. Set to 0 to fail
@@ -115,8 +125,8 @@ func Default() Config {
 			ReuseOpenCodeSession:    false,
 			PromptRetryCount:        3,
 			// Liveness watchdog defaults. See the field docs on Runtime.
-			IdleTimeoutSec:         120,
-			MaxCallSeconds:         30 * 60,
+			IdleTimeoutSec:    120,
+			MaxCallSeconds:    30 * 60,
 			LivenessPollSec:   5,
 			DiscoveryASTHints: true,
 		},

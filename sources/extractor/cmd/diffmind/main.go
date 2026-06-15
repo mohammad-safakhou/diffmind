@@ -59,6 +59,7 @@ func run(args []string) {
 	opencodeDeleteDelaySeconds := fs.Int("opencode-delete-delay-seconds", 0, "delay before deleting OpenCode sessions when cleanup is enabled")
 	reuseOpenCodeSession := fs.Bool("reuse-opencode-session", false, "reuse a single OpenCode session across prompts in a run")
 	skipReexamination := fs.Bool("skip-reexamination", false, "skip stage 2 (LLM re-ask for low-signal seeds) for faster, lower-accuracy runs")
+	skipDetail := fs.Bool("skip-detail", false, "skip stage 3 (LLM detail enrichment); verified seeds convert straight to entities and high-value fields are backfilled deterministically from the AST")
 	minConfidence := fs.Float64("min-confidence", -1, "confidence threshold in [0,1]")
 	idleTimeoutSeconds := fs.Int("idle-timeout-seconds", 0, "abort a prompt after this many seconds without observable progress on the OpenCode session (0 = use config default 120s)")
 	promptRetryCount := fs.Int("prompt-retry-count", -1, "retry a prompt this many times after the liveness watchdog declares it stuck (-1 = use config default 3; 0 = disable)")
@@ -117,6 +118,7 @@ func run(args []string) {
 	cfg.Runtime.CleanupOpenCodeSessions = *cleanupOpenCodeSessions
 	cfg.Runtime.ReuseOpenCodeSession = *reuseOpenCodeSession
 	cfg.Runtime.SkipReexamination = *skipReexamination
+	cfg.Runtime.SkipDetail = *skipDetail
 	if *opencodeDeleteDelaySeconds > 0 {
 		cfg.Runtime.OpenCodeDeleteDelaySec = *opencodeDeleteDelaySeconds
 	}
