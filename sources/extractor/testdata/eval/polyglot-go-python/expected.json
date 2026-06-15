@@ -1,0 +1,46 @@
+{
+  "fixture": "polyglot-go-python",
+  "repo_path": "repo",
+  "service_name": "polyglot-go-python",
+  "exposures": [
+    {
+      "type": "http_route",
+      "name": "GET /health",
+      "details": { "method": "GET", "path": "/health" },
+      "deterministic": true
+    },
+    {
+      "type": "http_route",
+      "name": "GET /version",
+      "details": { "method": "GET", "path": "/version" },
+      "deterministic": true
+    },
+    {
+      "type": "http_route",
+      "name": "ANY /orders",
+      "details": { "method": "ANY", "path": "/orders" },
+      "deterministic": true
+    },
+    {
+      "type": "http_route",
+      "name": "ANY /orders/<int:pk>",
+      "details": { "method": "ANY", "path": "/orders/<int:pk>" },
+      "deterministic": true
+    }
+  ],
+  "dependencies": [
+    {
+      "type": "db_operation",
+      "name": "read order",
+      "details": { "table": "order", "operation": "read" },
+      "deterministic": true
+    }
+  ],
+  "connections": [
+    {
+      "from": { "type": "http_route", "details": { "method": "ANY", "path": "/orders" } },
+      "to": { "type": "db_operation", "details": { "table": "order", "operation": "read" } },
+      "deterministic": true
+    }
+  ]
+}
