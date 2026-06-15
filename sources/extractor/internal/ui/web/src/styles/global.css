@@ -135,14 +135,6 @@ a:hover { text-decoration: underline; }
   font-family: 'JetBrains Mono', monospace;
   letter-spacing: 0;
 }
-/* Per-stage batch counter — currently only the detail stage emits
-   batches_total, but the field gracefully handles other stages
-   that might adopt the same pattern later. */
-.pipeline-stage .stage-batches {
-  font-size: 10px; color: var(--text-dim);
-  height: 12px; overflow: hidden;
-  font-family: 'JetBrains Mono', monospace;
-}
 .pipeline-stage.running::after {
   content: '';
   position: absolute; top: 8px; right: 12px; width: 8px; height: 8px;
@@ -518,36 +510,6 @@ a:hover { text-decoration: underline; }
 }
 .system-status-detail tr.row-fail td { background: rgba(239, 68, 68, 0.05); }
 .system-status-detail tr.row-warn td { background: rgba(245, 158, 11, 0.04); }
-
-/* IndexBuildPanel in the DetailDrawer: per-base build status +
-   live docker-build tail. */
-.build-jobs-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-  margin-top: 6px;
-}
-.build-jobs-table th,
-.build-jobs-table td {
-  text-align: left;
-  padding: 4px 6px;
-  border-bottom: 1px dashed var(--border);
-}
-.build-jobs-table tr.row-success td { color: var(--success); }
-.build-jobs-table tr.row-failed td { color: var(--error); }
-.build-jobs-table tr.row-running td { color: var(--running); }
-.build-log-tail {
-  background: var(--bg-1);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 8px;
-  max-height: 320px;
-  overflow: auto;
-  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
-  font-size: 11px;
-  white-space: pre-wrap;
-  color: var(--text-muted);
-}
 
 /* ────────────────────────────────────────────────────────────────────────────
    Outcome Graph page
