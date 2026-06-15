@@ -13,10 +13,8 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
-	"github.com/mohammad-safakhou/diffmind/internal/runstate"
 	"github.com/mohammad-safakhou/diffmind/internal/stage/astindex"
 	connectionstage "github.com/mohammad-safakhou/diffmind/internal/stage/connections"
-	detailstage "github.com/mohammad-safakhou/diffmind/internal/stage/detail"
 	discoverystage "github.com/mohammad-safakhou/diffmind/internal/stage/discovery"
 	infrastructurestage "github.com/mohammad-safakhou/diffmind/internal/stage/infrastructure"
 	reexaminestage "github.com/mohammad-safakhou/diffmind/internal/stage/reexamine"
@@ -333,37 +331,6 @@ func (o *orchestrator) runReexamination(
 		Seeds: seeds, RepoFacts: repoFacts, Progress: onResult,
 	})
 	return out.Jobs, out.Unresolved, out.Err, out.FailedTrigger
-}
-
-func (o *orchestrator) runDetailBatch(
-	ctx context.Context,
-	jobs []detailJob,
-	repoFacts *repoFacts,
-	onResult func(),
-) []detailResult {
-	out := (detailstage.Runner{
-		Workers:       o.cfg.Runtime.Workers,
-		RunDir:        o.runDir,
-		RepoPath:      o.repoPath,
-		SubDir:        o.subDir,
-		MinConfidence: o.cfg.Quality.MinConfidence,
-		Store:         o.store,
-		Prompt:        o.promptAgent,
-		Hints: func(objective objectives.Objective) objectiveHints {
-			return o.hintsFor(objective, nil)
-		},
-		Emit:       o.emit,
-		PathMapper: o.PathMapper(),
-	}).Run(ctx, detailstage.Input{
-		Jobs: jobs, RepoFacts: repoFacts, Progress: onResult,
-	})
-	return out.Results
-}
-
-func (o *orchestrator) detailCheckpointForSeed(job detailJob) (runstate.DetailCheckpointEntry, bool) {
-	return (detailstage.Runner{
-		RepoPath: o.repoPath, MinConfidence: o.cfg.Quality.MinConfidence,
-	}).CheckpointForSeed(job)
 }
 
 // runConnectionsBatch is the pipeline boundary for the deterministic

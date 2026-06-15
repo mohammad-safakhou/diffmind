@@ -31,16 +31,5 @@ ALSO CHECK:
 
 Do NOT include webhook callback endpoints (those are a separate objective).
 Include route path, HTTP method, handler symbol, request inputs, and validation entry points.`,
-	DetailPrompt: `For this HTTP route, extract the complete handler flow in execution order:
-1. Authentication/authorization checks (Spring Security filters, JWT validation, @PreAuthorize)
-2. Request validation (@Valid, custom validators, input sanitization)
-3. Business logic flow (service calls in order)
-4. ALL downstream dependency operations - for each one identify:
-   - DB operations: exact table names, read vs write, repository method
-   - Outbound HTTP calls: target service, method/path
-   - Queue publishes: queue/topic name, message type
-   - Cache operations: cache name, get/put/evict
-5. Response mapping and error handling
-6. For DB operations include table names and read/write operation type.`,
 	ConnectionContext: "Prioritize ordered call-path mapping from HTTP route to downstream dependencies with conditions.",
 }

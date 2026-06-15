@@ -24,6 +24,5 @@ FOR EACH WEBHOOK EXTRACT:
 - Idempotency/duplicate handling
 
 If no webhooks exist, return {"items": []}.`,
-	DetailPrompt:      "For this webhook, extract signature/auth checks, payload schema, branching rules, idempotency/duplicate handling, and ordered downstream operations.",
 	ConnectionContext: "Map webhook-to-dependency conditional paths with explicit guard expressions.",
 }

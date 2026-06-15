@@ -123,8 +123,6 @@ func StageFromJob(jobID string) string {
 		return "discovery"
 	case "reexamine":
 		return "reexamination"
-	case "detail":
-		return "detail"
 	case "connections":
 		return "connections"
 	default:

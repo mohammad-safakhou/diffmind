@@ -31,12 +31,5 @@ by @Profile/@ConditionalOnProperty and triggered externally (e.g. a Kubernetes
 CronJob launching the app with that profile) is a scheduled_job. Report it HERE,
 not as a cli_command, and name it by its handler class.method so it has one
 stable identity.`,
-	DetailPrompt: `For this job, extract:
-1. Trigger conditions (schedule expression, profile/property guards)
-2. Distributed locking configuration (ShedLock name, lockAtLeast, lockAtMost)
-3. Execution flow in order
-4. Dataset selection logic (what data does it query/process?)
-5. ALL downstream dependency operations
-6. Error handling and recovery`,
 	ConnectionContext: "Map scheduled-job paths with schedule/profile/property guards.",
 }

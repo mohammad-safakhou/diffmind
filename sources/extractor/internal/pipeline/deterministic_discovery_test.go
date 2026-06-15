@@ -247,24 +247,3 @@ func TestConfirmedDiscoveryBlock(t *testing.T) {
 		t.Fatalf("missing rediscovery instruction: %s", block)
 	}
 }
-
-func TestDetailCheckpointForDeterministicSeed(t *testing.T) {
-	obj := objectiveByType(t, "http_route")
-	seed := llmEntity{
-		Type:       "http_route",
-		Name:       "GET /orders",
-		Summary:    "deterministic route",
-		Confidence: 1.0,
-		Details:    map[string]any{"method": "GET", "path": "/orders", "handler": "OrderController.list"},
-		Locations:  []llmLocation{{File: "orders.go", StartLine: 10, EndLine: 10}},
-		Evidence:   []llmEvidence{{File: "orders.go", StartLine: 10, EndLine: 10, Source: "deterministic_framework"}},
-	}
-	o := &orchestrator{repoPath: "repo"}
-	entry, ok := o.detailCheckpointForSeed(detailJob{Objective: obj, Seed: seed})
-	if !ok {
-		t.Fatal("expected checkpoint entry")
-	}
-	if entry.Exposure == nil || entry.Exposure.Type != "http_route" {
-		t.Fatalf("unexpected checkpoint entry: %#v", entry)
-	}
-}

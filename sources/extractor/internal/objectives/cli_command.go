@@ -30,6 +30,5 @@ cli_command. Only report a genuine interactive/operator command or a true
 process entrypoint (the application's main launcher) here.
 
 If this is a standard web service with no CLI commands or Lambda handlers, return {"items": []}.`,
-	DetailPrompt:      "For this CLI entrypoint, extract arguments, command options, validation, and ordered downstream operations.",
 	ConnectionContext: "Map command-triggered execution paths to dependencies.",
 }

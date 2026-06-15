@@ -25,12 +25,5 @@ FOR EACH PUBLISH OPERATION EXTRACT:
 - The config property or environment variable that defines the destination
 
 IMPORTANT: Check infrastructure configuration files (helm values, *values.yaml, application.yml, application.properties) for queue URLs, topic ARNs, and queue names.`,
-	DetailPrompt: `For this publish operation, extract:
-1. Destination queue/topic/ARN and how it's configured
-2. Message type and payload structure
-3. Publishing method (sync/async/batch)
-4. Serialization format
-5. Message attributes/headers
-6. Error handling on publish failure`,
 	ConnectionContext: "Connection mapping must include destination and publish operation step.",
 }

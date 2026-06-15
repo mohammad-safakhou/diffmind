@@ -40,13 +40,5 @@ Kinesis is stream_consume. (Object storage like S3 has no dedicated objective
 yet, so DO report S3 here rather than dropping it.) A Feign/HTTP client is
 outbound_http, NOT outbound_rpc — only gRPC/Thrift/protobuf stubs are
 outbound_rpc.`,
-	DetailPrompt: `For this outbound HTTP dependency, extract:
-1. Target service/host and the config property that defines the URL
-2. Exact endpoint path and HTTP method
-3. Request body type and response type
-4. Circuit breaker configuration (name, failure threshold, timeout)
-5. Retry configuration (max attempts, backoff)
-6. Timeout configuration
-7. Error handling (fallback methods)`,
 	ConnectionContext: "Connection mapping must include outbound method/path and guard condition.",
 }

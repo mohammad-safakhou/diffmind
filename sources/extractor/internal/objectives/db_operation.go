@@ -39,12 +39,5 @@ IMPORTANT:
   (read/write/upsert/delete) so duplicates collapse cleanly.
 - Redis GET/SET/DEL operations count as db_operations
 - In-memory caches (EhCache, Caffeine) with NO external backing store are NOT db_operations`,
-	DetailPrompt: `For this DB operation, provide:
-1. Exact table/entity/key names
-2. Database type and connection source
-3. Operation semantics (SELECT/INSERT/UPDATE/DELETE, or Redis GET/SET/DEL, or DynamoDB GetItem/PutItem)
-4. Transaction context (@Transactional, isolation level)
-5. Input parameters and query conditions
-6. Repository/DAO class and method`,
 	ConnectionContext: "Connection mapping must include db table and read/write operation per step.",
 }

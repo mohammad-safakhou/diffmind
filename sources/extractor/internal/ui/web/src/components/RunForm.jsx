@@ -49,7 +49,6 @@ const DEFAULTS = {
     cleanup_opencode_sessions: false,
     opencode_delete_delay_seconds: 5,
     skip_reexamination: false,
-    skip_detail: false,
     // Discovery-strengthening knobs (all OFF by default; see config.Runtime).
     discovery_verify: false,
     discovery_verify_mode: 'reask',
@@ -123,7 +122,7 @@ function sanitizePrefill(p) {
     return o
   }
   if (p.opencode) out.opencode = pick(p.opencode, ['base_url', 'username', 'provider_id', 'model_id', 'model_variant', 'timeout_seconds'])
-  if (p.runtime) out.runtime = pick(p.runtime, ['workers', 'max_catalog_items', 'idle_timeout_seconds', 'max_call_seconds', 'liveness_poll_seconds', 'prompt_retry_count', 'skip_reexamination', 'skip_detail', 'discovery_verify', 'discovery_verify_mode', 'discovery_verify_samples', 'discovery_framework_scope', 'reuse_opencode_session'])
+  if (p.runtime) out.runtime = pick(p.runtime, ['workers', 'max_catalog_items', 'idle_timeout_seconds', 'max_call_seconds', 'liveness_poll_seconds', 'prompt_retry_count', 'skip_reexamination', 'discovery_verify', 'discovery_verify_mode', 'discovery_verify_samples', 'discovery_framework_scope', 'reuse_opencode_session'])
   if (p.quality) out.quality = pick(p.quality, ['min_confidence'])
   return out
 }
@@ -344,12 +343,6 @@ export function RunForm({ onLaunched, prefill, gateOnActiveRun = true }) {
             <input type="checkbox" id="skip-reex" checked={form.runtime.skip_reexamination} onInput={(e) => update('runtime.skip_reexamination', e.target.checked)} disabled={running} />
             <label for="skip-reex">Skip Stage 2 (re-examination)</label>
           </div>
-          <div class="toggle">
-            <input type="checkbox" id="skip-detail" checked={form.runtime.skip_detail} onInput={(e) => update('runtime.skip_detail', e.target.checked)} disabled={running} />
-            <label for="skip-detail" title="Skip Stage 3 (LLM detail enrichment). Verified seeds convert straight to entities; high-value fields (auth, route inputs) are backfilled deterministically from the AST. Reclaims ~40% of tokens.">
-              Skip Stage 3 (detail enrichment)
-            </label>
-          </div>
 
           {/*
             DISCOVERY STRENGTHENING section.
@@ -454,7 +447,6 @@ function buildCLI(f) {
   if (f.runtime.reuse_opencode_session) parts.push('  --reuse-opencode-session')
   if (f.runtime.cleanup_opencode_sessions) parts.push('  --cleanup-opencode-sessions')
   if (f.runtime.skip_reexamination) parts.push('  --skip-reexamination')
-  if (f.runtime.skip_detail) parts.push('  --skip-detail')
   if (f.runtime.discovery_verify) parts.push('  --discovery-verify')
   if (f.runtime.discovery_verify && f.runtime.discovery_verify_mode) parts.push(`  --discovery-verify-mode ${f.runtime.discovery_verify_mode}`)
   if (f.runtime.discovery_verify && f.runtime.discovery_verify_mode === 'ksample' && f.runtime.discovery_verify_samples) parts.push(`  --discovery-verify-samples ${f.runtime.discovery_verify_samples}`)

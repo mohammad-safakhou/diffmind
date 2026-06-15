@@ -23,7 +23,7 @@ func TestStageFromJob_Mapping(t *testing.T) {
 		"discover.exposure.http_route":                 "discovery",
 		"discover.dependency.db_operation":             "discovery",
 		"reexamine.exposure.http_route.GET-/users-id-": "reexamination",
-		"detail.exposure.http_route.GET-/users-id-":    "detail",
+		"detail.exposure.http_route.GET-/users-id-":    "other", // detail stage removed → unmapped
 		"connections.4f3ce0":                           "connections",
 		"connections.4f3ce0.batch.2":                   "connections",
 		"weird.unknown.verb":                           "other",

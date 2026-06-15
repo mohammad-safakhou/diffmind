@@ -29,7 +29,6 @@ type (
 	langFact        = extraction.LanguageFact
 	discoveryResult = extraction.DiscoveryResult
 	detailJob       = extraction.DetailJob
-	detailResult    = extraction.DetailResult
 )
 
 type (

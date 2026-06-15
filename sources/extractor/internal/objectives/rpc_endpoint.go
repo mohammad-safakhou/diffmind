@@ -20,6 +20,5 @@ FOR EACH RPC ENDPOINT EXTRACT:
 - Handler implementation class/function
 
 If no RPC endpoints exist, return {"items": []}.`,
-	DetailPrompt:      "For this RPC endpoint, extract request contract, auth/validation, handler flow order, and downstream actions.",
 	ConnectionContext: "Map RPC endpoint paths to dependencies with explicit branch conditions.",
 }

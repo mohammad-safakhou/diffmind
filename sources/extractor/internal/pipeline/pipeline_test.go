@@ -114,8 +114,12 @@ func (f *fakeOpenCode) PromptStructured(ctx context.Context, sessionID, director
 	case role == "discovery" && strings.Contains(prompt, "OBJECTIVE_ID: exposure.http_route"):
 		return map[string]any{"items": []any{map[string]any{
 			"type": "http_route", "name": "GET /users/{id}", "summary": "HTTP endpoint", "confidence": 0.95,
-			"inputs":           []any{map[string]any{"name": "id", "type": "string", "required": true}},
-			"details":          map[string]any{"method": "GET", "path": "/users/{id}"},
+			"inputs": []any{map[string]any{"name": "id", "type": "string", "required": true}},
+			// The dependencies hint links this exposure to the db_operation
+			// via the shallow matcher (no SCIP index in this test). Discovery
+			// now carries it directly — there is no detail stage to inject it.
+			"details": map[string]any{"method": "GET", "path": "/users/{id}",
+				"dependencies": []any{map[string]any{"name": "users_table_select", "type": "db_operation"}}},
 			"source_locations": []any{map[string]any{"file": "api.go", "start_line": 10, "end_line": 30}},
 			"evidence": []any{map[string]any{
 				"file": "api.go", "start_line": 12, "end_line": 12,
@@ -137,45 +141,6 @@ func (f *fakeOpenCode) PromptStructured(ctx context.Context, sessionID, director
 
 	case role == "discovery":
 		return map[string]any{"items": []any{}}, nil
-
-	case role == "detail" && strings.Contains(prompt, "OBJECTIVE_ID: exposure.http_route"):
-		return map[string]any{"item": map[string]any{
-			"type": "http_route", "name": "GET /users/{id}", "summary": "Validates id and returns user", "confidence": 0.96,
-			"key_actions": []any{"validate path param", "query user repository", "return JSON"},
-			"inputs":      []any{map[string]any{"name": "id", "type": "string", "required": true, "description": "user identifier"}},
-			// db_operations link this exposure to the users_table_select
-			// dependency via the shallow matcher (no SCIP index available
-			// in this test). The fields here must match the dependency's
-			// Name / details so buildShallowConnections pairs them.
-			"details": map[string]any{
-				"method": "GET", "path": "/users/{id}", "auth": "required",
-				"dependencies": []any{map[string]any{
-					"name": "users_table_select",
-					"type": "db_operation",
-				}},
-			},
-			"source_locations": []any{map[string]any{"file": "api.go", "start_line": 10, "end_line": 30}},
-			"evidence": []any{map[string]any{
-				"file": "api.go", "start_line": 20, "end_line": 20,
-				"snippet": "userRepo.GetByID(ctx, id)", "source": "opencode",
-			}},
-		}}, nil
-
-	case role == "detail" && strings.Contains(prompt, "OBJECTIVE_ID: dependency.db_operation"):
-		return map[string]any{"item": map[string]any{
-			"type": "db_operation", "name": "users_table_select", "summary": "Select by id on users table", "confidence": 0.95,
-			"key_actions":      []any{"prepare query", "execute read"},
-			"inputs":           []any{map[string]any{"name": "id", "type": "string", "required": true}},
-			"details":          map[string]any{"table": "users", "operation": "read", "transaction": "none"},
-			"source_locations": []any{map[string]any{"file": "repo.go", "start_line": 40, "end_line": 60}},
-			"evidence": []any{map[string]any{
-				"file": "repo.go", "start_line": 45, "end_line": 45,
-				"snippet": "SELECT * FROM users WHERE id = ?", "source": "opencode",
-			}},
-		}}, nil
-
-	case role == "detail":
-		return map[string]any{"item": nil}, nil
 
 	case role == "connection" && strings.Contains(prompt, "EXPOSURE_ID: "+exposureID):
 		return map[string]any{"items": []any{map[string]any{
@@ -259,11 +224,11 @@ func TestRunBuildsExposuresDependenciesAndConnections(t *testing.T) {
 		t.Fatalf("connection.to = %q, want dependency id %q", got, result.Dependencies[0].ID)
 	}
 
-	// All LLM-driven stages must have fired at least once. repo_facts
-	// has 1 call, discovery has one per objective, detail has one per
-	// seed (2). The connection stage is no longer LLM-driven (SCIP +
-	// shallow fallback do the job), so it must issue ZERO LLM calls.
-	// Re-examination is 0 because the seeds were clean.
+	// LLM calls fire only for the stages that still exist: repo_facts (1) and
+	// discovery (one per objective). The detail stage is gone — verified seeds
+	// convert to entities deterministically, so there must be ZERO detail
+	// calls. Connections is deterministic (SCIP + shallow fallback) → 0 LLM
+	// calls. Re-examination is 0 because the seeds were clean.
 	fake.rec.mu.Lock()
 	defer fake.rec.mu.Unlock()
 	if fake.rec.roles["repo_facts"] != 1 {
@@ -272,8 +237,8 @@ func TestRunBuildsExposuresDependenciesAndConnections(t *testing.T) {
 	if fake.rec.roles["discovery"] != 14 {
 		t.Fatalf("expected 14 discovery calls (one per objective, incl. connection_client), got %d", fake.rec.roles["discovery"])
 	}
-	if fake.rec.roles["detail"] != 2 {
-		t.Fatalf("expected 2 detail calls, got %d", fake.rec.roles["detail"])
+	if fake.rec.roles["detail"] != 0 {
+		t.Fatalf("expected 0 detail calls (detail stage removed), got %d", fake.rec.roles["detail"])
 	}
 	if fake.rec.roles["connection"] != 0 {
 		t.Fatalf("expected 0 connection LLM calls (SCIP stage replaces LLM), got %d", fake.rec.roles["connection"])
@@ -375,8 +340,10 @@ func TestRunReexaminationRescuesLowConfidenceSeed(t *testing.T) {
 	if got := len(result.Exposures); got != 1 {
 		t.Fatalf("expected 1 rescued exposure, got %d (unresolved=%d)", got, len(result.Unresolved))
 	}
-	if got := result.Exposures[0].Summary; !strings.Contains(got, "detailed") {
-		t.Fatalf("expected rescued+detailed summary, got %q", got)
+	// The rescued exposure carries the re-examination's corrected summary
+	// (there is no detail stage to enrich it further).
+	if got := result.Exposures[0].Summary; !strings.Contains(got, "re-verified") {
+		t.Fatalf("expected rescued (re-verified) summary, got %q", got)
 	}
 	fake.rec.mu.Lock()
 	if fake.rec.roles["reexamination"] != 1 {
@@ -525,9 +492,16 @@ func (f *fakeBatching) PromptStructured(ctx context.Context, sessionID, director
 	case role == "repo_facts":
 		return map[string]any{}, nil
 	case role == "discovery" && strings.Contains(prompt, "OBJECTIVE_ID: exposure.http_route"):
+		// Name all 5 deps as dependencies of this exposure so the shallow
+		// matcher (no SCIP in tests) pairs them. Discovery carries this hint
+		// directly now — there is no detail stage to inject it.
+		depNames := []any{}
+		for i := 0; i < 5; i++ {
+			depNames = append(depNames, map[string]any{"name": "dep" + string(rune('0'+i)), "type": "db_operation"})
+		}
 		return map[string]any{"items": []any{map[string]any{
 			"type": "http_route", "name": "GET /users/{id}", "summary": "HTTP endpoint", "confidence": 0.95,
-			"details":          map[string]any{"method": "GET", "path": "/users/{id}"},
+			"details":          map[string]any{"method": "GET", "path": "/users/{id}", "dependencies": depNames},
 			"source_locations": []any{map[string]any{"file": "api.go", "start_line": 10, "end_line": 30}},
 		}}}, nil
 	case role == "discovery" && strings.Contains(prompt, "OBJECTIVE_ID: dependency.db_operation"):
