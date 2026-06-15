@@ -50,10 +50,9 @@ uses, so "correct" is judged exactly as the pipeline judges "duplicate". See
 - `internal/pipeline/` — extraction lifecycle, stage sequencing, resume/failure
   routing, progress/events, snapshot ownership, and terminal result assembly.
 - `internal/stage/` — typed stage packages (`repofacts`, `astindex`,
-  `infrastructure`, `discovery`, `reexamine`, `detail`, `connections`,
-  `reconcile`).
-- `internal/pipeline/deterministic_floor.go` — LLM-free projection of the
-  deterministic floor; powers cheap-mode eval.
+  `discovery`, `reexamine`, `connections`, `reconcile`).
+- `internal/floor/` — LLM-free projection of the deterministic path; powers
+  cheap-mode eval.
 - `internal/stage/discovery/config_resolve.go` — `${...}` property-placeholder
   resolver (queue/topic names) against the parsed config index.
 - `internal/llmrun/` — prompt execution, sessions, retries, watchdog/liveness,
@@ -79,9 +78,10 @@ uses, so "correct" is judged exactly as the pipeline judges "duplicate". See
 3. **Sharding is evidence-gated & candidate-clustered.** Only shard directories
    with real AST candidates; never fan an empty objective into N whole-repo
    scans. A shard scopes what it *reports*, never what it may *read*.
-4. **Detail is additive.** It enriches discovered entities; it must never drop
-   or re-identify one. Discovery (+reexamination) is the authority on *what
-   exists*.
+4. **Discovery owns entities.** Discovery (+reexamination) is the authority on
+   what exists, its identity, and its semantic richness. Deterministic
+   conversion/backfills may enrich an entity but must never drop or re-identify
+   one. Do not reintroduce an LLM detail stage.
 5. **Dedup targets the architectural fact.** db/cache collapse by
    `(resource, operation)`; genuinely distinct datastores (postgres vs dynamodb)
    are preserved — never silently merge across real databases.

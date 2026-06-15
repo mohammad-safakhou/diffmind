@@ -62,7 +62,7 @@ type ProjectIndex struct {
 	RejectedFrameworks []FrameworkBinding
 
 	// Configs holds the parsed configuration files (YAML, JSON, TOML, .env,
-	// .properties). Used by the infrastructure inventory stage.
+	// .properties). Used by discovery resource resolution and instance backfills.
 	Configs map[string]*ConfigFile
 
 	// Languages are the distinct source languages actually present in the

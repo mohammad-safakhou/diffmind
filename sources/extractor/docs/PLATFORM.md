@@ -69,7 +69,8 @@ without giving up the LLM's reach.
 
 ```
 repo_facts → ast_index → deterministic_discovery → LLM discovery (merged)
-           → reexamination → detail (additive) → connections → reconcile → artifacts
+           → reexamination → deterministic conversion/backfills
+           → connections → connection_repair → reconcile → artifacts
 ```
 
 - **repo_facts** — one LLM call + marker-file scan: languages, frameworks,
@@ -80,11 +81,19 @@ repo_facts → ast_index → deterministic_discovery → LLM discovery (merged)
 - **LLM discovery** — per-objective agents, grounded in advisory AST hints,
   sharded only where there is real static evidence (see below).
 - **reexamination** — re-confirms low-signal candidates.
-- **detail** — enriches each entity; **strictly additive** (never drops or
-  re-identifies a discovered entity).
-- **connections** — deterministic BFS over the call graph; zero LLM.
+- **conversion/backfills** — converts verified discovery seeds directly to
+  entities, then adds high-precision AST-derived auth, inputs, datastore
+  platform, dependencies, and client-instance propagation.
+- **connections** — deterministic BFS over the call graph.
+- **connection_repair** — one constrained, fail-soft LLM tail for exposures
+  left unconnected, choosing only from the existing dependency catalog.
 - **reconcile** — dedup to the high-level fact, sort for stable IDs, drop
   orphaned connections.
+
+The LLM detail stage was deleted in June 2026. It consumed roughly one third of
+run tokens, discovery already owned every identity-bearing field, and much of
+its extra prose never reached the graph. Richness that matters to the product
+must now be produced by discovery or by high-precision deterministic backfills.
 
 ### Key invariants (don't regress these)
 
@@ -96,20 +105,23 @@ repo_facts → ast_index → deterministic_discovery → LLM discovery (merged)
   candidates; never fan an empty objective into N whole-repo scans. A shard
   scopes what it *reports*, never what it may *read* (shared base classes/config
   must stay visible).
-- **Detail is enrichment, not a gate.** It may add to discovery, never subtract.
+- **Discovery is the entity contract.** There is no later semantic repair pass
+  for names, details, evidence, or inputs. Discovery output must be usable as-is.
 - **Dedup targets the architectural fact.** db/cache collapse by
   `(resource, operation)`; distinct real datastores are preserved.
+- **Absence is an empty list, never an entity.** Placeholder/no-result sentinel
+  rows are invalid even when they satisfy the JSON schema.
 
 ## 5. Known limitations / honest gaps
 
-- **Deterministic `db_operation` is JVM-only.** It recognises Spring Data / JPA
-  / MyBatis (`*Repository`, `*Dao`, `EntityManager`). On other stacks it returns
-  nothing and `db_operation` falls back to LLM-only discovery — safe, but not
-  yet stabilised there.
 - **Deterministic coverage is partial.** Stable today: http_route,
-  queue_consumer, scheduled_job, outbound_http (Feign), db_operation (JVM).
-  Still LLM-only: queue_publish, cache_operation, outbound_rpc, stream_consume,
-  command_exec, rpc_endpoint, webhook, cli_command.
+  queue_consumer, scheduled_job, outbound_http (selected framework bindings),
+  db_operation (repository calls, raw SQL, and selected ORMs), queue_publish
+  (known clients with resolvable destinations), command_exec, outbound_rpc
+  (generated gRPC stubs), and stream_consume (selected stream APIs). Coverage is
+  intentionally conservative and uneven by language/framework. Cache operations,
+  webhooks, CLI commands, RPC endpoints, and connection clients remain primarily
+  LLM-owned.
 - **LLM sampling is not pinned.** No temperature/seed control yet (provider may
   not honor it on the configured model); residual run-to-run variance is damped
   by the deterministic floor + dedup, not eliminated.
@@ -117,24 +129,22 @@ repo_facts → ast_index → deterministic_discovery → LLM discovery (merged)
   errs toward "don't merge", never a wrong merge.
 - **No cost/budget guard.** A run will spend whatever it spends; there is no
   token ceiling or abort-on-exhaustion (deliberately deferred).
-- **LLM-only objectives are high-variance run-to-run.** Objectives with no
-  deterministic detector (`queue_publish`, `cache_operation`, `outbound_rpc`,
-  `stream_consume`, `command_exec`, `rpc_endpoint`, `webhook`, `cli_command`)
-  get a single whole-repo "find ALL X" call — the highest-variance prompt shape.
-  Measured on `routing-service` across two runs: `cli_command` 7→0,
-  `outbound_rpc` 14→10, `command_exec` 1→0, `stream_consume` 0→1, while the
-  deterministic-floored types (http_route, scheduled_job, db_operation) stayed
-  stable. This is the single biggest remaining accuracy lever — see roadmap.
-- **Connections have no LLM tail.** The connection stage is 100% deterministic
-  AST BFS, so exposures wired via DI / events / async-queue / dynamic dispatch /
-  deep chains (>`MaxDepth`) or on non-JVM stacks silently get no connections.
+- **LLM-owned objectives remain high-variance.** Optional `reask` and `ksample`
+  verification can add recall, but June 15 measurements also showed that union
+  sampling amplifies noise and cost unless candidate validity is stronger.
+- **Evidence validation is still shallow.** A source path and positive line
+  number pass the conversion gate; the cited snippet is not yet checked against
+  the indexed source range. Plausible-looking negative statements can therefore
+  masquerade as evidence.
+- **Connection repair is expensive.** On the June 15 scenarios it consumed
+  about 138k-237k tokens per run. It restores links the AST misses, but needs
+  tighter candidate retrieval and independent precision measurement.
 
-Fixed June 2026 (previously listed here): deterministic db-table precision nits
-— `entity_manager` and `*_id_seq`/`*_seq` are now filtered out, and `${...}`
-config placeholders in queue-consumer names resolve to the real queue. A
-residual `unknown <table>` can still appear when the *LLM itself* names a db op
-that way (we never rewrite LLM-authored names); reconcile collapses it by
-`(resource, operation)`, so it is not a duplicate.
+Fixed June 2026: the detail and unused infrastructure stages were removed;
+connection repair became visible; deterministic db junk tables are filtered;
+`${...}` queue/topic placeholders resolve to real resources; common no-result
+sentinels are rejected; and shard fan-out now uses stricter evidence than prompt
+hint rendering for confusable objectives.
 
 ## 6. Roadmap / milestones
 
@@ -150,42 +160,51 @@ DONE (June 2026):
 - ✅ **Config placeholder resolution** — `${...}` queue/topic names in framework
   bindings resolve to the real resource
   (`internal/stage/discovery/config_resolve.go`).
+- ✅ **Delete detail + infrastructure** — removes the two LLM stages that did
+  not justify their token cost; deterministic conversion/backfills are canonical.
+- ✅ **LLM connection repair tail** — additive, fail-soft repair over a closed
+  dependency catalog for exposures the AST walk leaves dangling.
+- ✅ **Keyword-seeded sharding** — selected LLM-owned objectives can accumulate
+  static evidence from imports/calls instead of always using one whole-repo call.
 
 Near-term (the highest-leverage gaps, in priority order):
-1. **LLM connection verify/repair pass** — add an LLM *tail* after the
-   deterministic AST connection walk for exposures it leaves unconnected
-   (DI / events / async-queue / dynamic dispatch / deep chains / non-JVM),
-   constrained to the known dependency catalog and AST-validated. Connections
-   are the hardest sub-problem and currently have zero LLM coverage — the
-   clearest violation of the "LLM is the brain" thesis. (`--max-catalog-items`
-   is still wired; the removed scaffolding is recoverable from git `3c59dee~1`.)
-2. **Stabilise LLM-only objectives** — keyword-seed candidate files (reuse the
-   `objectiveMatchers` keyword lists) so `queue_publish`, `cache_operation`,
-   `outbound_rpc`, `command_exec`, etc. get evidence-gated directory shards
-   instead of one whole-repo call. Directly attacks the run-to-run variance
-   documented in §5. Gate on the existing soft-target so no empty fan-out.
-3. **Promote detail-discovered dependencies** — the detail stage observes
-   downstream ops (Redis/SQS/HTTP/exec) it currently discards as text; route
-   genuinely-new ones back through verification (preserving "discovery is the
-   authority") instead of dropping them.
-4. **Extend deterministic discovery to the remaining types** — queue_publish
-   (template `.send`), cache_operation (`@Cacheable` w/ external store),
-   outbound_rpc — each gated on a precision check before promotion.
-5. **Deterministic db coverage beyond JVM** — Django ORM, ActiveRecord, GORM,
-   Sequelize/Prisma. The biggest lever for non-Java repos.
+1. **Full-run labeled stability suite** — label representative real services,
+   score every scenario, and add K-run variance metrics. Counts from one run are
+   not an accuracy signal.
+2. **Evidence-grounded candidate validation** — verify cited path/range/snippet
+   against the AST/source snapshot before keep-biased reexamination can retain a
+   candidate.
+3. **Objective-specific identity schemas** — require the identity-bearing keys
+   for each objective in structured output and normalize them before shard,
+   verify, and deterministic merges.
+4. **Candidate-manifest discovery** — retrieve compact candidate files/symbols
+   first, then ask the LLM to classify/enrich that bounded set plus an explicit
+   dynamic tail. This is the main recall-per-token improvement.
+5. **Verification redesign** — replace whole-repo union sampling with targeted
+   missed-candidate checks and an independently measured precision gate.
+6. **Extend deterministic coverage** — prioritize external cache operations,
+   CLI/RPC/webhook entrypoints, non-Feign HTTP clients, and additional ORM/client
+   libraries where precision can be proven.
 
 Medium-term (quality & trust):
-6. **Pin LLM determinism** where the provider supports it (seed/temperature);
-   measure variance with the eval harness's planned K-run/full mode, don't assume.
-7. **Cost guardrail** — optional token budget that aborts and fails (not
-   silently completes).
+7. **Adaptive cost scheduler** — per-objective call/token budgets, shard caps,
+   diminishing-return stop rules, and cheaper models for classification.
+8. **Connection repair retrieval** — partition dangling exposures and shortlist
+   reachable dependency candidates before prompting.
+9. **Deterministic-first repo facts and clients** — remove avoidable discovery
+   tokens by deriving stack facts and connection backbones from AST/config.
+10. **Pin LLM determinism** where supported and report the effective sampling
+    configuration in every run.
 
 Longer-term (product):
-8. **Cross-service graph** — stitch many services' exposures↔dependencies into
+11. **Cross-service graph** — stitch many services' exposures↔dependencies into
    a fleet-wide architecture graph (e.g. service A's outbound_http → service B's
    http_route). (Placeholder resolution above makes the instance names stable
    enough to stitch on.)
-9. **Diff mode** — architecture delta between two commits/versions.
+12. **Diff mode** — architecture delta between two commits/versions.
+
+The measured June 15 scenarios and the concrete discovery work plan are in
+`docs/DISCOVERY_ROADMAP.md`.
 
 ## 7. Where things live
 

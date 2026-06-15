@@ -1,5 +1,9 @@
 # DiffMind — accuracy-first roadmap to a concrete working extractor
 
+> **Superseded in June 2026.** This document records the pre-removal roadmap
+> and still discusses the former detail stage. Use `docs/PLATFORM.md` and
+> `docs/DISCOVERY_ROADMAP.md` for current architecture and priorities.
+
 > **Status:** APPROVED for **accuracy-scope** implementation (team review, after
 > four rounds). NOT a production sign-off — security + reliability hardening
 > remain explicitly deferred (see end). Two items are intentionally provisional:

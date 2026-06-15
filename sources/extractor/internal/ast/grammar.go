@@ -121,7 +121,8 @@ func SupportedLanguages() []string {
 }
 
 // IsConfigFile reports whether the given file extension belongs to a
-// configuration file that the infrastructure inventory stage should parse.
+// configuration file that the AST index should parse for discovery and
+// resource-resolution context.
 var configExtensions = map[string]string{
 	".yml":        "yaml",
 	".yaml":       "yaml",
