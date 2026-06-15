@@ -29,6 +29,17 @@ type Runner struct {
 	Emit            EventFunc
 	PathMapper      *extraction.PathMapper
 	Confirmed       map[string][]extraction.Candidate
+
+	// FrameworkScope enables the riskier framework-label prompt trim (config
+	// DiscoveryFrameworkScope; default OFF). Language scoping is always on.
+	FrameworkScope bool
+	// MinConfidence is the run's confidence floor, used by the verification
+	// pass to floor a downgraded-but-retained item so it survives the later gate.
+	MinConfidence float64
+	// VerifyMode ("" off, "reask", "ksample") and VerifySamples drive the
+	// optional Stage-1.5 verification pass, gated to HighVariance objectives.
+	VerifyMode    string
+	VerifySamples int
 }
 
 type RunInput struct {
@@ -231,7 +242,7 @@ func (r Runner) runShard(ctx context.Context, obj objectives.Objective, rf *extr
 		}
 		scope = shard.Dirs
 	}
-	prompt := extraction.BuildDiscoveryPrompt(obj, rf, r.SubDir, hints, scope, r.Confirmed[obj.ID])
+	prompt := extraction.BuildDiscoveryPrompt(obj, rf, r.SubDir, hints, scope, r.Confirmed[obj.ID], r.FrameworkScope)
 	schema := extraction.EntityListSchemaForObjective(obj)
 	payload, err := r.Prompt(ctx, jobID, prompt, schema)
 	if err != nil {
