@@ -16,7 +16,6 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/stage/astindex"
 	connectionstage "github.com/mohammad-safakhou/diffmind/internal/stage/connections"
 	discoverystage "github.com/mohammad-safakhou/diffmind/internal/stage/discovery"
-	infrastructurestage "github.com/mohammad-safakhou/diffmind/internal/stage/infrastructure"
 	reexaminestage "github.com/mohammad-safakhou/diffmind/internal/stage/reexamine"
 	"github.com/mohammad-safakhou/diffmind/internal/stage/repofacts"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
@@ -133,60 +132,6 @@ func (o *orchestrator) runASTIndexStage(ctx context.Context) error {
 func countCallEdges(idx *ast.ProjectIndex) int {
 	return astindex.CountCallEdges(idx)
 }
-
-// runInfrastructureStage uses the config files already parsed by ast_index to
-// build an infrastructure inventory (databases, topics, queues, external services).
-// It sends the flat config entries to an LLM that names each system.
-func (o *orchestrator) runInfrastructureStage(ctx context.Context, rf *repoFacts) (*InfrastructureInventory, error) {
-	if o.astIndex == nil || len(o.astIndex.Configs) == 0 {
-		util.Info("agents.infrastructure", "no config files; skipping inventory", nil)
-		return &InfrastructureInventory{}, nil
-	}
-
-	o.emit(events.Event{
-		Kind: events.KindStageStarted, Stage: "infrastructure",
-		Status:  events.StatusRunning,
-		Payload: map[string]any{"config_files": len(o.astIndex.Configs)},
-	})
-
-	inv, err := (infrastructurestage.Runner{Prompt: o.promptAgent}).Run(ctx, infrastructurestage.Input{
-		Index: o.astIndex, Facts: rf,
-	})
-	if err != nil {
-		// Infrastructure inventory is best-effort; don't halt the run.
-		util.Warn("agents.infrastructure", "inventory LLM call failed; continuing without inventory", map[string]any{"error": err.Error()})
-		o.emit(events.Event{
-			Kind: events.KindStageCompleted, Stage: "infrastructure",
-			Status: events.StatusSkipped, Message: "LLM call failed: " + err.Error(),
-		})
-		return &InfrastructureInventory{}, nil
-	}
-
-	// Persist to state/.
-	if o.runDir != "" {
-		o.persistStageState("infrastructure.json", inv)
-	}
-
-	o.emit(events.Event{
-		Kind: events.KindStageCompleted, Stage: "infrastructure",
-		Status: events.StatusSuccess,
-		Payload: map[string]any{
-			"databases": len(inv.Databases),
-			"topics":    len(inv.Topics),
-			"queues":    len(inv.Queues),
-			"services":  len(inv.Services),
-		},
-	})
-	return inv, nil
-}
-
-// Infrastructure types
-
-// InfrastructureInventory is the project-level list of external systems.
-type InfrastructureInventory = infrastructurestage.Inventory
-
-// InfraSystem is one external infrastructure system.
-type InfraSystem = infrastructurestage.System
 
 type reexamineTrigger = reexaminestage.Trigger
 
