@@ -18,11 +18,11 @@ import { runMeta, preflight } from '../lib/store.js'
 // Bumping the key forces a clean slate; we also delete the old key
 // on first load so it doesn't sit around forever.
 // Bumped to v3 when the indexer block was added to DEFAULTS in Sprint 3.
-// Saved v2 payloads are layered through deepMerge, so users who saved
-// their preferred form before this change still get correct defaults
-// for the new indexer fields. We still wipe pre-v2 storage on load.
-const STORAGE_KEY = 'diffmind:form-defaults-v3'
-const LEGACY_STORAGE_KEYS = ['diffmind:form-defaults', 'diffmind:form-defaults-v2']
+// Bumped to v4 when the dead controls (deterministic_discovery select +
+// indexer block) were removed — removing fields from DEFAULTS requires a
+// bump so a stale saved value can't resurrect a control that no longer exists.
+const STORAGE_KEY = 'diffmind:form-defaults-v4'
+const LEGACY_STORAGE_KEYS = ['diffmind:form-defaults', 'diffmind:form-defaults-v2', 'diffmind:form-defaults-v3']
 
 // `timeout_seconds` is the raw http.Client.Timeout on the transport.
 // We DELIBERATELY do not surface it as a primary control — the
@@ -55,7 +55,6 @@ const DEFAULTS = {
     discovery_verify_mode: 'reask',
     discovery_verify_samples: 2,
     discovery_framework_scope: false,
-    deterministic_discovery: 'observe',
     // Liveness watchdog: this is the real "wait at most N seconds
     // with no observable progress before aborting" control.
     idle_timeout_seconds: 120,
@@ -64,23 +63,6 @@ const DEFAULTS = {
     liveness_poll_seconds: 5,
   },
   quality: { min_confidence: 0.7 },
-  // Indexer controls the SCIP indexing stage (deterministic call-graph
-  // extraction; replaces the old LLM-based connections stage). All
-  // fields are optional. Empty strings / false fall back to server
-  // defaults — see internal/config/config.go and the indexer block in
-  // internal/ui/handlers_run.go.
-  //
-  //   disabled   = true                → skip indexing entirely; connections
-  //                                      degrade to the shallow name matcher.
-  //   image      = "<tag>"             → use a custom prebuilt image.
-  //   auto_build = "missing"           → build if missing (default).
-  //              = "always"            → rebuild every run (for Dockerfile dev).
-  //              = "never"             → never auto-build; fail-soft if missing.
-  indexer: {
-    disabled: false,
-    image: '', // empty → diffmind-indexer:dev (server default)
-    auto_build: '', // empty → "missing" (server default)
-  },
 }
 
 // deepMerge produces a copy of `base` with values from `over` layered
@@ -141,7 +123,7 @@ function sanitizePrefill(p) {
     return o
   }
   if (p.opencode) out.opencode = pick(p.opencode, ['base_url', 'username', 'provider_id', 'model_id', 'model_variant', 'timeout_seconds'])
-  if (p.runtime) out.runtime = pick(p.runtime, ['workers', 'max_catalog_items', 'idle_timeout_seconds', 'max_call_seconds', 'liveness_poll_seconds', 'prompt_retry_count', 'deterministic_discovery', 'skip_reexamination', 'skip_detail', 'discovery_verify', 'discovery_verify_mode', 'discovery_verify_samples', 'discovery_framework_scope', 'reuse_opencode_session'])
+  if (p.runtime) out.runtime = pick(p.runtime, ['workers', 'max_catalog_items', 'idle_timeout_seconds', 'max_call_seconds', 'liveness_poll_seconds', 'prompt_retry_count', 'skip_reexamination', 'skip_detail', 'discovery_verify', 'discovery_verify_mode', 'discovery_verify_samples', 'discovery_framework_scope', 'reuse_opencode_session'])
   if (p.quality) out.quality = pick(p.quality, ['min_confidence'])
   return out
 }
@@ -350,23 +332,6 @@ export function RunForm({ onLaunched, prefill, gateOnActiveRun = true }) {
               <input type="number" value={form.opencode.timeout_seconds} onInput={(e) => update('opencode.timeout_seconds', Number(e.target.value))} disabled={running} />
             </div>
           </div>
-          <div class="row-3">
-            <div class="field">
-              <label title="observe writes deterministic reports only; shadow_compare compares LLM baseline against deterministic candidate; active promotes deterministic facts; off disables the deterministic pass.">
-                Deterministic discovery
-              </label>
-              <select
-                value={form.runtime.deterministic_discovery}
-                onInput={(e) => update('runtime.deterministic_discovery', e.target.value)}
-                disabled={running}
-              >
-                <option value="observe">observe</option>
-                <option value="shadow_compare">shadow compare</option>
-                <option value="active">active</option>
-                <option value="off">off</option>
-              </select>
-            </div>
-          </div>
           <div class="toggle">
             <input type="checkbox" id="reuse" checked={form.runtime.reuse_opencode_session} onInput={(e) => update('runtime.reuse_opencode_session', e.target.checked)} disabled={running} />
             <label for="reuse">Reuse one OpenCode session per run</label>
@@ -434,59 +399,6 @@ export function RunForm({ onLaunched, prefill, gateOnActiveRun = true }) {
               </label>
             </div>
           </div>
-
-          {/*
-            INDEXER section.
-            The SCIP index stage is what makes Stage 4 (connections)
-            deterministic instead of LLM-driven. On a fresh install
-            with no prebuilt image, the server auto-builds
-            diffmind-indexer:dev from the embedded Dockerfile the
-            first time it's needed (one-off ~20 min). These knobs let
-            advanced users opt out, point at a prebuilt image, or
-            force a rebuild after editing Dockerfile.indexer.
-          */}
-          <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border);">
-            <div class="toggle">
-              <input
-                type="checkbox"
-                id="indexer-disabled"
-                checked={form.indexer.disabled}
-                onInput={(e) => update('indexer.disabled', e.target.checked)}
-                disabled={running}
-              />
-              <label for="indexer-disabled" title="Skip the SCIP index stage entirely. Connections will degrade to the shallow name matcher.">
-                Disable SCIP indexer (use shallow matcher)
-              </label>
-            </div>
-            <div class="row-3">
-              <div class="field" style="grid-column: span 2;">
-                <label title="Container image to use for the SCIP indexer. Leave blank to use the server default (diffmind-indexer:dev, auto-built from the embedded Dockerfile on first run).">
-                  Indexer image
-                </label>
-                <input
-                  type="text"
-                  placeholder="diffmind-indexer:dev"
-                  value={form.indexer.image}
-                  onInput={(e) => update('indexer.image', e.target.value)}
-                  disabled={running || form.indexer.disabled}
-                />
-              </div>
-              <div class="field">
-                <label title="When to build the indexer image. 'missing' = build if absent (default). 'always' = rebuild every run (use while iterating on Dockerfile.indexer). 'never' = fail-soft if absent.">
-                  Auto-build
-                </label>
-                <select
-                  value={form.indexer.auto_build}
-                  onInput={(e) => update('indexer.auto_build', e.target.value)}
-                  disabled={running || form.indexer.disabled}
-                >
-                  <option value="">missing (default)</option>
-                  <option value="always">always</option>
-                  <option value="never">never</option>
-                </select>
-              </div>
-            </div>
-          </div>
         </div>
       )}
 
@@ -539,7 +451,6 @@ function buildCLI(f) {
   if (f.runtime.prompt_retry_count !== undefined && f.runtime.prompt_retry_count !== null) parts.push(`  --prompt-retry-count ${f.runtime.prompt_retry_count}`)
   if (f.runtime.max_call_seconds) parts.push(`  --max-call-seconds ${f.runtime.max_call_seconds}`)
   if (f.runtime.liveness_poll_seconds) parts.push(`  --liveness-poll-seconds ${f.runtime.liveness_poll_seconds}`)
-  if (f.runtime.deterministic_discovery) parts.push(`  --deterministic-discovery ${f.runtime.deterministic_discovery}`)
   if (f.runtime.reuse_opencode_session) parts.push('  --reuse-opencode-session')
   if (f.runtime.cleanup_opencode_sessions) parts.push('  --cleanup-opencode-sessions')
   if (f.runtime.skip_reexamination) parts.push('  --skip-reexamination')
@@ -549,9 +460,6 @@ function buildCLI(f) {
   if (f.runtime.discovery_verify && f.runtime.discovery_verify_mode === 'ksample' && f.runtime.discovery_verify_samples) parts.push(`  --discovery-verify-samples ${f.runtime.discovery_verify_samples}`)
   if (f.runtime.discovery_framework_scope) parts.push('  --discovery-framework-scope')
   if (f.quality.min_confidence) parts.push(`  --min-confidence ${f.quality.min_confidence}`)
-  if (f.indexer?.disabled) parts.push('  --no-index')
-  if (f.indexer?.image) parts.push(`  --indexer-image ${q(f.indexer.image)}`)
-  if (f.indexer?.auto_build) parts.push(`  --indexer-auto-build ${f.indexer.auto_build}`)
   return parts.join(' \\\n')
 }
 
