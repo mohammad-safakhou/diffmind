@@ -34,7 +34,7 @@ func NewResolver(idx *Index) *Resolver {
 }
 
 // EntityLocation is diffmind's input to the resolver: a name plus a
-// best-known file:line position from the detail stage. Field numbers
+// best-known file:line position from discovery. Field numbers
 // follow the model.Location convention (1-based lines; we convert to
 // zero-based internally).
 //

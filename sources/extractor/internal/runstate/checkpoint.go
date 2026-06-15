@@ -150,8 +150,7 @@ func (s *CheckpointStore) LoadDiscoveryShardCheckpoint(dir, objID string) map[in
 
 // ---- reexamination per-item checkpoint ----
 //
-// Unlike the detail stage (which writes one JSONL line per entity) the
-// reexamination stage had no per-item checkpoint — it only wrote
+// Reexamination originally had no per-item checkpoint — it only wrote
 // reexamination.json when the whole stage succeeded. A single prompt
 // failure halted the stage and on retry ALL suspects were re-run, even
 // the ones that had already been confirmed/rejected.
@@ -166,7 +165,7 @@ const reexamEntitiesJSONL = "reexam_entities.jsonl"
 
 // ReexamCheckpointEntry is one row of state/reexam_entities.jsonl.
 type ReexamCheckpointEntry struct {
-	// Key is objective_id::safe_seed_name, same scheme as detail.
+	// Key is objective_id::safe_seed_name.
 	Key string `json:"key"`
 	// Outcome is "confirmed", "rejected", or "clean" (was never suspect).
 	// We only write "confirmed" and "rejected"; "clean" seeds never enter
