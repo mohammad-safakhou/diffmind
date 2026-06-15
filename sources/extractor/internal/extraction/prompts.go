@@ -150,6 +150,27 @@ func ExampleBlock(obj objectives.Objective) string {
 	return "GOOD_EXAMPLE (one well-formed item; match this shape, not its specific values):\n" + obj.Example + "\n\n"
 }
 
+// badExampleBlock renders the objective's NegativeExample, if any. It shows the
+// model an item that is COMMONLY misclassified as this objective but belongs to
+// a neighbour, with the reason. Populated only for confusable pairs, so most
+// objectives render nothing here.
+func BadExampleBlock(obj objectives.Objective) string {
+	if strings.TrimSpace(obj.NegativeExample) == "" {
+		return ""
+	}
+	return "BAD_EXAMPLE (an item commonly MISCLASSIFIED as this objective — do NOT report items like this; they belong to another objective):\n" + obj.NegativeExample + "\n\n"
+}
+
+// boundaryBlock renders the objective's one-line scope exclusion, if any. It is
+// placed right after the description so the model reads the "where this stops"
+// rule before it starts enumerating. Empty → omitted.
+func BoundaryBlock(obj objectives.Objective) string {
+	if strings.TrimSpace(obj.Boundary) == "" {
+		return ""
+	}
+	return "BOUNDARY (keep this objective distinct from its neighbours):\n- " + obj.Boundary + "\n\n"
+}
+
 // detailKeysLine renders the required-detail-keys hint, if any.
 func DetailKeysLine(obj objectives.Objective) string {
 	if len(obj.DetailKeys) == 0 {
@@ -291,9 +312,137 @@ func BulletLanguages(line string) (langs []string, ok bool) {
 	return got, true
 }
 
+// ---- Framework scoping of discovery prompts (gated, riskier than language) ----
+//
+// Language scoping (above) trims bullets for whole PROGRAMMING LANGUAGES the
+// repo doesn't use — a safe trim, because a Java-only repo provably has no
+// Python. Framework scoping goes one level finer: it trims FRAMEWORK/TECH
+// bullets (Redis, DynamoDB, MyBatis, ...) the repo shows no trace of in
+// repo_facts. This is riskier — repo_facts can under-report a framework that is
+// in fact used — so it is gated behind DiscoveryFrameworkScope (default OFF).
+//
+// Two safety biases keep a wrong trim unlikely:
+//   - Unknown/empty detected set → NO filtering (identical to today's prompt).
+//   - Matching against the detected set is GENEROUS (substring either way), so
+//     the trim only fires when the repo has no trace of the framework at all.
+
+// promptLabelFrameworks maps a discovery-prompt bullet label (token before the
+// first colon, lower-cased) to the canonical framework/tech keyword(s) that
+// satisfy it. A label absent from this map is treated as cross-cutting and is
+// ALWAYS kept. Only distinctive, datastore/transport-specific labels are listed
+// — never generic ones ("raw sql", "python") that a language bullet or prose
+// already covers.
+var promptLabelFrameworks = map[string][]string{
+	"spring boot":     {"spring"},
+	"spring data jpa": {"spring", "jpa", "hibernate"},
+	"spring jdbc":     {"spring", "jdbc"},
+	"jax-rs":          {"jax-rs", "jersey", "resteasy"},
+	"mybatis":         {"mybatis"},
+	"hibernate":       {"hibernate", "jpa"},
+	"redis":           {"redis", "jedis", "lettuce"},
+	"dynamodb":        {"dynamodb", "dynamo"},
+	"elasticsearch":   {"elasticsearch", "elastic", "opensearch"},
+	"mongodb":         {"mongo"},
+	"memcached":       {"memcached"},
+	"hazelcast":       {"hazelcast"},
+	"kinesis":         {"kinesis"},
+	"kafka":           {"kafka"},
+}
+
+// detectedFrameworkSet canonicalises the repo's frameworks and probable tech
+// hints (from repo_facts) into a lower-cased set. Returns nil when nothing is
+// known, signalling callers to skip framework filtering entirely.
+func DetectedFrameworkSet(rf *RepoFacts) map[string]bool {
+	if rf == nil {
+		return nil
+	}
+	set := map[string]bool{}
+	add := func(s string) {
+		s = strings.ToLower(strings.TrimSpace(s))
+		if s != "" {
+			set[s] = true
+		}
+	}
+	for _, f := range rf.Frameworks {
+		add(f)
+	}
+	for _, h := range rf.ProbableTechHints {
+		add(h)
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return set
+}
+
+// bulletFrameworks inspects a "- <Label>: ..." line and, when Label names a
+// framework/tech in promptLabelFrameworks, returns the canonical keywords that
+// satisfy it. ok=false means the line is not a framework-labelled bullet and
+// must be kept verbatim.
+func BulletFrameworks(line string) (keywords []string, ok bool) {
+	t := strings.TrimSpace(line)
+	if !strings.HasPrefix(t, "- ") {
+		return nil, false
+	}
+	t = strings.TrimSpace(t[2:])
+	colon := strings.Index(t, ":")
+	if colon <= 0 {
+		return nil, false
+	}
+	label := strings.ToLower(strings.TrimSpace(t[:colon]))
+	got, found := promptLabelFrameworks[label]
+	if !found {
+		return nil, false
+	}
+	return got, true
+}
+
+// scopeFrameworkLabels drops framework-labelled bullet lines for frameworks the
+// repo shows no trace of. detected==nil (unknown) returns the prompt unchanged.
+func ScopeFrameworkLabels(prompt string, detected map[string]bool) string {
+	if len(detected) == 0 {
+		return prompt
+	}
+	lines := strings.Split(prompt, "\n")
+	out := lines[:0]
+	for _, line := range lines {
+		if kws, ok := BulletFrameworks(line); ok && !frameworkPresent(kws, detected) {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
+// frameworkPresent reports whether any of a bullet's canonical keywords overlaps
+// the detected set. Matching is deliberately generous (equality, or a
+// length-guarded substring either direction) so the trim errs toward KEEPING a
+// bullet when in doubt — a wrong keep wastes a few tokens, a wrong drop blinds
+// the model.
+func frameworkPresent(keywords []string, detected map[string]bool) bool {
+	for _, kw := range keywords {
+		for dt := range detected {
+			if tokenOverlap(kw, dt) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func tokenOverlap(a, b string) bool {
+	if a == b {
+		return true
+	}
+	if len(a) >= 3 && len(b) >= 3 && (strings.Contains(a, b) || strings.Contains(b, a)) {
+		return true
+	}
+	return false
+}
+
 // ---- Stage 1: per-objective discovery ----
 
-func BuildDiscoveryPrompt(obj objectives.Objective, rf *RepoFacts, subDir string, hints ObjectiveHints, scopeDirs []string, confirmed []Candidate) string {
+func BuildDiscoveryPrompt(obj objectives.Objective, rf *RepoFacts, subDir string, hints ObjectiveHints, scopeDirs []string, confirmed []Candidate, frameworkScope bool) string {
 	var sb strings.Builder
 	sb.WriteString("AGENT ROLE: objective-extractor\n")
 	sb.WriteString(readOnlyPreamble)
@@ -309,24 +458,45 @@ func BuildDiscoveryPrompt(obj objectives.Objective, rf *RepoFacts, subDir string
 	sb.WriteString("DESCRIPTION: ")
 	sb.WriteString(obj.Description)
 	sb.WriteString("\n\n")
+	sb.WriteString(BoundaryBlock(obj))
 	sb.WriteString(MonorepoScopeLine(subDir))
 	sb.WriteString(DiscoveryScopeBlock(scopeDirs))
 	sb.WriteString(RepoFactsBlock(rf))
 	sb.WriteString(AstHintsBlock(hints))
 	sb.WriteString(ConfirmedDiscoveryBlock(confirmed))
 	sb.WriteString("DISCOVERY INSTRUCTIONS:\n")
-	sb.WriteString(ScopeFrameworkPatterns(obj.DiscoveryPrompt, DetectedLanguageSet(rf)))
+	// Language scoping always runs (a safe trim); framework scoping is layered
+	// on top only when the caller opts in (DiscoveryFrameworkScope).
+	scoped := ScopeFrameworkPatterns(obj.DiscoveryPrompt, DetectedLanguageSet(rf))
+	if frameworkScope {
+		scoped = ScopeFrameworkLabels(scoped, DetectedFrameworkSet(rf))
+	}
+	sb.WriteString(scoped)
 	sb.WriteString("\n\n")
 	sb.WriteString(ExampleBlock(obj))
+	sb.WriteString(BadExampleBlock(obj))
 	sb.WriteString(DetailKeysLine(obj))
+	sb.WriteString(hardRulesBlock(obj))
+	return sb.String()
+}
+
+// hardRulesBlock renders the closing HARD RULES + OUTPUT contract. It carries
+// the always-on enumerate-then-verify discipline and, for HighVariance
+// objectives (the LLM-only types with no strong deterministic floor), an extra
+// exhaustiveness line — those are the ones that silently under-report.
+func hardRulesBlock(obj objectives.Objective) string {
+	var sb strings.Builder
 	sb.WriteString(`HARD RULES:
 - Every item MUST have name, type, summary, confidence in [0,1], and at least one source_locations entry with file + start_line. start_line MUST be the exact declaration line; do not approximate.
 - Every file path MUST be relative to repo root.
 - If nothing matches, return {"items": []}.
 - Do NOT include items from unrelated categories. This agent is scoped to the objective above.
-- Confidence reflects your certainty the item is real and of this objective's type.
-
-OUTPUT: Return a single JSON object {"items": [...]} matching the provided schema.`)
+- ENUMERATE then VERIFY: first list every plausible candidate exhaustively, then OPEN each candidate's source and confirm it is real and of this exact type before reporting it; DROP any candidate you cannot confirm in code.
+- Confidence reflects your certainty the item is real and of this objective's type.`)
+	if obj.HighVariance {
+		sb.WriteString("\n- BE EXHAUSTIVE: this category is easy to under-report. There is rarely a single obvious declaration site — sweep ALL plausible locations (services, helpers, config, dynamic/reflective registration) and report every distinct instance.")
+	}
+	sb.WriteString("\n\nOUTPUT: Return a single JSON object {\"items\": [...]} matching the provided schema.")
 	return sb.String()
 }
 
