@@ -12,7 +12,7 @@
 import { computed, signal } from '@preact/signals'
 
 // STAGES_MAIN is the main pipeline row in event-emission order.
-const STAGES_MAIN = ['repo_facts', 'discovery', 'reexamination', 'detail', 'index', 'connections', 'reconcile']
+const STAGES_MAIN = ['repo_facts', 'index', 'deterministic_discovery', 'discovery', 'reexamination', 'connections', 'connection_repair', 'reconcile']
 // STAGES_PARALLEL are stages that run in parallel WITH the main row
 // rather than sequentially. They each get their own graph node above
 // the main pipeline row. Today this is just the indexer image build.
