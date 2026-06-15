@@ -25,7 +25,7 @@ func objectiveByType(t *testing.T, typ string) objectives.Objective {
 func TestDiscoverySemanticKeyDbOperationCollapsesByResource(t *testing.T) {
 	obj := objectiveByType(t, "db_operation")
 	readA := llmEntity{Type: "db_operation", Name: "OrderRepository.findById", Details: map[string]any{"table": "orders", "operation": "read"}}
-	readB := llmEntity{Type: "db_operation", Name: "OrderRepository.findByStatus", Details: map[string]any{"table": "Orders", "operation": "READ"}}
+	readB := llmEntity{Type: "db_operation", Name: "OrderRepository.findByStatus", Details: map[string]any{"table": "Orders", "operation": "select"}}
 	write := llmEntity{Type: "db_operation", Name: "OrderRepository.save", Details: map[string]any{"table": "orders", "operation": "write"}}
 
 	kA, kB, kW := discoverySemanticKey(obj, readA), discoverySemanticKey(obj, readB), discoverySemanticKey(obj, write)

@@ -390,7 +390,7 @@ func DiscoverySemanticKey(obj objectives.Objective, e Candidate) string {
 		// the architectural fact the extractor is after, which is also what
 		// stabilises the run-to-run count.
 		resource := first("table", "entity", "cache", "key", "collection", "index")
-		op := get("operation")
+		op := entitykey.NormalizeDBOperation(first("operation", "operation_kind", "operation_type"))
 		if resource != "" || op != "" {
 			return strings.Join([]string{obj.ID, resource, op}, "|")
 		}
@@ -464,6 +464,46 @@ func HasDeterministicEvidence(e Candidate) bool {
 		}
 	}
 	return false
+}
+
+// IsNoResultSentinel reports structured-output filler that describes the
+// absence of findings instead of an architectural entity. Some models satisfy
+// the non-empty item schema with names such as "placeholder", "__none__", or
+// "noop" plus a summary saying nothing was found. Those rows have real-looking
+// source locations and therefore survive reexamination's keep-biased policy
+// unless discovery rejects them explicitly.
+func IsNoResultSentinel(obj objectives.Objective, e Candidate) bool {
+	name := strings.ToLower(strings.TrimSpace(e.Name))
+	compact := strings.NewReplacer(" ", "", "-", "", "_", "", ".", "", "/", "").Replace(name)
+	switch compact {
+	case "", "none", "null", "nil", "na", "placeholder", "dummy", "noresult", "noresults", "notfound":
+		return true
+	}
+	objID := strings.NewReplacer(".", "", "_", "", "-", "").Replace(strings.ToLower(obj.ID))
+	objType := strings.ReplaceAll(strings.ToLower(obj.Type), "_", "")
+	if compact == objID || compact == objType {
+		return negativeFindingSummary(e.Summary)
+	}
+	if strings.HasPrefix(compact, "no") && strings.HasSuffix(compact, "found") {
+		return true
+	}
+	if (compact == "noop" || compact == "nooperation") && negativeFindingSummary(e.Summary) {
+		return true
+	}
+	return negativeFindingSummary(e.Summary) &&
+		(strings.Contains(compact, "none") || strings.Contains(compact, "placeholder") || strings.Contains(compact, "dummy"))
+}
+
+func negativeFindingSummary(summary string) bool {
+	s := strings.ToLower(strings.TrimSpace(summary))
+	if s == "" {
+		return false
+	}
+	return (strings.HasPrefix(s, "no ") || strings.HasPrefix(s, "nothing ")) &&
+		(strings.Contains(s, " found") ||
+			strings.Contains(s, " confirmed") ||
+			strings.Contains(s, " detected") ||
+			strings.Contains(s, " exist"))
 }
 
 // ShardEntityKey is the fallback identity for an entity without an
