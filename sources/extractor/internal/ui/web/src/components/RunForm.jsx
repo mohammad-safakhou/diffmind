@@ -49,6 +49,12 @@ const DEFAULTS = {
     cleanup_opencode_sessions: false,
     opencode_delete_delay_seconds: 5,
     skip_reexamination: false,
+    skip_detail: false,
+    // Discovery-strengthening knobs (all OFF by default; see config.Runtime).
+    discovery_verify: false,
+    discovery_verify_mode: 'reask',
+    discovery_verify_samples: 2,
+    discovery_framework_scope: false,
     deterministic_discovery: 'observe',
     // Liveness watchdog: this is the real "wait at most N seconds
     // with no observable progress before aborting" control.
@@ -135,7 +141,7 @@ function sanitizePrefill(p) {
     return o
   }
   if (p.opencode) out.opencode = pick(p.opencode, ['base_url', 'username', 'provider_id', 'model_id', 'model_variant', 'timeout_seconds'])
-  if (p.runtime) out.runtime = pick(p.runtime, ['workers', 'max_catalog_items', 'idle_timeout_seconds', 'max_call_seconds', 'liveness_poll_seconds', 'prompt_retry_count', 'deterministic_discovery', 'skip_reexamination', 'reuse_opencode_session'])
+  if (p.runtime) out.runtime = pick(p.runtime, ['workers', 'max_catalog_items', 'idle_timeout_seconds', 'max_call_seconds', 'liveness_poll_seconds', 'prompt_retry_count', 'deterministic_discovery', 'skip_reexamination', 'skip_detail', 'discovery_verify', 'discovery_verify_mode', 'discovery_verify_samples', 'discovery_framework_scope', 'reuse_opencode_session'])
   if (p.quality) out.quality = pick(p.quality, ['min_confidence'])
   return out
 }
@@ -373,6 +379,61 @@ export function RunForm({ onLaunched, prefill, gateOnActiveRun = true }) {
             <input type="checkbox" id="skip-reex" checked={form.runtime.skip_reexamination} onInput={(e) => update('runtime.skip_reexamination', e.target.checked)} disabled={running} />
             <label for="skip-reex">Skip Stage 2 (re-examination)</label>
           </div>
+          <div class="toggle">
+            <input type="checkbox" id="skip-detail" checked={form.runtime.skip_detail} onInput={(e) => update('runtime.skip_detail', e.target.checked)} disabled={running} />
+            <label for="skip-detail" title="Skip Stage 3 (LLM detail enrichment). Verified seeds convert straight to entities; high-value fields (auth, route inputs) are backfilled deterministically from the AST. Reclaims ~40% of tokens.">
+              Skip Stage 3 (detail enrichment)
+            </label>
+          </div>
+
+          {/*
+            DISCOVERY STRENGTHENING section.
+            The verification pass is a gated Stage-1.5 that re-checks the
+            discovered items (and hunts for missed ones) for the high-variance,
+            LLM-only objectives. It is fail-soft and keep-biased. Framework
+            scoping is a riskier prompt trim (drops bullets for frameworks the
+            repo shows no trace of). Both default OFF — see config.Runtime.
+          */}
+          <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border);">
+            <div class="toggle">
+              <input type="checkbox" id="disc-verify" checked={form.runtime.discovery_verify} onInput={(e) => update('runtime.discovery_verify', e.target.checked)} disabled={running} />
+              <label for="disc-verify" title="Stage 1.5 verification over discovered items, gated to high-variance objectives so cost stays bounded. Fail-soft and keep-biased: a doubted item is downgraded, never silently dropped.">
+                Verify discovery (high-variance objectives)
+              </label>
+            </div>
+            <div class="row-2">
+              <div class="field">
+                <label title="reask = one extra call to confirm/correct items and find missed ones. ksample = run the objective K times and union the results.">
+                  Verify mode
+                </label>
+                <select
+                  value={form.runtime.discovery_verify_mode}
+                  onInput={(e) => update('runtime.discovery_verify_mode', e.target.value)}
+                  disabled={running || !form.runtime.discovery_verify}
+                >
+                  <option value="reask">reask</option>
+                  <option value="ksample">ksample</option>
+                </select>
+              </div>
+              <div class="field">
+                <label title="K for ksample mode: how many samples to union (the first is the normal pass). Floored to 1-5.">
+                  Verify samples (K)
+                </label>
+                <input
+                  type="number" min="1" max="5"
+                  value={form.runtime.discovery_verify_samples}
+                  onInput={(e) => update('runtime.discovery_verify_samples', Number(e.target.value))}
+                  disabled={running || !form.runtime.discovery_verify || form.runtime.discovery_verify_mode !== 'ksample'}
+                />
+              </div>
+            </div>
+            <div class="toggle">
+              <input type="checkbox" id="disc-fwscope" checked={form.runtime.discovery_framework_scope} onInput={(e) => update('runtime.discovery_framework_scope', e.target.checked)} disabled={running} />
+              <label for="disc-fwscope" title="Drop discovery-prompt bullets for frameworks the repo shows no trace of in repo_facts. Riskier prompt trim (a wrong drop blinds the model); validate with floor-coverage before relying on it.">
+                Scope prompts to detected frameworks
+              </label>
+            </div>
+          </div>
 
           {/*
             INDEXER section.
@@ -482,6 +543,11 @@ function buildCLI(f) {
   if (f.runtime.reuse_opencode_session) parts.push('  --reuse-opencode-session')
   if (f.runtime.cleanup_opencode_sessions) parts.push('  --cleanup-opencode-sessions')
   if (f.runtime.skip_reexamination) parts.push('  --skip-reexamination')
+  if (f.runtime.skip_detail) parts.push('  --skip-detail')
+  if (f.runtime.discovery_verify) parts.push('  --discovery-verify')
+  if (f.runtime.discovery_verify && f.runtime.discovery_verify_mode) parts.push(`  --discovery-verify-mode ${f.runtime.discovery_verify_mode}`)
+  if (f.runtime.discovery_verify && f.runtime.discovery_verify_mode === 'ksample' && f.runtime.discovery_verify_samples) parts.push(`  --discovery-verify-samples ${f.runtime.discovery_verify_samples}`)
+  if (f.runtime.discovery_framework_scope) parts.push('  --discovery-framework-scope')
   if (f.quality.min_confidence) parts.push(`  --min-confidence ${f.quality.min_confidence}`)
   if (f.indexer?.disabled) parts.push('  --no-index')
   if (f.indexer?.image) parts.push(`  --indexer-image ${q(f.indexer.image)}`)
