@@ -60,6 +60,10 @@ func run(args []string) {
 	reuseOpenCodeSession := fs.Bool("reuse-opencode-session", false, "reuse a single OpenCode session across prompts in a run")
 	skipReexamination := fs.Bool("skip-reexamination", false, "skip stage 2 (LLM re-ask for low-signal seeds) for faster, lower-accuracy runs")
 	skipDetail := fs.Bool("skip-detail", false, "skip stage 3 (LLM detail enrichment); verified seeds convert straight to entities and high-value fields are backfilled deterministically from the AST")
+	discoveryVerify := fs.Bool("discovery-verify", false, "enable the stage-1.5 discovery verification pass (gated to high-variance objectives; fail-soft, keep-biased)")
+	discoveryVerifyMode := fs.String("discovery-verify-mode", "", "verification strategy when --discovery-verify is on: reask (re-open + find-missed) or ksample (run K times and union) (empty = use config default reask)")
+	discoveryVerifySamples := fs.Int("discovery-verify-samples", 0, "K for ksample verify mode, floored to [1,5] (0 = use config default 2)")
+	discoveryFrameworkScope := fs.Bool("discovery-framework-scope", false, "drop discovery-prompt bullets for frameworks the repo shows no trace of (riskier prompt trim; default off)")
 	minConfidence := fs.Float64("min-confidence", -1, "confidence threshold in [0,1]")
 	idleTimeoutSeconds := fs.Int("idle-timeout-seconds", 0, "abort a prompt after this many seconds without observable progress on the OpenCode session (0 = use config default 120s)")
 	promptRetryCount := fs.Int("prompt-retry-count", -1, "retry a prompt this many times after the liveness watchdog declares it stuck (-1 = use config default 3; 0 = disable)")
@@ -119,6 +123,23 @@ func run(args []string) {
 	cfg.Runtime.ReuseOpenCodeSession = *reuseOpenCodeSession
 	cfg.Runtime.SkipReexamination = *skipReexamination
 	cfg.Runtime.SkipDetail = *skipDetail
+	if *discoveryVerifyMode != "" {
+		cfg.Runtime.DiscoveryVerifyMode = *discoveryVerifyMode
+	}
+	if *discoveryVerifySamples > 0 {
+		cfg.Runtime.DiscoveryVerifySamples = *discoveryVerifySamples
+	}
+	// The verify/framework-scope toggles override the config file only when the
+	// flag was explicitly passed, so the flag's false default can't silently
+	// clobber a config-file value (Sanitize later floors samples / coerces mode).
+	flagSet := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { flagSet[f.Name] = true })
+	if flagSet["discovery-verify"] {
+		cfg.Runtime.DiscoveryVerify = *discoveryVerify
+	}
+	if flagSet["discovery-framework-scope"] {
+		cfg.Runtime.DiscoveryFrameworkScope = *discoveryFrameworkScope
+	}
 	if *opencodeDeleteDelaySeconds > 0 {
 		cfg.Runtime.OpenCodeDeleteDelaySec = *opencodeDeleteDelaySeconds
 	}
