@@ -500,6 +500,56 @@ func hardRulesBlock(obj objectives.Objective) string {
 	return sb.String()
 }
 
+// BuildDiscoveryVerifyPrompt builds the Stage-1.5 verification prompt for one
+// objective. It hands the model the items the first discovery pass found and
+// asks it to (a) open each one and confirm/correct it, and (b) search for any
+// MISSED items of the same type. The orchestrator merge is KEEP-biased — it
+// retains a doubted item (downgraded) rather than dropping it — so the model is
+// told to reject only clear hallucinations and to prioritise finding what was
+// missed, which is where the recall win comes from.
+func BuildDiscoveryVerifyPrompt(obj objectives.Objective, rf *RepoFacts, subDir string, items []Candidate, hints ObjectiveHints) string {
+	itemsJSON, _ := json.MarshalIndent(items, "", "  ")
+	var sb strings.Builder
+	sb.WriteString("AGENT ROLE: discovery-verifier\n")
+	sb.WriteString(readOnlyPreamble)
+	sb.WriteString("OBJECTIVE_ID: ")
+	sb.WriteString(obj.ID)
+	sb.WriteString("\n")
+	sb.WriteString("OBJECTIVE_KIND: ")
+	sb.WriteString(string(obj.Kind))
+	sb.WriteString("\n")
+	sb.WriteString("OBJECTIVE_TYPE: ")
+	sb.WriteString(obj.Type)
+	sb.WriteString("\n\n")
+	sb.WriteString(BoundaryBlock(obj))
+	sb.WriteString(MonorepoScopeLine(subDir))
+	sb.WriteString(RepoFactsBlock(rf))
+	sb.WriteString(AstHintsBlock(hints))
+	sb.WriteString("DISCOVERED_ITEMS (from a first pass — verify each):\n")
+	sb.Write(itemsJSON)
+	sb.WriteString("\n\n")
+	sb.WriteString(`TASK:
+1. For EACH discovered item: open its source_locations and confirm it is a real `)
+	sb.WriteString(obj.Type)
+	sb.WriteString(`. Keep it (correcting details/locations/confidence) when real; OMIT it ONLY when it is a clear hallucination or a misclassification that belongs to another objective.
+2. SEARCH for MISSED items: a first pass commonly under-reports. Enumerate the code for any `)
+	sb.WriteString(obj.Type)
+	sb.WriteString(` NOT already in the list and ADD it. Every added item MUST have a real source location you verified.
+3. Return the FULL verified set (kept + corrected + newly found), not just the changes.
+
+`)
+	sb.WriteString(DetailKeysLine(obj))
+	sb.WriteString(`HARD RULES:
+- Every item MUST have name, type, summary, confidence in [0,1], and at least one source_locations entry with file + start_line.
+- Every file path MUST be relative to repo root.
+- Prefer KEEPING a plausible item over dropping it; reject only what you can affirmatively show is not a `)
+	sb.WriteString(obj.Type)
+	sb.WriteString(`.
+
+OUTPUT: Return a single JSON object {"items": [...]} matching the provided schema.`)
+	return sb.String()
+}
+
 func ConfirmedDiscoveryBlock(items []Candidate) string {
 	if len(items) == 0 {
 		return ""
