@@ -29,6 +29,17 @@ type Runner struct {
 	Emit            EventFunc
 	PathMapper      *extraction.PathMapper
 	Confirmed       map[string][]extraction.Candidate
+
+	// FrameworkScope enables the riskier framework-label prompt trim (config
+	// DiscoveryFrameworkScope; default OFF). Language scoping is always on.
+	FrameworkScope bool
+	// MinConfidence is the run's confidence floor, used by the verification
+	// pass to floor a downgraded-but-retained item so it survives the later gate.
+	MinConfidence float64
+	// VerifyMode ("" off, "reask", "ksample") and VerifySamples drive the
+	// optional Stage-1.5 verification pass, gated to HighVariance objectives.
+	VerifyMode    string
+	VerifySamples int
 }
 
 type RunInput struct {
@@ -190,6 +201,15 @@ func (r Runner) RunObjective(ctx context.Context, obj objectives.Objective, rf *
 		return nil, err
 	}
 
+	// Stage 1.5: optional, config-gated verification of the discovered items.
+	// Gated to HighVariance objectives (the LLM-only ones with no strong AST
+	// floor) so cost stays bounded. Fail-soft: any verify error keeps the
+	// un-verified items and the objective still succeeds. Runs BEFORE path
+	// mapping so the single ApplyToEntities below maps the merged result once.
+	if r.VerifyMode != "" && obj.HighVariance {
+		items = r.verifyItems(ctx, obj, rf, items)
+	}
+
 	if r.PathMapper != nil {
 		r.PathMapper.ApplyToEntities(items)
 	}
@@ -231,7 +251,7 @@ func (r Runner) runShard(ctx context.Context, obj objectives.Objective, rf *extr
 		}
 		scope = shard.Dirs
 	}
-	prompt := extraction.BuildDiscoveryPrompt(obj, rf, r.SubDir, hints, scope, r.Confirmed[obj.ID])
+	prompt := extraction.BuildDiscoveryPrompt(obj, rf, r.SubDir, hints, scope, r.Confirmed[obj.ID], r.FrameworkScope)
 	schema := extraction.EntityListSchemaForObjective(obj)
 	payload, err := r.Prompt(ctx, jobID, prompt, schema)
 	if err != nil {
@@ -309,6 +329,105 @@ func (r Runner) hintsFor(objective objectives.Objective, fileScope []string) obj
 		return objectiveHints{}
 	}
 	return BuildObjectiveHints(r.Index, objective, r.SubDir, fileScope)
+}
+
+// verifyItems dispatches the configured verification strategy for one
+// objective's discovered items. Always returns a usable set (the input on any
+// fail-soft path), never an error — verification can only help recall/precision,
+// never break the run.
+func (r Runner) verifyItems(ctx context.Context, obj objectives.Objective, rf *extraction.RepoFacts, items []extraction.Candidate) []extraction.Candidate {
+	switch r.VerifyMode {
+	case "ksample":
+		return r.verifyKSample(ctx, obj, rf, items)
+	case "reask":
+		return r.verifyReask(ctx, obj, rf, items)
+	default:
+		return items
+	}
+}
+
+// verifyReask re-opens the discovered items in one extra call to confirm/correct
+// them and surface anything the first pass missed, then merges KEEP-biased. With
+// nothing discovered there is nothing to anchor a re-ask, so it is a no-op (the
+// ksample mode is the path that hunts from scratch).
+func (r Runner) verifyReask(ctx context.Context, obj objectives.Objective, rf *extraction.RepoFacts, items []extraction.Candidate) []extraction.Candidate {
+	if len(items) == 0 {
+		return items
+	}
+	parentID := "discover." + obj.ID
+	jobID := parentID + ".verify"
+	started := time.Now()
+	r.emit(events.Event{
+		Kind: events.KindJobStarted, Stage: "discovery", JobID: jobID, ParentID: parentID, Status: events.StatusRunning,
+		Payload: map[string]any{"objective_id": obj.ID, "mode": "reask", "in": len(items)},
+	})
+	prompt := extraction.BuildDiscoveryVerifyPrompt(obj, rf, r.SubDir, items, r.hintsFor(obj, nil))
+	schema := extraction.EntityListSchemaForObjective(obj)
+	payload, err := r.Prompt(ctx, jobID, prompt, schema)
+	if err != nil {
+		r.emit(events.Event{
+			Kind: events.KindJobFailed, Stage: "discovery", JobID: jobID, ParentID: parentID, Status: events.StatusFailed,
+			Message: err.Error(),
+			Payload: map[string]any{"objective_id": obj.ID, "mode": "reask", "duration_ms": time.Since(started).Milliseconds()},
+		})
+		return items // fail-soft: keep the un-verified items
+	}
+	verified := extraction.ParseEntities(payload["items"])
+	kept := verified[:0]
+	for i := range verified {
+		if extraction.ForceObjectiveType(obj, &verified[i]) {
+			kept = append(kept, verified[i])
+		}
+	}
+	merged := MergeVerify(obj, items, kept, r.MinConfidence)
+	r.emit(events.Event{
+		Kind: events.KindJobCompleted, Stage: "discovery", JobID: jobID, ParentID: parentID, Status: events.StatusSuccess,
+		Payload: map[string]any{
+			"objective_id": obj.ID, "mode": "reask",
+			"in": len(items), "out": len(merged), "duration_ms": time.Since(started).Milliseconds(),
+		},
+	})
+	return merged
+}
+
+// verifyKSample draws K-1 additional INDEPENDENT whole-repo samples and unions
+// them with the first pass (never intersects, so a sample can only add recall).
+// Each extra sample is a fresh whole-repo call with no sharding and no
+// checkpoint reuse — re-running the sharded path would reload the first run's
+// shard checkpoints and collapse every sample into one. Per-sample fail-soft.
+func (r Runner) verifyKSample(ctx context.Context, obj objectives.Objective, rf *extraction.RepoFacts, items []extraction.Candidate) []extraction.Candidate {
+	k := r.VerifySamples
+	if k < 2 {
+		return items // need at least one extra sample to add anything
+	}
+	parentID := "discover." + obj.ID
+	batches := [][]extraction.Candidate{items}
+	for s := 2; s <= k; s++ {
+		if ctx.Err() != nil {
+			break
+		}
+		jobID := fmt.Sprintf("%s.verify.sample.%d", parentID, s)
+		started := time.Now()
+		r.emit(events.Event{
+			Kind: events.KindJobStarted, Stage: "discovery", JobID: jobID, ParentID: parentID, Status: events.StatusRunning,
+			Payload: map[string]any{"objective_id": obj.ID, "mode": "ksample", "sample": s},
+		})
+		extra, err := r.runShard(ctx, obj, rf, nil, jobID)
+		if err != nil {
+			r.emit(events.Event{
+				Kind: events.KindJobFailed, Stage: "discovery", JobID: jobID, ParentID: parentID, Status: events.StatusFailed,
+				Message: err.Error(),
+				Payload: map[string]any{"objective_id": obj.ID, "mode": "ksample", "sample": s, "duration_ms": time.Since(started).Milliseconds()},
+			})
+			continue // fail-soft: skip this sample, keep going
+		}
+		r.emit(events.Event{
+			Kind: events.KindJobCompleted, Stage: "discovery", JobID: jobID, ParentID: parentID, Status: events.StatusSuccess,
+			Payload: map[string]any{"objective_id": obj.ID, "mode": "ksample", "sample": s, "items": len(extra), "duration_ms": time.Since(started).Milliseconds()},
+		})
+		batches = append(batches, extra)
+	}
+	return MergeShardEntities(obj, batches)
 }
 
 func (r Runner) emit(event events.Event) {

@@ -72,6 +72,13 @@ type orchestrator struct {
 	pipelineCancel context.CancelFunc
 
 	discoveryConfirmed map[string][]llmEntity
+
+	// clients holds the connection backbones surfaced by the connection_client
+	// discovery objective. They are not graph nodes; the deterministic
+	// propagation pass resolves each to an instance and fans it to the
+	// operations that use it. Populated at the discovery split (or loaded from
+	// connection_clients.json on resume).
+	clients []model.ConnectionClient
 }
 
 // emit is the convenience wrapper used by every stage to publish a single
@@ -355,6 +362,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		})
 		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "discovery", Status: events.StatusSkipped, Message: "resumed from state"})
 		seeds = resumeSeeds
+		o.clients = o.loadClientsState(opts.ResumeFromDir)
 		// Rebuild the type -> Objective map from the resumed seeds.
 		for _, s := range seeds {
 			if s.Objective.Kind == model.KindExposure {
@@ -421,6 +429,13 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		o.emitStageCompleted("discovery", events.StatusSuccess, nil)
 
 		for _, d := range discovery {
+			if d.Objective.Kind == model.KindClient {
+				// Clients are connection backbones, not graph nodes: collect
+				// them for deterministic instance propagation and never turn
+				// them into detail seeds.
+				o.clients = append(o.clients, discoverystage.ClientsFromCandidates(d.Items)...)
+				continue
+			}
 			if d.Objective.Kind == model.KindExposure {
 				exposureObjectives[d.Objective.Type] = d.Objective
 				state.ExposureObjs[d.Objective.Type] = d.Objective.ID
@@ -429,6 +444,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 				seeds = append(seeds, detailJob{Objective: d.Objective, Seed: it})
 			}
 		}
+		o.persistStageState("connection_clients.json", o.clients)
 		state.DiscoverySeeds = append([]detailJob(nil), seeds...)
 		o.persistStageState("discovery.json", state.DiscoverySeeds)
 		o.persistStageState("exposure_objectives.json", state.ExposureObjs)
@@ -485,6 +501,24 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "detail", Status: events.StatusSkipped, Message: "resumed from state"})
 		exposures = resumeExposures
 		dependencies = resumeDeps
+	} else if o.cfg.Runtime.SkipDetail {
+		// Stage 3 disabled by config. Discovery (+reexamination) already
+		// decided WHAT exists and the seeds carry their identity-bearing
+		// details; the detail pass only ADDS richness (IO contract,
+		// key_actions, prose), which we deliberately drop here — the
+		// high-value subset is recovered deterministically from the AST in
+		// the post-discovery block below. Convert the verified seeds straight
+		// to entities so connections/reconcile run unchanged, and persist
+		// detail_*.json so a retry resumes exactly like a normal run.
+		util.Info("agents.orchestrator", "stage 3 detail skipped by config", map[string]any{"entities": len(reexamined)})
+		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "detail", Status: events.StatusSkipped, Message: "skipped by config"})
+		exposures, dependencies = o.seedsToEntities(reexamined, &unresolved)
+		exposures = reconcile.DedupeExposures(exposures)
+		dependencies = reconcile.DedupeDependencies(dependencies)
+		state.DetailExposures = append([]model.Exposure(nil), exposures...)
+		state.DetailDependency = append([]model.Dependency(nil), dependencies...)
+		o.persistStageState("detail_exposures.json", state.DetailExposures)
+		o.persistStageState("detail_dependencies.json", state.DetailDependency)
 	} else {
 		progress.StartPhase("detail", len(reexamined), 45, 70, "Enriching each verified entity with evidence, IO contract, and details.")
 		// Pre-compute batch counts so stage_started carries both
@@ -620,8 +654,14 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	state.DetailDependency = append([]model.Dependency(nil), dependencies...)
 	if o.astIndex != nil {
 		dependencies = connectionstage.AugmentDependencies(o.astIndex, exposures, dependencies, o.cfg.Quality.MinConfidence)
-		discoverystage.StampInferredDBPlatform(o.astIndex, dependencies)        // P7: configured platform for deterministic db ops
-		discoverystage.StampInstanceRefs(o.astIndex, exposures, dependencies) // concrete instance identity (downstream contract)
+		discoverystage.StampInferredDBPlatform(o.astIndex, dependencies) // P7: configured platform for deterministic db ops
+		// Backbone-client instance propagation: resolve each client to a concrete
+		// instance and fan it to the ops that use it (multi-datastore), then the
+		// single-resource StampInstanceRefs runs inside as the additive safety net.
+		o.clients = discoverystage.PropagateClientInstances(o.astIndex, o.clients, exposures, dependencies)
+		o.persistStageState("connection_clients.json", o.clients)
+		discoverystage.EnrichExposuresFromAnnotations(o.astIndex, exposures) // B′ T1: recover auth/security from handler annotations
+		discoverystage.EnrichExposuresFromParams(o.astIndex, exposures)      // B′ T2: recover IO-contract inputs from handler signature
 		dependencies = reconcile.DedupeDependencies(dependencies)
 		state.DetailDependency = append([]model.Dependency(nil), dependencies...)
 		o.persistStageState("detail_dependencies.json", state.DetailDependency)
@@ -695,6 +735,7 @@ func (o *orchestrator) assembleResult(ctx context.Context, start time.Time, expo
 		Exposures:    exposures,
 		Dependencies: dependencies,
 		Connections:  conns,
+		Clients:      o.clients,
 		Unresolved:   reconcile.DedupeUnresolved(unresolved),
 		Warnings:     reconcile.DedupeWarnings(warnings),
 	}
@@ -742,6 +783,32 @@ func (o *orchestrator) assembleResult(ctx context.Context, start time.Time, expo
 		Payload: terminalPayload,
 	})
 	return result
+}
+
+// seedsToEntities converts verified (reexamined) seeds straight into model
+// entities via extraction.ToBase, with no LLM enrichment. It is the
+// --skip-detail path's replacement for the detail stage's seed→entity
+// conversion: discovery already owns identity, so the seed's type/name/details
+// are authoritative. Seeds that fail the ToBase gate (low confidence, no
+// source location, wrong type) are appended to *unresolved exactly as the
+// detail path would record them.
+func (o *orchestrator) seedsToEntities(jobs []detailJob, unresolved *[]model.UnresolvedItem) ([]model.Exposure, []model.Dependency) {
+	exposures := make([]model.Exposure, 0, len(jobs))
+	dependencies := make([]model.Dependency, 0, len(jobs))
+	for _, j := range jobs {
+		seed := j.Seed
+		base, ur := extraction.ToBase(o.repoPath, j.Objective, seed, o.cfg.Quality.MinConfidence)
+		if ur != nil {
+			*unresolved = append(*unresolved, *ur)
+			continue
+		}
+		if j.Objective.Kind == model.KindExposure {
+			exposures = append(exposures, model.Exposure{BaseEntity: base})
+		} else {
+			dependencies = append(dependencies, model.Dependency{BaseEntity: base})
+		}
+	}
+	return exposures, dependencies
 }
 
 // emitRunStarted logs and emits the run_started event with the resolved config

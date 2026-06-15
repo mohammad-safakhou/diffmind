@@ -65,8 +65,12 @@ type ProjectIndex struct {
 	// .properties). Used by the infrastructure inventory stage.
 	Configs map[string]*ConfigFile
 
-	// Language is the primary language of the project (from langdetect).
-	Language string
+	// Languages are the distinct source languages actually present in the
+	// repository, derived from the files parsed (parsing is extension-driven,
+	// so a polyglot repo lists every language it contains). There is no single
+	// "primary" language: the index, framework detectors, and prompt scoping all
+	// operate across all detected languages.
+	Languages []string
 }
 
 // FileAST is the tree-sitter analysis of one source file.
@@ -94,6 +98,19 @@ type SymbolDef struct {
 	Range       Range
 	Receiver    string
 	Modifiers   []string
+	Annotations []Annotation
+	// Parameters are the declared formal parameters of a function/method
+	// (empty for classes/interfaces and for languages whose extractor does not
+	// yet populate them). Used to recover an exposure's IO contract
+	// deterministically without an LLM pass.
+	Parameters []Param
+}
+
+// Param is one declared formal parameter of a function/method, with its
+// parameter-level annotations (e.g. Spring @PathVariable/@RequestParam).
+type Param struct {
+	Name        string
+	Type        string
 	Annotations []Annotation
 }
 

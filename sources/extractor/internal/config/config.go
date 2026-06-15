@@ -32,6 +32,16 @@ type Runtime struct {
 	// repos with config files when the UI inventory isn't needed (X6).
 	SkipInfrastructure bool `json:"skip_infrastructure"`
 
+	// SkipDetail skips Stage 3 (LLM detail enrichment) — the co-#1 token cost.
+	// Discovery (+reexamination) already decides WHAT exists and carries the
+	// identity-bearing details; detail only ADDS per-entity richness (IO
+	// contract, key_actions, prose). When skipped, verified seeds convert
+	// straight to entities and the high-value fields are recovered
+	// deterministically from the AST (auth from annotations, inputs from
+	// handler signatures). Phased rollout: default false until the eval A/B
+	// confirms the graph is unchanged, then flip to default-skip.
+	SkipDetail bool `json:"skip_detail"`
+
 	// PromptRetryCount is how many times DiffMind retries a prompt after
 	// the liveness watchdog declares it stuck. The initial attempt is not
 	// counted; default 3 means up to 4 total attempts. Set to 0 to fail
@@ -65,6 +75,39 @@ type Runtime struct {
 	// to A/B the anchoring-bias hypothesis (prompts then match the
 	// pre-grounding behaviour byte-for-byte).
 	DiscoveryASTHints bool `json:"discovery_ast_hints"`
+
+	// DiscoveryVerify enables the optional Stage-1.5 discovery verification
+	// pass. It is gated to the HighVariance (LLM-only) objectives so cost
+	// stays bounded, and is fail-soft + KEEP-biased: a verify error keeps the
+	// un-verified items, and a doubted item is downgraded+tagged
+	// ("discovery_verify_doubted") rather than dropped (only a structurally
+	// unverifiable, unconfirmed item is dropped). Default false so the first
+	// eval A/B captures a clean discovery baseline before this is enabled.
+	DiscoveryVerify bool `json:"discovery_verify"`
+
+	// DiscoveryVerifyMode selects the verification strategy when
+	// DiscoveryVerify is on:
+	//   - "reask":   re-open the discovered items' locations to confirm/correct,
+	//                and search for any MISSED items of the same type, in ONE
+	//                extra call per HighVariance objective.
+	//   - "ksample": run the objective's discovery K times (DiscoveryVerifySamples)
+	//                and UNION the results — never intersect, so a sample can only
+	//                ADD recall. Targets run-to-run recall wobble.
+	// Unknown values are coerced to "reask" by Sanitize. Default "reask".
+	DiscoveryVerifyMode string `json:"discovery_verify_mode"`
+
+	// DiscoveryVerifySamples is K for the ksample verify mode (the first sample
+	// is the normal discovery run; K-1 extra whole-repo samples are unioned in).
+	// Floored to [1,5] in Sanitize. Default 2.
+	DiscoveryVerifySamples int `json:"discovery_verify_samples"`
+
+	// DiscoveryFrameworkScope drops framework-labelled discovery-prompt bullets
+	// for frameworks the repo clearly does not use (from repo_facts). This is
+	// the riskiest prompt trim — a wrong drop blinds the model to a real
+	// construct — so it defaults false; validate with floor-coverage before
+	// enabling. Language-based scoping (ScopeFrameworkPatterns) is always on and
+	// independent of this knob.
+	DiscoveryFrameworkScope bool `json:"discovery_framework_scope"`
 }
 
 type Artifacts struct {
@@ -115,10 +158,16 @@ func Default() Config {
 			ReuseOpenCodeSession:    false,
 			PromptRetryCount:        3,
 			// Liveness watchdog defaults. See the field docs on Runtime.
-			IdleTimeoutSec:         120,
-			MaxCallSeconds:         30 * 60,
+			IdleTimeoutSec:    120,
+			MaxCallSeconds:    30 * 60,
 			LivenessPollSec:   5,
 			DiscoveryASTHints: true,
+			// Discovery verification ships OFF by default (see field docs);
+			// the mode/samples are sensible values used only once it is enabled.
+			DiscoveryVerify:         false,
+			DiscoveryVerifyMode:     "reask",
+			DiscoveryVerifySamples:  2,
+			DiscoveryFrameworkScope: false,
 		},
 		// Artifacts default to the central ~/.diffmind/runs directory so runs
 		// are discoverable independent of the scanned repository. Override
@@ -216,6 +265,34 @@ func (c *Config) Sanitize() []SanitizationFix {
 			Reason: "value was < 0; reset to default (3)",
 		})
 		c.Runtime.PromptRetryCount = def.Runtime.PromptRetryCount
+	}
+
+	// Bound the verification sample count to [1,5]. Below 1 a "sample" is
+	// meaningless (the first run is always the seed sample); above 5 is pure
+	// cost with diminishing recall. Defensive against a stale/hand-written
+	// config so the verify pass can never multiply LLM calls without bound.
+	if c.Runtime.DiscoveryVerifySamples < 1 {
+		fixes = append(fixes, SanitizationFix{
+			Field: "runtime.discovery_verify_samples",
+			Was:   c.Runtime.DiscoveryVerifySamples, Adjusted: def.Runtime.DiscoveryVerifySamples,
+			Reason: "value was < 1; reset to default (2)",
+		})
+		c.Runtime.DiscoveryVerifySamples = def.Runtime.DiscoveryVerifySamples
+	} else if c.Runtime.DiscoveryVerifySamples > 5 {
+		fixes = append(fixes, SanitizationFix{
+			Field: "runtime.discovery_verify_samples",
+			Was:   c.Runtime.DiscoveryVerifySamples, Adjusted: 5,
+			Reason: "value exceeded the safe ceiling; capped at 5",
+		})
+		c.Runtime.DiscoveryVerifySamples = 5
+	}
+	// Coerce an unknown verify mode to the safe default. SanitizationFix is
+	// int-only, so this correction is applied silently (the effective mode is
+	// logged with the rest of the run config).
+	switch c.Runtime.DiscoveryVerifyMode {
+	case "reask", "ksample":
+	default:
+		c.Runtime.DiscoveryVerifyMode = def.Runtime.DiscoveryVerifyMode
 	}
 
 	// The invariant: transport timeout must exceed MaxCallSeconds plus

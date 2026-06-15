@@ -90,7 +90,6 @@ func Build(ctx context.Context, repoRoot, primaryLanguage string, workers int, p
 		LocalTypes: make(map[string]string),
 		Implements: make(map[string][]string),
 		Configs:    make(map[string]*ConfigFile),
-		Language:   primaryLanguage,
 	}
 
 	type parseResult struct {
@@ -176,11 +175,20 @@ func Build(ctx context.Context, repoRoot, primaryLanguage string, workers int, p
 	// Step 7: cross-file symbol resolution
 	resolveCallees(idx)
 
+	// Step 7b: record the distinct languages actually present (extension-driven,
+	// so polyglot repos list all of them). primaryLanguage is only a fallback
+	// label for the rare repo with no parseable source files.
+	idx.Languages = distinctFileLanguages(idx.Files)
+	if len(idx.Languages) == 0 && strings.TrimSpace(primaryLanguage) != "" {
+		idx.Languages = []string{primaryLanguage}
+	}
+
 	// Step 8: detect framework bindings
 	idx.Frameworks, idx.RejectedFrameworks = detectFrameworks(idx)
 
 	util.Info("ast.index", "project index built", map[string]any{
 		"files":               len(idx.Files),
+		"languages":           idx.Languages,
 		"symbols":             len(idx.Symbols),
 		"callgraph":           len(idx.CallGraph),
 		"configs":             len(idx.Configs),
@@ -488,6 +496,30 @@ func isSkippedDir(name string) bool {
 		return true
 	}
 	return false
+}
+
+// distinctFileLanguages returns the sorted set of languages across all parsed
+// files. This is the honest multi-language signal: it reflects what was actually
+// indexed, not a single configured "primary" language.
+func distinctFileLanguages(files map[string]*FileAST) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 4)
+	for _, fa := range files {
+		if fa == nil {
+			continue
+		}
+		l := strings.TrimSpace(fa.Language)
+		if l == "" {
+			continue
+		}
+		if _, ok := seen[l]; ok {
+			continue
+		}
+		seen[l] = struct{}{}
+		out = append(out, l)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // unique deduplicates a string slice preserving order.

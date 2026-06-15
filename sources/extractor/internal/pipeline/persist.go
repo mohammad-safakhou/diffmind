@@ -110,6 +110,26 @@ func (o *orchestrator) loadResumeState(dir string) (
 	return
 }
 
+// loadClientsState reads connection_clients.json from a previous run's state
+// directory so a resume can repopulate the connection backbones without
+// re-running discovery. Best-effort: any error returns nil (propagation then
+// falls back to the single-resource instance stamping).
+func (o *orchestrator) loadClientsState(dir string) []model.ConnectionClient {
+	if strings.TrimSpace(dir) == "" {
+		return nil
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "connection_clients.json"))
+	if err != nil {
+		return nil
+	}
+	var clients []model.ConnectionClient
+	if err := json.Unmarshal(b, &clients); err != nil {
+		util.Warn("agents.resume", "could not parse connection_clients.json", map[string]any{"error": err})
+		return nil
+	}
+	return clients
+}
+
 // persistStageState writes a single stage's output as JSON to
 // <runDir>/state/<filename>. It is best-effort: errors are logged but
 // never abort the run because we don't want artifact persistence to
