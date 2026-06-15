@@ -42,11 +42,12 @@ cmd / ui
 ## Pipeline
 
 ```text
-repo_facts -> ast_index -> infrastructure
-           -> deterministic discovery + LLM discovery
-           -> reexamination -> detail -> connections -> reconcile
+repo_facts -> ast_index -> deterministic discovery + LLM discovery
+           -> reexamination -> deterministic entity conversion/backfills
+           -> connections -> connection repair -> reconcile
 ```
 
 There is one canonical path. Deterministic discovery always runs and merges
-into LLM discovery. Detail is additive, and reconciliation uses
-`entitykey.Semantic` as the canonical identity.
+into LLM discovery. Discovery owns entity identity and richness; there is no
+later LLM detail stage. Reconciliation uses `entitykey.Semantic` as the
+canonical identity.

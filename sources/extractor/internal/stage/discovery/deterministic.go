@@ -117,7 +117,7 @@ func (DeterministicRunner) Run(input DeterministicInput) DeterministicOutput {
 // call graph, independent of the LLM. It reuses the SAME repository-call
 // predicates the connections stage already trusts (isRepositoryOperationSymbol,
 // tableEntityFromRepository, inferDBOperationKind) so precision matches the
-// post-detail AST augmentation that has been in production.
+// connection resolver's interpretation of repository calls.
 //
 // Granularity is HIGH-LEVEL: one entity per (table, operation-kind) — e.g.
 // "read orders", "write orders" — not one per repository method. That matches
@@ -127,15 +127,11 @@ func (DeterministicRunner) Run(input DeterministicInput) DeterministicOutput {
 // pipeline treats it as a confirmed seed.
 //
 // SCOPE / KNOWN LIMITATIONS (intentional, documented — see docs/PLATFORM.md):
-//   - JVM-ONLY. The repository-call predicates recognise Spring Data / JPA /
-//     MyBatis conventions (*Repository, *Dao, EntityManager). On non-JVM stacks
-//     (Django ORM, ActiveRecord, GORM, Sequelize, ...) this yields ZERO rows —
-//     SAFE (db_operation falls back to LLM-only discovery) but NOT yet stable
-//     there. Extending deterministic db coverage to other ORMs is a milestone.
-//   - Table names are derived from the repository/entity symbol name; they can
-//     be slightly off (e.g. "entity_manager" from a raw EntityManager call, or
-//     a "*_id_seq" sequence). These are low-signal precision nits, not
-//     duplicates; reconcile collapses by (resource, operation) regardless.
+//   - This repository-call leg is strongest on Spring Data / JPA / MyBatis.
+//     Separate raw-SQL and ORM legs cover selected non-JVM patterns, but coverage
+//     remains conservative and uneven.
+//   - Table names are derived only when a resource can be resolved precisely;
+//     generic handles and sequence names are rejected rather than guessed.
 //
 // InferConfigDBPlatform returns the single concrete relational DB platform
 // referenced by the repo's config (jdbc URL / driver class), or "" when none or

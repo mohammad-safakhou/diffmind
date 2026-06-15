@@ -31,11 +31,12 @@ memory** — it provides a stable recall floor, focuses the LLM, and verifies.
    objectives with no static evidence get one cheap whole-repo call instead of
    N empty scans). LLM and deterministic results are merged with a per-objective
    semantic dedup key.
-5. **Detail enrichment** adds method/path, table, evidence, etc. It is
-   strictly additive — it never drops or re-identifies a discovered entity.
-6. Connections are built **deterministically** by BFS over the AST call graph
-   from each exposure's entry symbol to dependency targets. No LLM calls;
-   conditions come from tree-sitter enclosing-node context.
+5. Discovery seeds are converted directly to entities. Deterministic AST
+   backfills add high-confidence context such as route auth, handler inputs,
+   configured datastore platform, and client-instance propagation.
+6. Connections are built by deterministic BFS over the AST call graph. A
+   constrained, fail-soft LLM repair pass may add links only for exposures the
+   walk left unconnected, targeting the closed dependency catalog.
 7. Results are confidence-gated, **deduplicated to the high-level architectural
    fact** (e.g. db operations collapse to one row per `(table, operation)` while
    preserving genuinely distinct datastores), and emitted as artifacts plus
@@ -46,8 +47,9 @@ memory** — it provides a stable recall floor, focuses the LLM, and verifies.
    dedups with. Cheap mode scores the deterministic floor with no OpenCode (a
    hermetic CI guardrail); `score-run` grades a real run directory.
 
-There is no planner/verifier loop. See `docs/PLATFORM.md` for the product
-vision, design rationale, and roadmap.
+There is no autonomous planner loop. Optional discovery verification is bounded
+and objective-gated. See `docs/PLATFORM.md` for the product vision, design
+rationale, and roadmap.
 
 ## OpenCode Setup (Required)
 
@@ -160,7 +162,7 @@ export OPENCODE_SERVER_PASSWORD='your-pass'
 Structured logs include per-step orchestration details:
 - objective extraction start/end
 - discovery worker activity
-- per-entity detail extraction
+- discovery shard and verification activity
 - per-exposure connection mapping
 - unresolved and warning generation
 - high-level progress lines with `%`, phase name, progress bar, and a tip (`component=progress`)
@@ -235,7 +237,7 @@ Artifacts are written to:
 - agent/runtime failures
 - low-confidence entities/links
 - unknown-entity references in connection mapping
-- detail extraction that could not confirm a discovered candidate
+- rejected reexamination or connection-repair proposals
 
 ## Dashboard UI
 

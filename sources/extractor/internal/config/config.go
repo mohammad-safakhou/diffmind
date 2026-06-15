@@ -52,7 +52,7 @@ type Runtime struct {
 	// more HTTP traffic to localhost (the JSON payload is ~4 KB).
 	LivenessPollSec int `json:"liveness_poll_seconds"`
 
-	// DiscoveryASTHints controls whether the discovery/reexamine/detail
+	// DiscoveryASTHints controls whether the discovery/reexamination
 	// prompts are augmented with deterministic AST candidate hints
 	// (symbols, framework bindings, datasource config). The hints are
 	// advisory only — the LLM is never constrained to them — but they
@@ -62,7 +62,7 @@ type Runtime struct {
 	DiscoveryASTHints bool `json:"discovery_ast_hints"`
 
 	// DiscoveryVerify enables the optional Stage-1.5 discovery verification
-	// pass. It is gated to the HighVariance (LLM-only) objectives so cost
+	// pass. It is gated to HighVariance objectives so cost
 	// stays bounded, and is fail-soft + KEEP-biased: a verify error keeps the
 	// un-verified items, and a doubted item is downgraded+tagged
 	// ("discovery_verify_doubted") rather than dropped (only a structurally

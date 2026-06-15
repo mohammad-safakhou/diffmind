@@ -15,7 +15,7 @@ type Objective struct {
 	Example string
 	// DetailKeys lists the details{} keys this objective's items should
 	// populate (e.g. http_route → method,path). Rendered as
-	// REQUIRED_DETAIL_KEYS in the discovery + detail prompts. details{}
+	// REQUIRED_DETAIL_KEYS in discovery and reexamination prompts. details{}
 	// stays a free map (no schema change); this only nudges consistency,
 	// which improves downstream semantic dedup. Empty → omitted.
 	DetailKeys []string
