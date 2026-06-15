@@ -21,7 +21,6 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/runstate"
 	"github.com/mohammad-safakhou/diffmind/internal/snapshot"
 	connectionstage "github.com/mohammad-safakhou/diffmind/internal/stage/connections"
-	detailstage "github.com/mohammad-safakhou/diffmind/internal/stage/detail"
 	discoverystage "github.com/mohammad-safakhou/diffmind/internal/stage/discovery"
 	reconcile "github.com/mohammad-safakhou/diffmind/internal/stage/reconcile"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
@@ -296,7 +295,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	start := time.Now()
 
 	// Load any previously-saved stage state for resume.
-	resumeRf, resumeSeeds, resumeExpObjs, resumeReexam, resumeExposures, resumeDeps := o.loadResumeState(opts.ResumeFromDir)
+	resumeRf, resumeSeeds, resumeExpObjs, resumeReexam := o.loadResumeState(opts.ResumeFromDir)
 
 	// haltFailure forwards to buildFailure with the live accumulators. Kept
 	// as a closure so the per-stage call sites stay terse; the body lives in
@@ -491,167 +490,22 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	state.ReexamSeeds = append([]detailJob(nil), reexamined...)
 	o.persistStageState("reexamination.json", state.ReexamSeeds)
 
-	// --- Stage 3: detail enrichment ---
+	// --- Stage 3: seed → entity conversion (deterministic) ---
+	// Discovery (+reexamination) already decided WHAT exists and the seeds carry
+	// their identity-bearing details, so we convert the verified seeds straight
+	// to entities with no LLM. The high-value fields an LLM detail pass used to
+	// add (auth, IO-contract inputs) are recovered deterministically from the
+	// AST in the post-conversion block below. Resume re-derives this instantly
+	// from the persisted reexamination seeds, so nothing is reloaded from disk.
 	exposures := make([]model.Exposure, 0)
 	dependencies := make([]model.Dependency, 0)
-	if resumeExposures != nil || resumeDeps != nil {
-		util.Info("agents.orchestrator", "resume: skipping detail (loaded from state)", map[string]any{
-			"exposures": len(resumeExposures), "dependencies": len(resumeDeps),
-		})
-		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "detail", Status: events.StatusSkipped, Message: "resumed from state"})
-		exposures = resumeExposures
-		dependencies = resumeDeps
-	} else if o.cfg.Runtime.SkipDetail {
-		// Stage 3 disabled by config. Discovery (+reexamination) already
-		// decided WHAT exists and the seeds carry their identity-bearing
-		// details; the detail pass only ADDS richness (IO contract,
-		// key_actions, prose), which we deliberately drop here — the
-		// high-value subset is recovered deterministically from the AST in
-		// the post-discovery block below. Convert the verified seeds straight
-		// to entities so connections/reconcile run unchanged, and persist
-		// detail_*.json so a retry resumes exactly like a normal run.
-		util.Info("agents.orchestrator", "stage 3 detail skipped by config", map[string]any{"entities": len(reexamined)})
-		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "detail", Status: events.StatusSkipped, Message: "skipped by config"})
-		exposures, dependencies = o.seedsToEntities(reexamined, &unresolved)
-		exposures = reconcile.DedupeExposures(exposures)
-		dependencies = reconcile.DedupeDependencies(dependencies)
-		state.DetailExposures = append([]model.Exposure(nil), exposures...)
-		state.DetailDependency = append([]model.Dependency(nil), dependencies...)
-		o.persistStageState("detail_exposures.json", state.DetailExposures)
-		o.persistStageState("detail_dependencies.json", state.DetailDependency)
-	} else {
-		progress.StartPhase("detail", len(reexamined), 45, 70, "Enriching each verified entity with evidence, IO contract, and details.")
-		// Pre-compute batch counts so stage_started carries both
-		// "entities total" AND "batches total". The dashboard renders
-		// "X/N entities · X/B batches" to communicate the batched
-		// nature of detail work. We compute over the same set the
-		// detail stage will see — and we account for the per-entity
-		// checkpoint so a resume shows the truly-pending count, not
-		// the original 152.
-		previewPending := reexamined
-		if o.runDir != "" {
-			checkpoint := o.store.LoadDetailCheckpoint(o.runDir + "/" + stateDir)
-			if len(checkpoint) > 0 {
-				filtered := make([]detailJob, 0, len(reexamined))
-				for _, j := range reexamined {
-					if _, ok := checkpoint[runstate.DetailEntityKey(j.Objective.ID, j.Seed.Name)]; ok {
-						continue
-					}
-					filtered = append(filtered, j)
-				}
-				previewPending = filtered
-			}
-		}
-		if len(previewPending) > 0 {
-			filtered := make([]detailJob, 0, len(previewPending))
-			for _, j := range previewPending {
-				seed := j.Seed
-				if extraction.IsCompleteDeterministicSeed(j.Objective, &seed) {
-					continue
-				}
-				filtered = append(filtered, j)
-			}
-			previewPending = filtered
-		}
-		previewBatches := detailstage.DetailGroups(previewPending)
-		o.emit(events.Event{
-			Kind: events.KindStageStarted, Stage: "detail", Status: events.StatusRunning,
-			Payload: map[string]any{
-				"total":         len(reexamined),     // total entities in scope
-				"pending":       len(previewPending), // entities NOT yet checkpointed
-				"batches_total": len(previewBatches),
-				"tip":           "Enriching each verified entity with evidence, IO contract, and details.",
-			},
-		})
-		details := o.runDetailBatch(ctx, reexamined, rf, progress.Advance)
-		progress.CompletePhase()
-
-		// Results arrive in completion order (workers run in parallel),
-		// so we cannot index back into `reexamined` to recover the seed
-		// — that would attribute the failure to the wrong job. Each
-		// detailResult now carries SeedName explicitly so we can
-		// reconstruct the failing job_id correctly.
-		var firstDetailErr error
-		var firstDetailObjID, firstDetailSeed string
-		for _, d := range details {
-			if d.Err == nil {
-				continue
-			}
-			// Skip peer-cancelled siblings (see discovery for
-			// rationale). Per-call HTTP timeouts must surface.
-			if d.PeerCancelled {
-				continue
-			}
-			if firstDetailErr == nil {
-				firstDetailErr = d.Err
-				firstDetailObjID = d.Objective.ID
-				firstDetailSeed = d.SeedName
-			}
-		}
-		if firstDetailErr != nil {
-			o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "detail", Status: events.StatusFailed})
-			return haltFailure("detail",
-				"detail."+firstDetailObjID+"."+extraction.SafeJobID(firstDetailSeed),
-				firstDetailObjID, firstDetailSeed, firstDetailErr, nil)
-		}
-		o.emitStageCompleted("detail", events.StatusSuccess, nil)
-
-		// Detail is an ENRICHMENT stage, not a gatekeeper. Discovery (+
-		// reexamination) already decided WHAT exists; detail only adds
-		// method/path, table, evidence, etc. So it must never silently drop
-		// or re-identify an entity: a seed the model failed to enrich falls
-		// back to its discovered form, and the discovered type/name are always
-		// preserved over whatever detail returned. This keeps the count and
-		// identity stable across runs regardless of detail-stage variance.
-		seedByKey := make(map[string]llmEntity, len(reexamined))
-		for _, j := range reexamined {
-			seedByKey[runstate.DetailEntityKey(j.Objective.ID, j.Seed.Name)] = j.Seed
-		}
-		for _, d := range details {
-			seed, hasSeed := seedByKey[runstate.DetailEntityKey(d.Objective.ID, d.SeedName)]
-			item := d.Item
-			if item == nil {
-				if !hasSeed {
-					continue
-				}
-				s := seed
-				item = &s
-			} else if hasSeed {
-				// Preserve the discovered identity; keep detail's enrichment.
-				// Type, name AND identity-bearing details (path, operation,
-				// table, …) are pinned to the seed so detail can never silently
-				// re-identify an entity and break its dedup/eval key (C2).
-				item.Type = seed.Type
-				if strings.TrimSpace(seed.Name) != "" {
-					item.Name = seed.Name
-				}
-				detailstage.PinIdentityDetails(item, seed)
-			}
-			base, ur := extraction.ToBase(o.repoPath, d.Objective, *item, o.cfg.Quality.MinConfidence)
-			if ur != nil {
-				unresolved = append(unresolved, *ur)
-				continue
-			}
-			if d.Objective.Kind == model.KindExposure {
-				exposures = append(exposures, model.Exposure{BaseEntity: base})
-			} else {
-				dependencies = append(dependencies, model.Dependency{BaseEntity: base})
-			}
-		}
-		util.Info("agents.orchestrator", "detail completed", map[string]any{
-			"exposures": len(exposures), "dependencies": len(dependencies),
-		})
-
-		// Reconcile entities BEFORE connection mapping so the catalog is dedup'd.
-		exposures = reconcile.DedupeExposures(exposures)
-		dependencies = reconcile.DedupeDependencies(dependencies)
-		state.DetailExposures = append([]model.Exposure(nil), exposures...)
-		state.DetailDependency = append([]model.Dependency(nil), dependencies...)
-		o.persistStageState("detail_exposures.json", state.DetailExposures)
-		o.persistStageState("detail_dependencies.json", state.DetailDependency)
-	}
-	state.DetailExposures = append([]model.Exposure(nil), exposures...)
-	state.DetailDependency = append([]model.Dependency(nil), dependencies...)
+	exposures, dependencies = o.seedsToEntities(reexamined, &unresolved)
+	exposures = reconcile.DedupeExposures(exposures)
+	dependencies = reconcile.DedupeDependencies(dependencies)
+	state.Exposures = append([]model.Exposure(nil), exposures...)
+	state.Dependencies = append([]model.Dependency(nil), dependencies...)
+	o.persistStageState("entities_exposures.json", state.Exposures)
+	o.persistStageState("entities_dependencies.json", state.Dependencies)
 	if o.astIndex != nil {
 		dependencies = connectionstage.AugmentDependencies(o.astIndex, exposures, dependencies, o.cfg.Quality.MinConfidence)
 		discoverystage.StampInferredDBPlatform(o.astIndex, dependencies) // P7: configured platform for deterministic db ops
@@ -663,8 +517,8 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		discoverystage.EnrichExposuresFromAnnotations(o.astIndex, exposures) // B′ T1: recover auth/security from handler annotations
 		discoverystage.EnrichExposuresFromParams(o.astIndex, exposures)      // B′ T2: recover IO-contract inputs from handler signature
 		dependencies = reconcile.DedupeDependencies(dependencies)
-		state.DetailDependency = append([]model.Dependency(nil), dependencies...)
-		o.persistStageState("detail_dependencies.json", state.DetailDependency)
+		state.Dependencies = append([]model.Dependency(nil), dependencies...)
+		o.persistStageState("entities_dependencies.json", state.Dependencies)
 	}
 
 	// --- Stage 4: connection mapping ---

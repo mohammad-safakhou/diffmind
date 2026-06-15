@@ -41,7 +41,6 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			"liveness_poll_seconds":     cfg.Runtime.LivenessPollSec,
 			"prompt_retry_count":        cfg.Runtime.PromptRetryCount,
 			"skip_reexamination":        cfg.Runtime.SkipReexamination,
-			"skip_detail":               cfg.Runtime.SkipDetail,
 			"discovery_verify":          cfg.Runtime.DiscoveryVerify,
 			"discovery_verify_mode":     cfg.Runtime.DiscoveryVerifyMode,
 			"discovery_verify_samples":  cfg.Runtime.DiscoveryVerifySamples,

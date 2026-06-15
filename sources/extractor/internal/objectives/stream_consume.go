@@ -22,12 +22,5 @@ FOR EACH STREAM CONSUMER EXTRACT:
 - Checkpoint/offset management strategy
 
 If no stream consumers exist, return {"items": []}.`,
-	DetailPrompt: `For this stream consumer, extract:
-1. Stream name/ARN and config
-2. Consumer group/application name
-3. Processing model (batch/single record)
-4. Checkpoint strategy
-5. Error handling and retry
-6. Downstream operations triggered`,
 	ConnectionContext: "Connection mapping must include stream source and processing conditions.",
 }

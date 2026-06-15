@@ -225,7 +225,6 @@ func stageFailures(in []model.UnresolvedItem) map[string]int {
 		// Hard agent failures (the LLM call itself errored after
 		// retries) are filed under the stage that ran them.
 		"discovery_failure":         "discovery",
-		"detail_failure":            "detail",
 		"connections_failure":       "connections",
 		"reexamine_failure":         "reexamination",
 		"rejected_on_reexamination": "reexamination",

@@ -6,7 +6,7 @@ import (
 )
 
 // Resolver maps diffmind's entity references (file:line locations and
-// names recorded in detail_exposures.json / detail_dependencies.json)
+// names recorded in entities_exposures.json / entities_dependencies.json)
 // to SCIP symbols inside an Index.
 //
 // Resolution proceeds in two tiers, from highest to lowest confidence:
@@ -258,7 +258,7 @@ func displayNameFromSymbol(sym string) string {
 
 // ResolveByQualified resolves a "ClassName.methodName" or
 // "ClassName#methodName" name to a symbol. This is the common form
-// stored in detail_dependencies.json for repository methods:
+// stored in entities_dependencies.json for repository methods:
 // `CampaignItemRepository.findByIdOrThrow`. We split on the dot/#
 // and require both parts to match.
 //

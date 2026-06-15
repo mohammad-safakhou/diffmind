@@ -41,7 +41,6 @@ type startRunRequest struct {
 		CleanupOpenCodeSessions bool `json:"cleanup_opencode_sessions"`
 		OpenCodeDeleteDelaySec  int  `json:"opencode_delete_delay_seconds"`
 		SkipReexamination       bool `json:"skip_reexamination"`
-		SkipDetail              bool `json:"skip_detail"`
 		PromptRetryCount        *int `json:"prompt_retry_count"`
 		// Liveness watchdog knobs. 0 = use config default. See
 		// config.Runtime for field semantics.
@@ -95,7 +94,6 @@ func buildConfigFromRequest(req startRunRequest) config.Config {
 		cfg.Runtime.OpenCodeDeleteDelaySec = req.Runtime.OpenCodeDeleteDelaySec
 	}
 	cfg.Runtime.SkipReexamination = req.Runtime.SkipReexamination
-	cfg.Runtime.SkipDetail = req.Runtime.SkipDetail
 	cfg.Runtime.DiscoveryVerify = req.Runtime.DiscoveryVerify
 	if req.Runtime.DiscoveryVerifyMode != "" {
 		cfg.Runtime.DiscoveryVerifyMode = req.Runtime.DiscoveryVerifyMode
@@ -199,7 +197,6 @@ func (s *Server) handleRunCreate(w http.ResponseWriter, r *http.Request) {
 		"workers":                        cfg.Runtime.Workers,
 		"max_catalog_items":              cfg.Runtime.MaxCatalogItems,
 		"skip_reexamination":             cfg.Runtime.SkipReexamination,
-		"skip_detail":                    cfg.Runtime.SkipDetail,
 		"discovery_verify":               cfg.Runtime.DiscoveryVerify,
 		"discovery_verify_mode":          cfg.Runtime.DiscoveryVerifyMode,
 		"discovery_framework_scope":      cfg.Runtime.DiscoveryFrameworkScope,
@@ -244,7 +241,6 @@ type retryRequest struct {
 		LivenessPollSec      int  `json:"liveness_poll_seconds"`
 		ReuseOpenCodeSession bool `json:"reuse_opencode_session"`
 		SkipReexamination    bool `json:"skip_reexamination"`
-		SkipDetail           bool `json:"skip_detail"`
 
 		DiscoveryVerify         bool   `json:"discovery_verify"`
 		DiscoveryVerifyMode     string `json:"discovery_verify_mode"`
@@ -317,7 +313,6 @@ func (s *Server) handleRunRetry(w http.ResponseWriter, r *http.Request, runID st
 	}
 	cfg.Runtime.ReuseOpenCodeSession = req.Runtime.ReuseOpenCodeSession
 	cfg.Runtime.SkipReexamination = req.Runtime.SkipReexamination
-	cfg.Runtime.SkipDetail = req.Runtime.SkipDetail
 	cfg.Runtime.DiscoveryVerify = req.Runtime.DiscoveryVerify
 	if req.Runtime.DiscoveryVerifyMode != "" {
 		cfg.Runtime.DiscoveryVerifyMode = req.Runtime.DiscoveryVerifyMode

@@ -8,7 +8,6 @@ type Objective struct {
 	Type              string
 	Description       string
 	DiscoveryPrompt   string
-	DetailPrompt      string
 	ConnectionContext string
 
 	// Example is an optional, concise, schema-valid example item rendered
