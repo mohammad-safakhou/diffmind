@@ -113,6 +113,7 @@ func extractSymbols(root *sitter.Node, src []byte, lang string, sitterLang *sitt
 			Range:       r,
 			Receiver:    receiver,
 			Annotations: annots,
+			Parameters:  extractParams(defNode, src, lang),
 		})
 	}
 
