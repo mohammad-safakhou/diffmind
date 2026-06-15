@@ -1,7 +1,17 @@
 import { useState, useMemo, useRef, useEffect } from 'preact/hooks'
 import { timeline, selection } from '../lib/store.js'
 
-const STAGE_FILTERS = ['all', 'repo_facts', 'discovery', 'reexamination', 'detail', 'connections', 'reconcile']
+const STAGE_FILTERS = [
+  'all',
+  'repo_facts',
+  'ast_index',
+  'deterministic_discovery',
+  'discovery',
+  'reexamination',
+  'connections',
+  'connection_repair',
+  'reconcile',
+]
 
 // How close to the bottom (in px) counts as "the user is following along".
 // If the user is within this much of the bottom we auto-scroll on every new
@@ -112,7 +122,7 @@ function onSelect(e) {
 }
 
 // batchSummary returns a human-readable phrase for batch-level
-// events. e.g. "detail batch ×12: GET /a, GET /b, +10 more".
+// events. e.g. "batch x12: GET /a, GET /b, +10 more".
 // Returns empty string when the event isn't a batch event;
 // callers fall back to the shortJob rendering in that case.
 function batchSummary(e) {

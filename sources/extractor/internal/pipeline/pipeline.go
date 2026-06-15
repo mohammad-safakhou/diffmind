@@ -26,7 +26,7 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
-// orchestrator wires the six pipeline stages together and owns the shared
+// orchestrator wires the pipeline stages together and owns the shared
 // OpenCode session (when enabled). It keeps the "thin orchestrator" contract
 // from the plan: no business logic, only stage sequencing and lifecycle.
 //
@@ -235,12 +235,8 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		snap = s
 	}
 
-	// Pipeline-wide cancellable context. We hand `ctx` (= pipelineCtx)
-	// to every stage so a hard image-build failure in the parallel
-	// goroutine can yank every in-flight LLM call (Stages 1-3) via
-	// pipelineCancel and let the pipeline halt promptly with a
-	// clear failure report instead of letting wasted LLM work
-	// drag on for minutes after the build has already failed.
+	// Pipeline-wide cancellable context. Every stage receives this child so a
+	// root failure or operator cancellation stops pending work promptly.
 	pipelineCtx, pipelineCancel := context.WithCancel(ctx)
 	defer pipelineCancel()
 
@@ -327,12 +323,10 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	state.RepoFacts = rf
 
 	// --- Stage 0b: AST index (tree-sitter) ---
-	// Runs in parallel with discovery/reexamination/detail LLM stages.
-	// The result is consumed by the connections stage.
-	// We run it synchronously here so it's complete before connections.
-	// For large repos (>500 files) this takes 5-30s — well within the
-	// time LLM stages need. If it fails, we log a warning and continue;
-	// connections will fall back to the shallow matcher.
+	// Discovery consumes its framework bindings and objective hints, so the
+	// index is intentionally synchronous and precedes every extraction stage.
+	// If it fails, discovery remains LLM-only and connections fall back to the
+	// shallow matcher.
 	if err := o.runASTIndexStage(ctx); err != nil {
 		util.Warn("agents.orchestrator", "ast_index stage failed; connections will use shallow matcher", map[string]any{"error": err.Error()})
 		// Non-fatal: allow the rest of the pipeline to proceed.
@@ -368,7 +362,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 		// discovery set below. Safe no-op when the AST index is unavailable.
 		deterministic := o.runDeterministicDiscovery(ctx, allObjectives)
 		o.discoveryConfirmed = discoverystage.DeterministicByObjective(deterministic)
-		progress.StartPhase("discovery", len(allObjectives), 10, 35, "Discovering exposures and dependencies per objective in parallel.")
+		progress.StartPhase("discovery", len(allObjectives), 10, 55, "Discovering exposures and dependencies per objective in parallel.")
 		o.emit(events.Event{Kind: events.KindStageStarted, Stage: "discovery", Status: events.StatusRunning, Payload: map[string]any{"total": len(allObjectives), "tip": "Discovering exposures and dependencies per objective in parallel."}})
 		for _, obj := range allObjectives {
 			o.emit(events.Event{
@@ -455,7 +449,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 				suspects++
 			}
 		}
-		progress.StartPhase("reexamination", suspects, 35, 45, "Re-asking the model to confirm or reject low-signal candidates.")
+		progress.StartPhase("reexamination", suspects, 55, 65, "Re-asking the model to confirm or reject low-signal candidates.")
 		o.emit(events.Event{Kind: events.KindStageStarted, Stage: "reexamination", Status: events.StatusRunning, Payload: map[string]any{"total": suspects, "tip": "Re-asking the model to confirm or reject low-signal candidates."}})
 		cleaned, unresolvedRe, reexamErr, reexamFailedSeed := o.runReexamination(ctx, seeds, rf, progress.Advance)
 		progress.CompletePhase()
@@ -508,7 +502,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	}
 
 	// --- Stage 4: connection mapping ---
-	progress.StartPhase("connections", len(exposures), 70, 85, "Mapping conditional exposure-to-dependency paths per exposure.")
+	progress.StartPhase("connections", len(exposures), 65, 82, "Mapping conditional exposure-to-dependency paths per exposure.")
 	o.emit(events.Event{Kind: events.KindStageStarted, Stage: "connections", Status: events.StatusRunning, Payload: map[string]any{"total": len(exposures), "tip": "Mapping conditional exposure-to-dependency paths per exposure."}})
 	conns, connUnresolved, connErr, connFailedExposure := o.runConnectionsBatch(ctx, exposures, dependencies, exposureObjectives, rf, progress.Advance)
 	progress.CompletePhase()
@@ -528,7 +522,7 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	// result, never fails the run. It is its OWN visible stage (not folded into
 	// connections) because it makes an LLM call — surfacing it keeps the
 	// progress bar moving instead of appearing to stall after connections.
-	progress.StartPhase("connection_repair", 1, 85, 90, "Repairing exposures the deterministic walk left with no connections.")
+	progress.StartPhase("connection_repair", 1, 82, 90, "Repairing exposures the deterministic walk left with no connections.")
 	o.emit(events.Event{Kind: events.KindStageStarted, Stage: "connection_repair", Status: events.StatusRunning, Payload: map[string]any{"total": 1, "tip": "Repairing exposures the deterministic walk left with no connections."}})
 	repairOut, repairErr := (connectionstage.RepairRunner{
 		Prompt:        o.promptAgent,
@@ -626,13 +620,9 @@ func (o *orchestrator) assembleResult(ctx context.Context, start time.Time, expo
 	return result
 }
 
-// seedsToEntities converts verified (reexamined) seeds straight into model
-// entities via extraction.ToBase, with no LLM enrichment. It is the
-// --skip-detail path's replacement for the detail stage's seed→entity
-// conversion: discovery already owns identity, so the seed's type/name/details
-// are authoritative. Seeds that fail the ToBase gate (low confidence, no
-// source location, wrong type) are appended to *unresolved exactly as the
-// detail path would record them.
+// seedsToEntities converts verified seeds straight into model entities via
+// extraction.ToBase. Discovery owns identity and richness; this deterministic
+// conversion is the only canonical path.
 func (o *orchestrator) seedsToEntities(jobs []detailJob, unresolved *[]model.UnresolvedItem) ([]model.Exposure, []model.Dependency) {
 	exposures := make([]model.Exposure, 0, len(jobs))
 	dependencies := make([]model.Dependency, 0, len(jobs))
@@ -661,6 +651,8 @@ func (o *orchestrator) emitRunStarted() {
 		"repo": o.repoPath, "source_session_dir": o.sourceSessionDir, "snapshot": o.snap.Path, "sub_dir": o.subDir,
 		"workers": cfg.Runtime.Workers, "max_catalog_items": cfg.Runtime.MaxCatalogItems,
 		"reuse_session": cfg.Runtime.ReuseOpenCodeSession, "min_confidence": cfg.Quality.MinConfidence,
+		"discovery_verify": cfg.Runtime.DiscoveryVerify, "discovery_verify_mode": cfg.Runtime.DiscoveryVerifyMode,
+		"discovery_verify_samples": cfg.Runtime.DiscoveryVerifySamples, "discovery_framework_scope": cfg.Runtime.DiscoveryFrameworkScope,
 		"opencode_transport_timeout_sec": cfg.OpenCode.TimeoutSec,
 		"idle_timeout_sec":               cfg.Runtime.IdleTimeoutSec,
 		"prompt_retry_count":             cfg.Runtime.PromptRetryCount,
@@ -678,6 +670,11 @@ func (o *orchestrator) emitRunStarted() {
 			"max_catalog_items":              cfg.Runtime.MaxCatalogItems,
 			"min_confidence":                 cfg.Quality.MinConfidence,
 			"skip_reexamination":             cfg.Runtime.SkipReexamination,
+			"discovery_ast_hints":            cfg.Runtime.DiscoveryASTHints,
+			"discovery_verify":               cfg.Runtime.DiscoveryVerify,
+			"discovery_verify_mode":          cfg.Runtime.DiscoveryVerifyMode,
+			"discovery_verify_samples":       cfg.Runtime.DiscoveryVerifySamples,
+			"discovery_framework_scope":      cfg.Runtime.DiscoveryFrameworkScope,
 			"opencode_transport_timeout_sec": cfg.OpenCode.TimeoutSec,
 			"idle_timeout_sec":               cfg.Runtime.IdleTimeoutSec,
 			"prompt_retry_count":             cfg.Runtime.PromptRetryCount,

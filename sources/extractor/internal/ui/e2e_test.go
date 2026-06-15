@@ -87,7 +87,7 @@ func TestServerEndToEnd(t *testing.T) {
 
 	// 3. Assertions on the event sequence. We require at least:
 	//    - run_started
-	//    - stage_started for each of the six stages
+	//    - stage_started for the pipeline stages
 	//    - llm_call_started + llm_call_completed
 	//    - run_completed
 	want := []string{

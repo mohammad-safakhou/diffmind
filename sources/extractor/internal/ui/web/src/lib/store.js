@@ -12,12 +12,8 @@
 import { computed, signal } from '@preact/signals'
 
 // STAGES_MAIN is the main pipeline row in event-emission order.
-const STAGES_MAIN = ['repo_facts', 'index', 'deterministic_discovery', 'discovery', 'reexamination', 'connections', 'connection_repair', 'reconcile']
-// STAGES_PARALLEL are stages that run in parallel WITH the main row
-// rather than sequentially. They each get their own graph node above
-// the main pipeline row. Today this is just the indexer image build.
-const STAGES_PARALLEL = ['index.build']
-const STAGES = [...STAGES_MAIN, ...STAGES_PARALLEL]
+const STAGES_MAIN = ['repo_facts', 'ast_index', 'deterministic_discovery', 'discovery', 'reexamination', 'connections', 'connection_repair', 'reconcile']
+const STAGES = [...STAGES_MAIN]
 
 export const runMeta = signal(null)
 export const stages = signal(initialStages())
@@ -32,14 +28,6 @@ export const counts = computed(() => deriveCounts(jobs.value))
 // have not polled yet). The SystemStatus component subscribes to
 // this; the RunForm reads it to gate the Run button.
 export const preflight = signal(null)
-
-// buildLogs is a ring buffer of recent docker-build log lines for
-// the parallel `index.build` stage. The DetailDrawer subscribes
-// to this when the user selects the index.build node so they see
-// live tail of the build output.
-//
-// We cap at 200 entries to keep memory bounded across long builds.
-export const buildLogs = signal([])
 
 function initialStages() {
   const m = new Map()
@@ -159,13 +147,6 @@ export function applyEvent(e) {
           startedAt: e.ts,
           done: 0,
           percent: 0,
-          // Batch counts (currently only emitted for the detail
-          // stage). PipelineStrip renders "X/N entities · X/B
-          // batches" so the user sees the LLM-cost-relevant
-          // number alongside the entity tally.
-          batchesTotal: e.payload?.batches_total ?? prev.batchesTotal ?? 0,
-          batchesDone: 0,
-          pendingEntities: e.payload?.pending ?? prev.pendingEntities ?? 0,
         })
       })
       break
@@ -206,20 +187,6 @@ export function applyEvent(e) {
     case 'job_started':
     case 'job_completed':
     case 'job_failed':
-      // Track batches separately from per-entity jobs so the
-      // pipeline strip can render the dual counter ("X/N entities ·
-      // X/B batches"). A batch-level job event carries
-      // payload.batch === true and represents one LLM call covering
-      // multiple entities.
-      if (e.payload?.batch === true && (e.kind === 'job_completed' || e.kind === 'job_failed') && e.stage) {
-        mutateStages((m) => {
-          const prev = m.get(e.stage) || {}
-          m.set(e.stage, {
-            ...prev,
-            batchesDone: (prev.batchesDone || 0) + 1,
-          })
-        })
-      }
       mutateJobs((m) => {
         const id = e.job_id
         const prev = m.get(id) || {
@@ -265,23 +232,8 @@ export function applyEvent(e) {
       watchdogActions.value = [...watchdogActions.value, e]
       break
 
-    case 'log':
-      // Capture image-build log lines so DetailDrawer can render
-      // a live tail when the user inspects the index.build node.
-      // Other 'log' events (rare today) just hit the timeline.
-      if (e.stage === 'index.build' || e.job_id === 'index.build') {
-        const next = [...buildLogs.value, {
-          ts: e.ts,
-          message: e.message || '',
-          tail: e.payload?.tail || '',
-        }]
-        if (next.length > 200) next.splice(0, next.length - 200)
-        buildLogs.value = next
-      }
-      break
-
     default:
-      // session_created, session_aborted, subscriber_dropped — purely informational.
+      // log, session_created, session_aborted, subscriber_dropped - informational only.
       break
   }
 }
