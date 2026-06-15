@@ -13,7 +13,6 @@ func testObj() objectives.Objective {
 		ID: "exposure.http_route", Kind: model.KindExposure, Type: "http_route",
 		Description:       "HTTP routes",
 		DiscoveryPrompt:   "find http routes",
-		DetailPrompt:      "detail http routes",
 		ConnectionContext: "http route connection context",
 	}
 }
@@ -26,15 +25,6 @@ func TestBuildDiscoveryPromptContainsRequiredMarkers(t *testing.T) {
 	mustContain(t, p, "OBJECTIVE_TYPE: http_route")
 	mustContain(t, p, "ONLY analyze files under 'services/foo/'")
 	mustContain(t, p, "find http routes")
-}
-
-func TestBuildDetailPromptContainsSeed(t *testing.T) {
-	seed := llmEntity{Type: "http_route", Name: "GET /", Confidence: 0.9}
-	p := BuildDetailPrompt(testObj(), seed, nil, "", objectiveHints{})
-	mustContain(t, p, "AGENT ROLE: detail-extractor")
-	mustContain(t, p, "OBJECTIVE_ID: exposure.http_route")
-	mustContain(t, p, "detail http routes")
-	mustContain(t, p, "\"name\": \"GET /\"")
 }
 
 func TestBuildReexaminePromptContainsTrigger(t *testing.T) {

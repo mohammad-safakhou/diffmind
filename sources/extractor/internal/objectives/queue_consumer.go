@@ -28,14 +28,5 @@ FOR EACH CONSUMER EXTRACT:
 - The environment variables or config properties that define the queue URL/name
 
 IMPORTANT: Check infrastructure configuration files (helm values, *values.yaml, application.yml, application.properties) for queue name bindings and ARNs.`,
-	DetailPrompt: `For this consumer, extract:
-1. Queue/topic/stream name and how it's configured (env var, property, hardcoded)
-2. Payload contract (message type, deserialization)
-3. Message validation and filtering
-4. Handler flow in execution order
-5. ALL downstream dependency operations triggered by this consumer
-6. Retry/error handling (DLQ, max retries, backoff)
-7. Batch vs single message processing
-8. Concurrency settings`,
 	ConnectionContext: "Map queue-consumer paths to dependencies and include queue destination config guards.",
 }

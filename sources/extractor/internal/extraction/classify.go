@@ -27,7 +27,7 @@ var typeAliases = map[model.EntityKind]map[string]string{
 		"outbound_http_service": "outbound_http", "external_service": "outbound_http", "http_client": "outbound_http", "api_client": "outbound_http",
 		"sqs_publish": "queue_publish", "queue_send": "queue_publish", "topic_publish": "queue_publish",
 		"stream_consumer": "stream_consume",
-		"database": "db_operation", "sql_query": "db_operation", "repository_operation": "db_operation",
+		"database":        "db_operation", "sql_query": "db_operation", "repository_operation": "db_operation",
 		"shell_command": "command_exec", "process_exec": "command_exec",
 	},
 }

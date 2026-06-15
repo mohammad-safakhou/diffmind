@@ -16,7 +16,6 @@ var (
 	ShouldReportHTTPStatus  = llmrun.ShouldReportHTTPStatus
 	BuildRepoFactsPrompt    = repofacts.BuildPrompt
 	BuildDiscoveryPrompt    = extraction.BuildDiscoveryPrompt
-	BuildDetailPrompt       = extraction.BuildDetailPrompt
 	BuildReexaminePrompt    = extraction.BuildReexaminePrompt
 	ScopeFrameworkPatterns  = extraction.ScopeFrameworkPatterns
 	DetectedLanguageSet     = extraction.DetectedLanguageSet

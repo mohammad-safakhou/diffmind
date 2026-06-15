@@ -11,7 +11,6 @@ import (
 
 	"github.com/mohammad-safakhou/diffmind/internal/extraction"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
-	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
 // CheckpointStore persists and loads per-stage checkpoints under a run's
@@ -29,112 +28,11 @@ type CheckpointStore struct {
 // without re-running everything that already worked.
 const StateDir = "state"
 
-// detailEntitiesJSONL is the append-only per-entity checkpoint
-// written by the detail stage's worker pool. Each line is one
-// `DetailCheckpointEntry`. We use JSON-lines (not a single JSON
-// object) so a partial write on a crash never corrupts already-
-// persisted entries; the worst case is a torn last line, which
-// LoadDetailCheckpoint detects and ignores.
-const detailEntitiesJSONL = "detail_entities.jsonl"
-
-// DetailCheckpointEntry is one row of state/detail_entities.jsonl.
-// The Key field is the deterministic identifier the orchestrator
-// uses to decide whether a seed has already been enriched on a
-// previous run (see DetailEntityKey). Exposure and Dependency are
-// optional pointers: a successful enrichment produces exactly one
-// of them; an explicit "model could not enrich" still produces an
-// entry (with neither populated) so we don't re-attempt the same
-// seed on every retry — the model already told us it can't.
-type DetailCheckpointEntry struct {
-	Key         string            `json:"key"`
-	ObjectiveID string            `json:"objective_id"`
-	SeedName    string            `json:"seed_name"`
-	Exposure    *model.Exposure   `json:"exposure,omitempty"`
-	Dependency  *model.Dependency `json:"dependency,omitempty"`
-	Skipped     bool              `json:"skipped,omitempty"` // model returned nil — keep seed as-is
-	WrittenAt   time.Time         `json:"written_at"`
-}
-
-// DetailEntityKey is the deterministic key the orchestrator uses
-// to look up whether a seed has been enriched. Composed of the
-// objective id (always present, kind+type+namespace) plus the
-// safe-jobid'd seed name. Two different seeds with the same name
-// under the same objective WOULD collide — but the orchestrator
-// already requires names to be unique within an objective for the
-// stable-ID generation, so this is safe.
-func DetailEntityKey(objectiveID, seedName string) string {
-	return objectiveID + "::" + safeJobID(seedName)
-}
-
-// AppendDetailEntity writes one entry to the detail checkpoint file
-// in append-only mode. Best-effort: any I/O error is logged and
-// swallowed because losing one checkpoint line is never worse than
-// what the operator faces today (re-running the whole stage).
-func (s *CheckpointStore) AppendDetailEntity(entry DetailCheckpointEntry) {
-	if strings.TrimSpace(s.RunDir) == "" {
-		return
-	}
-	dir := filepath.Join(s.RunDir, StateDir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		util.Warn("agents.state", "could not create state dir for checkpoint", map[string]any{"dir": dir, "error": err})
-		return
-	}
-	path := filepath.Join(dir, detailEntitiesJSONL)
-	entry.WrittenAt = time.Now().UTC()
-	b, err := json.Marshal(entry)
-	if err != nil {
-		util.Warn("agents.state", "could not marshal detail checkpoint entry", map[string]any{"key": entry.Key, "error": err})
-		return
-	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		util.Warn("agents.state", "could not open detail checkpoint", map[string]any{"path": path, "error": err})
-		return
-	}
-	defer f.Close()
-	if _, err := f.Write(append(b, '\n')); err != nil {
-		util.Warn("agents.state", "could not append detail checkpoint", map[string]any{"path": path, "error": err})
-	}
-}
-
-// LoadDetailCheckpoint reads the per-entity detail checkpoint for
-// a previously-failed run. Returns a map keyed by entity key (see
-// DetailEntityKey). A torn last line is ignored. Missing file
-// returns an empty map (not an error) — the caller treats "no
-// checkpoint" as "all seeds need processing".
-func (s *CheckpointStore) LoadDetailCheckpoint(dir string) map[string]DetailCheckpointEntry {
-	out := map[string]DetailCheckpointEntry{}
-	if strings.TrimSpace(dir) == "" {
-		return out
-	}
-	path := filepath.Join(dir, detailEntitiesJSONL)
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return out
-	}
-	for _, line := range strings.Split(string(b), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		var entry DetailCheckpointEntry
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			// Torn last line or schema drift; skip and keep going.
-			util.Trace("agents.resume", "skipping malformed detail checkpoint line", map[string]any{"error": err})
-			continue
-		}
-		if entry.Key == "" {
-			continue
-		}
-		out[entry.Key] = entry
-	}
-	return out
-}
-
 // ---- discovery per-objective checkpoint ----
 //
 // Without this, a single objective failing mid-stage causes all
 // already-completed objectives to be re-run on retry, wasting LLM
-// calls that succeeded. The pattern mirrors detail_entities.jsonl.
+// calls that succeeded.
 
 const discoverEntitiesJSONL = "discover_entities.jsonl"
 
