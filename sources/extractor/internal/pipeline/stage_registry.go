@@ -74,8 +74,11 @@ func (o *orchestrator) runASTIndexStage(ctx context.Context) error {
 		}
 	}
 
-	// Determine primary language: use the first configured language if set,
-	// otherwise pass empty string and let langdetect within ast.Build handle it.
+	// AST parsing is extension-driven and inherently multi-language: every
+	// supported source file is parsed regardless of language, and the resulting
+	// index records ALL languages present (out.Summary.Languages). The
+	// configured Indexer.Languages no longer gates anything; we pass the first
+	// entry only as a fallback LABEL for the rare repo with no parseable source.
 	primaryLang := ""
 	if len(o.cfg.Indexer.Languages) > 0 {
 		primaryLang = o.cfg.Indexer.Languages[0]
@@ -104,6 +107,7 @@ func (o *orchestrator) runASTIndexStage(ctx context.Context) error {
 
 	util.Info("agents.ast_index", "index built", map[string]any{
 		"files":       out.Summary.Files,
+		"languages":   out.Summary.Languages,
 		"symbols":     out.Summary.Symbols,
 		"call_edges":  out.Summary.CallEdges,
 		"configs":     out.Summary.Configs,
@@ -116,6 +120,7 @@ func (o *orchestrator) runASTIndexStage(ctx context.Context) error {
 		Status: events.StatusSuccess,
 		Payload: map[string]any{
 			"files":       out.Summary.Files,
+			"languages":   out.Summary.Languages,
 			"symbols":     out.Summary.Symbols,
 			"call_edges":  out.Summary.CallEdges,
 			"configs":     out.Summary.Configs,
