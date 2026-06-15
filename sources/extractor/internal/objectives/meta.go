@@ -2,7 +2,7 @@ package objectives
 
 // objectiveMetaEntry carries the few-shot example and required detail keys for
 // one objective type. Kept separate from the prompt literals so the large
-// DiscoveryPrompt/DetailPrompt blocks stay readable.
+// DiscoveryPrompt blocks stay readable.
 type objectiveMetaEntry struct {
 	example    string
 	detailKeys []string

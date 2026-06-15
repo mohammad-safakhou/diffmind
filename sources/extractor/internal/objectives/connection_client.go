@@ -48,6 +48,5 @@ RULES:
   operations. Here we only want the backbones they share.
 - Only report config_anchor you can confirm by reading a config/build file.`,
 	// Discovery-only: clients are resolved deterministically, never enriched.
-	DetailPrompt:      "",
 	ConnectionContext: "",
 }

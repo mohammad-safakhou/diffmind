@@ -8,6 +8,5 @@ var objCommandExec = Objective{
 	Type:              "command_exec",
 	Description:       "External command/process execution",
 	DiscoveryPrompt:   "Find shell/process execution dependencies (Runtime.exec, ProcessBuilder, os command wrappers, subprocess, scripts). If none exist, return {\"items\": []}.",
-	DetailPrompt:      "For this command dependency, extract executed command pattern, arguments, environment inputs, and guard conditions.",
 	ConnectionContext: "Connection mapping must include executed command and trigger condition.",
 }

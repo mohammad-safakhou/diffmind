@@ -31,12 +31,5 @@ cache-aside) is a cache_operation and belongs HERE. Redis used as a PRIMARY
 DATASTORE (durable keys, no TTL, source of truth) is a db_operation. Pick ONE;
 do not report the same Redis access as both.
 If no external cache operations exist, return {"items": []}.`,
-	DetailPrompt: `For this cache operation, provide:
-1. Cache type (Redis, Memcached, etc.) and connection config
-2. Key pattern and namespace
-3. Operation types (read/write/evict)
-4. TTL/expiration configuration
-5. Serialization format
-6. Cache-aside vs write-through pattern`,
 	ConnectionContext: "Connection mapping must include cache key pattern and read/write operation per step.",
 }

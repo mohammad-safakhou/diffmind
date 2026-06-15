@@ -63,7 +63,6 @@ func TestWriteManifestStageFailureSummary(t *testing.T) {
 		Unresolved: []model.UnresolvedItem{
 			{Kind: model.KindExposure, Type: "http_route", Name: "obj-a", ReasonCode: "discovery_failure", Reason: "boom"},
 			{Kind: model.KindExposure, Type: "http_route", Name: "obj-b", ReasonCode: "discovery_failure", Reason: "boom"},
-			{Kind: model.KindExposure, Type: "http_route", Name: "obj-c", ReasonCode: "detail_failure", Reason: "boom"},
 			{Kind: model.KindDependency, Type: "connection", Name: "exp-1", ReasonCode: "connections_failure", Reason: "boom"},
 			{Kind: model.KindExposure, Type: "http_route", Name: "obj-d", ReasonCode: "reexamine_failure", Reason: "kept original seed"},
 			{Kind: model.KindExposure, Type: "http_route", Name: "obj-e", ReasonCode: "rejected_on_reexamination", Reason: "not real"},
@@ -83,7 +82,6 @@ func TestWriteManifestStageFailureSummary(t *testing.T) {
 	}
 	want := map[string]int{
 		"discovery":     2,
-		"detail":        1,
 		"connections":   1,
 		"reexamination": 2,
 		"validation":    1,

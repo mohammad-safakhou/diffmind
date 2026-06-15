@@ -32,33 +32,21 @@ func fileExists(path string) bool {
 // lives in runstate; this alias keeps orchestration call sites terse.
 const stateDir = runstate.StateDir
 
-// resumeState is the bundle returned by loadResumeState. The struct
-// (rather than a positional return) makes new fields backwards-
-// compatible: adding the detail checkpoint here would have been an
-// ugly 7-value return.
-type resumeState struct {
-	RepoFacts        *repoFacts
-	Seeds            []detailJob
-	ExposureObjs     map[string]string
-	Reexam           []detailJob
-	Exposures        []model.Exposure
-	Dependencies     []model.Dependency
-	DetailCheckpoint map[string]runstate.DetailCheckpointEntry
-}
-
 // loadResumeState reads previously-saved per-stage outputs from
 // `<runDir>/state/*.json`. It returns one tuple value per stage; nil
 // means "not found, re-execute". Any read/parse error for a single
 // file logs a warning and returns nil for that stage so a corrupt
 // state file doesn't prevent the operator from retrying with the
 // remaining stages still skipped.
+//
+// Note: entities are NOT resumed from disk. The seed→entity conversion is
+// deterministic and instant, so a resume re-derives exposures/dependencies from
+// the persisted reexamination seeds rather than reloading them.
 func (o *orchestrator) loadResumeState(dir string) (
 	rf *repoFacts,
 	seeds []detailJob,
 	expObjs map[string]string,
 	reexam []detailJob,
-	exposures []model.Exposure,
-	deps []model.Dependency,
 ) {
 	if strings.TrimSpace(dir) == "" {
 		return
@@ -92,20 +80,12 @@ func (o *orchestrator) loadResumeState(dir string) (
 	if !read("reexamination.json", &reexam) {
 		reexam = nil
 	}
-	if !read("detail_exposures.json", &exposures) {
-		exposures = nil
-	}
-	if !read("detail_dependencies.json", &deps) {
-		deps = nil
-	}
 	util.Info("agents.resume", "loaded resume state", map[string]any{
-		"dir":                 dir,
-		"repo_facts":          rf != nil,
-		"discovery":           len(seeds),
-		"exposure_objs":       len(expObjs),
-		"reexamination":       len(reexam),
-		"detail_exposures":    len(exposures),
-		"detail_dependencies": len(deps),
+		"dir":           dir,
+		"repo_facts":    rf != nil,
+		"discovery":     len(seeds),
+		"exposure_objs": len(expObjs),
+		"reexamination": len(reexam),
 	})
 	return
 }

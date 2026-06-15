@@ -79,14 +79,6 @@ type DetailJob struct {
 	Seed      Candidate
 }
 
-type DetailResult struct {
-	Objective     objectives.Objective
-	SeedName      string
-	Item          *Candidate
-	Err           error
-	PeerCancelled bool
-}
-
 type Request struct {
 	RepoPath      string
 	CaptureDir    string
@@ -127,12 +119,12 @@ type Failure struct {
 }
 
 type IntermediateState struct {
-	RepoFacts        *RepoFacts               `json:"repo_facts,omitempty"`
-	DiscoverySeeds   []DetailJob              `json:"discovery_seeds,omitempty"`
-	ReexamSeeds      []DetailJob              `json:"reexam_seeds,omitempty"`
-	DetailExposures  []model.Exposure         `json:"detail_exposures,omitempty"`
-	DetailDependency []model.Dependency       `json:"detail_dependencies,omitempty"`
-	Connections      []model.Connection       `json:"connections,omitempty"`
-	Clients          []model.ConnectionClient `json:"connection_clients,omitempty"`
-	ExposureObjs     map[string]string        `json:"exposure_objectives,omitempty"`
+	RepoFacts      *RepoFacts               `json:"repo_facts,omitempty"`
+	DiscoverySeeds []DetailJob              `json:"discovery_seeds,omitempty"`
+	ReexamSeeds    []DetailJob              `json:"reexam_seeds,omitempty"`
+	Exposures      []model.Exposure         `json:"entities_exposures,omitempty"`
+	Dependencies   []model.Dependency       `json:"entities_dependencies,omitempty"`
+	Connections    []model.Connection       `json:"connections,omitempty"`
+	Clients        []model.ConnectionClient `json:"connection_clients,omitempty"`
+	ExposureObjs   map[string]string        `json:"exposure_objectives,omitempty"`
 }

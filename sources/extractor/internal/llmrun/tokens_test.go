@@ -29,7 +29,7 @@ func TestStageFromJob(t *testing.T) {
 		"repo_facts":                       "repo_facts",
 		"discover.exposure.http_route":     "discovery",
 		"reexamine.exposure.http_route.id": "reexamination",
-		"detail.exposure.http_route.id":    "detail",
+		"detail.exposure.http_route.id":    "other", // detail stage removed → unmapped
 		"connections.batch.1":              "connections",
 		"unknown.job":                      "other",
 		"":                                 "other",
