@@ -80,6 +80,9 @@ func resolveFile(abs string, inheritedVars map[string]string, rootService string
 		fallback = rootService
 	}
 
+	for _, r := range raw.Resources {
+		out.Resources = append(out.Resources, toResource(r))
+	}
 	for _, e := range raw.Exposures {
 		out.Exposures = append(out.Exposures, toEntity(e, fallback))
 	}
@@ -112,6 +115,23 @@ func resolveFile(abs string, inheritedVars map[string]string, rootService string
 	return nil
 }
 
+func toResource(r rawResource) Resource {
+	details := r.Details
+	if details == nil {
+		details = map[string]any{}
+	}
+	return Resource{
+		ID:       strings.TrimSpace(r.ID),
+		Kind:     strings.TrimSpace(r.Kind),
+		Platform: strings.TrimSpace(r.Platform),
+		Name:     strings.TrimSpace(r.Name),
+		Instance: strings.TrimSpace(r.Instance),
+		Summary:  strings.TrimSpace(r.Summary),
+		Tags:     r.Tags,
+		Details:  details,
+	}
+}
+
 func toEntity(e rawEntity, fallbackService string) Entity {
 	service := strings.TrimSpace(e.Service)
 	if service == "" {
@@ -125,6 +145,7 @@ func toEntity(e rawEntity, fallbackService string) Entity {
 		Alias:    strings.TrimSpace(e.ID),
 		Type:     strings.TrimSpace(e.Type),
 		Name:     strings.TrimSpace(e.Name),
+		Resource: strings.TrimSpace(e.Resource),
 		Service:  service,
 		Summary:  strings.TrimSpace(e.Summary),
 		Platform: strings.TrimSpace(e.Platform),

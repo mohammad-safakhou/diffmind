@@ -104,6 +104,9 @@ func toBase(e Entity, kind model.EntityKind) (model.BaseEntity, error) {
 	for k, v := range e.Details {
 		details[k] = v
 	}
+	if e.Resource != "" {
+		details["resource"] = e.Resource
+	}
 	base := model.BaseEntity{
 		Type:       e.Type,
 		Name:       e.Name,

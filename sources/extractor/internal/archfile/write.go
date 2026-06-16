@@ -25,6 +25,7 @@ var derivedDetailKeys = map[string]bool{
 	"operation_normalized": true,
 	"operation_kind":       true,
 	"instance":             true,
+	"resource":             true,
 }
 
 // Document renders the whole catalog as a discovery file. Used for a first
@@ -417,7 +418,16 @@ func fromRecords(exps []model.Exposure, deps []model.Dependency, conns []model.C
 		referenced[c.ToDependencyID] = true
 	}
 	tokenFor := map[string]string{}
-	build := func(b model.BaseEntity) rawEntity {
+	resourceIDs := map[string]bool{}
+	for _, d := range deps {
+		r := resourceForBase(d.BaseEntity)
+		if !resourceIDs[r.ID] {
+			raw.Resources = append(raw.Resources, r)
+			resourceIDs[r.ID] = true
+		}
+	}
+
+	build := func(b model.BaseEntity, dependency bool) rawEntity {
 		token := b.Name
 		alias := ""
 		if nameCounts[b.Name] > 1 {
@@ -441,6 +451,9 @@ func fromRecords(exps []model.Exposure, deps []model.Dependency, conns []model.C
 			svc = ""
 		}
 		re := rawEntity{Type: b.Type, Name: b.Name, Service: svc, Summary: b.Summary, Platform: b.Platform, Details: details, Tags: b.Tags}
+		if dependency {
+			re.Resource = resourceIDForBase(b)
+		}
 		if referenced[b.ID] && alias != "" {
 			re.ID = alias
 		}
@@ -448,10 +461,10 @@ func fromRecords(exps []model.Exposure, deps []model.Dependency, conns []model.C
 	}
 
 	for _, e := range exps {
-		raw.Exposures = append(raw.Exposures, build(e.BaseEntity))
+		raw.Exposures = append(raw.Exposures, build(e.BaseEntity, false))
 	}
 	for _, d := range deps {
-		raw.Dependencies = append(raw.Dependencies, build(d.BaseEntity))
+		raw.Dependencies = append(raw.Dependencies, build(d.BaseEntity, true))
 	}
 	for _, c := range conns {
 		raw.Connections = append(raw.Connections, rawConn{

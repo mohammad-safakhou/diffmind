@@ -156,6 +156,9 @@ func TestArchitectureRunProposalAndFileGraph(t *testing.T) {
 	if got := len(graph["connections"].([]any)); got != 1 {
 		t.Fatalf("graph connections = %d, want 1", got)
 	}
+	if got := len(graph["resources"].([]any)); got != 1 {
+		t.Fatalf("graph resources = %d, want 1", got)
+	}
 
 	writeRunArtifacts(t, base, "20260616T110000Z", repo,
 		[]map[string]any{{
@@ -188,6 +191,91 @@ func TestArchitectureRunProposalAndFileGraph(t *testing.T) {
 	if got := len(body["skip"].([]any)); got != 3 {
 		t.Fatalf("second proposal skip = %d, want 3: %v", got, body)
 	}
+}
+
+func TestArchitectureFileDraftApply(t *testing.T) {
+	base := t.TempDir()
+	repo := t.TempDir()
+	mainPath := filepath.Join(repo, "diffmind.yaml")
+	if err := os.WriteFile(mainPath, []byte(`schema: diffmind.discovery.v1
+service: orders
+resources:
+  - id: orders_db
+    kind: datastore
+    platform: postgres
+    name: Orders DB
+    instance: orders
+dependencies:
+  - type: db_operation
+    name: OrderRepository.save
+    resource: orders_db
+    details: {table: orders, operation: write, platform: postgres}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(base, "127.0.0.1", 8080)
+	mux := http.NewServeMux()
+	s.routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/architecture/file?path=" + mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var file map[string]any
+	decodeJSON(t, resp, &file)
+	sha, _ := file["sha256"].(string)
+	if sha == "" {
+		t.Fatalf("file response missing sha: %+v", file)
+	}
+
+	before, err := os.ReadFile(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, body := postJSON(t, srv, "/api/architecture/file-draft", `{"path":"`+mainPath+`","base_sha":"`+sha+`","edits":{"resources":[{"id":"orders_db","name":"Orders Database"}]}}`)
+	if status != http.StatusOK {
+		t.Fatalf("file-draft status %d: %v", status, body)
+	}
+	if !strings.Contains(body["yaml"].(string), "Orders Database") {
+		t.Fatalf("draft yaml missing edit: %v", body["yaml"])
+	}
+	afterDraft, err := os.ReadFile(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(afterDraft) {
+		t.Fatal("draft endpoint wrote the main file")
+	}
+
+	status, _ = postJSON(t, srv, "/api/architecture/file-apply", `{"path":"`+mainPath+`","base_sha":"stale","yaml":`+jsonString(body["yaml"].(string))+`}`)
+	if status != http.StatusConflict {
+		t.Fatalf("stale apply status = %d, want 409", status)
+	}
+	status, body = postJSON(t, srv, "/api/architecture/file-apply", `{"path":"`+mainPath+`","base_sha":"`+sha+`","yaml":`+jsonString(body["yaml"].(string))+`}`)
+	if status != http.StatusOK {
+		t.Fatalf("file-apply status %d: %v", status, body)
+	}
+	afterApply, err := os.ReadFile(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(afterApply), "Orders Database") {
+		t.Fatalf("apply did not write draft:\n%s", string(afterApply))
+	}
+
+	status, _ = postJSON(t, srv, "/api/architecture/file-apply", `{"path":"`+mainPath+`","base_sha":"`+body["sha256"].(string)+`","yaml":"schema: ["}`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("invalid yaml apply status = %d, want 400", status)
+	}
+}
+
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 func writeRunArtifacts(t *testing.T, base, runID, repo string, exposures, dependencies, connections []map[string]any) {

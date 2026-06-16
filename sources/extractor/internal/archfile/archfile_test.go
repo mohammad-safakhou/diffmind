@@ -183,6 +183,105 @@ exposures:
 	}
 }
 
+func TestResourcesRoundTripThroughModel(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := writeFile(t, dir, "diffmind.yaml", `schema: diffmind.discovery.v1
+service: orders
+resources:
+  - id: orders_db
+    kind: datastore
+    platform: postgres
+    name: Orders DB
+    instance: orders
+dependencies:
+  - type: db_operation
+    name: OrderRepository.save
+    resource: orders_db
+    details: {table: orders, operation: write, platform: postgres}
+`)
+	resolved, err := Resolve(mainPath)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	graph, err := ToGraph(resolved, "file:test")
+	if err != nil {
+		t.Fatalf("graph: %v", err)
+	}
+	if len(graph.Resources) != 1 || graph.Resources[0].ID != "orders_db" {
+		t.Fatalf("resources = %+v, want orders_db", graph.Resources)
+	}
+	if len(graph.Dependencies) != 1 || graph.Dependencies[0].ResourceID != "orders_db" {
+		t.Fatalf("dependency resource = %+v, want orders_db", graph.Dependencies)
+	}
+
+	store := catalog.NewStore(filepath.Join(dir, "cat"))
+	doc, _ := importFile(t, store, mainPath)
+	exported, err := Marshal(Document(doc))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	exportPath := writeFile(t, dir, "exported.yaml", string(exported))
+	exportedResolved, err := Resolve(exportPath)
+	if err != nil {
+		t.Fatalf("resolve exported: %v", err)
+	}
+	exportedGraph, err := ToGraph(exportedResolved, "file:exported")
+	if err != nil {
+		t.Fatalf("graph exported: %v", err)
+	}
+	if exportedGraph.Dependencies[0].ResourceID != "orders_db" {
+		t.Fatalf("exported dependency resource = %q, want orders_db", exportedGraph.Dependencies[0].ResourceID)
+	}
+}
+
+func TestDraftPromotesDerivedResourceWithoutWritingMain(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := writeFile(t, dir, "diffmind.yaml", `schema: diffmind.discovery.v1
+service: orders
+dependencies:
+  - type: db_operation
+    name: OrderRepository.save
+    details: {table: orders, operation: write, platform: postgres}
+`)
+	before, err := os.ReadFile(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := Resolve(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph, err := ToGraph(resolved, "file:test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(graph.Resources) != 1 || !graph.Resources[0].Derived {
+		t.Fatalf("expected one derived resource, got %+v", graph.Resources)
+	}
+	draft, err := Draft(mainPath, EditSet{Resources: []ResourceEdit{{
+		ID:   graph.Resources[0].ID,
+		Name: strPtr("Orders Database"),
+	}}})
+	if err != nil {
+		t.Fatalf("draft: %v", err)
+	}
+	if draft.Summary.Resources != 1 {
+		t.Fatalf("draft summary = %+v, want one resource edit", draft.Summary)
+	}
+	if !strings.Contains(draft.YAML, "Orders Database") {
+		t.Fatalf("draft yaml missing resource edit:\n%s", draft.YAML)
+	}
+	after, err := os.ReadFile(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("draft wrote main file:\nbefore=%s\nafter=%s", before, after)
+	}
+}
+
+func strPtr(s string) *string { return &s }
+
 func TestUnknownVariableErrors(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "diffmind.yaml", `schema: diffmind.discovery.v1
