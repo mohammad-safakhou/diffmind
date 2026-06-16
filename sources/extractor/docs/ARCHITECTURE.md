@@ -1,13 +1,13 @@
 # Backend Architecture
 
-DiffMind's backend follows a one-way dependency flow:
+DiffMind has two top-level domains: the canonical architecture catalog and the
+automation pipeline that can propose/import records into it.
 
 ```text
-cmd / ui
-   -> app / runner
-   -> pipeline
-   -> floor / stage packages
-   -> extraction contracts and focused services
+ui / API -> catalog -> model / entitykey
+
+cmd / ui -> app / runner -> pipeline -> floor / stage packages
+                                  -> extraction contracts and focused services
 ```
 
 ## Package Responsibilities
@@ -26,6 +26,12 @@ cmd / ui
 - `internal/entitykey`: canonical architectural identities shared by extraction,
   reconciliation, and evaluation.
 - `internal/opencode`: OpenCode HTTP transport and wire decoding.
+- `internal/catalog`: canonical `architecture.v1` document, validation, atomic
+  persistence, optimistic revisioning, ownership metadata, and run imports.
+
+The catalog must not import pipeline or stage packages. Automation reaches it
+through stable model records and import adapters, preserving the rule that a run
+is an input to the product rather than the product database.
 
 ## Dependency Rules
 
