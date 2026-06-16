@@ -3,7 +3,8 @@
 // index.html and the hash is re-read on boot, so deep links survive a refresh.
 //
 // Routes:
-//   #/                 → runs dashboard (home)
+//   #/                 → canonical architecture catalog
+//   #/runs             → automation runs dashboard
 //   #/runs/<run_id>    → per-run detail view
 import { useEffect, useState } from 'preact/hooks'
 
@@ -37,5 +38,6 @@ export function useRoute() {
 export function parseRoute(path) {
   const m = path.match(/^\/runs\/([^/]+)$/)
   if (m) return { name: 'detail', runID: decodeURIComponent(m[1]) }
-  return { name: 'home' }
+  if (path === '/runs') return { name: 'runs' }
+  return { name: 'architecture' }
 }

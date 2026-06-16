@@ -135,8 +135,8 @@ function sortGroups(groups, order) {
 }
 
 // ─── main component ──────────────────────────────────────────────────────────
-export function OutcomeGraph({ onClose }) {
-  const [data, setData] = useState(null)
+export function OutcomeGraph({ onClose, graphData = null }) {
+  const [data, setData] = useState(graphData)
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(true)
   const [hovered, setHovered] = useState(null)   // node id
@@ -149,12 +149,18 @@ export function OutcomeGraph({ onClose }) {
 
   // Load artifacts
   useEffect(() => {
+    if (graphData) {
+      setData(graphData)
+      setError(null)
+      setLoading(false)
+      return
+    }
     if (!runId) { setLoading(false); setError('No active run.'); return }
     setLoading(true)
     getRunGraph(runId)
       .then(d => { setData(d); setLoading(false) })
       .catch(e => { setError(e.message); setLoading(false) })
-  }, [runId])
+  }, [runId, graphData])
 
   // Keyboard: Escape closes pin, then closes graph
   useEffect(() => {
