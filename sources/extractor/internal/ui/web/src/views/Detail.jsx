@@ -99,8 +99,8 @@ export function Detail({ runID }) {
   return (
     <div class="app">
       <div class="detail-topbar-row">
-        <button class="btn secondary back-btn" onClick={() => navigate('/')} title="Back to all runs">
-          {'←'} All runs
+        <button class="btn secondary back-btn" onClick={() => navigate('/runs')} title="Back to automation runs">
+          {'←'} Automation runs
         </button>
         <span class="detail-run-id">{runID}</span>
       </div>

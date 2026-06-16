@@ -132,6 +132,24 @@ export function getRunGraph(runID) {
   return api(`/api/runs/${encodeURIComponent(runID)}/graph`)
 }
 
+export function getArchitecture() {
+  return api('/api/architecture')
+}
+
+export function saveArchitecture(document) {
+  return api('/api/architecture', {
+    method: 'PUT',
+    body: JSON.stringify(document),
+  })
+}
+
+export function importArchitectureRun(runID) {
+  return api('/api/architecture/import-run', {
+    method: 'POST',
+    body: JSON.stringify({ run_id: runID }),
+  })
+}
+
 // Preflight API. The dashboard's SystemStatus panel polls
 // /api/preflight every 15s and pushes form-derived options to
 // /api/preflight/options whenever the user edits the URL or

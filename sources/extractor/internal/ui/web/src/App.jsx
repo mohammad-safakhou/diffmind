@@ -3,10 +3,10 @@ import { onAuthFailure, getToken, setToken } from './lib/api.js'
 import { useRoute } from './lib/router.js'
 import { Home } from './views/Home.jsx'
 import { Detail } from './views/Detail.jsx'
+import { Architecture } from './views/Architecture.jsx'
 
-// App is the router shell. It switches between the runs dashboard (home) and a
-// per-run detail view based on the URL hash, and surfaces the auth banner when
-// the server rejects a request with 401.
+// App is the router shell for the catalog, automation runs, and per-run detail.
+// It also surfaces the auth banner when the server rejects a request with 401.
 export function App() {
   const route = useRoute()
   const [authError, setAuthError] = useState(false)
@@ -23,9 +23,9 @@ export function App() {
           initial={getToken()}
         />
       )}
-      {route.name === 'detail'
-        ? <Detail runID={route.runID} key={route.runID} />
-        : <Home />}
+      {route.name === 'detail' && <Detail runID={route.runID} key={route.runID} />}
+      {route.name === 'runs' && <Home />}
+      {route.name === 'architecture' && <Architecture />}
     </div>
   )
 }
