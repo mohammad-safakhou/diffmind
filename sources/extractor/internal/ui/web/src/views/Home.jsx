@@ -114,10 +114,13 @@ export function Home() {
     <div class="app">
       <header class="home-header">
         <div>
-          <h1>DiffMind</h1>
-          <p class="home-sub">Repository artifact extraction runs</p>
+          <h1>Automation Runs</h1>
+          <p class="home-sub">Generate proposals that can be imported into the architecture catalog</p>
         </div>
-        <button class="btn" onClick={() => setShowForm(true)}>+ New Run</button>
+        <div class="home-header-actions">
+          <button class="btn secondary" onClick={() => navigate('/')}>Architecture</button>
+          <button class="btn" onClick={() => setShowForm(true)}>+ New Run</button>
+        </div>
       </header>
 
       <div class="home-toolbar">
