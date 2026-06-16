@@ -79,6 +79,23 @@ func (s *Store) SaveManual(in Document) (Document, error) {
 // identity, not run-local IDs, chooses the durable record. Automation can
 // refresh automation-owned records but never overwrites manually owned ones.
 func (s *Store) Import(in ImportInput) (Document, ImportSummary, error) {
+	return s.importWith(in, OwnerAutomation)
+}
+
+// ImportManual merges a human-authored source (the in-repo discovery file) into
+// the catalog. Because a person asserted these facts, every imported record is
+// owned by `manual`: it is protected from later automation runs and a newer file
+// import overwrites a stale manual record. Unlike Import it never skips on
+// ownership — the file is the source of truth for what it contains. in.RunID is
+// a provenance label (e.g. "file:diffmind.yaml"), not a run identifier.
+func (s *Store) ImportManual(in ImportInput) (Document, ImportSummary, error) {
+	if strings.TrimSpace(in.RunID) == "" {
+		in.RunID = "file"
+	}
+	return s.importWith(in, OwnerManual)
+}
+
+func (s *Store) importWith(in ImportInput, source Owner) (Document, ImportSummary, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -94,9 +111,9 @@ func (s *Store) Import(in ImportInput) (Document, ImportSummary, error) {
 	summary := ImportSummary{RunID: in.RunID}
 	idMap := map[string]string{}
 
-	doc.Exposures = mergeExposures(doc.Exposures, in.Exposures, doc.Records, idMap, in.RunID, now, &summary)
-	doc.Dependencies = mergeDependencies(doc.Dependencies, in.Dependencies, doc.Records, idMap, in.RunID, now, &summary)
-	doc.Connections = mergeConnections(doc.Connections, in.Connections, doc.Records, idMap, in.RunID, now, &summary)
+	doc.Exposures = mergeExposures(doc.Exposures, in.Exposures, doc.Records, idMap, in.RunID, source, now, &summary)
+	doc.Dependencies = mergeDependencies(doc.Dependencies, in.Dependencies, doc.Records, idMap, in.RunID, source, now, &summary)
+	doc.Connections = mergeConnections(doc.Connections, in.Connections, doc.Records, idMap, in.RunID, source, now, &summary)
 
 	doc.SchemaVersion = SchemaVersion
 	doc.Revision++
@@ -338,23 +355,23 @@ func recordValues(doc Document) map[string]any {
 	return out
 }
 
-func mergeExposures(current, incoming []model.Exposure, metadata map[string]RecordMetadata, idMap map[string]string, runID string, now time.Time, summary *ImportSummary) []model.Exposure {
+func mergeExposures(current, incoming []model.Exposure, metadata map[string]RecordMetadata, idMap map[string]string, runID string, source Owner, now time.Time, summary *ImportSummary) []model.Exposure {
 	byKey := map[string]int{}
 	for i, e := range current {
-		byKey[entityCatalogKey("exposure", e.BaseEntity)] = i
+		byKey[EntityCatalogKey("exposure", e.BaseEntity)] = i
 	}
 	for _, candidate := range incoming {
 		oldID := candidate.ID
-		key := entityCatalogKey("exposure", candidate.BaseEntity)
+		key := EntityCatalogKey("exposure", candidate.BaseEntity)
 		if i, ok := byKey[key]; ok {
 			idMap[oldID] = current[i].ID
-			if metadata[current[i].ID].Owner == OwnerManual {
+			if skipMerge(metadata[current[i].ID].Owner, source) {
 				summary.SkippedManual++
 				continue
 			}
 			candidate.ID = current[i].ID
 			current[i] = candidate
-			setAutomationMetadata(metadata, candidate.ID, runID, now)
+			setMetadata(metadata, candidate.ID, source, runID, now)
 			summary.Updated++
 			continue
 		}
@@ -362,29 +379,29 @@ func mergeExposures(current, incoming []model.Exposure, metadata map[string]Reco
 		idMap[oldID] = candidate.ID
 		current = append(current, candidate)
 		byKey[key] = len(current) - 1
-		setAutomationMetadata(metadata, candidate.ID, runID, now)
+		setMetadata(metadata, candidate.ID, source, runID, now)
 		summary.Added++
 	}
 	return current
 }
 
-func mergeDependencies(current, incoming []model.Dependency, metadata map[string]RecordMetadata, idMap map[string]string, runID string, now time.Time, summary *ImportSummary) []model.Dependency {
+func mergeDependencies(current, incoming []model.Dependency, metadata map[string]RecordMetadata, idMap map[string]string, runID string, source Owner, now time.Time, summary *ImportSummary) []model.Dependency {
 	byKey := map[string]int{}
 	for i, d := range current {
-		byKey[entityCatalogKey("dependency", d.BaseEntity)] = i
+		byKey[EntityCatalogKey("dependency", d.BaseEntity)] = i
 	}
 	for _, candidate := range incoming {
 		oldID := candidate.ID
-		key := entityCatalogKey("dependency", candidate.BaseEntity)
+		key := EntityCatalogKey("dependency", candidate.BaseEntity)
 		if i, ok := byKey[key]; ok {
 			idMap[oldID] = current[i].ID
-			if metadata[current[i].ID].Owner == OwnerManual {
+			if skipMerge(metadata[current[i].ID].Owner, source) {
 				summary.SkippedManual++
 				continue
 			}
 			candidate.ID = current[i].ID
 			current[i] = candidate
-			setAutomationMetadata(metadata, candidate.ID, runID, now)
+			setMetadata(metadata, candidate.ID, source, runID, now)
 			summary.Updated++
 			continue
 		}
@@ -392,16 +409,16 @@ func mergeDependencies(current, incoming []model.Dependency, metadata map[string
 		idMap[oldID] = candidate.ID
 		current = append(current, candidate)
 		byKey[key] = len(current) - 1
-		setAutomationMetadata(metadata, candidate.ID, runID, now)
+		setMetadata(metadata, candidate.ID, source, runID, now)
 		summary.Added++
 	}
 	return current
 }
 
-func mergeConnections(current, incoming []model.Connection, metadata map[string]RecordMetadata, idMap map[string]string, runID string, now time.Time, summary *ImportSummary) []model.Connection {
+func mergeConnections(current, incoming []model.Connection, metadata map[string]RecordMetadata, idMap map[string]string, runID string, source Owner, now time.Time, summary *ImportSummary) []model.Connection {
 	byKey := map[string]int{}
 	for i, c := range current {
-		byKey[connectionCatalogKey(c)] = i
+		byKey[ConnectionCatalogKey(c)] = i
 	}
 	for _, candidate := range incoming {
 		fromID, fromOK := idMap[candidate.FromExposureID]
@@ -411,28 +428,32 @@ func mergeConnections(current, incoming []model.Connection, metadata map[string]
 		}
 		candidate.FromExposureID = fromID
 		candidate.ToDependencyID = toID
-		key := connectionCatalogKey(candidate)
+		key := ConnectionCatalogKey(candidate)
 		if i, ok := byKey[key]; ok {
-			if metadata[current[i].ID].Owner == OwnerManual {
+			if skipMerge(metadata[current[i].ID].Owner, source) {
 				summary.SkippedManual++
 				continue
 			}
 			candidate.ID = current[i].ID
 			current[i] = candidate
-			setAutomationMetadata(metadata, candidate.ID, runID, now)
+			setMetadata(metadata, candidate.ID, source, runID, now)
 			summary.Updated++
 			continue
 		}
 		candidate.ID = util.StableID("architecture-connection", key)
 		current = append(current, candidate)
 		byKey[key] = len(current) - 1
-		setAutomationMetadata(metadata, candidate.ID, runID, now)
+		setMetadata(metadata, candidate.ID, source, runID, now)
 		summary.Added++
 	}
 	return current
 }
 
-func entityCatalogKey(kind string, b model.BaseEntity) string {
+// EntityCatalogKey is the service-scoped semantic identity used to dedup and
+// merge a node into the catalog. It is exported so other import adapters (the
+// in-repo discovery file) compute identity exactly as the run importer does —
+// there must be only one identity function across read, write, and run import.
+func EntityCatalogKey(kind string, b model.BaseEntity) string {
 	return strings.Join([]string{
 		kind,
 		strings.ToLower(strings.TrimSpace(b.Service)),
@@ -440,17 +461,29 @@ func entityCatalogKey(kind string, b model.BaseEntity) string {
 	}, "|")
 }
 
-func connectionCatalogKey(c model.Connection) string {
+// ConnectionCatalogKey is the durable identity of a connection. See
+// EntityCatalogKey for why it is exported.
+func ConnectionCatalogKey(c model.Connection) string {
 	return strings.Join([]string{c.FromExposureID, c.ToDependencyID, strings.ToLower(strings.TrimSpace(c.PathSignature))}, "|")
 }
 
-func setAutomationMetadata(metadata map[string]RecordMetadata, id, runID string, now time.Time) {
+// skipMerge protects manually owned records from automation imports. A manual
+// source (the discovery file) is authoritative and never skips.
+func skipMerge(existing, source Owner) bool {
+	return existing == OwnerManual && source == OwnerAutomation
+}
+
+func setMetadata(metadata map[string]RecordMetadata, id string, source Owner, runID string, now time.Time) {
 	meta := metadata[id]
 	if meta.CreatedAt.IsZero() {
 		meta.CreatedAt = now
 	}
-	meta.Owner = OwnerAutomation
-	meta.RunID = runID
+	meta.Owner = source
+	if source == OwnerManual {
+		meta.RunID = ""
+	} else {
+		meta.RunID = runID
+	}
 	meta.UpdatedAt = now
 	metadata[id] = meta
 }

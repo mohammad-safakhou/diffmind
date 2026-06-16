@@ -132,22 +132,54 @@ export function getRunGraph(runID) {
   return api(`/api/runs/${encodeURIComponent(runID)}/graph`)
 }
 
-export function getArchitecture() {
-  return api('/api/architecture')
-}
-
-export function saveArchitecture(document) {
-  return api('/api/architecture', {
-    method: 'PUT',
-    body: JSON.stringify(document),
-  })
-}
-
-export function importArchitectureRun(runID) {
-  return api('/api/architecture/import-run', {
+// Repo discovery-file workflow. A selected run writes .diffmind.generated.yaml;
+// merging folds its new facts into the repository-owned diffmind.yaml.
+export function mergeRepoFile(path) {
+  return api('/api/architecture/merge-file', {
     method: 'POST',
-    body: JSON.stringify({ run_id: runID }),
+    body: JSON.stringify({ path }),
   })
+}
+
+export function getFileGraph(path) {
+  return api('/api/architecture/file-graph?path=' + encodeURIComponent(path))
+}
+
+export function runProposal(path, runID) {
+  return api('/api/architecture/run-proposal', {
+    method: 'POST',
+    body: JSON.stringify({ path, run_id: runID }),
+  })
+}
+
+// Raw discovery-file content for the inline editor.
+export function getRepoFile(path) {
+  return api('/api/architecture/file?path=' + encodeURIComponent(path))
+}
+
+export function putRepoFile(path, content) {
+  return api('/api/architecture/file', {
+    method: 'PUT',
+    body: JSON.stringify({ path, content }),
+  })
+}
+
+// First-class repositories.
+export function listRepos() {
+  return api('/api/repos')
+}
+
+export function upsertRepo(body) {
+  return api('/api/repos', { method: 'POST', body: JSON.stringify(body) })
+}
+
+export function deleteRepo(id) {
+  return api('/api/repos/' + encodeURIComponent(id), { method: 'DELETE' })
+}
+
+// Server-side folder browser for picking a diffmind.yaml.
+export function fsList(path) {
+  return api('/api/fs/list' + (path ? '?path=' + encodeURIComponent(path) : ''))
 }
 
 // Preflight API. The dashboard's SystemStatus panel polls

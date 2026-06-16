@@ -1,0 +1,361 @@
+package archfile
+
+import (
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/mohammad-safakhou/diffmind/internal/catalog"
+)
+
+const sampleMain = `schema: diffmind.discovery.v1
+service: order-service
+vars:
+  events_queue: order-events
+  orders_db: postgres
+exposures:
+  - type: http_route
+    name: POST /v1/orders
+    summary: Create an order
+    details:
+      method: POST
+      path: /v1/orders
+      auth: "hasRole('USER')"
+  - type: queue_consumer
+    name: order-events-consumer
+    details:
+      queue: ${events_queue}
+      platform: sqs
+      handler: OrderListener.onMessage
+dependencies:
+  - id: orders_write
+    type: db_operation
+    name: OrderRepository.save
+    details:
+      table: orders
+      operation: upsert
+      platform: ${orders_db}
+  - type: outbound_http
+    name: GET billing/charge
+    details:
+      method: GET
+      path: /charge
+      target_service: billing-service
+connections:
+  - from: POST /v1/orders
+    to: orders_write
+    condition: order.valid
+  - from: POST /v1/orders
+    to: GET billing/charge
+`
+
+func writeFile(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+	return p
+}
+
+func importFile(t *testing.T, store *catalog.Store, path string) (catalog.Document, catalog.ImportSummary) {
+	t.Helper()
+	resolved, err := Resolve(path)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	in, err := ToModel(resolved, "file:test")
+	if err != nil {
+		t.Fatalf("tomodel: %v", err)
+	}
+	doc, sum, err := store.ImportManual(in)
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	return doc, sum
+}
+
+func idSet(doc catalog.Document) []string {
+	var ids []string
+	for _, e := range doc.Exposures {
+		ids = append(ids, e.ID)
+	}
+	for _, d := range doc.Dependencies {
+		ids = append(ids, d.ID)
+	}
+	for _, c := range doc.Connections {
+		ids = append(ids, c.ID)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// TestRoundTripIsNoOp is the gate: author → import → export → re-import must add
+// nothing and produce identical durable identities. A failure means file-read
+// and run-import disagree on identity.
+func TestRoundTripIsNoOp(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := writeFile(t, dir, "diffmind.yaml", sampleMain)
+
+	store1 := catalog.NewStore(filepath.Join(dir, "cat1"))
+	doc1, sum1 := importFile(t, store1, mainPath)
+	if sum1.Added != 6 { // 2 exposures + 2 deps + 2 connections
+		t.Fatalf("expected 6 added on first import, got %+v", sum1)
+	}
+
+	// Export the catalog back to a discovery file.
+	exported, err := Marshal(Document(doc1))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	exportPath := writeFile(t, dir, "exported.yaml", string(exported))
+
+	// Re-import the export into a fresh catalog: identities must match doc1.
+	store2 := catalog.NewStore(filepath.Join(dir, "cat2"))
+	doc2, _ := importFile(t, store2, exportPath)
+
+	a, b := idSet(doc1), idSet(doc2)
+	if strings.Join(a, ",") != strings.Join(b, ",") {
+		t.Fatalf("identity drift across round trip:\n doc1=%v\n doc2=%v", a, b)
+	}
+
+	// Re-importing the export into the ORIGINAL catalog must add nothing.
+	_, sum3 := importFile(t, store1, exportPath)
+	if sum3.Added != 0 {
+		t.Fatalf("re-import added %d records, want 0 (round trip not idempotent): %+v", sum3.Added, sum3)
+	}
+}
+
+func TestResolveVarsAndIncludes(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "architecture")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dir, "diffmind.yaml", `schema: diffmind.discovery.v1
+service: order-service
+vars:
+  q: order-events
+include:
+  - ./architecture/more.yaml
+exposures:
+  - type: queue_consumer
+    name: c1
+    details:
+      queue: ${q}
+      platform: sqs
+      handler: H.on
+`)
+	writeFile(t, sub, "more.yaml", `schema: diffmind.discovery.v1
+vars:
+  q: payments-events
+exposures:
+  - type: queue_consumer
+    name: c2
+    details:
+      queue: ${q}
+      platform: sqs
+      handler: H.on
+`)
+
+	resolved, err := Resolve(filepath.Join(dir, "diffmind.yaml"))
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(resolved.Exposures) != 2 {
+		t.Fatalf("expected 2 exposures from include, got %d", len(resolved.Exposures))
+	}
+	got := map[string]string{}
+	for _, e := range resolved.Exposures {
+		got[e.Name], _ = e.Details["queue"].(string)
+	}
+	if got["c1"] != "order-events" {
+		t.Errorf("c1 queue = %q, want order-events", got["c1"])
+	}
+	if got["c2"] != "payments-events" { // child var shadows parent
+		t.Errorf("c2 queue = %q, want payments-events (child var shadow)", got["c2"])
+	}
+	// Included file inherits the root service (it set none of its own).
+	if resolved.Exposures[1].Service != "order-service" {
+		t.Errorf("included entity service = %q, want order-service", resolved.Exposures[1].Service)
+	}
+}
+
+func TestUnknownVariableErrors(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "diffmind.yaml", `schema: diffmind.discovery.v1
+service: s
+exposures:
+  - type: http_route
+    name: GET /x
+    details:
+      method: GET
+      path: ${missing}
+`)
+	_, err := Resolve(filepath.Join(dir, "diffmind.yaml"))
+	if err == nil {
+		t.Fatal("expected error for unknown variable")
+	}
+	if !strings.Contains(err.Error(), "missing") {
+		t.Errorf("error should name the missing variable, got: %v", err)
+	}
+}
+
+func TestEnvPlaceholderPreserved(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "diffmind.yaml", `schema: diffmind.discovery.v1
+service: s
+dependencies:
+  - type: db_operation
+    name: r
+    details: {table: t, operation: read, platform: postgres, url: "${DB_URL:localhost}"}
+`)
+	resolved, err := Resolve(filepath.Join(dir, "diffmind.yaml"))
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	url, _ := resolved.Dependencies[0].Details["url"].(string)
+	if url != "${DB_URL:localhost}" {
+		t.Errorf("runtime placeholder mangled: %q", url)
+	}
+}
+
+func TestIncludeCycleDetected(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "a.yaml", "schema: diffmind.discovery.v1\ninclude: [./b.yaml]\n")
+	writeFile(t, dir, "b.yaml", "schema: diffmind.discovery.v1\ninclude: [./a.yaml]\n")
+	_, err := Resolve(filepath.Join(dir, "a.yaml"))
+	if err == nil || !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("expected include cycle error, got: %v", err)
+	}
+}
+
+// TestMergeNonClobber verifies MergeIntoMain appends only genuinely new entries,
+// preserves human comments/vars, and is a no-op on a second run.
+func TestMergeNonClobber(t *testing.T) {
+	dir := t.TempDir()
+	mainBody := `schema: diffmind.discovery.v1
+service: order-service
+# a human comment that must survive
+vars:
+  q: order-events
+exposures:
+  - type: http_route
+    name: POST /v1/orders
+    details: {method: POST, path: /v1/orders}
+`
+	mainPath := writeFile(t, dir, "diffmind.yaml", mainBody)
+	genPath := filepath.Join(dir, ".diffmind.generated.yaml")
+
+	// Generated proposes one duplicate (same identity) and one new entity.
+	writeFile(t, dir, ".diffmind.generated.yaml", `schema: diffmind.discovery.v1
+service: order-service
+exposures:
+  - type: http_route
+    name: POST /v1/orders
+    details: {method: POST, path: /v1/orders}
+dependencies:
+  - type: db_operation
+    name: OrderRepository.save
+    details: {table: orders, operation: upsert, platform: postgres}
+`)
+
+	appended, err := MergeIntoMain(mainPath, genPath)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if appended != 1 {
+		t.Fatalf("expected 1 appended (the new dependency), got %d", appended)
+	}
+	merged, err := os.ReadFile(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(merged)
+	if !strings.Contains(text, "a human comment that must survive") {
+		t.Error("human comment was clobbered")
+	}
+	if !strings.Contains(text, "${q}") && !strings.Contains(text, "q: order-events") {
+		t.Error("vars block was clobbered")
+	}
+	if !strings.Contains(text, "OrderRepository.save") {
+		t.Error("new dependency was not appended")
+	}
+	if _, err := os.Stat(genPath); !os.IsNotExist(err) {
+		t.Error("generated file should be consumed after merge")
+	}
+
+	// Second merge with the same proposal is a no-op (file already merged in).
+	writeFile(t, dir, ".diffmind.generated.yaml", `schema: diffmind.discovery.v1
+service: order-service
+dependencies:
+  - type: db_operation
+    name: OrderRepository.save
+    details: {table: orders, operation: upsert, platform: postgres}
+`)
+	appended2, err := MergeIntoMain(mainPath, genPath)
+	if err != nil {
+		t.Fatalf("merge 2: %v", err)
+	}
+	if appended2 != 0 {
+		t.Fatalf("second merge appended %d, want 0", appended2)
+	}
+}
+
+// TestMergePreviewMatchesApply guards the compute/apply split: the previewed
+// append count must equal what MergeIntoMain actually writes.
+func TestMergePreviewMatchesApply(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := writeFile(t, dir, "diffmind.yaml", `schema: diffmind.discovery.v1
+service: order-service
+exposures:
+  - type: http_route
+    name: POST /v1/orders
+    details: {method: POST, path: /v1/orders}
+`)
+	genPath := filepath.Join(dir, ".diffmind.generated.yaml")
+	writeFile(t, dir, ".diffmind.generated.yaml", `schema: diffmind.discovery.v1
+service: order-service
+exposures:
+  - type: http_route
+    name: POST /v1/orders
+    details: {method: POST, path: /v1/orders}
+dependencies:
+  - type: db_operation
+    name: OrderRepository.save
+    details: {table: orders, operation: upsert, platform: postgres}
+`)
+
+	plan, err := MergePreview(mainPath, genPath)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if len(plan.Append) != 1 || len(plan.Skip) != 1 {
+		t.Fatalf("preview: append=%d skip=%d, want 1/1", len(plan.Append), len(plan.Skip))
+	}
+	// Generated file must be untouched by a preview.
+	if _, err := os.Stat(genPath); err != nil {
+		t.Fatal("preview must not consume the generated file")
+	}
+	applied, err := MergeIntoMain(mainPath, genPath)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if applied != len(plan.Append) {
+		t.Fatalf("apply count %d != preview append count %d", applied, len(plan.Append))
+	}
+}
+
+func TestValidateRejectsBadYAML(t *testing.T) {
+	if err := Validate([]byte("schema: diffmind.discovery.v1\nexposures: [\n")); err == nil {
+		t.Fatal("expected parse error for malformed YAML")
+	}
+	if err := Validate([]byte("schema: wrong.schema\n")); err == nil {
+		t.Fatal("expected error for unsupported schema")
+	}
+	if err := Validate([]byte("schema: diffmind.discovery.v1\nservice: s\n")); err != nil {
+		t.Fatalf("valid file rejected: %v", err)
+	}
+}
