@@ -8,9 +8,8 @@
 
 ## 1. What DiffMind is
 
-DiffMind is a **multi-language architecture extractor**. Point it at a service's
-source repository and it produces structured JSON describing the service's
-**externally observable architecture**:
+DiffMind is an **editable architecture catalog**. The durable product is a
+versioned graph that teams can build, review, and curate directly:
 
 - **Exposures** — how the service can be triggered from outside: HTTP routes,
   webhooks, RPC endpoints, queue/stream consumers, scheduled jobs, CLI/Lambda
@@ -22,13 +21,21 @@ source repository and it produces structured JSON describing the service's
   dependencies it triggers, with per-hop conditions and repetition derived from
   control flow.
 
-The output is a high-level, evidence-backed map of "what comes in, what goes
-out, and how they're wired" — for documentation, impact analysis, dependency
-graphs, and migration/audit work across a fleet of services.
+The extraction pipeline is one automation source for this catalog. It can read a
+repository and produce evidence-backed records for import, but a run is not the
+database and generated artifacts are not the final authority. Humans and other
+tools can create, correct, connect, or remove graph facts without source
+analysis. A reviewed proposal inbox is the next product milestone.
 
 ## 2. What we offer (the value)
 
-- **Language-agnostic.** Works across Java/Kotlin, Python, JS/TS, Go, and more,
+- **A shared architecture specification.** The graph exists independently of
+  any extractor and can be authored manually, like an OpenAPI document.
+- **Automation without surrendering ownership.** Runs import by semantic
+  identity; manually curated records are protected from later automation.
+- **Open and versioned.** The catalog has a documented JSON shape, optimistic
+  revisions, and provenance per record.
+- **Language-agnostic automation.** Works across Java/Kotlin, Python, JS/TS, Go, and more,
   because the semantic understanding is done by an LLM, not per-language rules.
 - **High-level, not a symbol dump.** One "reads `orders`" dependency, not 15
   repository methods. The output is at the altitude an architect thinks in.
@@ -40,8 +47,13 @@ graphs, and migration/audit work across a fleet of services.
 
 ## 3. Core design principle
 
-> **The LLM is the brain. Deterministic static analysis is the skeleton and the
-> memory.**
+> **The architecture graph is the product. Automation proposes and maintains
+> facts; it does not own them.**
+
+Within source-code automation:
+
+> **The LLM is the semantic brain. Deterministic static analysis is its recall
+> floor, context, and verifier.**
 
 Enterprise codebases are full of custom frameworks, reflection, dynamic
 registration, and in-house abstractions. No deterministic analyzer will ever
@@ -65,7 +77,30 @@ prompt possible. Shrinking that surface (deterministic floor + tight, evidence-
 scoped shards + strong dedup) is what makes the system **stable and affordable**
 without giving up the LLM's reach.
 
-## 4. Pipeline (one path, no modes)
+## 4. Product architecture
+
+```text
+manual editing ----------------┐
+source extraction runs --------+-> canonical architecture catalog
+future CI/connectors/imports ---┘        |-> visual graph
+                                        |-> API/export
+                                        └-> history/review (roadmap)
+```
+
+The current catalog is persisted as `<runs-dir>/architecture.v1.json`. It uses
+optimistic revision numbers and record-level ownership:
+
+- `manual` records are controlled by users and are never overwritten by import,
+- `automation` records may be refreshed by later runs,
+- imports match nodes by service-scoped semantic identity rather than run-local
+  IDs,
+- connections are remapped onto the catalog's durable node IDs.
+
+This file-backed store is the first persistence adapter. It establishes the
+domain and API before SQLite/Postgres, users, permissions, or collaborative
+history are introduced.
+
+## 5. Automation pipeline (one path, no modes)
 
 ```
 repo_facts → ast_index → deterministic_discovery → LLM discovery (merged)
@@ -112,7 +147,16 @@ must now be produced by discovery or by high-precision deterministic backfills.
 - **Absence is an empty list, never an entity.** Placeholder/no-result sentinel
   rows are invalid even when they satisfy the JSON schema.
 
-## 5. Known limitations / honest gaps
+## 6. Known limitations / honest gaps
+
+- **Catalog ownership is record-level.** Editing one field protects the whole
+  record. Field-level ownership and three-way merges are roadmap work.
+- **Imports apply directly.** The next product milestone is a proposal/review
+  inbox where users accept or reject a run diff before it changes the catalog.
+- **History is shallow.** Revision conflicts prevent lost updates, but durable
+  revision history, rollback, audit authors, and comments are not implemented.
+- **One catalog per UI data directory.** Workspaces, fleet catalogs, and
+  cross-service stitching remain future work.
 
 - **Deterministic coverage is partial.** Stable today: http_route,
   queue_consumer, scheduled_job, outbound_http (selected framework bindings),
@@ -146,9 +190,27 @@ connection repair became visible; deterministic db junk tables are filtered;
 sentinels are rejected; and shard fan-out now uses stricter evidence than prompt
 hint rendering for confusable objectives.
 
-## 6. Roadmap / milestones
+## 7. Roadmap / milestones
 
-DONE (June 2026):
+Product priorities:
+
+1. **Proposal review.** Convert run import into an inspectable add/change/remove
+   diff with per-record accept/reject.
+2. **Field-level ownership and merge.** Preserve manual summaries/tags while
+   allowing automation to refresh evidence, source locations, and confidence.
+3. **Revision history.** Store immutable changesets with actor, source, reason,
+   rollback, and comments.
+4. **Workspaces and service boundaries.** Support multiple catalogs, service
+   ownership, fleet stitching, and environment overlays.
+5. **Collaboration database.** Move the catalog persistence adapter to
+   SQLite/Postgres with users, roles, locking, and search.
+6. **Automation SDK.** Make source extraction one provider among CI imports,
+   OpenAPI/AsyncAPI, cloud inventory, runtime telemetry, and custom plugins.
+
+The detailed product migration is in `docs/GRAPH_FIRST_PLAN.md`. Automation
+accuracy work remains in `docs/DISCOVERY_ROADMAP.md`.
+
+Automation work completed in June 2026:
 - ✅ **Accuracy eval harness** — `internal/eval` + `diffmind eval`. Scores
   exposures/deps/connections against hand-labeled fixtures with per-objective
   P/R/F1, matching on the same identity the pipeline dedups with. Cheap mode
@@ -206,12 +268,14 @@ Longer-term (product):
 The measured June 15 scenarios and the concrete discovery work plan are in
 `docs/DISCOVERY_ROADMAP.md`.
 
-## 7. Where things live
+## 8. Where things live
 
 - `internal/objectives/registry.go` — the objective map + prompts.
 - `internal/pipeline/` — orchestration, lifecycle, resume, events, and terminal
   result assembly.
 - `internal/floor/` — LLM-free deterministic-floor projection used by eval.
+- `internal/catalog/` — canonical architecture document, ownership, revisions,
+  validation, and run import.
 - `internal/stage/` — stage-owned extraction logic.
 - `internal/extraction/`, `internal/llmrun/`, `internal/runstate/`, and
   `internal/entitykey/` — domain contracts, LLM runtime, persisted checkpoints,
@@ -226,7 +290,7 @@ The measured June 15 scenarios and the concrete discovery work plan are in
 - Artifacts: `~/.diffmind/runs/<run_id>/` (manifest, exposures, dependencies,
   connections, unresolved, prompts, events.jsonl, state/).
 
-## 8. Validating a change
+## 9. Validating a change
 
 `go build ./... && go test ./...` must stay green. Two complementary checks:
 
