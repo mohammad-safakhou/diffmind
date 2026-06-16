@@ -1,13 +1,35 @@
 # DiffMind
 
-DiffMind is an OpenCode-first architecture extractor.
+DiffMind is an editable architecture catalog with an OpenCode-powered
+automation pipeline.
 
-It produces JSON artifacts for:
+The durable product is a graph that teams can create and curate directly:
 - Exposures: endpoints, queue consumers, commands, schedulers, jobs, and other external entrypoints.
 - Dependencies: database usage, queue publishes, outbound endpoint calls, command runs, and other external dependencies.
 - Conditional connections: exposure -> dependency links with path conditions.
 
-## What Is Implemented
+Extraction runs are an optional way to populate that graph from source code.
+They produce evidence-backed inputs; they are not the source of truth. The
+current foundation imports them directly, with reviewed proposals planned next.
+
+## Architecture Catalog
+
+The dashboard opens on the canonical catalog. Users can add, edit, and delete
+exposures, dependencies, and connections, inspect the visual graph, and import
+completed extraction runs.
+
+The catalog is persisted as `<runs-dir>/architecture.v1.json` with:
+
+- optimistic revisions so stale browser tabs cannot overwrite newer edits,
+- record provenance (`manual` or `automation` plus source run),
+- semantic run merges instead of run-local ID replacement,
+- manual ownership protection: once a record is edited by a user, later
+  automation imports do not overwrite it.
+
+The JSON store is the first persistence adapter, not the final collaboration
+database. See `docs/GRAPH_FIRST_PLAN.md`.
+
+## Automation Pipeline
 
 The extractor is a multi-agent orchestrator with a fixed objective map. The
 design principle: **the LLM is the brain (cross-language semantic understanding
@@ -48,8 +70,7 @@ memory** — it provides a stable recall floor, focuses the LLM, and verifies.
    hermetic CI guardrail); `score-run` grades a real run directory.
 
 There is no autonomous planner loop. Optional discovery verification is bounded
-and objective-gated. See `docs/PLATFORM.md` for the product vision, design
-rationale, and roadmap.
+and objective-gated. See `docs/PLATFORM.md` and `docs/GRAPH_FIRST_PLAN.md`.
 
 ## OpenCode Setup (Required)
 
@@ -241,8 +262,10 @@ Artifacts are written to:
 
 ## Dashboard UI
 
-The dashboard is a single-page app that lets you launch runs, watch them
-live, drill into any LLM call, and replay finished runs.
+The dashboard is a single-page app with two product surfaces:
+
+- **Architecture** — the editable source-of-truth graph.
+- **Automation runs** — launch, inspect, retry, and import extraction runs.
 
 ```bash
 go run ./cmd/diffmind ui \
@@ -255,6 +278,10 @@ Then open `http://127.0.0.1:8080`.
 
 What you get:
 
+- manual architecture node and connection editing,
+- provenance and revision-aware saves,
+- explicit run import into the catalog,
+- a visual architecture graph,
 - **Run form** mirroring every CLI flag (provider, model, workers,
   thresholds, advanced toggles). Defaults persist in `localStorage`. The
   form also previews the equivalent CLI command so you can copy/paste into
