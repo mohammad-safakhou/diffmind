@@ -6,10 +6,9 @@ file is the operational quick-reference.
 
 ## What this is (one line)
 
-A multi-language architecture extractor: it reads a service's source and emits
-exposures, dependencies, and their conditional connections as JSON. The LLM does
-the semantic understanding; deterministic static analysis (tree-sitter AST) is
-the recall floor, the LLM's context, and the verifier.
+An editable architecture catalog: teams build and curate exposures,
+dependencies, and conditional connections directly; the multi-language
+extraction pipeline is one automation source that can import graph records.
 
 ## Build / test / run
 
@@ -60,6 +59,8 @@ uses, so "correct" is judged exactly as the pipeline judges "duplicate". See
 - `internal/runstate/` — checkpoints, stage state, failure reports, and
   backward-compatible readers.
 - `internal/entitykey/` — canonical identities shared by reconcile and eval.
+- `internal/catalog/` — canonical editable architecture document, revisioning,
+  ownership metadata, and run imports.
 - `internal/ast/` + `internal/ast/framework/` — tree-sitter engine + framework detectors.
 - `internal/reconcile/` — final dedup / sort / orphan-drop; `SemanticKey(Loose)`
   is the exported identity the eval matcher reuses.
@@ -88,6 +89,9 @@ uses, so "correct" is judged exactly as the pipeline judges "duplicate". See
 6. **Deterministic facts must be high-precision.** A deterministic item is fed
    to the LLM as confirmed and merged into output; a wrong one poisons results.
    Prefer "emit nothing" over "emit a guess."
+7. **The catalog is the product.** Runs are automation inputs, never the durable
+   source of truth. Import by semantic identity and never overwrite a
+   manually-owned catalog record.
 
 ## Conventions
 
