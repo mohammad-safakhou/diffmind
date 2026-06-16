@@ -25,9 +25,21 @@ type rawFile struct {
 	Service      string            `yaml:"service,omitempty"`
 	Vars         map[string]string `yaml:"vars,omitempty"`
 	Include      []string          `yaml:"include,omitempty"`
+	Resources    []rawResource     `yaml:"resources,omitempty"`
 	Exposures    []rawEntity       `yaml:"exposures,omitempty"`
 	Dependencies []rawEntity       `yaml:"dependencies,omitempty"`
 	Connections  []rawConn         `yaml:"connections,omitempty"`
+}
+
+type rawResource struct {
+	ID       string         `yaml:"id"`
+	Kind     string         `yaml:"kind"`
+	Platform string         `yaml:"platform,omitempty"`
+	Name     string         `yaml:"name"`
+	Instance string         `yaml:"instance,omitempty"`
+	Summary  string         `yaml:"summary,omitempty"`
+	Tags     []string       `yaml:"tags,omitempty"`
+	Details  map[string]any `yaml:"details,omitempty"`
 }
 
 type rawEntity struct {
@@ -36,6 +48,7 @@ type rawEntity struct {
 	ID       string         `yaml:"id,omitempty"`
 	Type     string         `yaml:"type"`
 	Name     string         `yaml:"name"`
+	Resource string         `yaml:"resource,omitempty"`
 	Service  string         `yaml:"service,omitempty"`
 	Summary  string         `yaml:"summary,omitempty"`
 	Platform string         `yaml:"platform,omitempty"`
@@ -55,9 +68,24 @@ type rawConn struct {
 // service defaults applied. It is what ToModel consumes.
 type File struct {
 	Service      string
+	Resources    []Resource
 	Exposures    []Entity
 	Dependencies []Entity
 	Connections  []Conn
+}
+
+// Resource is an explicit top-level cluster in diffmind.yaml. Dependencies may
+// point at it with `resource:`; older files can omit resources and let the graph
+// derive clusters from dependency identity.
+type Resource struct {
+	ID       string
+	Kind     string
+	Platform string
+	Name     string
+	Instance string
+	Summary  string
+	Tags     []string
+	Details  map[string]any
 }
 
 // Entity is one resolved exposure or dependency. Service is already the
@@ -66,6 +94,7 @@ type Entity struct {
 	Alias    string
 	Type     string
 	Name     string
+	Resource string
 	Service  string
 	Summary  string
 	Platform string

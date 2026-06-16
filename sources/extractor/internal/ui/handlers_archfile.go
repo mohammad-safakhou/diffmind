@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -178,7 +180,7 @@ func (s *Server) handleArchitectureFileContent(w http.ResponseWriter, r *http.Re
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		out := map[string]any{"exists": true, "content": string(b), "valid": true}
+		out := map[string]any{"exists": true, "content": string(b), "sha256": sha256Hex(b), "valid": true}
 		if resolved, err := archfile.Resolve(filepath.Clean(path)); err != nil {
 			out["valid"] = false
 			out["error"] = err.Error()
@@ -271,16 +273,89 @@ func (s *Server) handleArchitectureFileGraph(w http.ResponseWriter, r *http.Requ
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	input, err := archfile.ToModel(resolved, "file:"+filepath.Base(path))
+	graph, err := archfile.ToGraph(resolved, "file:"+filepath.Base(path))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, map[string]any{
-		"exposures":    input.Exposures,
-		"dependencies": input.Dependencies,
-		"connections":  input.Connections,
-	})
+	writeJSON(w, graph)
+}
+
+func (s *Server) handleArchitectureFileDraft(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Path    string           `json:"path"`
+		BaseSHA string           `json:"base_sha"`
+		Edits   archfile.EditSet `json:"edits"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	path, err := fileRequest{Path: req.Path}.clean()
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.BaseSHA != "" {
+		current, err := os.ReadFile(path)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if sha256Hex(current) != strings.TrimSpace(req.BaseSHA) {
+			writeErr(w, http.StatusConflict, errors.New("file changed since it was loaded"))
+			return
+		}
+	}
+	draft, err := archfile.Draft(path, req.Edits)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, draft)
+}
+
+func (s *Server) handleArchitectureFileApply(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Path    string `json:"path"`
+		BaseSHA string `json:"base_sha"`
+		YAML    string `json:"yaml"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	path, err := fileRequest{Path: req.Path}.clean()
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	current, err := os.ReadFile(path)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if strings.TrimSpace(req.BaseSHA) == "" || sha256Hex(current) != strings.TrimSpace(req.BaseSHA) {
+		writeErr(w, http.StatusConflict, errors.New("file changed since it was loaded"))
+		return
+	}
+	if err := archfile.Validate([]byte(req.YAML)); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := archfile.WriteRaw(path, []byte(req.YAML)); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "sha256": sha256Hex([]byte(req.YAML))})
 }
 
 // handleArchitectureRunProposal builds a transient generated file directly from
@@ -339,4 +414,9 @@ func (s *Server) handleArchitectureRunProposal(w http.ResponseWriter, r *http.Re
 		"append":         plan.Append,
 		"skip":           plan.Skip,
 	})
+}
+
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }

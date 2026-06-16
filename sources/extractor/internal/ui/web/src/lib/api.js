@@ -145,6 +145,20 @@ export function getFileGraph(path) {
   return api('/api/architecture/file-graph?path=' + encodeURIComponent(path))
 }
 
+export function draftRepoFile(path, baseSHA, edits) {
+  return api('/api/architecture/file-draft', {
+    method: 'POST',
+    body: JSON.stringify({ path, base_sha: baseSHA, edits }),
+  })
+}
+
+export function applyRepoFile(path, baseSHA, yaml) {
+  return api('/api/architecture/file-apply', {
+    method: 'POST',
+    body: JSON.stringify({ path, base_sha: baseSHA, yaml }),
+  })
+}
+
 export function runProposal(path, runID) {
   return api('/api/architecture/run-proposal', {
     method: 'POST',
