@@ -62,8 +62,22 @@ uses, so "correct" is judged exactly as the pipeline judges "duplicate". See
   sorting, normalization, and orphan policies.
 - `internal/eval/` — golden-set accuracy harness (label loader, identity keying,
   P/R/F1 scorer, cheap + score-run modes). Fixtures under `testdata/eval/`.
-- `internal/ui/` — dashboard (Go server + SPA under `web/`).
-- `cmd/diffmind/` — CLI (`run`, `retry`, `validate`, `list-runs`, `eval`, `ui`).
+- `internal/archfile/` — in-repo discovery-file (`diffmind.yaml`) adapter: YAML
+  parse + `vars`/`include` resolution, `ToModel` (identity parity via
+  `extraction.EnrichEntityGrouping` + `catalog.EntityCatalogKey`), and
+  comment-preserving write-back (transient `.diffmind.generated.yaml` proposal →
+  surgical merge into the main file).
+- `internal/repostore/` — first-class repositories registry (`repos.json`):
+  path-derived ids, remembered `diffmind.yaml` path per repo. Unioned at read
+  time with repos discovered from run history.
+- `internal/ui/` — dashboard (Go server + Preact SPA under `web/`). Repo-centric:
+  landing is a repositories overview; each repo has a guided discovery-file
+  workflow (Read/Propose/Merge with dry-run diff previews + inline YAML editor),
+  its runs, and its catalog footprint. The global catalog/graph is at `/catalog`;
+  per-run detail renders full-bleed outside the nav shell. Shared UI primitives
+  live in `web/src/components/ui/`.
+- `cmd/diffmind/` — CLI (`run`, `retry`, `validate`, `list-runs`, `eval`, `ui`,
+  `catalog import-file|export-file|merge-file`).
 
 ## Invariants — do NOT regress these
 

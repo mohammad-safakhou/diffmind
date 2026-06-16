@@ -18,6 +18,7 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
+	"github.com/mohammad-safakhou/diffmind/internal/repostore"
 	"github.com/mohammad-safakhou/diffmind/internal/runner"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
@@ -37,6 +38,7 @@ type Server struct {
 	bus     *events.Bus
 	runner  *runner.Runner
 	catalog *catalog.Store
+	repos   *repostore.Store
 	token   string // optional auth; empty = open
 
 	// preflight caches the most recent system-readiness report
@@ -88,6 +90,7 @@ func New(baseDir, host string, port int) *Server {
 		bus:     bus,
 		runner:  r,
 		catalog: catalog.NewStore(baseDir),
+		repos:   repostore.NewStore(baseDir),
 	}
 }
 
@@ -211,10 +214,25 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/runs/active", s.handleActiveRun) // GET active run ids
 	mux.HandleFunc("/api/runs/", s.handleRunsItem)        // /{id}/(events|state|cancel|retry|job/...)
 
+	// First-class repositories (union of registered + run-derived).
+	mux.HandleFunc("/api/repos", s.handleRepos)      // GET (list) | POST (register/update)
+	mux.HandleFunc("/api/repos/", s.handleReposItem) // DELETE /{id}
+
 	// Canonical editable architecture. Runs are imported into this document;
 	// they are not the source of truth themselves.
 	mux.HandleFunc("/api/architecture", s.handleArchitecture)
 	mux.HandleFunc("/api/architecture/import-run", s.handleArchitectureImport)
+	// In-repo discovery file (diffmind.yaml): read it as a manual source, propose
+	// automation facts into a transient file, and merge that into the main file.
+	mux.HandleFunc("/api/architecture/import-file", s.handleArchitectureImportFile)
+	mux.HandleFunc("/api/architecture/export-file", s.handleArchitectureExportFile)
+	mux.HandleFunc("/api/architecture/merge-file", s.handleArchitectureMergeFile)
+	mux.HandleFunc("/api/architecture/propose-preview", s.handleArchitectureProposePreview)
+	mux.HandleFunc("/api/architecture/merge-preview", s.handleArchitectureMergePreview)
+	mux.HandleFunc("/api/architecture/file", s.handleArchitectureFileContent) // GET ?path= | PUT
+	mux.HandleFunc("/api/architecture/file-graph", s.handleArchitectureFileGraph)
+	mux.HandleFunc("/api/architecture/run-proposal", s.handleArchitectureRunProposal)
+	mux.HandleFunc("/api/fs/list", s.handleFsList)
 
 	// Aggregate lifecycle SSE for the homepage dashboard.
 	mux.HandleFunc("/api/events", s.handleAggregateEvents)

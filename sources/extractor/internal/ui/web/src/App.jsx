@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'preact/hooks'
 import { onAuthFailure, getToken, setToken } from './lib/api.js'
-import { useRoute } from './lib/router.js'
-import { Home } from './views/Home.jsx'
+import { navigate, useRoute } from './lib/router.js'
 import { Detail } from './views/Detail.jsx'
-import { Architecture } from './views/Architecture.jsx'
+import { RepositoriesOverview } from './views/RepositoriesOverview.jsx'
+import { RepositoryDetail } from './views/RepositoryDetail.jsx'
+import { ToastHost } from './components/ui/index.js'
 
-// App is the router shell for the catalog, automation runs, and per-run detail.
-// It also surfaces the auth banner when the server rejects a request with 401.
+// App is the router shell. Repository-centric surfaces get only a slim brand
+// header; per-run Detail stays full-bleed so its layout and SSE wiring remain
+// untouched.
 export function App() {
   const route = useRoute()
   const [authError, setAuthError] = useState(false)
@@ -23,10 +25,29 @@ export function App() {
           initial={getToken()}
         />
       )}
-      {route.name === 'detail' && <Detail runID={route.runID} key={route.runID} />}
-      {route.name === 'runs' && <Home />}
-      {route.name === 'architecture' && <Architecture />}
+      {route.name === 'detail'
+        ? <Detail runID={route.runID} key={route.runID} />
+        : (
+          <div class="repo-shell">
+            <TopBrand />
+            {route.name === 'repos' && <RepositoriesOverview />}
+            {route.name === 'repo' && <RepositoryDetail repoID={route.repoID} key={route.repoID} />}
+          </div>
+        )}
+      <ToastHost />
     </div>
+  )
+}
+
+function TopBrand() {
+  return (
+    <header class="topbrand">
+      <button class="topbrand-logo" onClick={() => navigate('/')}>
+        <span class="topbrand-dot" />
+        DiffMind
+      </button>
+      <span class="topbrand-sub">Repository architecture files</span>
+    </header>
   )
 }
 

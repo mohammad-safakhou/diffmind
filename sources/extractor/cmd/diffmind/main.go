@@ -19,7 +19,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: diffmind <run|retry|validate|list-runs|eval|ui> ...")
+		fmt.Fprintln(os.Stderr, "usage: diffmind <run|retry|validate|list-runs|eval|ui|catalog> ...")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -35,6 +35,8 @@ func main() {
 		evalCmd(os.Args[2:])
 	case "ui":
 		serveUI(os.Args[2:])
+	case "catalog":
+		catalogCmd(os.Args[2:])
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command:", os.Args[1])
 		os.Exit(2)

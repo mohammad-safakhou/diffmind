@@ -135,7 +135,7 @@ function sortGroups(groups, order) {
 }
 
 // ─── main component ──────────────────────────────────────────────────────────
-export function OutcomeGraph({ onClose, graphData = null }) {
+export function OutcomeGraph({ onClose, graphData = null, onEditNode = null, embedded = false }) {
   const [data, setData] = useState(graphData)
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -167,16 +167,16 @@ export function OutcomeGraph({ onClose, graphData = null }) {
     const h = (e) => {
       if (e.key === 'Escape') {
         if (pinned) { setPinned(null); setTooltip(null) }
-        else onClose()
+        else if (onClose) onClose()
       }
     }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
   }, [pinned, onClose])
 
-  if (loading) return <GraphShell onClose={onClose}><div class="og-loading">Loading artifacts…</div></GraphShell>
-  if (error)   return <GraphShell onClose={onClose}><div class="og-error">{error}</div></GraphShell>
-  if (!data)   return <GraphShell onClose={onClose}><div class="og-error">No data.</div></GraphShell>
+  if (loading) return <GraphShell onClose={onClose} embedded={embedded}><div class="og-loading">Loading artifacts…</div></GraphShell>
+  if (error)   return <GraphShell onClose={onClose} embedded={embedded}><div class="og-error">{error}</div></GraphShell>
+  if (!data)   return <GraphShell onClose={onClose} embedded={embedded}><div class="og-error">No data.</div></GraphShell>
 
   // ── Prepare data ──────────────────────────────────────────────────────────
   const exposures    = flattenArtifact(data.exposures)
@@ -345,7 +345,7 @@ export function OutcomeGraph({ onClose, graphData = null }) {
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <GraphShell onClose={onClose}>
+    <GraphShell onClose={onClose} embedded={embedded}>
       <div class="og-header">
         <div class="og-counts">
           <span class="og-count-chip exp">{exposures.length} exposures</span>
@@ -586,6 +586,7 @@ export function OutcomeGraph({ onClose, graphData = null }) {
         depToExps={depToExps}
         connections={connections}
         typeColor={typeColor}
+        onEditNode={onEditNode}
         onClose={() => { setPinned(null) }}
       />}
 
@@ -700,7 +701,7 @@ function reasonCounts(items) {
 }
 
 // ─── Pinned node detail panel ────────────────────────────────────────────────
-function PinnedDetail({ pinned, expById, depById, expToDeps, depToExps, connections, typeColor, onClose }) {
+function PinnedDetail({ pinned, expById, depById, expToDeps, depToExps, connections, typeColor, onEditNode, onClose }) {
   const [tab, setTab] = useState('connections')  // 'connections' | 'sequence' | 'inputs'
   const isExp = expById.has(pinned)
   const node  = isExp ? expById.get(pinned) : depById.get(pinned)
@@ -742,7 +743,17 @@ function PinnedDetail({ pinned, expById, depById, expToDeps, depToExps, connecti
             <div class="og-detail-endpoint">{endpointHints[0]}</div>
           )}
         </div>
-        <button class="og-detail-close" onClick={onClose}>✕</button>
+        <div class="og-detail-header-actions">
+          {onEditNode && (
+            <button
+              class="btn secondary tiny"
+              onClick={() => onEditNode(isExp ? 'exposure' : 'dependency', node)}
+            >
+              Edit
+            </button>
+          )}
+          <button class="og-detail-close" onClick={onClose}>✕</button>
+        </div>
       </div>
 
       {/* Tab bar */}
@@ -953,11 +964,11 @@ function condLabel(kind) {
 }
 
 // ─── Shell (overlay + close button) ─────────────────────────────────────────
-function GraphShell({ children, onClose }) {
+function GraphShell({ children, onClose, embedded = false }) {
   return (
-    <div class="og-overlay">
+    <div class={embedded ? 'og-overlay og-inline' : 'og-overlay'}>
       <div class="og-container">
-        <button class="og-close-btn" onClick={onClose} title="Close (Esc)">✕</button>
+        {onClose && <button class="og-close-btn" onClick={onClose} title="Close (Esc)">✕</button>}
         {children}
       </div>
     </div>
