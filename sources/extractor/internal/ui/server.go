@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mohammad-safakhou/diffmind/internal/catalog"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
@@ -35,6 +36,7 @@ type Server struct {
 	port    int
 	bus     *events.Bus
 	runner  *runner.Runner
+	catalog *catalog.Store
 	token   string // optional auth; empty = open
 
 	// preflight caches the most recent system-readiness report
@@ -79,7 +81,14 @@ func New(baseDir, host string, port int) *Server {
 	}
 	bus := events.NewBus(20000)
 	r := runner.New(baseDir, bus)
-	return &Server{baseDir: baseDir, host: host, port: port, bus: bus, runner: r}
+	return &Server{
+		baseDir: baseDir,
+		host:    host,
+		port:    port,
+		bus:     bus,
+		runner:  r,
+		catalog: catalog.NewStore(baseDir),
+	}
 }
 
 // Addr returns "host:port".
@@ -201,6 +210,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/runs", s.handleRunsCollection)   // GET (list) | POST (create)
 	mux.HandleFunc("/api/runs/active", s.handleActiveRun) // GET active run ids
 	mux.HandleFunc("/api/runs/", s.handleRunsItem)        // /{id}/(events|state|cancel|retry|job/...)
+
+	// Canonical editable architecture. Runs are imported into this document;
+	// they are not the source of truth themselves.
+	mux.HandleFunc("/api/architecture", s.handleArchitecture)
+	mux.HandleFunc("/api/architecture/import-run", s.handleArchitectureImport)
 
 	// Aggregate lifecycle SSE for the homepage dashboard.
 	mux.HandleFunc("/api/events", s.handleAggregateEvents)
