@@ -97,6 +97,13 @@ type identityEntry struct {
 func (r *Resolver) buildIdentityIndex() []identityEntry {
 	var index []identityEntry
 	for _, entry := range r.registry.All() {
+		if entry.Name != "" {
+			index = append(index, identityEntry{
+				ServiceName: entry.Name,
+				Kind:        "service_name",
+				Value:       strings.ToLower(entry.Name),
+			})
+		}
 		if entry.Identity == nil {
 			continue
 		}

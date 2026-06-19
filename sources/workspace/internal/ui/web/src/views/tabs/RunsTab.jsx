@@ -107,7 +107,7 @@ function NewRun({ pid, onClose, onCreated }) {
     const refs = repos
       .filter((r) => choices[r.id]?.enabled && choices[r.id]?.selected)
       .map((r) => ({ repo_id: r.id, diffmind_run_id: choices[r.id].selected }))
-    if (refs.length === 0) { setError('Select at least one repo with a DiffMind run.'); return }
+    if (refs.length === 0) { setError('Select at least one repo with DiffMind data.'); return }
     setBusy(true)
     try { onCreated(await createRun(pid, { repos: refs })) }
     catch (e) { setError(e.message) }
@@ -118,7 +118,7 @@ function NewRun({ pid, onClose, onCreated }) {
     <Modal title="New Graph Run" onClose={onClose} wide>
       {repos.length === 0 && <p class="muted">No repositories in this project. Add some in the Repos tab first.</p>}
       <table class="data-table">
-        <thead><tr><th>Include</th><th>Repository</th><th>DiffMind run</th></tr></thead>
+        <thead><tr><th>Include</th><th>Repository</th><th>DiffMind source</th></tr></thead>
         <tbody>
           {repos.map((r) => {
             const c = choices[r.id] || { runs: [], selected: '', enabled: false }
@@ -128,11 +128,11 @@ function NewRun({ pid, onClose, onCreated }) {
                 <td>{r.name}<div class="muted mono small">{r.path}</div></td>
                 <td>
                   {c.runs.length === 0
-                    ? <span class="muted small">no DiffMind runs found</span>
+                    ? <span class="muted small">no DiffMind data found</span>
                     : (
                       <select value={c.selected} onChange={(e) => setSel(r.id, e.target.value)}>
                         {c.runs.map((run, i) => (
-                          <option key={run.run_id} value={run.run_id}>{run.run_id}{i === 0 ? ' (latest)' : ''}</option>
+                          <option key={run.run_id} value={run.run_id}>{sourceLabel(run)}{i === 0 ? ' (default)' : ''}</option>
                         ))}
                       </select>
                     )}
@@ -149,6 +149,11 @@ function NewRun({ pid, onClose, onCreated }) {
       </div>
     </Modal>
   )
+}
+
+function sourceLabel(run) {
+  if (run.source === 'archfile' || run.run_id === 'repo:diffmind.yaml') return 'diffmind.yaml'
+  return run.run_id
 }
 
 export function StatusBadge({ status }) {

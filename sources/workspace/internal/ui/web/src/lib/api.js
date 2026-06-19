@@ -59,4 +59,5 @@ export const getRun = (pid, rid) => api(`/api/projects/${pid}/runs/${rid}`)
 export const cancelRun = (pid, rid) => api(`/api/projects/${pid}/runs/${rid}/cancel`, { method: 'POST' })
 export const deleteRun = (pid, rid) => api(`/api/projects/${pid}/runs/${rid}`, { method: 'DELETE' })
 export const getRunGraph = (pid, rid) => api(`/api/projects/${pid}/runs/${rid}/graph`)
+export const getRunArchGraph = (pid, rid) => api(`/api/projects/${pid}/runs/${rid}/archgraph`)
 export const runEventsURL = (pid, rid) => `/api/projects/${pid}/runs/${rid}/events`

@@ -130,6 +130,32 @@ func TestUnresolvedDependencies(t *testing.T) {
 	}
 }
 
+func TestResolutionFallsBackToRegisteredServiceNames(t *testing.T) {
+	reg := registry.New()
+	reg.AddArchitecture("ranking-service", &model.ServiceArchitecture{
+		ServiceName: "ranking-service",
+		Dependencies: []model.Dependency{{BaseEntity: model.BaseEntity{
+			ID:      "dep1",
+			Type:    "outbound_http",
+			Name:    "POST gateway-service /v1/traffic-shaper",
+			Details: map[string]any{"target_service": "gateway-service"},
+		}}},
+	})
+	reg.AddArchitecture("gateway-service", &model.ServiceArchitecture{ServiceName: "gateway-service"})
+
+	resolution, err := New(reg, util.NewLogger(util.LevelInfo)).Resolve()
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	if len(resolution.Matches) != 1 {
+		t.Fatalf("expected 1 service-name fallback match, got %+v", resolution.Matches)
+	}
+	match := resolution.Matches[0]
+	if match.FromService != "ranking-service" || match.ToService != "gateway-service" || match.MatchType != "http" {
+		t.Fatalf("unexpected match: %+v", match)
+	}
+}
+
 func TestExtractTarget(t *testing.T) {
 	tests := []struct {
 		name     string

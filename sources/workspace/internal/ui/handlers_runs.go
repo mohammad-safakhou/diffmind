@@ -21,7 +21,11 @@ func (s *Server) handleDiffMindRuns(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"runs": groups[repoPath]})
+		runs := append([]artifacts.DiffMindRunInfo(nil), groups[repoPath]...)
+		if info, ok := artifacts.RepoArchfileRunInfo(repoPath); ok {
+			runs = append([]artifacts.DiffMindRunInfo{info}, runs...)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"runs": runs})
 		return
 	}
 	groups, err := artifacts.DiscoverDiffMindRunsByRepo(s.diffmindRunsDir)

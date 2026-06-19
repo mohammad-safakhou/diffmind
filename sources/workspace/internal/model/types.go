@@ -143,6 +143,19 @@ type TokenBucket struct {
 	Cost       float64 `json:"cost"`
 }
 
+type Resource struct {
+	ID       string         `json:"id"`
+	Kind     string         `json:"kind"`
+	Platform string         `json:"platform,omitempty"`
+	Name     string         `json:"name"`
+	Instance string         `json:"instance,omitempty"`
+	Summary  string         `json:"summary,omitempty"`
+	Tags     []string       `json:"tags,omitempty"`
+	Details  map[string]any `json:"details,omitempty"`
+	Status   string         `json:"status,omitempty"`
+	Source   string         `json:"source,omitempty"`
+}
+
 // ---------------------------------------------------------------------------
 // DiffMind-specific types
 // ---------------------------------------------------------------------------
@@ -152,6 +165,7 @@ type ServiceArchitecture struct {
 	ServiceName  string
 	RepoPath     string
 	Manifest     *RunManifest
+	Resources    []Resource
 	Exposures    []Exposure
 	Dependencies []Dependency
 	Connections  []Connection

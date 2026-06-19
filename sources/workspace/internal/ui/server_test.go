@@ -253,4 +253,17 @@ func TestDiffMindRunsDiscoveryAPI(t *testing.T) {
 	if len(out.Runs) != 1 {
 		t.Fatalf("filtered discovery returned %d", len(out.Runs))
 	}
+
+	repoWithFile := t.TempDir()
+	os.WriteFile(filepath.Join(repoWithFile, "diffmind.yaml"), []byte(`schema: diffmind.discovery.v1
+service: file-backed
+`), 0o644)
+	resp, data = doJSON(t, "GET", srv.URL+"/api/diffmind-runs?repo_path="+repoWithFile, nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("archfile discovery = %d: %s", resp.StatusCode, data)
+	}
+	json.Unmarshal(data, &out)
+	if len(out.Runs) != 1 || out.Runs[0]["run_id"] != "repo:diffmind.yaml" {
+		t.Fatalf("expected repo archfile run, got %+v", out.Runs)
+	}
 }
