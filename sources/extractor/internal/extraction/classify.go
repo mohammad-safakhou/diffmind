@@ -166,7 +166,13 @@ func DeriveGrouping(b model.BaseEntity) (platform, instance, operation, opKind s
 		opKind = "execute"
 	case "db_operation", "cache_operation":
 		platform = DBPlatform(nameLower, get("database", "database_type", "aws_service", "cache_type", "client_class"))
-		instance = FirstNonEmpty(get("database", "database_name", "datasource", "connection_string", "table", "entity", "cache_name", "namespace"), platform)
+		// Instance is the physical datastore, NOT the table/entity (that is the
+		// resource, and lives in the identity key already). Using the table/entity
+		// — or a Java entity CLASS name — as the instance is the noise source the
+		// deterministic client-instance pass exists to replace; leave it to the
+		// real datastore hints, else the platform word (which downstream treats as
+		// generic and overrides with the resolved instance).
+		instance = FirstNonEmpty(get("database", "database_name", "datasource", "connection_string", "cache_name", "namespace"), platform)
 		operation = FirstNonEmpty(get("operation", "sql_equivalent", "query", "method", "service_method"), b.Name)
 		// Canonical kind via the SAME folder the identity/dedup uses, so the
 		// emitted operation_kind is genuinely read/write (delete/insert/saveAll
