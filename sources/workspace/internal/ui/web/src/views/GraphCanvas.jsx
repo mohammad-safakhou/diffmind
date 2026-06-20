@@ -492,6 +492,12 @@ function normalizeSharedName(raw) {
 
 export function GraphCanvas({ graph, onSelect }) {
   const svgRef = useRef(null)
+  const transformRef = useRef(d3.zoomIdentity)
+  const graphLayoutKeyRef = useRef('')
+  const userMovedRef = useRef(false)
+  const programmaticZoomRef = useRef(false)
+  const renderKey = graphRenderKey(graph)
+  const layoutKey = graphLayoutKey(graph)
 
   useEffect(() => {
     if (!graph || !svgRef.current) return
@@ -531,8 +537,14 @@ export function GraphCanvas({ graph, onSelect }) {
 
     dagre.layout(top)
 
+    const previousLayoutKey = graphLayoutKeyRef.current
+    const preserveUserView = userMovedRef.current && previousLayoutKey === layoutKey
     const rootG = svg.append('g')
-    const zoom = d3.zoom().scaleExtent([0.08, 2.4]).on('zoom', (ev) => rootG.attr('transform', ev.transform))
+    const zoom = d3.zoom().scaleExtent([0.08, 2.4]).on('zoom', (ev) => {
+      transformRef.current = ev.transform
+      if (!programmaticZoomRef.current && ev.sourceEvent) userMovedRef.current = true
+      rootG.attr('transform', ev.transform)
+    })
     svg.call(zoom)
     svg.on('click', () => selectThing(null))
 
@@ -602,17 +614,55 @@ export function GraphCanvas({ graph, onSelect }) {
       onSelect && onSelect(sel)
     }
 
-    const graphW = top.graph().width || 1000
-    const graphH = top.graph().height || 700
-    const pad = 60
-    const fitScale = Math.min((W - pad * 2) / graphW, (H - pad * 2) / graphH, 1.05)
-    const scale = Math.min(Math.max(fitScale, 0.12), 1.05)
-    const tx = (W - graphW * scale) / 2
-    const ty = (H - graphH * scale) / 2
-    svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale))
-  }, [graph])
+    graphLayoutKeyRef.current = layoutKey
+    programmaticZoomRef.current = true
+    if (preserveUserView) {
+      svg.call(zoom.transform, transformRef.current)
+    } else {
+      const graphW = top.graph().width || 1000
+      const graphH = top.graph().height || 700
+      const pad = 60
+      const fitScale = Math.min((W - pad * 2) / graphW, (H - pad * 2) / graphH, 1.05)
+      const scale = Math.min(Math.max(fitScale, 0.12), 1.05)
+      const tx = (W - graphW * scale) / 2
+      const ty = (H - graphH * scale) / 2
+      transformRef.current = d3.zoomIdentity.translate(tx, ty).scale(scale)
+      userMovedRef.current = false
+      svg.call(zoom.transform, transformRef.current)
+    }
+    programmaticZoomRef.current = false
+
+    return () => {
+      svg.on('.zoom', null)
+    }
+  }, [renderKey])
 
   return <svg ref={svgRef} class="graph-svg-full graph-svg-instance" />
+}
+
+function graphLayoutKey(graph) {
+  if (!graph) return ''
+  const services = (graph.services || []).map((s) => s.name).sort()
+  const edges = (graph.edges || []).map((e) => `${e.from}>${e.to}:${e.type || ''}:${e.label || ''}`).sort()
+  const resources = [
+    ...(graph.external_nodes || []).map((n) => `ext:${n.name}`),
+    ...(graph.queue_nodes || []).map((n) => `queue:${n.id || n.name}`),
+    ...(graph.database_nodes || []).map((n) => `db:${n.id || n.name}`),
+    ...(graph.scheduler_nodes || []).map((n) => `sched:${n.id || n.name}`),
+  ].sort()
+  return JSON.stringify({ run: graph.run_id || '', services, edges, resources })
+}
+
+function graphRenderKey(graph) {
+  if (!graph) return ''
+  const services = (graph.services || []).map((s) => [
+    s.name,
+    s.team || '',
+    s.diffmind_freshness || '',
+    s.repo_metrics?.total_loc || 0,
+    s.repo_metrics?.languages?.[0]?.language || '',
+  ]).sort()
+  return JSON.stringify({ layout: graphLayoutKey(graph), services })
 }
 
 function addTopNode(top, nodeInfo, id, type, data, label) {
