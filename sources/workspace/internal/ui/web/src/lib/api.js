@@ -41,6 +41,12 @@ export const createRepo = (pid, r) => api(`/api/projects/${pid}/repos`, { method
 export const patchRepo = (pid, rid, r) => api(`/api/projects/${pid}/repos/${rid}`, { method: 'PATCH', body: j(r) })
 export const deleteRepo = (pid, rid) => api(`/api/projects/${pid}/repos/${rid}`, { method: 'DELETE' })
 export const repoSuggestions = (pid) => api(`/api/projects/${pid}/repo-suggestions`)
+export const getWorkspace = (pid) => api(`/api/projects/${pid}/workspace`)
+export const syncRepo = (pid, rid) => api(`/api/projects/${pid}/repos/${rid}/sync`, { method: 'POST' })
+export const startRepoDiffMind = (pid, rid) => api(`/api/projects/${pid}/repos/${rid}/diffmind-runs`, { method: 'POST' })
+export const getDiffMindYaml = (pid, rid) => api(`/api/projects/${pid}/repos/${rid}/diffmind-yaml`)
+export const putDiffMindYaml = (pid, rid, body) => api(`/api/projects/${pid}/repos/${rid}/diffmind-yaml`, { method: 'PUT', body: j({ body }) })
+export const getLiveStatus = (pid) => api(`/api/projects/${pid}/live-status`)
 
 // Blueprints
 export const listBlueprints = (pid) => api(`/api/projects/${pid}/blueprints`)

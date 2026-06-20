@@ -38,14 +38,27 @@ type OpenCodeConfig struct {
 // BlueprintIDs and Instruction are repo-level overrides of the project
 // defaults: a non-empty value wins over the project's.
 type Repo struct {
-	ID           string    `json:"id"`
-	Name         string    `json:"name"`
-	Path         string    `json:"path"`
-	Kind         string    `json:"kind"` // service_repo | infra_repo
-	BlueprintIDs []string  `json:"blueprint_ids,omitempty"`
-	Instruction  string    `json:"instruction,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID                string    `json:"id"`
+	Name              string    `json:"name"`
+	Path              string    `json:"path"`
+	Kind              string    `json:"kind"` // service_repo | infra_repo
+	SourceType        string    `json:"source_type,omitempty"`
+	GitURL            string    `json:"git_url,omitempty"`
+	GitProvider       string    `json:"git_provider,omitempty"`
+	ClonePath         string    `json:"clone_path,omitempty"`
+	DefaultBranch     string    `json:"default_branch,omitempty"`
+	HeadSHA           string    `json:"head_sha,omitempty"`
+	RemoteHeadSHA     string    `json:"remote_head_sha,omitempty"`
+	SyncStatus        string    `json:"sync_status,omitempty"`
+	SyncError         string    `json:"sync_error,omitempty"`
+	LastSyncedAt      time.Time `json:"last_synced_at,omitempty"`
+	Team              string    `json:"team,omitempty"`
+	LastDiffMindRunID string    `json:"last_diffmind_run_id,omitempty"`
+	DiffMindFreshness string    `json:"diffmind_freshness,omitempty"`
+	BlueprintIDs      []string  `json:"blueprint_ids,omitempty"`
+	Instruction       string    `json:"instruction,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 // BlueprintMeta is the listing projection of a stored blueprint. The full

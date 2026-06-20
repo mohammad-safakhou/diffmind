@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/mohammad-safakhou/diffmind/internal/artifacts"
+	"github.com/mohammad-safakhou/diffmind/internal/model"
 )
 
 // ArchGraph is the architecture graph for a single run.
@@ -36,16 +37,21 @@ type SchedulerNode struct {
 }
 
 type ServiceNode struct {
-	Name           string              `json:"name"`
-	Known          bool                `json:"known"`
-	HTTPRoutes     []EntitySummary     `json:"http_routes"`
-	QueueConsumers []EntitySummary     `json:"queue_consumers"`
-	ScheduledJobs  []EntitySummary     `json:"scheduled_jobs"`
-	Webhooks       []EntitySummary     `json:"webhooks"`
-	CLICommands    []EntitySummary     `json:"cli_commands"`
-	Databases      []string            `json:"databases"`
-	Dependencies   []EntitySummary     `json:"dependencies"`
-	Connections    []ConnectionSummary `json:"connections"`
+	Name              string              `json:"name"`
+	Known             bool                `json:"known"`
+	RepoID            string              `json:"repo_id,omitempty"`
+	RepoPath          string              `json:"repo_path,omitempty"`
+	Team              string              `json:"team,omitempty"`
+	DiffMindFreshness string              `json:"diffmind_freshness,omitempty"`
+	RepoMetrics       *model.RepoMetrics  `json:"repo_metrics,omitempty"`
+	HTTPRoutes        []EntitySummary     `json:"http_routes"`
+	QueueConsumers    []EntitySummary     `json:"queue_consumers"`
+	ScheduledJobs     []EntitySummary     `json:"scheduled_jobs"`
+	Webhooks          []EntitySummary     `json:"webhooks"`
+	CLICommands       []EntitySummary     `json:"cli_commands"`
+	Databases         []string            `json:"databases"`
+	Dependencies      []EntitySummary     `json:"dependencies"`
+	Connections       []ConnectionSummary `json:"connections"`
 }
 
 type ConnectionSummary struct {

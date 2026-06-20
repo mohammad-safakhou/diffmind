@@ -12,12 +12,18 @@ import (
 
 // DiffMindRunInfo is the discovery projection of a single central DiffMind run.
 type DiffMindRunInfo struct {
-	RunID      string    `json:"run_id"`
-	RepoPath   string    `json:"repo_path"`
-	StartedAt  time.Time `json:"started_at"`
-	FinishedAt time.Time `json:"finished_at"`
-	Dir        string    `json:"-"`
-	Source     string    `json:"source,omitempty"`
+	RunID            string             `json:"run_id"`
+	RepoPath         string             `json:"repo_path"`
+	StartedAt        time.Time          `json:"started_at"`
+	FinishedAt       time.Time          `json:"finished_at"`
+	Team             string             `json:"team,omitempty"`
+	RepoGitSHA       string             `json:"repo_git_sha,omitempty"`
+	RepoGitBranch    string             `json:"repo_git_branch,omitempty"`
+	RepoGitRemoteURL string             `json:"repo_git_remote_url,omitempty"`
+	RepoGitDirty     bool               `json:"repo_git_dirty,omitempty"`
+	RepoMetrics      *model.RepoMetrics `json:"repo_metrics,omitempty"`
+	Dir              string             `json:"-"`
+	Source           string             `json:"source,omitempty"`
 }
 
 // RepoArchfileRunInfo returns the synthetic run-selection record used by the UI
@@ -30,6 +36,7 @@ func RepoArchfileRunInfo(repoPath string) (DiffMindRunInfo, bool) {
 	return DiffMindRunInfo{
 		RunID:    RepoArchfileRunID,
 		RepoPath: repoPath,
+		Team:     RepoArchfileTeam(repoPath),
 		Dir:      path,
 		Source:   "archfile",
 	}, true
@@ -114,7 +121,21 @@ func readRunManifest(dir string) (DiffMindRunInfo, bool) {
 	if m.RepoPath == "" {
 		return DiffMindRunInfo{}, false
 	}
-	return DiffMindRunInfo{RepoPath: m.RepoPath, StartedAt: m.StartedAt, FinishedAt: m.FinishedAt}, true
+	team := m.Team
+	if team == "" {
+		team = "default"
+	}
+	return DiffMindRunInfo{
+		RepoPath:         m.RepoPath,
+		StartedAt:        m.StartedAt,
+		FinishedAt:       m.FinishedAt,
+		Team:             team,
+		RepoGitSHA:       m.RepoGitSHA,
+		RepoGitBranch:    m.RepoGitBranch,
+		RepoGitRemoteURL: m.RepoGitRemoteURL,
+		RepoGitDirty:     m.RepoGitDirty,
+		RepoMetrics:      m.RepoMetrics,
+	}, true
 }
 
 func sortRuns(runs []DiffMindRunInfo) {

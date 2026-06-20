@@ -122,14 +122,35 @@ type RunManifest struct {
 	StartedAt         time.Time              `json:"started_at"`
 	FinishedAt        time.Time              `json:"finished_at"`
 	RepoPath          string                 `json:"repo_path"`
+	Team              string                 `json:"team,omitempty"`
+	RepoGitSHA        string                 `json:"repo_git_sha,omitempty"`
+	RepoGitBranch     string                 `json:"repo_git_branch,omitempty"`
+	RepoGitRemoteURL  string                 `json:"repo_git_remote_url,omitempty"`
+	RepoGitDirty      bool                   `json:"repo_git_dirty,omitempty"`
 	SchemaVersion     string                 `json:"schema_version"`
 	OpenCodeURL       string                 `json:"opencode_url,omitempty"`
 	ConfidenceMinimum float64                `json:"confidence_minimum"`
 	Counts            map[string]int         `json:"counts"`
+	RepoMetrics       *RepoMetrics           `json:"repo_metrics,omitempty"`
 	Warnings          []string               `json:"warnings,omitempty"`
 	Metadata          map[string]string      `json:"metadata,omitempty"`
 	StageFailures     map[string]int         `json:"stage_failures,omitempty"`
 	TokenTotals       map[string]TokenBucket `json:"token_totals,omitempty"`
+}
+
+type RepoMetrics struct {
+	TotalLOC            int              `json:"total_loc"`
+	FileCount           int              `json:"file_count"`
+	Languages           []LanguageMetric `json:"languages,omitempty"`
+	Frameworks          []string         `json:"frameworks,omitempty"`
+	BuildTools          []string         `json:"build_tools,omitempty"`
+	DetectedServiceName string           `json:"detected_service_name,omitempty"`
+}
+
+type LanguageMetric struct {
+	Language string `json:"language"`
+	Files    int    `json:"files"`
+	LOC      int    `json:"loc"`
 }
 
 type TokenBucket struct {

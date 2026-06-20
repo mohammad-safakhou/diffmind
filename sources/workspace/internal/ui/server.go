@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/mohammad-safakhou/diffmind/internal/runmgr"
@@ -24,6 +25,13 @@ type Server struct {
 	host            string
 	port            int
 	log             *util.Logger
+	liveStatusMu    sync.Mutex
+	liveStatusCache map[string]liveStatusCacheEntry
+}
+
+type liveStatusCacheEntry struct {
+	value     repoLive
+	expiresAt time.Time
 }
 
 // New constructs a Server backed by the given store and run manager.
@@ -37,7 +45,7 @@ func New(st *store.Store, runs *runmgr.Manager, diffmindRunsDir, host string, po
 	if log == nil {
 		log = util.NewLogger(util.LevelInfo)
 	}
-	return &Server{store: st, runs: runs, diffmindRunsDir: diffmindRunsDir, host: host, port: port, log: log}
+	return &Server{store: st, runs: runs, diffmindRunsDir: diffmindRunsDir, host: host, port: port, log: log, liveStatusCache: map[string]liveStatusCacheEntry{}}
 }
 
 // Addr returns "host:port".
@@ -70,7 +78,13 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/projects/{pid}/repos/{rid}", s.handleGetRepo)
 	mux.HandleFunc("PATCH /api/projects/{pid}/repos/{rid}", s.handlePatchRepo)
 	mux.HandleFunc("DELETE /api/projects/{pid}/repos/{rid}", s.handleDeleteRepo)
+	mux.HandleFunc("POST /api/projects/{pid}/repos/{rid}/sync", s.handleSyncRepo)
+	mux.HandleFunc("POST /api/projects/{pid}/repos/{rid}/diffmind-runs", s.handleStartDiffMindRepoRun)
+	mux.HandleFunc("GET /api/projects/{pid}/repos/{rid}/diffmind-yaml", s.handleGetDiffMindYAML)
+	mux.HandleFunc("PUT /api/projects/{pid}/repos/{rid}/diffmind-yaml", s.handlePutDiffMindYAML)
 	mux.HandleFunc("GET /api/projects/{pid}/repo-suggestions", s.handleRepoSuggestions)
+	mux.HandleFunc("GET /api/projects/{pid}/workspace", s.handleWorkspace)
+	mux.HandleFunc("GET /api/projects/{pid}/live-status", s.handleLiveStatus)
 
 	// Blueprints (G4).
 	mux.HandleFunc("GET /api/projects/{pid}/blueprints", s.handleListBlueprints)

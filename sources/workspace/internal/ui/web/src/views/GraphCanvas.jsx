@@ -552,6 +552,9 @@ export function GraphCanvas({ graph, onSelect }) {
       if (n) servicePorts.set(name, computeServicePorts(model, n.x, n.y))
     })
 
+    const frameGroup = rootG.append('g').attr('class', 'team-frames')
+    drawTeamFrames(frameGroup, services, serviceModels, topPositions)
+
     const edgeGroup = rootG.append('g').attr('class', 'instance-edges')
     visualEdges(displayEdges).forEach((edge) => {
       const from = endpointFor(edge.from, edge, 'source', topPositions, servicePorts, serviceNames)
@@ -723,6 +726,54 @@ function drawHull(g, model, cx, cy) {
     (service.connections || []).length && `${(service.connections || []).length} flows`,
   ].filter(Boolean).join(' · ')
   if (counts) drawText(g, counts, cx, cy + 52, 'service-counts')
+  drawServiceBadges(g, service, cx, cy + 78)
+}
+
+function drawServiceBadges(g, service, cx, y) {
+  const metrics = service.repo_metrics || {}
+  const lang = metrics.languages && metrics.languages[0] ? metrics.languages[0].language : ''
+  const loc = metrics.total_loc ? `${Math.round(metrics.total_loc / 100) / 10}k LOC` : ''
+  const badges = [
+    service.team || 'default',
+    [lang, loc].filter(Boolean).join(' · '),
+    service.diffmind_freshness || '',
+  ].filter(Boolean)
+  const totalW = badges.reduce((sum, b) => sum + Math.max(54, b.length * 7 + 22), 0) + Math.max(0, badges.length - 1) * 6
+  let x = cx - totalW / 2
+  badges.forEach((badge) => {
+    const w = Math.max(54, badge.length * 7 + 22)
+    const cls = badge === 'stale' ? 'service-badge stale' : badge === 'fresh' ? 'service-badge fresh' : 'service-badge'
+    g.append('rect').attr('class', cls).attr('x', x).attr('y', y - 13).attr('width', w).attr('height', 22).attr('rx', 11)
+    drawText(g, shortLabel(badge, 18), x + w / 2, y + 3, 'service-badge-text')
+    x += w + 6
+  })
+}
+
+function drawTeamFrames(parent, services, serviceModels, topPositions) {
+  const teams = new Map()
+  services.forEach((svc) => {
+    const pos = topPositions.get(svc.name)
+    const model = serviceModels.get(svc.name)
+    if (!pos || !model) return
+    const team = svc.team || 'default'
+    const item = teams.get(team) || { name: team, minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity, count: 0 }
+    item.minX = Math.min(item.minX, pos.x - model.width / 2 - 54)
+    item.maxX = Math.max(item.maxX, pos.x + model.width / 2 + 54)
+    item.minY = Math.min(item.minY, pos.y - model.height / 2 - 60)
+    item.maxY = Math.max(item.maxY, pos.y + model.height / 2 + 60)
+    item.count += 1
+    teams.set(team, item)
+  })
+  Array.from(teams.values()).forEach((team, i) => {
+    if (!Number.isFinite(team.minX)) return
+    const g = parent.append('g').attr('class', 'team-frame')
+    const x = team.minX
+    const y = team.minY
+    const w = team.maxX - team.minX
+    const h = team.maxY - team.minY
+    g.append('rect').attr('class', `team-frame-bg tone-${i % 5}`).attr('x', x).attr('y', y).attr('width', w).attr('height', h).attr('rx', 24)
+    g.append('text').attr('class', 'team-frame-label').attr('x', x + 24).attr('y', y + 34).text(`${team.name} · ${team.count}`)
+  })
 }
 
 function drawGroup(g, group, cx, cy, kind, ports, selectThing) {

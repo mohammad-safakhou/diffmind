@@ -45,6 +45,13 @@ func (s *Store) blueprintsDir(pid string) string {
 }
 func (s *Store) reposDir(pid string) string { return filepath.Join(s.projectDir(pid), "repos") }
 func (s *Store) runsDir(pid string) string  { return filepath.Join(s.projectDir(pid), "runs") }
+func (s *Store) worktreesDir(pid string) string {
+	return filepath.Join(s.projectDir(pid), "worktrees")
+}
+
+func (s *Store) WorktreeDir(pid, repoID string) string {
+	return filepath.Join(s.worktreesDir(pid), repoID)
+}
 
 // RunDir exposes the on-disk directory for a graph run (used by the run
 // manager to write graph.json / events.jsonl / identities).
@@ -104,7 +111,7 @@ func (s *Store) CreateProject(p Project) (*Project, error) {
 	p.ID = id
 	p.CreatedAt = now
 	p.UpdatedAt = now
-	for _, sub := range []string{"blueprints", "repos", "runs"} {
+	for _, sub := range []string{"blueprints", "repos", "runs", "worktrees"} {
 		if err := os.MkdirAll(filepath.Join(s.projectDir(id), sub), 0o755); err != nil {
 			return nil, err
 		}
@@ -186,6 +193,7 @@ func (s *Store) GetRepo(pid, id string) (*Repo, error) {
 		}
 		return nil, err
 	}
+	normalizeRepoDefaults(&r)
 	return &r, nil
 }
 
@@ -196,20 +204,30 @@ func (s *Store) CreateRepo(pid string, r Repo) (*Repo, error) {
 	if _, err := s.GetProject(pid); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(r.Path) == "" {
-		return nil, fmt.Errorf("repo path is required")
+	if strings.TrimSpace(r.Path) == "" && strings.TrimSpace(r.GitURL) == "" {
+		return nil, fmt.Errorf("repo path or git_url is required")
 	}
 	if strings.TrimSpace(r.Name) == "" {
-		r.Name = filepath.Base(strings.TrimRight(r.Path, "/"))
+		r.Name = repoNameFromSource(r)
 	}
 	if r.Kind == "" {
 		r.Kind = "service_repo"
 	}
+	normalizeRepoDefaults(&r)
 	id := s.uniqueSlug(s.reposDir(pid), r.Name)
 	now := time.Now().UTC()
 	r.ID = id
 	r.CreatedAt = now
 	r.UpdatedAt = now
+	if r.SourceType == "git" || r.GitURL != "" {
+		r.SourceType = "git"
+		if r.ClonePath == "" {
+			r.ClonePath = s.WorktreeDir(pid, id)
+		}
+		if r.Path == "" {
+			r.Path = r.ClonePath
+		}
+	}
 	if err := os.MkdirAll(filepath.Join(s.reposDir(pid), id), 0o755); err != nil {
 		return nil, err
 	}
@@ -229,11 +247,45 @@ func (s *Store) UpdateRepo(pid, id string, mutate func(*Repo)) (*Repo, error) {
 	}
 	mutate(r)
 	r.ID = id
+	normalizeRepoDefaults(r)
 	r.UpdatedAt = time.Now().UTC()
 	if err := writeJSON(filepath.Join(s.reposDir(pid), id, "repo.json"), *r); err != nil {
 		return nil, err
 	}
 	return r, nil
+}
+
+func normalizeRepoDefaults(r *Repo) {
+	if r.SourceType == "" {
+		if r.GitURL != "" {
+			r.SourceType = "git"
+		} else {
+			r.SourceType = "local"
+		}
+	}
+	if r.Team == "" {
+		r.Team = "default"
+	}
+	if r.DiffMindFreshness == "" {
+		r.DiffMindFreshness = "unknown"
+	}
+	if r.Path == "" && r.ClonePath != "" {
+		r.Path = r.ClonePath
+	}
+}
+
+func repoNameFromSource(r Repo) string {
+	if r.GitURL != "" {
+		u := strings.TrimSuffix(strings.TrimSpace(r.GitURL), "/")
+		u = strings.TrimSuffix(u, ".git")
+		if idx := strings.LastIndex(u, "/"); idx >= 0 && idx+1 < len(u) {
+			return u[idx+1:]
+		}
+		if idx := strings.LastIndex(u, ":"); idx >= 0 && idx+1 < len(u) {
+			return u[idx+1:]
+		}
+	}
+	return filepath.Base(strings.TrimRight(r.Path, "/"))
 }
 
 // DeleteRepo removes only DiffMind's metadata for the repo; the source

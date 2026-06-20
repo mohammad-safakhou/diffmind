@@ -25,6 +25,7 @@ var archfileVarPattern = regexp.MustCompile(`\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
 type rawArchFile struct {
 	Schema       string            `yaml:"schema"`
 	Service      string            `yaml:"service,omitempty"`
+	Team         string            `yaml:"team,omitempty"`
 	Vars         map[string]string `yaml:"vars,omitempty"`
 	Include      []string          `yaml:"include,omitempty"`
 	Resources    []rawResource     `yaml:"resources,omitempty"`
@@ -71,6 +72,7 @@ type rawConn struct {
 
 type resolvedArchFile struct {
 	Service      string
+	Team         string
 	Resources    []model.Resource
 	Exposures    []rawEntity
 	Dependencies []rawEntity
@@ -86,6 +88,14 @@ func RepoArchfilePath(repoPath string) string {
 func HasRepoArchfile(repoPath string) bool {
 	st, err := os.Stat(RepoArchfilePath(repoPath))
 	return err == nil && !st.IsDir()
+}
+
+func RepoArchfileTeam(repoPath string) string {
+	resolved, err := resolveArchfile(RepoArchfilePath(repoPath))
+	if err != nil {
+		return "default"
+	}
+	return firstString(resolved.Team, "default")
 }
 
 // ReadDiffMindArchfile reads the latest DiffMind discovery-file format
@@ -106,6 +116,7 @@ func ReadDiffMindArchfile(path string) (*model.ServiceArchitecture, error) {
 		Manifest: &model.RunManifest{
 			RunID:         RepoArchfileRunID,
 			RepoPath:      repoPath,
+			Team:          firstString(resolved.Team, "default"),
 			SchemaVersion: ArchfileSchema,
 			Counts:        map[string]int{},
 			Metadata:      map[string]string{"source": path},
@@ -207,6 +218,9 @@ func resolveArchfileInto(abs string, inheritedVars map[string]string, rootServic
 	}
 	if out.Service == "" {
 		out.Service = rootService
+	}
+	if out.Team == "" {
+		out.Team = firstString(raw.Team, "default")
 	}
 	fallback := fileService
 	if fallback == "" {

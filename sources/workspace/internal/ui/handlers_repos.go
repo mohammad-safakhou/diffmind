@@ -22,11 +22,15 @@ func (s *Server) handleListRepos(w http.ResponseWriter, r *http.Request) {
 }
 
 type createRepoRequest struct {
-	Name         string   `json:"name"`
-	Path         string   `json:"path"`
-	Kind         string   `json:"kind"`
-	BlueprintIDs []string `json:"blueprint_ids"`
-	Instruction  string   `json:"instruction"`
+	Name          string   `json:"name"`
+	Path          string   `json:"path"`
+	Kind          string   `json:"kind"`
+	SourceType    string   `json:"source_type"`
+	GitURL        string   `json:"git_url"`
+	DefaultBranch string   `json:"default_branch"`
+	Team          string   `json:"team"`
+	BlueprintIDs  []string `json:"blueprint_ids"`
+	Instruction   string   `json:"instruction"`
 }
 
 func (s *Server) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
@@ -35,16 +39,21 @@ func (s *Server) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if strings.TrimSpace(req.Path) == "" {
-		writeErr(w, http.StatusBadRequest, errors.New("path is required"))
+	if strings.TrimSpace(req.Path) == "" && strings.TrimSpace(req.GitURL) == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("path or git_url is required"))
 		return
 	}
 	repo, err := s.store.CreateRepo(r.PathValue("pid"), store.Repo{
-		Name:         req.Name,
-		Path:         req.Path,
-		Kind:         req.Kind,
-		BlueprintIDs: req.BlueprintIDs,
-		Instruction:  req.Instruction,
+		Name:          req.Name,
+		Path:          req.Path,
+		Kind:          req.Kind,
+		SourceType:    req.SourceType,
+		GitURL:        req.GitURL,
+		GitProvider:   inferGitProvider(req.GitURL),
+		DefaultBranch: req.DefaultBranch,
+		Team:          req.Team,
+		BlueprintIDs:  req.BlueprintIDs,
+		Instruction:   req.Instruction,
 	})
 	if err != nil {
 		s.writeStoreErr(w, err)
@@ -63,11 +72,15 @@ func (s *Server) handleGetRepo(w http.ResponseWriter, r *http.Request) {
 }
 
 type patchRepoRequest struct {
-	Name         *string   `json:"name"`
-	Path         *string   `json:"path"`
-	Kind         *string   `json:"kind"`
-	BlueprintIDs *[]string `json:"blueprint_ids"`
-	Instruction  *string   `json:"instruction"`
+	Name          *string   `json:"name"`
+	Path          *string   `json:"path"`
+	Kind          *string   `json:"kind"`
+	SourceType    *string   `json:"source_type"`
+	GitURL        *string   `json:"git_url"`
+	DefaultBranch *string   `json:"default_branch"`
+	Team          *string   `json:"team"`
+	BlueprintIDs  *[]string `json:"blueprint_ids"`
+	Instruction   *string   `json:"instruction"`
 }
 
 func (s *Server) handlePatchRepo(w http.ResponseWriter, r *http.Request) {
@@ -85,6 +98,19 @@ func (s *Server) handlePatchRepo(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.Kind != nil {
 			rp.Kind = *req.Kind
+		}
+		if req.SourceType != nil {
+			rp.SourceType = *req.SourceType
+		}
+		if req.GitURL != nil {
+			rp.GitURL = *req.GitURL
+			rp.GitProvider = inferGitProvider(*req.GitURL)
+		}
+		if req.DefaultBranch != nil {
+			rp.DefaultBranch = *req.DefaultBranch
+		}
+		if req.Team != nil {
+			rp.Team = *req.Team
 		}
 		if req.BlueprintIDs != nil {
 			rp.BlueprintIDs = *req.BlueprintIDs
@@ -171,4 +197,15 @@ func looksLikeRepo(dir string) bool {
 		return true
 	}
 	return false
+}
+
+func inferGitProvider(url string) string {
+	u := strings.ToLower(url)
+	if strings.Contains(u, "github.com") {
+		return "github"
+	}
+	if strings.TrimSpace(url) == "" {
+		return ""
+	}
+	return "git"
 }
