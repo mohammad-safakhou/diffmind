@@ -112,6 +112,7 @@ func execute(ctx context.Context, in executionInput) (RunOutput, error) {
 		StartedAt:     in.StartedAt,
 		FinishedAt:    time.Now().UTC(),
 		TokenTotals:   result.Tokens,
+		RepoFacts:     result.Intermediate.RepoFacts,
 	})
 	if err != nil {
 		util.Error(in.Component, "artifact write failed", map[string]any{"error": err})

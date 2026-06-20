@@ -233,6 +233,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/architecture/file-graph", s.handleArchitectureFileGraph)
 	mux.HandleFunc("/api/architecture/file-draft", s.handleArchitectureFileDraft)
 	mux.HandleFunc("/api/architecture/file-apply", s.handleArchitectureFileApply)
+	mux.HandleFunc("/api/architecture/file-review", s.handleArchitectureFileReview)
 	mux.HandleFunc("/api/architecture/run-proposal", s.handleArchitectureRunProposal)
 	mux.HandleFunc("/api/fs/list", s.handleFsList)
 

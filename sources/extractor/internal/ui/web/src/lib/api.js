@@ -166,6 +166,16 @@ export function runProposal(path, runID) {
   })
 }
 
+// reviewRepoFile applies a batch of curation edits (accept = status edits,
+// edit-then-accept = field edits, reject = deletes) in one optimistic write,
+// returning the new sha + resolved graph. `edits` is an archfile EditSet.
+export function reviewRepoFile(path, baseSHA, edits) {
+  return api('/api/architecture/file-review', {
+    method: 'POST',
+    body: JSON.stringify({ path, base_sha: baseSHA, edits }),
+  })
+}
+
 // Raw discovery-file content for the inline editor.
 export function getRepoFile(path) {
   return api('/api/architecture/file?path=' + encodeURIComponent(path))

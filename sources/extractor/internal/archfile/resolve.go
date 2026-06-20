@@ -24,13 +24,13 @@ func Resolve(path string) (*File, error) {
 		return nil, err
 	}
 	out := &File{}
-	if err := resolveFile(abs, map[string]string{}, "", map[string]bool{}, 0, out); err != nil {
+	if err := resolveFile(abs, map[string]string{}, "", "", map[string]bool{}, 0, out); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func resolveFile(abs string, inheritedVars map[string]string, rootService string, visited map[string]bool, depth int, out *File) error {
+func resolveFile(abs string, inheritedVars map[string]string, rootService, rootTeam string, visited map[string]bool, depth int, out *File) error {
 	if depth > maxIncludeDepth {
 		return fmt.Errorf("include depth exceeded %d at %s", maxIncludeDepth, abs)
 	}
@@ -75,6 +75,13 @@ func resolveFile(abs string, inheritedVars map[string]string, rootService string
 	if out.Service == "" {
 		out.Service = rootService
 	}
+	fileTeam := strings.TrimSpace(raw.Team)
+	if rootTeam == "" {
+		rootTeam = fileTeam
+	}
+	if out.Team == "" {
+		out.Team = rootTeam
+	}
 	fallback := fileService
 	if fallback == "" {
 		fallback = rootService
@@ -95,6 +102,8 @@ func resolveFile(abs string, inheritedVars map[string]string, rootService string
 			To:        strings.TrimSpace(c.To),
 			Condition: strings.TrimSpace(c.Condition),
 			Summary:   strings.TrimSpace(c.Summary),
+			Status:    strings.TrimSpace(c.Status),
+			Source:    strings.TrimSpace(c.Source),
 		})
 	}
 
@@ -108,7 +117,7 @@ func resolveFile(abs string, inheritedVars map[string]string, rootService string
 		if !filepath.IsAbs(child) {
 			child = filepath.Join(dir, inc)
 		}
-		if err := resolveFile(child, vars, rootService, visited, depth+1, out); err != nil {
+		if err := resolveFile(child, vars, rootService, rootTeam, visited, depth+1, out); err != nil {
 			return err
 		}
 	}
@@ -129,6 +138,8 @@ func toResource(r rawResource) Resource {
 		Summary:  strings.TrimSpace(r.Summary),
 		Tags:     r.Tags,
 		Details:  details,
+		Status:   strings.TrimSpace(r.Status),
+		Source:   strings.TrimSpace(r.Source),
 	}
 }
 
@@ -151,6 +162,8 @@ func toEntity(e rawEntity, fallbackService string) Entity {
 		Platform: strings.TrimSpace(e.Platform),
 		Tags:     e.Tags,
 		Details:  details,
+		Status:   strings.TrimSpace(e.Status),
+		Source:   strings.TrimSpace(e.Source),
 	}
 }
 
@@ -192,40 +205,25 @@ func interpolateNode(n *yaml.Node, vars map[string]string, file string) error {
 	return nil
 }
 
+// expandScalar replaces ${name} with a declared var's value. An UNDECLARED
+// ${name} is left verbatim rather than erroring: run-discovered facts routinely
+// carry config placeholders (`${UUID}`, env-style names) that are not authoring
+// vars, and a hard failure there would break the whole graph/merge for one
+// literal. Declared vars still expand; ${ENV:default} (with a colon) is already
+// excluded by varPattern and passes through untouched.
 func expandScalar(s string, vars map[string]string, file string, line int) (string, error) {
-	var missing string
-	out := varPattern.ReplaceAllStringFunc(s, func(match string) string {
-		name := varPattern.FindStringSubmatch(match)[1]
-		if v, ok := vars[name]; ok {
-			return v
-		}
-		if missing == "" {
-			missing = name
-		}
-		return match
-	})
-	if missing != "" {
-		return "", fmt.Errorf("%s:%d: unknown variable ${%s}", file, line, missing)
-	}
-	return out, nil
+	return expandString(s, vars)
 }
 
 // expandString is the value-only variant used for variable definitions, where no
 // node position is available.
 func expandString(s string, vars map[string]string) (string, error) {
-	var missing string
 	out := varPattern.ReplaceAllStringFunc(s, func(match string) string {
 		name := varPattern.FindStringSubmatch(match)[1]
 		if v, ok := vars[name]; ok {
 			return v
 		}
-		if missing == "" {
-			missing = name
-		}
-		return match
+		return match // undeclared → leave verbatim (config placeholder, not an authoring var)
 	})
-	if missing != "" {
-		return "", fmt.Errorf("unknown variable ${%s}", missing)
-	}
 	return out, nil
 }

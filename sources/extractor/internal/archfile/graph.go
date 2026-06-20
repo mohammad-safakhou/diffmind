@@ -13,11 +13,21 @@ import (
 // It keeps file-authored resources when present, and derives compatible
 // resources from dependency identity for older diffmind.yaml files.
 type Graph struct {
-	Service      string             `json:"service"`
-	Resources    []GraphResource    `json:"resources"`
-	Exposures    []model.Exposure   `json:"exposures"`
-	Dependencies []GraphDependency  `json:"dependencies"`
-	Connections  []model.Connection `json:"connections"`
+	Service      string            `json:"service"`
+	Resources    []GraphResource   `json:"resources"`
+	Exposures    []GraphExposure   `json:"exposures"`
+	Dependencies []GraphDependency `json:"dependencies"`
+	Connections  []GraphConnection `json:"connections"`
+	Coverage     Coverage          `json:"coverage"`
+}
+
+// Coverage is the curation progress toward 100%: how many facts are verified vs
+// still pending review. Resources are not counted (they are containers).
+type Coverage struct {
+	Verified    int `json:"verified"`
+	Proposed    int `json:"proposed"`
+	NeedsReview int `json:"needs_review"`
+	Total       int `json:"total"`
 }
 
 type GraphResource struct {
@@ -30,11 +40,38 @@ type GraphResource struct {
 	Tags     []string       `json:"tags,omitempty"`
 	Details  map[string]any `json:"details,omitempty"`
 	Derived  bool           `json:"derived,omitempty"`
+	Status   string         `json:"status,omitempty"`
+}
+
+// GraphExposure / GraphConnection wrap the model types with curation status so
+// the UI can style verified vs proposed facts. The embedded model fields stay
+// top-level in JSON (id, name, type, ...).
+type GraphExposure struct {
+	model.Exposure
+	Status string `json:"status,omitempty"`
+	Source string `json:"source,omitempty"`
 }
 
 type GraphDependency struct {
 	model.Dependency
 	ResourceID string `json:"resource_id,omitempty"`
+	Status     string `json:"status,omitempty"`
+	Source     string `json:"source,omitempty"`
+}
+
+type GraphConnection struct {
+	model.Connection
+	Status string `json:"status,omitempty"`
+	Source string `json:"source,omitempty"`
+}
+
+// statusOf normalizes an empty status to "verified": hand-authored facts carry
+// no status field and are trusted by default.
+func statusOf(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return StatusVerified
+	}
+	return strings.TrimSpace(s)
 }
 
 func ToGraph(f *File, source string) (Graph, error) {
@@ -42,10 +79,24 @@ func ToGraph(f *File, source string) (Graph, error) {
 	if err != nil {
 		return Graph{}, err
 	}
-	g := Graph{
-		Service:     strings.TrimSpace(f.Service),
-		Exposures:   input.Exposures,
-		Connections: input.Connections,
+	g := Graph{Service: strings.TrimSpace(f.Service)}
+
+	for i, e := range input.Exposures {
+		status := StatusVerified
+		if i < len(f.Exposures) {
+			status = statusOf(f.Exposures[i].Status)
+		}
+		var src string
+		if i < len(f.Exposures) {
+			src = f.Exposures[i].Source
+		}
+		g.Exposures = append(g.Exposures, GraphExposure{Exposure: e, Status: status, Source: src})
+	}
+	// Connection status/source are carried on the model.Connection itself (set by
+	// ToModel from the authored fact). ToModel drops dangling connections, so a
+	// positional zip against f.Connections would misalign — read them directly.
+	for _, c := range input.Connections {
+		g.Connections = append(g.Connections, GraphConnection{Connection: c, Status: statusOf(c.Status), Source: c.Source})
 	}
 
 	resources := map[string]GraphResource{}
@@ -54,6 +105,7 @@ func ToGraph(f *File, source string) (Graph, error) {
 		if err != nil {
 			return Graph{}, err
 		}
+		gr.Status = statusOf(r.Status)
 		resources[gr.ID] = gr
 	}
 
@@ -76,12 +128,13 @@ func ToGraph(f *File, source string) (Graph, error) {
 				resources[resourceID] = derived
 			}
 		}
-		g.Dependencies = append(g.Dependencies, GraphDependency{Dependency: d, ResourceID: resourceID})
+		g.Dependencies = append(g.Dependencies, GraphDependency{Dependency: d, ResourceID: resourceID, Status: statusOf(authored.Status), Source: authored.Source})
 	}
 
 	for _, r := range resources {
 		g.Resources = append(g.Resources, r)
 	}
+	g.Coverage = g.computeCoverage()
 	sort.Slice(g.Resources, func(i, j int) bool {
 		if g.Resources[i].Kind != g.Resources[j].Kind {
 			return g.Resources[i].Kind < g.Resources[j].Kind
@@ -89,6 +142,31 @@ func ToGraph(f *File, source string) (Graph, error) {
 		return g.Resources[i].Name < g.Resources[j].Name
 	})
 	return g, nil
+}
+
+func (g Graph) computeCoverage() Coverage {
+	var c Coverage
+	tally := func(status string) {
+		c.Total++
+		switch statusOf(status) {
+		case StatusProposed:
+			c.Proposed++
+		case StatusNeedsReview:
+			c.NeedsReview++
+		default:
+			c.Verified++
+		}
+	}
+	for _, e := range g.Exposures {
+		tally(e.Status)
+	}
+	for _, d := range g.Dependencies {
+		tally(d.Status)
+	}
+	for _, conn := range g.Connections {
+		tally(conn.Status)
+	}
+	return c
 }
 
 func graphResource(r Resource) (GraphResource, error) {
@@ -135,6 +213,19 @@ func derivedResource(b model.BaseEntity) GraphResource {
 		detailString(b.Details, "host"),
 		b.Name,
 	)
+	// When a config/literal-grounded instance was resolved (the deterministic
+	// client pass), it is the authority for which node this op clusters under —
+	// so every op that goes through one client lands on one shared resource node
+	// (the core grouping value), and genuinely distinct instances stay distinct.
+	// Hand-authored facts carry no InstanceRef, so this is a no-op for them.
+	if b.InstanceRef != nil {
+		if k := strings.TrimSpace(b.InstanceRef.Kind); k != "" {
+			platform = k
+		}
+		if n := firstNonEmpty(b.InstanceRef.LogicalName, b.InstanceRef.Database, b.InstanceRef.Host); n != "" {
+			instance = n
+		}
+	}
 	id := "res_" + slug(strings.Join([]string{kind, platform, instance}, "_"))
 	name := resourceName(platform, instance)
 	return GraphResource{

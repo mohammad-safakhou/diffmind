@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mohammad-safakhou/diffmind/internal/extraction"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 )
 
@@ -121,5 +122,68 @@ func TestWriteManifestNoStageFailuresWhenAllGreen(t *testing.T) {
 	}
 	if got.StageFailures != nil {
 		t.Fatalf("expected stage_failures omitted for clean run; got %v", got.StageFailures)
+	}
+}
+
+func TestWriteManifestIncludesTeamAndRepoMetrics(t *testing.T) {
+	baseDir := t.TempDir()
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "diffmind.yaml"), []byte("schema: diffmind.discovery.v1\nservice: orders\nteam: growth\n"), 0o644); err != nil {
+		t.Fatalf("write archfile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(repo, "node_modules"), 0o755); err != nil {
+		t.Fatalf("mkdir skipped dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "node_modules", "ignored.js"), []byte("const noisy = true\n"), 0o644); err != nil {
+		t.Fatalf("write ignored source: %v", err)
+	}
+
+	_, err := Write(WriteInput{
+		RunID:         "run-metrics",
+		BaseDir:       baseDir,
+		RepoPath:      repo,
+		MinConfidence: 0.7,
+		StartedAt:     time.Now().UTC(),
+		FinishedAt:    time.Now().UTC(),
+		RepoFacts: &extraction.RepoFacts{
+			ServiceName:   "orders",
+			Frameworks:    []string{"net/http"},
+			LanguageFacts: []extraction.LanguageFact{{Language: "go", BuildTool: "go"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(baseDir, "run-metrics", "run_manifest.json"))
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var got model.RunManifest
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Team != "growth" {
+		t.Fatalf("team = %q, want growth", got.Team)
+	}
+	if got.RepoMetrics == nil {
+		t.Fatal("repo_metrics missing")
+	}
+	if got.RepoMetrics.DetectedServiceName != "orders" {
+		t.Fatalf("detected service = %q", got.RepoMetrics.DetectedServiceName)
+	}
+	if got.RepoMetrics.TotalLOC != 5 || got.RepoMetrics.FileCount != 2 {
+		t.Fatalf("metrics = %+v, want 5 loc across main.go and diffmind.yaml with node_modules skipped", got.RepoMetrics)
+	}
+	hasGo := false
+	for _, lm := range got.RepoMetrics.Languages {
+		if lm.Language == "go" && lm.Files == 1 && lm.LOC == 2 {
+			hasGo = true
+		}
+	}
+	if !hasGo {
+		t.Fatalf("language metrics = %+v", got.RepoMetrics.Languages)
 	}
 }

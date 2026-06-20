@@ -23,8 +23,9 @@ type repoView struct {
 	RunCount     int    `json:"run_count"`
 	LastStatus   string `json:"last_status,omitempty"`
 	LastFinished any    `json:"last_finished_at,omitempty"`
-	NodeCount    int    `json:"node_count"` // catalog nodes attributed to this repo's runs
-	EdgeCount    int    `json:"edge_count"` // catalog connections likewise
+	NodeCount    int    `json:"node_count"`    // nodes resolved from the discovery file
+	EdgeCount    int    `json:"edge_count"`    // connections likewise
+	PendingCount int    `json:"pending_count"` // facts awaiting review (status != verified)
 }
 
 // repositories returns the union of registered repos and repos discovered from
@@ -88,6 +89,22 @@ func (s *Server) repositories() ([]repoView, error) {
 				if resolved, err := archfile.Resolve(v.FilePath); err == nil {
 					v.NodeCount = len(resolved.Exposures) + len(resolved.Dependencies)
 					v.EdgeCount = len(resolved.Connections)
+					pending := func(s string) bool { st := strings.TrimSpace(s); return st != "" && st != "verified" }
+					for _, e := range resolved.Exposures {
+						if pending(e.Status) {
+							v.PendingCount++
+						}
+					}
+					for _, d := range resolved.Dependencies {
+						if pending(d.Status) {
+							v.PendingCount++
+						}
+					}
+					for _, c := range resolved.Connections {
+						if pending(c.Status) {
+							v.PendingCount++
+						}
+					}
 				}
 			}
 		}

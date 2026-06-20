@@ -62,20 +62,32 @@ func ToModel(f *File, source string) (catalog.ImportInput, error) {
 	}
 
 	for _, c := range f.Connections {
+		// A connection whose endpoint isn't present is dropped, not fatal. This
+		// happens routinely after a run import: the run's dependency may collapse
+		// (by identity) onto an already-present fact and get skipped, leaving its
+		// connection referencing a name the merged file no longer carries. One
+		// dangling edge must not blank the entire graph — the resolved file simply
+		// omits that edge. Genuine authoring typos surface the same way (a missing
+		// edge), which the graph and inline editor make visible.
 		from, ok := exposureTokens[c.From]
 		if !ok {
-			return catalog.ImportInput{}, fmt.Errorf("connection references unknown exposure %q", c.From)
+			continue
 		}
 		to, ok := dependencyTokens[c.To]
 		if !ok {
-			return catalog.ImportInput{}, fmt.Errorf("connection references unknown dependency %q", c.To)
+			continue
+		}
+		source := strings.TrimSpace(c.Source)
+		if source == "" {
+			source = "manual"
 		}
 		in.Connections = append(in.Connections, model.Connection{
 			FromExposureID: from.id,
 			ToDependencyID: to.id,
 			FromType:       from.typ,
 			ToType:         to.typ,
-			Source:         "manual",
+			Source:         source,
+			Status:         strings.TrimSpace(c.Status),
 			Confidence:     1,
 			Condition:      conditionFromShorthand(c.Condition),
 			PathSignature:  pathSignature(c.Condition),

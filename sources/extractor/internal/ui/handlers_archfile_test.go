@@ -293,3 +293,69 @@ func writeRunArtifacts(t *testing.T, base, runID, repo string, exposures, depend
 	mustWriteJSON(t, filepath.Join(runDir, "dependencies", "deps.json"), dependencies)
 	mustWriteJSON(t, filepath.Join(runDir, "connections", "connections.json"), connections)
 }
+
+func TestArchitectureFileReview(t *testing.T) {
+	base := t.TempDir()
+	repo := t.TempDir()
+	mainPath := filepath.Join(repo, "diffmind.yaml")
+	if err := os.WriteFile(mainPath, []byte(`schema: diffmind.discovery.v1
+service: orders
+exposures:
+  - type: http_route
+    name: POST /v1/orders
+    status: proposed
+    source: run:abc
+    details: {method: POST, path: /v1/orders}
+dependencies:
+  - type: db_operation
+    name: OrderRepository.save
+    status: proposed
+    source: run:abc
+    details: {table: orders, operation: write, platform: postgres}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(base, "127.0.0.1", 8080)
+	mux := http.NewServeMux()
+	s.routes(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// sha for optimistic write
+	resp, err := http.Get(srv.URL + "/api/architecture/file?path=" + mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file map[string]any
+	decodeJSON(t, resp, &file)
+	resp.Body.Close()
+	sha, _ := file["sha256"].(string)
+
+	// Accept the exposure (status->verified) and reject the dependency in one call.
+	body := `{"path":"` + mainPath + `","base_sha":"` + sha + `","edits":{` +
+		`"exposures":[{"id":"POST /v1/orders","status":"verified","source":"manual"}],` +
+		`"delete":[{"kind":"dependency","id":"OrderRepository.save"}]}}`
+	status, out := postJSON(t, srv, "/api/architecture/file-review", body)
+	if status != http.StatusOK {
+		t.Fatalf("file-review status %d: %v", status, out)
+	}
+	cov, _ := out["graph"].(map[string]any)["coverage"].(map[string]any)
+	if cov["verified"].(float64) != 1 || cov["proposed"].(float64) != 0 || cov["total"].(float64) != 1 {
+		t.Fatalf("coverage after review = %v, want 1 verified / 0 proposed / 1 total", cov)
+	}
+
+	merged, _ := os.ReadFile(mainPath)
+	if strings.Contains(string(merged), "OrderRepository.save") {
+		t.Fatalf("reject did not remove the dependency:\n%s", string(merged))
+	}
+	if !strings.Contains(string(merged), "status: verified") {
+		t.Fatalf("accept did not write verified status:\n%s", string(merged))
+	}
+
+	// Stale sha is rejected.
+	status, _ = postJSON(t, srv, "/api/architecture/file-review", `{"path":"`+mainPath+`","base_sha":"stale","edits":{}}`)
+	if status != http.StatusConflict {
+		t.Fatalf("stale review status = %d, want 409", status)
+	}
+}

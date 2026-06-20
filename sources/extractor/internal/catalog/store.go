@@ -456,9 +456,27 @@ func mergeConnections(current, incoming []model.Connection, metadata map[string]
 func EntityCatalogKey(kind string, b model.BaseEntity) string {
 	return strings.Join([]string{
 		kind,
-		strings.ToLower(strings.TrimSpace(b.Service)),
+		strings.ToLower(NormalizeServiceName(b.Service)),
 		entitykey.SemanticLoose(b),
 	}, "|")
+}
+
+// NormalizeServiceName collapses a path-like service value to its base segment.
+// Automation runs are launched with the repository's absolute path and store it
+// verbatim as the service (e.g. "/Users/x/repos/payments"), while a hand-authored
+// diffmind.yaml names the service plainly ("payments"). Both denote the same
+// service, so identity must treat them as one — otherwise every run fact imports
+// as a duplicate of the matching authored fact. A plain name (no path separator)
+// is returned trimmed and unchanged, so this is identity-neutral for clean files.
+func NormalizeServiceName(service string) string {
+	s := strings.TrimSpace(service)
+	if s == "" {
+		return ""
+	}
+	if strings.ContainsAny(s, "/\\") {
+		return filepath.Base(filepath.Clean(s))
+	}
+	return s
 }
 
 // ConnectionCatalogKey is the durable identity of a connection. See

@@ -13,6 +13,21 @@ type EditSet struct {
 	Exposures    []EntityEdit     `json:"exposures"`
 	Dependencies []EntityEdit     `json:"dependencies"`
 	Connections  []ConnectionEdit `json:"connections"`
+	// Delete removes facts (Reject in the review UI). Deleting an exposure or
+	// dependency also drops connections that reference it.
+	Delete []DeleteRef `json:"delete"`
+}
+
+// DeleteRef identifies a fact to remove. Kind is exposure|dependency|resource|
+// connection. Entities match by ID or Name; connections by From/To tokens (or
+// FromID/ToID resolved to tokens).
+type DeleteRef struct {
+	Kind   string `json:"kind"`
+	ID     string `json:"id"`
+	From   string `json:"from"`
+	To     string `json:"to"`
+	FromID string `json:"from_id"`
+	ToID   string `json:"to_id"`
 }
 
 type ResourceEdit struct {
@@ -22,6 +37,8 @@ type ResourceEdit struct {
 	Name     *string `json:"name,omitempty"`
 	Instance *string `json:"instance,omitempty"`
 	Summary  *string `json:"summary,omitempty"`
+	Status   *string `json:"status,omitempty"`
+	Source   *string `json:"source,omitempty"`
 }
 
 type EntityEdit struct {
@@ -32,6 +49,8 @@ type EntityEdit struct {
 	Platform *string        `json:"platform,omitempty"`
 	Summary  *string        `json:"summary,omitempty"`
 	Details  map[string]any `json:"details,omitempty"`
+	Status   *string        `json:"status,omitempty"`
+	Source   *string        `json:"source,omitempty"`
 }
 
 type ConnectionEdit struct {
@@ -41,6 +60,8 @@ type ConnectionEdit struct {
 	ToID      string  `json:"to_id"`
 	Condition *string `json:"condition,omitempty"`
 	Summary   *string `json:"summary,omitempty"`
+	Status    *string `json:"status,omitempty"`
+	Source    *string `json:"source,omitempty"`
 }
 
 type DraftResult struct {
@@ -54,6 +75,7 @@ type DraftSummary struct {
 	Exposures    int `json:"exposures"`
 	Dependencies int `json:"dependencies"`
 	Connections  int `json:"connections"`
+	Deleted      int `json:"deleted"`
 }
 
 func Draft(path string, edits EditSet) (DraftResult, error) {
@@ -96,7 +118,73 @@ func applyEdits(raw *rawFile, edits EditSet) DraftSummary {
 			summary.Connections++
 		}
 	}
+	for _, del := range edits.Delete {
+		summary.Deleted += applyDelete(raw, del)
+	}
 	return summary
+}
+
+// applyDelete removes a fact and returns how many records it removed (the fact
+// itself plus any connections that referenced a removed entity).
+func applyDelete(raw *rawFile, del DeleteRef) int {
+	switch strings.ToLower(strings.TrimSpace(del.Kind)) {
+	case "resource":
+		id := strings.TrimSpace(del.ID)
+		for i := range raw.Resources {
+			if raw.Resources[i].ID == id {
+				raw.Resources = append(raw.Resources[:i], raw.Resources[i+1:]...)
+				return 1
+			}
+		}
+	case "exposure":
+		return deleteEntity(raw, false, del.ID)
+	case "dependency":
+		return deleteEntity(raw, true, del.ID)
+	case "connection":
+		from := strings.TrimSpace(del.From)
+		to := strings.TrimSpace(del.To)
+		if from == "" && del.FromID != "" {
+			from = rawEntityToken(raw, false, del.FromID)
+		}
+		if to == "" && del.ToID != "" {
+			to = rawEntityToken(raw, true, del.ToID)
+		}
+		for i := range raw.Connections {
+			if raw.Connections[i].From == from && raw.Connections[i].To == to {
+				raw.Connections = append(raw.Connections[:i], raw.Connections[i+1:]...)
+				return 1
+			}
+		}
+	}
+	return 0
+}
+
+// deleteEntity removes an exposure/dependency and every connection that
+// references it (so rejecting a node never leaves a dangling edge).
+func deleteEntity(raw *rawFile, dependency bool, id string) int {
+	token := rawEntityToken(raw, dependency, id)
+	idx := rawEntityIndex(raw, dependency, id)
+	if idx < 0 {
+		return 0
+	}
+	removed := 1
+	if dependency {
+		raw.Dependencies = append(raw.Dependencies[:idx], raw.Dependencies[idx+1:]...)
+	} else {
+		raw.Exposures = append(raw.Exposures[:idx], raw.Exposures[idx+1:]...)
+	}
+	if token != "" {
+		kept := raw.Connections[:0]
+		for _, c := range raw.Connections {
+			if (dependency && c.To == token) || (!dependency && c.From == token) {
+				removed++
+				continue
+			}
+			kept = append(kept, c)
+		}
+		raw.Connections = kept
+	}
+	return removed
 }
 
 func applyResourceEdit(raw *rawFile, edit ResourceEdit) bool {
@@ -133,6 +221,12 @@ func patchResource(r *rawResource, edit ResourceEdit) {
 	if edit.Summary != nil {
 		r.Summary = strings.TrimSpace(*edit.Summary)
 	}
+	if edit.Status != nil {
+		r.Status = strings.TrimSpace(*edit.Status)
+	}
+	if edit.Source != nil {
+		r.Source = strings.TrimSpace(*edit.Source)
+	}
 	if r.Kind == "" {
 		r.Kind = "resource"
 	}
@@ -142,19 +236,26 @@ func patchResource(r *rawResource, edit ResourceEdit) {
 }
 
 func applyEntityEdit(raw *rawFile, dependency bool, edit EntityEdit) bool {
-	items := raw.Exposures
-	if dependency {
-		items = raw.Dependencies
-	}
 	idx := rawEntityIndex(raw, dependency, edit.ID)
 	if idx < 0 {
-		return false
+		// Not found: create a new fact when the edit carries enough to define one
+		// (type + name). This is how the graph's "+ Add" toolbar adds nodes.
+		if edit.Type == nil || edit.Name == nil || strings.TrimSpace(*edit.Type) == "" || strings.TrimSpace(*edit.Name) == "" {
+			return false
+		}
+		ne := rawEntity{}
+		patchEntity(&ne, edit, dependency)
+		if dependency {
+			raw.Dependencies = append(raw.Dependencies, ne)
+		} else {
+			raw.Exposures = append(raw.Exposures, ne)
+		}
+		return true
 	}
-	patchEntity(&items[idx], edit, dependency)
 	if dependency {
-		raw.Dependencies = items
+		patchEntity(&raw.Dependencies[idx], edit, dependency)
 	} else {
-		raw.Exposures = items
+		patchEntity(&raw.Exposures[idx], edit, dependency)
 	}
 	return true
 }
@@ -186,6 +287,12 @@ func patchEntity(e *rawEntity, edit EntityEdit, dependency bool) {
 			}
 			e.Details[k] = v
 		}
+	}
+	if edit.Status != nil {
+		e.Status = strings.TrimSpace(*edit.Status)
+	}
+	if edit.Source != nil {
+		e.Source = strings.TrimSpace(*edit.Source)
 	}
 }
 
@@ -235,9 +342,30 @@ func applyConnectionEdit(raw *rawFile, edit ConnectionEdit) bool {
 		if edit.Summary != nil {
 			raw.Connections[i].Summary = strings.TrimSpace(*edit.Summary)
 		}
+		if edit.Status != nil {
+			raw.Connections[i].Status = strings.TrimSpace(*edit.Status)
+		}
+		if edit.Source != nil {
+			raw.Connections[i].Source = strings.TrimSpace(*edit.Source)
+		}
 		return true
 	}
-	return false
+	// Not found: create the connection (the graph's connect-by-click).
+	nc := rawConn{From: from, To: to}
+	if edit.Condition != nil {
+		nc.Condition = strings.TrimSpace(*edit.Condition)
+	}
+	if edit.Summary != nil {
+		nc.Summary = strings.TrimSpace(*edit.Summary)
+	}
+	if edit.Status != nil {
+		nc.Status = strings.TrimSpace(*edit.Status)
+	}
+	if edit.Source != nil {
+		nc.Source = strings.TrimSpace(*edit.Source)
+	}
+	raw.Connections = append(raw.Connections, nc)
+	return true
 }
 
 func rawEntityToken(raw *rawFile, dependency bool, id string) string {

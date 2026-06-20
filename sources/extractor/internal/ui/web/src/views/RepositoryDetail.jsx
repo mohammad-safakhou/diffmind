@@ -4,6 +4,7 @@ import { navigate } from '../lib/router.js'
 import { Button, Card, Modal } from '../components/ui/index.js'
 import { RepoFileSync } from '../components/RepoFileSync.jsx'
 import { RepoGraph } from '../components/RepoGraph.jsx'
+import { ReviewInbox } from '../components/ReviewInbox.jsx'
 import { RunForm } from '../components/RunForm.jsx'
 import { RunsList } from '../components/RunsList.jsx'
 
@@ -50,6 +51,9 @@ export function RepositoryDetail({ repoID }) {
 
       <div class="tabbar">
         <button class={'tab' + (tab === 'overview' ? ' active' : '')} onClick={() => setTab('overview')}>Overview</button>
+        <button class={'tab' + (tab === 'review' ? ' active' : '')} onClick={() => setTab('review')}>
+          Review{repo.pending_count ? <span class="tab-badge">{repo.pending_count}</span> : null}
+        </button>
         <button class={'tab' + (tab === 'graph' ? ' active' : '')} onClick={() => setTab('graph')}>Graph</button>
       </div>
 
@@ -69,6 +73,7 @@ export function RepositoryDetail({ repoID }) {
           </section>
         </div>
       )}
+      {tab === 'review' && <ReviewInbox repo={repo} onChanged={load} />}
       {tab === 'graph' && (
         <RepoGraph repo={repo} onGenerate={() => setTab('overview')} onSaved={load} />
       )}
@@ -86,6 +91,12 @@ export function RepositoryDetail({ repoID }) {
   )
 }
 
+function coveragePct(repo) {
+  const total = (repo.node_count || 0) + (repo.edge_count || 0)
+  if (!total) return 100
+  return Math.round(((total - (repo.pending_count || 0)) / total) * 100)
+}
+
 function RepoSummary({ repo }) {
   return (
     <div class="repo-summary-grid">
@@ -95,9 +106,9 @@ function RepoSummary({ repo }) {
         <p class="page-sub mono">{repo.file_path || `${repo.path}/diffmind.yaml`}</p>
       </Card>
       <Card>
-        <div class="repo-section-kicker">Graph</div>
-        <h2>{repo.node_count || 0} nodes · {repo.edge_count || 0} connections</h2>
-        <p class="page-sub">Counts are resolved from this repository's discovery file.</p>
+        <div class="repo-section-kicker">Curation</div>
+        <h2>{coveragePct(repo)}% verified</h2>
+        <p class="page-sub">{repo.pending_count ? `${repo.pending_count} fact(s) awaiting review` : 'All facts verified.'} · {repo.node_count || 0} nodes · {repo.edge_count || 0} connections</p>
       </Card>
       <Card>
         <div class="repo-section-kicker">Automation</div>

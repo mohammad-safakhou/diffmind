@@ -67,6 +67,7 @@ export function RepositoriesOverview() {
                 <span><b>{r.edge_count || 0}</b> connections</span>
                 <span><b>{r.run_count || 0}</b> runs</span>
               </div>
+              <RepoCoverage repo={r} />
               <div class="repo-card-foot">
                 {r.last_status ? <StatusBadge status={r.last_status} /> : <span class="muted">no runs yet</span>}
                 <div class="repo-card-actions" onClick={(e) => e.stopPropagation()}>
@@ -99,6 +100,22 @@ function FileBadge({ repo }) {
   if (repo.file_path) return <Badge tone="warn">file missing</Badge>
   if (repo.run_count) return <Badge tone="warn">no file - generate</Badge>
   return <Badge tone="neutral">no file</Badge>
+}
+
+// RepoCoverage surfaces curation progress on the card — the signal that drives
+// the push toward a fully verified (100%) architecture.
+function RepoCoverage({ repo }) {
+  const total = (repo.node_count || 0) + (repo.edge_count || 0)
+  if (!repo.file_present || total === 0) return null
+  const pending = repo.pending_count || 0
+  const pct = Math.round(((total - pending) / total) * 100)
+  return (
+    <div class="repo-card-coverage">
+      <div class="repo-card-cov-track"><div class="repo-card-cov-fill" style={`width:${pct}%`} /></div>
+      <span class="repo-card-cov-label">{pct}% verified</span>
+      {pending > 0 && <Badge tone="warn">{pending} to review</Badge>}
+    </div>
+  )
 }
 
 function parentDir(p) {
