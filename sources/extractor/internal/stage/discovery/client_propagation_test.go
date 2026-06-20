@@ -80,6 +80,53 @@ func TestPropagateClientInstancesKindFallback(t *testing.T) {
 	}
 }
 
+// TestPropagateClientInstancesPlatformDisambiguation is the Phase-1 precision
+// fix: two clients of the SAME kind "db" (a Postgres DataSource and a DynamoDB
+// client) — which single-of-kind cannot disambiguate (it matches neither) — are
+// resolved per-op by the op's platform, so neither op mis-attaches.
+func TestPropagateClientInstancesPlatformDisambiguation(t *testing.T) {
+	idx := &astpkg.ProjectIndex{Configs: map[string]*astpkg.ConfigFile{
+		"application.yml": cfg("application.yml",
+			"spring.datasource.url", "jdbc:postgresql://pg:5432/facts_db",
+			"services.routing.dynamodb-table", "traffic-info",
+		),
+	}}
+	clients := []model.ConnectionClient{
+		{LogicalName: "automatedFactsRepository", Symbol: "AutomatedFactsCatalogueRepository", Kind: "db", ConfigAnchor: "spring.datasource.url"},
+		{LogicalName: "trafficDataClient", Symbol: "software.amazon.awssdk.services.dynamodb.DynamoDbClient", Kind: "db", ConfigAnchor: "services.routing.dynamodb-table"},
+	}
+	deps := []model.Dependency{
+		{BaseEntity: model.BaseEntity{Type: "db_operation", Name: "write automated_facts_catalogue", Platform: "postgres", Details: map[string]any{"table": "automated_facts_catalogue", "operation": "write"}}},
+		{BaseEntity: model.BaseEntity{Type: "db_operation", Name: "write traffic-info", Platform: "dynamodb", Details: map[string]any{"table": "traffic-info", "operation": "write"}}},
+	}
+	PropagateClientInstances(idx, clients, nil, deps)
+	if deps[0].Instance != "facts_db" {
+		t.Errorf("postgres op instance = %q, want facts_db (single-of-kind would match neither)", deps[0].Instance)
+	}
+	if deps[1].Instance == "facts_db" {
+		t.Errorf("dynamodb op mis-attached to the postgres datasource (instance=%q)", deps[1].Instance)
+	}
+	if deps[1].Platform != "dynamodb" {
+		t.Errorf("dynamodb op platform = %q, want dynamodb", deps[1].Platform)
+	}
+}
+
+// TestPropagateClientInstancesHTTPClient proves stamping now generalizes beyond
+// db/cache: an outbound_http op picks up its HTTP client's resolved host/instance.
+func TestPropagateClientInstancesHTTPClient(t *testing.T) {
+	idx := &astpkg.ProjectIndex{Configs: map[string]*astpkg.ConfigFile{
+		"application.yml": cfg("application.yml", "services.billing.url", "https://billing-service.internal/api"),
+	}}
+	clients := []model.ConnectionClient{{LogicalName: "billingClient", Kind: "http", ConfigAnchor: "services.billing.url"}}
+	deps := []model.Dependency{
+		{BaseEntity: model.BaseEntity{Type: "outbound_http", Name: "POST /charge", Platform: "http", Instance: "unknown", Details: map[string]any{"method": "POST", "path": "/charge"}}},
+	}
+	PropagateClientInstances(idx, clients, nil, deps)
+	if deps[0].InstanceRef == nil || deps[0].InstanceRef.Host != "billing-service.internal" {
+		t.Fatalf("outbound op should inherit the http client's host, got %+v", deps[0].InstanceRef)
+	}
+}
+
 // TestPropagateClientInstancesEmptyEqualsStampInstanceRefs pins behavior parity:
 // with no clients, propagation reduces exactly to StampInstanceRefs.
 func TestPropagateClientInstancesEmptyEqualsStampInstanceRefs(t *testing.T) {

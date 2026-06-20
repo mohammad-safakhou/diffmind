@@ -65,8 +65,14 @@ func Run(ctx context.Context, idx *astpkg.ProjectIndex, repoPath string, cfg con
 
 	// AST-derived db augmentation (the same step the pipeline runs)
 	dependencies = connectionstage.AugmentDependencies(idx, exposures, dependencies, minConf)
-	discoverystage.StampInferredDBPlatform(idx, dependencies)      // P7: give deterministic db ops the configured platform
-	discoverystage.StampInstanceRefs(idx, exposures, dependencies) // concrete instance identity (downstream contract)
+	discoverystage.StampInferredDBPlatform(idx, dependencies) // P7: give deterministic db ops the configured platform
+	discoverystage.HarvestPhysicalTables(idx, dependencies)   // entity CLASS -> physical table (identity correction)
+	// Deterministic client floor + propagation: detect connection backbones from
+	// the AST, resolve each to a concrete instance, and fan it to the ops that use
+	// it. Mirrors RunWith; PropagateClientInstances calls StampInstanceRefs as its
+	// safety net, so single-resource behavior is unchanged when no client matches.
+	clients := discoverystage.DetectClients(idx)
+	discoverystage.PropagateClientInstances(idx, clients, exposures, dependencies)
 	dependencies = reconcile.DedupeDependencies(dependencies)
 
 	// Connections (AST walk only; no shallow fallback, no LLM repair)

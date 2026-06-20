@@ -20,17 +20,18 @@ FRAMEWORK-SPECIFIC PATTERNS TO CHECK:
 - Node.js: axios, fetch, got, node-fetch, superagent
 - Python: requests, httpx, urllib3, aiohttp, boto3 (for AWS API calls)
 
-FOR EACH OUTBOUND CALL EXTRACT:
-- Target service name or host (check application.yml/properties AND any *values.yaml / config/*.yaml for the actual URL)
-- HTTP method and path
-- Client class/interface name
-- Resilience patterns (circuit breaker, retry, timeout - check @CircuitBreaker, @Retry, Resilience4j config)
-- Request/response types
+FOR EACH OUTBOUND CALL EXTRACT (point at the call; do NOT resolve the host):
+- details.method and details.path — the HTTP method and request path (the call identity).
+- details.client — the HTTP client/bean/interface SYMBOL the call goes through
+  (e.g. the @FeignClient interface, a named RestTemplate/WebClient bean, a
+  Retrofit service). This is how the concrete base URL/host is attached
+  deterministically.
+- details.target_service — the logical peer name when it is obvious from the
+  client (e.g. a @FeignClient name), but do NOT hunt config for the resolved URL.
 
-CRITICAL: Check infrastructure configuration files for the ACTUAL base URLs:
-- application.yml/properties for service.*.url or *.baseUrl properties
-- any *values.yaml / config/production/*.yaml for environment-specific URLs
-- These URLs often reveal the target service name (e.g., http://gateway-service.lead2cash.svc.cluster.local/)
+DO NOT guess or resolve the base URL/host: the connection_client objective points
+at the HTTP client and a deterministic pass resolves its configured base URL from
+config. Naming the client symbol above is enough.
 
 DO NOT miss Retrofit interfaces - they define HTTP calls via annotated Java interfaces.
 

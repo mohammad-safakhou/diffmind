@@ -120,19 +120,22 @@ const (
 )
 
 type Connection struct {
-	ID             string           `json:"id"`
-	FromExposureID string           `json:"from_exposure_id"`
-	ToDependencyID string           `json:"to_dependency_id"`
-	Source         string           `json:"source,omitempty"`
-	Condition      Condition        `json:"condition"`
-	PathSignature  string           `json:"path_signature"`
-	Summary        string           `json:"summary"`
-	Locations      []Location       `json:"source_locations"`
-	Evidence       []Evidence       `json:"evidence"`
-	Confidence     float64          `json:"confidence"`
-	FromType       string           `json:"from_type"`
-	ToType         string           `json:"to_type"`
-	Paths          []ConnectionPath `json:"paths,omitempty"`
+	ID             string `json:"id"`
+	FromExposureID string `json:"from_exposure_id"`
+	ToDependencyID string `json:"to_dependency_id"`
+	Source         string `json:"source,omitempty"`
+	// Status is the curation state carried from a discovery file ("verified",
+	// "proposed", "needs_review"); empty means verified. Run artifacts omit it.
+	Status        string           `json:"status,omitempty"`
+	Condition     Condition        `json:"condition"`
+	PathSignature string           `json:"path_signature"`
+	Summary       string           `json:"summary"`
+	Locations     []Location       `json:"source_locations"`
+	Evidence      []Evidence       `json:"evidence"`
+	Confidence    float64          `json:"confidence"`
+	FromType      string           `json:"from_type"`
+	ToType        string           `json:"to_type"`
+	Paths         []ConnectionPath `json:"paths,omitempty"`
 }
 
 type ConnectionPath struct {
@@ -168,16 +171,21 @@ type RunManifest struct {
 	StartedAt  time.Time `json:"started_at"`
 	FinishedAt time.Time `json:"finished_at"`
 	RepoPath   string    `json:"repo_path"`
+	Team       string    `json:"team,omitempty"`
 	// RepoGitSHA is the analyzed repo's HEAD commit (when it is a git repo), so a
 	// run can be pinned to the exact target revision. DiffMindVersion records the
 	// extractor build (set via -ldflags, else "dev") so output can be pinned to
 	// the code that produced it.
 	RepoGitSHA        string            `json:"repo_git_sha,omitempty"`
+	RepoGitBranch     string            `json:"repo_git_branch,omitempty"`
+	RepoGitRemoteURL  string            `json:"repo_git_remote_url,omitempty"`
+	RepoGitDirty      bool              `json:"repo_git_dirty,omitempty"`
 	DiffMindVersion   string            `json:"diffmind_version,omitempty"`
 	SchemaVersion     string            `json:"schema_version"`
 	OpenCodeURL       string            `json:"opencode_url,omitempty"`
 	ConfidenceMinimum float64           `json:"confidence_minimum"`
 	Counts            map[string]int    `json:"counts"`
+	RepoMetrics       *RepoMetrics      `json:"repo_metrics,omitempty"`
 	Warnings          []string          `json:"warnings,omitempty"`
 	Metadata          map[string]string `json:"metadata,omitempty"`
 
@@ -194,6 +202,21 @@ type RunManifest struct {
 	// the run-wide aggregate. Nil when the provider doesn't return
 	// token counters or when token reads were disabled.
 	TokenTotals map[string]TokenBucket `json:"token_totals,omitempty"`
+}
+
+type RepoMetrics struct {
+	TotalLOC            int              `json:"total_loc"`
+	FileCount           int              `json:"file_count"`
+	Languages           []LanguageMetric `json:"languages,omitempty"`
+	Frameworks          []string         `json:"frameworks,omitempty"`
+	BuildTools          []string         `json:"build_tools,omitempty"`
+	DetectedServiceName string           `json:"detected_service_name,omitempty"`
+}
+
+type LanguageMetric struct {
+	Language string `json:"language"`
+	Files    int    `json:"files"`
+	LOC      int    `json:"loc"`
 }
 
 // TokenBucket mirrors agents.tokenBucket in the model package so

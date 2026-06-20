@@ -489,9 +489,12 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	if o.astIndex != nil {
 		dependencies = connectionstage.AugmentDependencies(o.astIndex, exposures, dependencies, o.cfg.Quality.MinConfidence)
 		discoverystage.StampInferredDBPlatform(o.astIndex, dependencies) // P7: configured platform for deterministic db ops
-		// Backbone-client instance propagation: resolve each client to a concrete
-		// instance and fan it to the ops that use it (multi-datastore), then the
+		discoverystage.HarvestPhysicalTables(o.astIndex, dependencies)   // entity CLASS -> physical table (identity correction)
+		// Merge the LLM-discovered backbones with the deterministic AST client floor
+		// (so clients exist even when the model misses them), then resolve each to a
+		// concrete instance and fan it to the ops that use it (multi-datastore). The
 		// single-resource StampInstanceRefs runs inside as the additive safety net.
+		o.clients = discoverystage.MergeClients(o.clients, discoverystage.DetectClients(o.astIndex))
 		o.clients = discoverystage.PropagateClientInstances(o.astIndex, o.clients, exposures, dependencies)
 		o.persistStageState("connection_clients.json", o.clients)
 		discoverystage.EnrichExposuresFromAnnotations(o.astIndex, exposures) // B′ T1: recover auth/security from handler annotations

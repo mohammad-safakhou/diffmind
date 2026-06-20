@@ -1,0 +1,79 @@
+{
+  "fixture": "spring-multi-client",
+  "repo_path": "repo",
+  "service_name": "spring-multi-client",
+  "exposures": [
+    {
+      "type": "http_route",
+      "name": "GET /orders/{id}",
+      "details": { "method": "GET", "path": "/orders/{id}" },
+      "deterministic": true
+    },
+    {
+      "type": "http_route",
+      "name": "POST /orders",
+      "details": { "method": "POST", "path": "/orders" },
+      "deterministic": true
+    },
+    {
+      "type": "http_route",
+      "name": "GET /customers/{id}",
+      "details": { "method": "GET", "path": "/customers/{id}" },
+      "deterministic": true
+    },
+    {
+      "type": "http_route",
+      "name": "POST /customers",
+      "details": { "method": "POST", "path": "/customers" },
+      "deterministic": true
+    }
+  ],
+  "dependencies": [
+    {
+      "type": "db_operation",
+      "name": "read orders",
+      "details": { "table": "orders", "operation": "read" },
+      "deterministic": true
+    },
+    {
+      "type": "db_operation",
+      "name": "write orders",
+      "details": { "table": "orders", "operation": "write" },
+      "deterministic": true
+    },
+    {
+      "type": "db_operation",
+      "name": "read customers",
+      "details": { "table": "customers", "operation": "read" },
+      "deterministic": true
+    },
+    {
+      "type": "db_operation",
+      "name": "write customers",
+      "details": { "table": "customers", "operation": "write" },
+      "deterministic": true
+    }
+  ],
+  "connections": [
+    {
+      "from": { "type": "http_route", "details": { "method": "GET", "path": "/orders/{id}" } },
+      "to": { "type": "db_operation", "details": { "table": "orders", "operation": "read" } },
+      "deterministic": true
+    },
+    {
+      "from": { "type": "http_route", "details": { "method": "POST", "path": "/orders" } },
+      "to": { "type": "db_operation", "details": { "table": "orders", "operation": "write" } },
+      "deterministic": true
+    },
+    {
+      "from": { "type": "http_route", "details": { "method": "GET", "path": "/customers/{id}" } },
+      "to": { "type": "db_operation", "details": { "table": "customers", "operation": "read" } },
+      "deterministic": true
+    },
+    {
+      "from": { "type": "http_route", "details": { "method": "POST", "path": "/customers" } },
+      "to": { "type": "db_operation", "details": { "table": "customers", "operation": "write" } },
+      "deterministic": true
+    }
+  ]
+}

@@ -11,7 +11,9 @@ import (
 // Structured detail values must never be rendered into grouping fields: a real
 // run emitted instance "map[connection_source:... url_template:jdbc:...]" when
 // the LLM returned connection details as an object, splitting one database into
-// several downstream identities.
+// several downstream identities. The table is the RESOURCE (identity key), not
+// the instance, so it must NOT become the instance either — the instance is the
+// physical datastore, left generic here and resolved deterministically later.
 func TestDeriveGroupingIgnoresStructuredDetails(t *testing.T) {
 	b := model.BaseEntity{
 		Type: "db_operation",
@@ -29,8 +31,11 @@ func TestDeriveGroupingIgnoresStructuredDetails(t *testing.T) {
 	if strings.HasPrefix(instance, "map[") {
 		t.Fatalf("structured detail leaked into instance: %q", instance)
 	}
-	if instance != "traffic_configuration" {
-		t.Errorf("instance should fall through to the next scalar key, got %q", instance)
+	if instance == "traffic_configuration" {
+		t.Errorf("the table is the resource, not the instance; it must not be used as the instance, got %q", instance)
+	}
+	if instance != "database" {
+		t.Errorf("instance should fall back to the generic platform (resolved deterministically later), got %q", instance)
 	}
 	if platform != "database" {
 		// Generic here is correct: StampInferredDBPlatform later fills the

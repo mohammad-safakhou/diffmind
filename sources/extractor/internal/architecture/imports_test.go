@@ -40,7 +40,9 @@ func TestStageImportBoundaries(t *testing.T) {
 				t.Errorf("%s imports transitional agents package", path)
 			case strings.HasPrefix(importPath, module+"internal/stage/"):
 				importedStage := strings.TrimPrefix(importPath, module+"internal/stage/")
-				if importedStage != ownStage {
+				// A stage may import packages nested under itself (e.g. discovery's
+				// clientspec registry); only sibling-stage imports are forbidden.
+				if importedStage != ownStage && !strings.HasPrefix(importedStage, ownStage+"/") {
 					t.Errorf("%s imports stage %s", path, importedStage)
 				}
 			}

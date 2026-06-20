@@ -22,16 +22,22 @@ FRAMEWORK-SPECIFIC PATTERNS TO CHECK:
 - Python: psycopg2, SQLAlchemy, boto3 dynamodb, redis-py
 - Liquibase/Flyway migrations (mention but don't list as runtime ops)
 
-FOR EACH DB OPERATION EXTRACT:
-- Database type (PostgreSQL, MySQL, Redis, DynamoDB, Elasticsearch, MongoDB)
-- Table/entity/key name
-- Operation type (read/write/upsert/delete)
-- Repository/DAO class and method name
-- The datasource/connection config property name
+FOR EACH DB OPERATION EXTRACT (point at the operation; do NOT resolve the instance):
+- details.table — the PHYSICAL table/entity/key name. Prefer the real table name
+  (e.g. a JPA @Table(name=...), a DynamoDB table name) over the Java/ORM class
+  name. If you can only see the entity class, still report it, but the physical
+  name is what matters.
+- details.operation — read | write | upsert | delete
+- details.client — the repository/DAO/mapper/client SYMBOL this goes through
+  (e.g. "OrderRepository", "DynamoDbTable<TrafficData>", the @Mapper interface).
+  This is how the concrete database instance is attached deterministically.
+
+DO NOT guess the database instance/host/connection or hunt config for it: the
+connection_client objective points at the datasource/client and a deterministic
+pass resolves the concrete instance from config. Naming the client symbol above
+is enough.
 
 IMPORTANT:
-- Check application.yml/properties for datasource configuration to identify database type and connection details
-- Check any *values.yaml / config/*.yaml for database connection environment variables
 - Report the HIGH-LEVEL data dependency, not a per-method inventory: emit ONE
   item per distinct (table/entity, operation-type) pair. Five different SELECT
   methods on the "orders" table are ONE read item; a read and a write on the
