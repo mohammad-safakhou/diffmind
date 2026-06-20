@@ -21,3 +21,6 @@ internal/scip/testdata/fixtures/**/.gradle/
 internal/scip/testdata/fixtures/**/bin/
 internal/scip/testdata/fixtures/**/obj/
 internal/scip/testdata/fixtures/**/*.scip
+
+# Local Claude Code settings (per-developer)
+.claude/

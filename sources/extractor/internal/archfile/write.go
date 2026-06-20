@@ -65,19 +65,52 @@ func WriteGenerated(doc catalog.Document, mainPath, generatedPath string) (int, 
 	return count, nil
 }
 
-// WriteProposalDoc writes a complete proposal document to generatedPath. It is
-// used by the repo-centric UI's run -> file workflow, where the selected run is
-// compared directly against the repository's diffmind.yaml instead of first
-// flowing through the global catalog. Dangling connections are dropped so the
-// generated file always resolves cleanly.
-func WriteProposalDoc(doc catalog.Document, generatedPath string) error {
+// Curation status values. An empty status means "verified" (hand-authored facts
+// need no status field). Automation writes "proposed"; the review UI flips
+// accepted facts to "verified".
+const (
+	StatusVerified    = "verified"
+	StatusProposed    = "proposed"
+	StatusNeedsReview = "needs_review"
+)
+
+// WriteProposalDoc writes a complete proposal document to generatedPath, with
+// every record stamped status: proposed and the given source (e.g. "run:<id>").
+// It is used by the repo-centric UI's run -> file workflow, where the selected
+// run is compared directly against the repository's diffmind.yaml instead of
+// first flowing through the global catalog. Dangling connections are dropped so
+// the generated file always resolves cleanly.
+func WriteProposalDoc(doc catalog.Document, generatedPath, source string) error {
 	doc.Connections = dropDanglingConnections(doc.Exposures, doc.Dependencies, doc.Connections)
-	body, err := Marshal(Document(doc))
+	raw := Document(doc)
+	stampStatus(raw, StatusProposed, source)
+	body, err := Marshal(raw)
 	if err != nil {
 		return err
 	}
 	out := append([]byte(generatedHeader), body...)
 	return WriteRaw(generatedPath, out)
+}
+
+// stampStatus sets status + source on every record of a rawFile. Used to mark a
+// proposal as automation-suggested before it is merged into the main file.
+func stampStatus(raw *rawFile, status, source string) {
+	for i := range raw.Resources {
+		raw.Resources[i].Status = status
+		raw.Resources[i].Source = source
+	}
+	for i := range raw.Exposures {
+		raw.Exposures[i].Status = status
+		raw.Exposures[i].Source = source
+	}
+	for i := range raw.Dependencies {
+		raw.Dependencies[i].Status = status
+		raw.Dependencies[i].Source = source
+	}
+	for i := range raw.Connections {
+		raw.Connections[i].Status = status
+		raw.Connections[i].Source = source
+	}
 }
 
 func dropDanglingConnections(exps []model.Exposure, deps []model.Dependency, conns []model.Connection) []model.Connection {
@@ -387,13 +420,15 @@ func connSemanticKey(baseByID map[string]model.BaseEntity, c model.Connection) s
 func fromRecords(exps []model.Exposure, deps []model.Dependency, conns []model.Connection) *rawFile {
 	raw := &rawFile{Schema: Schema}
 
-	// Pick a file-level default service when one value dominates.
+	// Pick a file-level default service when one value dominates. Service values
+	// are normalized first so a run's absolute-path service collapses to its clean
+	// base name (matching how identity keys it), keeping generated YAML readable.
 	serviceCounts := map[string]int{}
 	for _, e := range exps {
-		serviceCounts[e.Service]++
+		serviceCounts[catalog.NormalizeServiceName(e.Service)]++
 	}
 	for _, d := range deps {
-		serviceCounts[d.Service]++
+		serviceCounts[catalog.NormalizeServiceName(d.Service)]++
 	}
 	defaultService := ""
 	best := 0
@@ -446,7 +481,7 @@ func fromRecords(exps []model.Exposure, deps []model.Dependency, conns []model.C
 		if len(details) == 0 {
 			details = nil
 		}
-		svc := b.Service
+		svc := catalog.NormalizeServiceName(b.Service)
 		if svc == defaultService {
 			svc = ""
 		}

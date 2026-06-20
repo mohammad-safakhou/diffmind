@@ -282,7 +282,11 @@ dependencies:
 
 func strPtr(s string) *string { return &s }
 
-func TestUnknownVariableErrors(t *testing.T) {
+// An undeclared ${var} is left verbatim, not an error: run-discovered facts
+// carry config placeholders (UUIDs, env names) that are not authoring vars, and
+// erroring would break the whole graph/merge for one literal. Declared vars
+// still expand (covered by TestResolveVars).
+func TestUnknownVariablePreserved(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "diffmind.yaml", `schema: diffmind.discovery.v1
 service: s
@@ -293,12 +297,46 @@ exposures:
       method: GET
       path: ${missing}
 `)
-	_, err := Resolve(filepath.Join(dir, "diffmind.yaml"))
-	if err == nil {
-		t.Fatal("expected error for unknown variable")
+	resolved, err := Resolve(filepath.Join(dir, "diffmind.yaml"))
+	if err != nil {
+		t.Fatalf("undeclared var should pass through, got error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "missing") {
-		t.Errorf("error should name the missing variable, got: %v", err)
+	if path, _ := resolved.Exposures[0].Details["path"].(string); path != "${missing}" {
+		t.Errorf("undeclared var should be verbatim, got %q", path)
+	}
+}
+
+// A connection whose endpoint isn't present is dropped, not fatal — otherwise a
+// single dangling edge (e.g. left behind when a run-imported dependency collapses
+// onto an already-present fact and is skipped) would blank the whole graph.
+func TestDanglingConnectionDropped(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "diffmind.yaml", `schema: diffmind.discovery.v1
+service: s
+exposures:
+  - id: e1
+    type: http_route
+    name: GET /x
+    details: {method: GET, path: /x}
+dependencies:
+  - id: d1
+    type: db_operation
+    name: read t
+    details: {table: t, operation: read, platform: postgres}
+connections:
+  - {from: e1, to: d1}
+  - {from: e1, to: ghost}
+`)
+	resolved, err := Resolve(filepath.Join(dir, "diffmind.yaml"))
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	g, err := ToGraph(resolved, "test")
+	if err != nil {
+		t.Fatalf("ToGraph must tolerate a dangling connection, got: %v", err)
+	}
+	if len(g.Connections) != 1 {
+		t.Fatalf("dangling connection should be dropped, kept %d", len(g.Connections))
 	}
 }
 
@@ -457,4 +495,100 @@ func TestValidateRejectsBadYAML(t *testing.T) {
 	if err := Validate([]byte("schema: diffmind.discovery.v1\nservice: s\n")); err != nil {
 		t.Fatalf("valid file rejected: %v", err)
 	}
+}
+
+// TestStatusRoundTrip verifies curation status/source survive resolve and a
+// no-op parse→marshal, and that empty status resolves as verified semantics.
+func TestStatusRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	body := `schema: diffmind.discovery.v1
+service: orders
+exposures:
+  - type: http_route
+    name: POST /v1/orders
+    details: {method: POST, path: /v1/orders}
+  - type: http_route
+    name: GET /v1/orders
+    status: proposed
+    source: run:abc
+    details: {method: GET, path: /v1/orders}
+`
+	p := writeFile(t, dir, "diffmind.yaml", body)
+	resolved, err := Resolve(p)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if resolved.Exposures[0].Status != "" {
+		t.Fatalf("authored fact should have empty (verified) status, got %q", resolved.Exposures[0].Status)
+	}
+	if resolved.Exposures[1].Status != "proposed" || resolved.Exposures[1].Source != "run:abc" {
+		t.Fatalf("proposed fact lost status/source: %+v", resolved.Exposures[1])
+	}
+	g, err := ToGraph(resolved, "test")
+	if err != nil {
+		t.Fatalf("tograph: %v", err)
+	}
+	if g.Coverage.Verified != 1 || g.Coverage.Proposed != 1 || g.Coverage.Total != 2 {
+		t.Fatalf("coverage = %+v, want 1 verified / 1 proposed / 2 total", g.Coverage)
+	}
+}
+
+// TestDraftAcceptAndReject checks the review primitives: a status edit flips a
+// proposed fact to verified, and a delete removes a fact plus its connections.
+func TestDraftAcceptAndReject(t *testing.T) {
+	dir := t.TempDir()
+	body := `schema: diffmind.discovery.v1
+service: orders
+exposures:
+  - type: http_route
+    name: POST /v1/orders
+    status: proposed
+    details: {method: POST, path: /v1/orders}
+dependencies:
+  - type: db_operation
+    name: OrderRepository.save
+    status: proposed
+    details: {table: orders, operation: write, platform: postgres}
+connections:
+  - from: POST /v1/orders
+    to: OrderRepository.save
+    status: proposed
+`
+	p := writeFile(t, dir, "diffmind.yaml", body)
+
+	verified := "verified"
+	manual := "manual"
+	accept, err := Draft(p, EditSet{
+		Exposures: []EntityEdit{{ID: "POST /v1/orders", Status: &verified, Source: &manual}},
+	})
+	if err != nil {
+		t.Fatalf("accept draft: %v", err)
+	}
+	if !strings.Contains(accept.YAML, "status: verified") {
+		t.Fatalf("accept did not write verified status:\n%s", accept.YAML)
+	}
+
+	reject, err := Draft(p, EditSet{
+		Delete: []DeleteRef{{Kind: "dependency", ID: "OrderRepository.save"}},
+	})
+	if err != nil {
+		t.Fatalf("reject draft: %v", err)
+	}
+	if strings.Contains(reject.YAML, "OrderRepository.save") {
+		t.Fatalf("reject did not remove the dependency:\n%s", reject.YAML)
+	}
+	if strings.Contains(reject.YAML, "POST /v1/orders\n    to: OrderRepository.save") || countConns(reject.YAML) != 0 {
+		t.Fatalf("reject left a dangling connection:\n%s", reject.YAML)
+	}
+}
+
+func countConns(yaml string) int {
+	// crude: count "  - from:" lines under connections in the draft
+	n := 0
+	for _, line := range strings.Split(yaml, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "- from:") {
+			n++
+		}
+	}
+	return n
 }

@@ -86,7 +86,7 @@ export function RepoFileSync({ repo, onChanged, onGraph }) {
       setPlan(null)
       await refreshStatus(path)
       onChanged?.()
-      toast.success(result.merged ? `Merged ${result.merged} record(s) into diffmind.yaml.` : 'Nothing to merge.')
+      toast.success(result.merged ? `Imported ${result.merged} fact(s) as proposed — review them in the Review tab.` : 'Nothing to import.')
     } catch (e) {
       toast.error(e.message || String(e))
     } finally {
@@ -102,7 +102,7 @@ export function RepoFileSync({ repo, onChanged, onGraph }) {
         <div>
           <div class="repo-section-kicker">{mode}</div>
           <h2>{status?.exists ? 'Keep diffmind.yaml current' : 'Create diffmind.yaml from automation'}</h2>
-          <p>Pick one completed run, preview the file diff, then merge only new facts into the repository file.</p>
+          <p>Pick one completed run, preview the diff, then import new facts as <b>proposed</b>. Curate them to verified in the Review tab.</p>
         </div>
         <FileStatusBadge status={status} />
       </div>

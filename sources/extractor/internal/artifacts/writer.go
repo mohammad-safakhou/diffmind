@@ -1,6 +1,7 @@
 package artifacts
 
 import (
+	"bufio"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -9,8 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mohammad-safakhou/diffmind/internal/extraction"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
+	"gopkg.in/yaml.v3"
 )
 
 const SchemaVersion = "v1alpha1"
@@ -28,6 +31,20 @@ func gitHeadSHA(path string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func gitOutput(path string, args ...string) string {
+	cmdArgs := append([]string{"-C", path}, args...)
+	out, err := exec.Command("git", cmdArgs...).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func gitDirty(path string) bool {
+	out := gitOutput(path, "status", "--porcelain")
+	return out != ""
 }
 
 type WriteInput struct {
@@ -48,6 +65,7 @@ type WriteInput struct {
 	// the dashboard's runs sidebar can show per-stage cost summaries
 	// without re-reading the events log.
 	TokenTotals map[string]model.TokenBucket
+	RepoFacts   *extraction.RepoFacts
 }
 
 func Write(in WriteInput) (string, error) {
@@ -74,7 +92,11 @@ func Write(in WriteInput) (string, error) {
 		StartedAt:         in.StartedAt,
 		FinishedAt:        in.FinishedAt,
 		RepoPath:          in.RepoPath,
+		Team:              repoTeam(in.RepoPath),
 		RepoGitSHA:        gitHeadSHA(in.RepoPath),
+		RepoGitBranch:     gitOutput(in.RepoPath, "rev-parse", "--abbrev-ref", "HEAD"),
+		RepoGitRemoteURL:  gitOutput(in.RepoPath, "remote", "get-url", "origin"),
+		RepoGitDirty:      gitDirty(in.RepoPath),
 		DiffMindVersion:   DiffMindVersion,
 		SchemaVersion:     SchemaVersion,
 		OpenCodeURL:       in.OpenCodeURL,
@@ -85,6 +107,7 @@ func Write(in WriteInput) (string, error) {
 			"connections":  len(in.Connections),
 			"unresolved":   len(in.Unresolved),
 		},
+		RepoMetrics:   CollectRepoMetrics(in.RepoPath, in.RepoFacts),
 		Warnings:      in.Warnings,
 		StageFailures: stageFailures(in.Unresolved),
 		TokenTotals:   in.TokenTotals,
@@ -100,6 +123,169 @@ func Write(in WriteInput) (string, error) {
 		"unresolved":   len(in.Unresolved),
 	})
 	return runDir, nil
+}
+
+func repoTeam(repoPath string) string {
+	type archfileHeader struct {
+		Team string `yaml:"team"`
+	}
+	data, err := os.ReadFile(filepath.Join(repoPath, "diffmind.yaml"))
+	if err != nil {
+		return "default"
+	}
+	var h archfileHeader
+	if err := yaml.Unmarshal(data, &h); err != nil {
+		return "default"
+	}
+	if team := strings.TrimSpace(h.Team); team != "" {
+		return team
+	}
+	return "default"
+}
+
+func CollectRepoMetrics(repoPath string, facts *extraction.RepoFacts) *model.RepoMetrics {
+	m := &model.RepoMetrics{}
+	byLang := map[string]*model.LanguageMetric{}
+	_ = filepath.WalkDir(repoPath, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		name := d.Name()
+		if d.IsDir() {
+			if skipMetricsDir(name) && path != repoPath {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		lang := languageForPath(path)
+		if lang == "" {
+			return nil
+		}
+		loc := countLOC(path)
+		if loc < 0 {
+			return nil
+		}
+		lm := byLang[lang]
+		if lm == nil {
+			lm = &model.LanguageMetric{Language: lang}
+			byLang[lang] = lm
+		}
+		lm.Files++
+		lm.LOC += loc
+		m.FileCount++
+		m.TotalLOC += loc
+		return nil
+	})
+	for _, lm := range byLang {
+		m.Languages = append(m.Languages, *lm)
+	}
+	sort.Slice(m.Languages, func(i, j int) bool {
+		if m.Languages[i].LOC != m.Languages[j].LOC {
+			return m.Languages[i].LOC > m.Languages[j].LOC
+		}
+		return m.Languages[i].Language < m.Languages[j].Language
+	})
+	if facts != nil {
+		m.Frameworks = uniqueStrings(facts.Frameworks)
+		m.DetectedServiceName = strings.TrimSpace(facts.ServiceName)
+		tools := map[string]bool{}
+		for _, lf := range facts.LanguageFacts {
+			if t := strings.TrimSpace(lf.BuildTool); t != "" {
+				tools[t] = true
+			}
+		}
+		for t := range tools {
+			m.BuildTools = append(m.BuildTools, t)
+		}
+		sort.Strings(m.BuildTools)
+	}
+	return m
+}
+
+func skipMetricsDir(name string) bool {
+	switch name {
+	case ".git", "node_modules", "vendor", "target", "build", "dist", ".gradle", ".idea", ".gocache", ".diffmind", "coverage", ".cache":
+		return true
+	default:
+		return false
+	}
+}
+
+func languageForPath(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".go":
+		return "go"
+	case ".java":
+		return "java"
+	case ".kt", ".kts":
+		return "kotlin"
+	case ".scala":
+		return "scala"
+	case ".js", ".jsx", ".mjs", ".cjs":
+		return "javascript"
+	case ".ts", ".tsx":
+		return "typescript"
+	case ".py":
+		return "python"
+	case ".rb":
+		return "ruby"
+	case ".cs":
+		return "csharp"
+	case ".fs":
+		return "fsharp"
+	case ".c", ".h":
+		return "c"
+	case ".cc", ".cpp", ".cxx", ".hpp":
+		return "cpp"
+	case ".rs":
+		return "rust"
+	case ".php":
+		return "php"
+	case ".yaml", ".yml":
+		return "yaml"
+	case ".json":
+		return "json"
+	case ".xml":
+		return "xml"
+	default:
+		return ""
+	}
+}
+
+func countLOC(path string) int {
+	f, err := os.Open(path)
+	if err != nil {
+		return -1
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	buf := make([]byte, 0, 64*1024)
+	sc.Buffer(buf, 1024*1024)
+	lines := 0
+	for sc.Scan() {
+		if strings.TrimSpace(sc.Text()) != "" {
+			lines++
+		}
+	}
+	if sc.Err() != nil {
+		return -1
+	}
+	return lines
+}
+
+func uniqueStrings(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func writeEntities(dir string, grouped map[string][]model.Exposure) error {

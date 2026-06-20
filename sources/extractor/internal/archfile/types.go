@@ -23,6 +23,7 @@ const Schema = "diffmind.discovery.v1"
 type rawFile struct {
 	Schema       string            `yaml:"schema"`
 	Service      string            `yaml:"service,omitempty"`
+	Team         string            `yaml:"team,omitempty"`
 	Vars         map[string]string `yaml:"vars,omitempty"`
 	Include      []string          `yaml:"include,omitempty"`
 	Resources    []rawResource     `yaml:"resources,omitempty"`
@@ -40,6 +41,11 @@ type rawResource struct {
 	Summary  string         `yaml:"summary,omitempty"`
 	Tags     []string       `yaml:"tags,omitempty"`
 	Details  map[string]any `yaml:"details,omitempty"`
+	// Status is the curation state: "verified" (human-confirmed; the default when
+	// omitted), "proposed" (automation suggested, awaiting review), or
+	// "needs_review". Source records provenance ("manual" or "run:<id>").
+	Status string `yaml:"status,omitempty"`
+	Source string `yaml:"source,omitempty"`
 }
 
 type rawEntity struct {
@@ -54,6 +60,8 @@ type rawEntity struct {
 	Platform string         `yaml:"platform,omitempty"`
 	Tags     []string       `yaml:"tags,omitempty"`
 	Details  map[string]any `yaml:"details,omitempty"`
+	Status   string         `yaml:"status,omitempty"`
+	Source   string         `yaml:"source,omitempty"`
 }
 
 type rawConn struct {
@@ -62,12 +70,15 @@ type rawConn struct {
 	// Condition is a shorthand expression; "" means unconditional.
 	Condition string `yaml:"condition,omitempty"`
 	Summary   string `yaml:"summary,omitempty"`
+	Status    string `yaml:"status,omitempty"`
+	Source    string `yaml:"source,omitempty"`
 }
 
 // File is a fully resolved discovery file: variables expanded, includes inlined,
 // service defaults applied. It is what ToModel consumes.
 type File struct {
 	Service      string
+	Team         string
 	Resources    []Resource
 	Exposures    []Entity
 	Dependencies []Entity
@@ -86,6 +97,8 @@ type Resource struct {
 	Summary  string
 	Tags     []string
 	Details  map[string]any
+	Status   string
+	Source   string
 }
 
 // Entity is one resolved exposure or dependency. Service is already the
@@ -100,6 +113,8 @@ type Entity struct {
 	Platform string
 	Tags     []string
 	Details  map[string]any
+	Status   string
+	Source   string
 }
 
 // Conn is one resolved connection; From/To reference an entity Alias or Name.
@@ -108,4 +123,6 @@ type Conn struct {
 	To        string
 	Condition string
 	Summary   string
+	Status    string
+	Source    string
 }

@@ -91,3 +91,30 @@ func TestStoreRejectsStaleRevisionAndOrphanConnection(t *testing.T) {
 		t.Fatal("expected orphan connection validation error")
 	}
 }
+
+func TestNormalizeServiceNameCollapsesPath(t *testing.T) {
+	cases := map[string]string{
+		"/Users/x/repos/payments":  "payments",
+		"/Users/x/repos/payments/": "payments",
+		"payments":                 "payments",
+		"  payments  ":             "payments",
+		"":                         "",
+	}
+	for in, want := range cases {
+		if got := NormalizeServiceName(in); got != want {
+			t.Errorf("NormalizeServiceName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A run stores the repo's absolute path as the service; a hand-authored file
+// names it plainly. The catalog identity must treat them as one service, or the
+// run's facts import as duplicates of the matching authored facts.
+func TestEntityCatalogKeyMatchesRunAndFileService(t *testing.T) {
+	details := map[string]any{"table": "campaign_item", "operation": "read", "platform": "postgres"}
+	runFact := model.BaseEntity{Type: "db_operation", Name: "read campaign_item", Service: "/Users/x/repos/routing-service", Platform: "postgres", Details: details}
+	fileFact := model.BaseEntity{Type: "db_operation", Name: "read campaign_item", Service: "routing-service", Platform: "postgres", Details: details}
+	if run, file := EntityCatalogKey("dependency", runFact), EntityCatalogKey("dependency", fileFact); run != file {
+		t.Fatalf("run vs file identity must collapse:\n run  = %s\n file = %s", run, file)
+	}
+}

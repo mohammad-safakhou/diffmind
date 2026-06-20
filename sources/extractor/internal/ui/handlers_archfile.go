@@ -358,6 +358,57 @@ func (s *Server) handleArchitectureFileApply(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, map[string]any{"ok": true, "sha256": sha256Hex([]byte(req.YAML))})
 }
 
+// handleArchitectureFileReview applies a batch of curation edits — accept
+// (status->verified), edit-then-accept, and reject (delete) — to the discovery
+// file in one optimistic-concurrency write. It is the engine behind the Review
+// inbox and the graph's inline accept/reject. Edits carry their own status
+// (e.g. accept = {status: verified, source: manual}); reject is EditSet.Delete.
+func (s *Server) handleArchitectureFileReview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Path    string           `json:"path"`
+		BaseSHA string           `json:"base_sha"`
+		Edits   archfile.EditSet `json:"edits"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	path, err := fileRequest{Path: req.Path}.clean()
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	current, err := os.ReadFile(path)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if strings.TrimSpace(req.BaseSHA) == "" || sha256Hex(current) != strings.TrimSpace(req.BaseSHA) {
+		writeErr(w, http.StatusConflict, errors.New("file changed since it was loaded"))
+		return
+	}
+	draft, err := archfile.Draft(path, req.Edits)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := archfile.WriteRaw(path, []byte(draft.YAML)); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"ok":      true,
+		"sha256":  sha256Hex([]byte(draft.YAML)),
+		"graph":   draft.Graph,
+		"summary": draft.Summary,
+		"yaml":    draft.YAML,
+	})
+}
+
 // handleArchitectureRunProposal builds a transient generated file directly from
 // one completed run and returns the merge preview against the repository file.
 func (s *Server) handleArchitectureRunProposal(w http.ResponseWriter, r *http.Request) {
@@ -400,7 +451,7 @@ func (s *Server) handleArchitectureRunProposal(w http.ResponseWriter, r *http.Re
 		Connections:   input.Connections,
 	}
 	genPath := filepath.Join(filepath.Dir(path), generatedFileName)
-	if err := archfile.WriteProposalDoc(doc, genPath); err != nil {
+	if err := archfile.WriteProposalDoc(doc, genPath, "run:"+runID); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
