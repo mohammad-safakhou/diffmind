@@ -24,13 +24,14 @@ func protocolEncodeJSON(w io.Writer, doc *protocol.Document) error { return prot
 func protocolEncodeYAML(w io.Writer, doc *protocol.Document) error { return protocol.EncodeYAML(w, doc) }
 
 type protocolBuilder struct {
-	doc       *protocol.Document
-	oldToNew  map[string]string
-	evSeen    map[string]string
-	objects   map[string]bool
-	resources map[string]string
-	pipeline  string
-	now       time.Time
+	doc        *protocol.Document
+	oldToNew   map[string]string
+	evSeen     map[string]string
+	objects    map[string]bool
+	resources  map[string]string
+	flowedFrom map[string]bool
+	pipeline   string
+	now        time.Time
 }
 
 func buildDiffMind protocol(in WriteInput, manifest model.RunManifest) (*protocol.Document, error) {
@@ -73,12 +74,13 @@ func buildDiffMind protocol(in WriteInput, manifest model.RunManifest) (*protoco
 				},
 			},
 		},
-		oldToNew:  map[string]string{},
-		evSeen:    map[string]string{},
-		objects:   map[string]bool{},
-		resources: map[string]string{},
-		pipeline:  pipeline,
-		now:       now,
+		oldToNew:   map[string]string{},
+		evSeen:     map[string]string{},
+		objects:    map[string]bool{},
+		resources:  map[string]string{},
+		flowedFrom: map[string]bool{},
+		pipeline:   pipeline,
+		now:        now,
 	}
 	for _, exp := range in.Exposures {
 		b.addExposure(exp)
@@ -88,6 +90,9 @@ func buildDiffMind protocol(in WriteInput, manifest model.RunManifest) (*protoco
 	}
 	for _, conn := range in.Connections {
 		b.addFlow(conn)
+	}
+	for _, exp := range in.Exposures {
+		b.addEntrypointTrace(exp)
 	}
 	sortDiffMind protocol(b.doc)
 	canonicalizeDiffMind protocol(b.doc)
@@ -411,6 +416,7 @@ func (b *protocolBuilder) addFlow(conn model.Connection) {
 	if from == "" || to == "" {
 		return
 	}
+	b.flowedFrom[from] = true
 	flow := protocol.Flow{
 		ID:           "flow." + slug(from+"."+to),
 		Kind:         flowKind(conn.FromType, conn.ToType),
@@ -446,6 +452,57 @@ func (b *protocolBuilder) addFlow(conn model.Connection) {
 	flow.From = ""
 	flow.To = ""
 	b.doc.Flows = append(b.doc.Flows, flow)
+}
+
+func (b *protocolBuilder) addEntrypointTrace(exp model.Exposure) {
+	from := b.oldToNew[exp.ID]
+	if from == "" || b.flowedFrom[from] {
+		return
+	}
+	flow := protocol.Flow{
+		ID:         "flow." + slug(from+".entrypoint"),
+		Kind:       "entrypoint_trace",
+		Entrypoint: from,
+		Nodes: []protocol.FlowNode{{
+			ID:   "n1",
+			Ref:  from,
+			Role: "entrypoint",
+		}},
+		Status:       protocol.StatusConfirmed,
+		Confidence:   confidence(exp.Confidence),
+		Origin:       protocol.OriginDeterministic,
+		EvidenceRefs: b.evidenceRefsForObject(from),
+	}
+	b.doc.Flows = append(b.doc.Flows, flow)
+}
+
+func (b *protocolBuilder) evidenceRefsForObject(id string) []string {
+	for _, o := range b.doc.Objects.HTTPEndpoints {
+		if o.ID == id {
+			return append([]string(nil), o.EvidenceRefs...)
+		}
+	}
+	for _, o := range b.doc.Objects.QueueConsumers {
+		if o.ID == id {
+			return append([]string(nil), o.EvidenceRefs...)
+		}
+	}
+	for _, o := range b.doc.Objects.CLICommands {
+		if o.ID == id {
+			return append([]string(nil), o.EvidenceRefs...)
+		}
+	}
+	for _, o := range b.doc.Objects.Activations {
+		if o.ID == id {
+			return append([]string(nil), o.EvidenceRefs...)
+		}
+	}
+	for _, o := range b.doc.Objects.RPCEndpoints {
+		if o.ID == id {
+			return append([]string(nil), o.EvidenceRefs...)
+		}
+	}
+	return nil
 }
 
 func semanticObjectID(base model.BaseEntity) string {
