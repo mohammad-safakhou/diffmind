@@ -18,6 +18,7 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	"github.com/mohammad-safakhou/diffmind/internal/opencode"
+	"github.com/mohammad-safakhou/diffmind/internal/provenance"
 	"github.com/mohammad-safakhou/diffmind/internal/runstate"
 	"github.com/mohammad-safakhou/diffmind/internal/snapshot"
 	connectionstage "github.com/mohammad-safakhou/diffmind/internal/stage/connections"
@@ -182,7 +183,7 @@ func Run(ctx context.Context, cfg config.Config, repoPath string, oc openCodeAPI
 // optional capture directory. Callers from the CLI typically pass an empty
 // RunOptions; the dashboard wires in a live Sink and a per-run capture dir.
 func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCodeAPI, opts RunOptions) (Result, error) {
-	if oc == nil || !oc.Enabled() {
+	if !cfg.IsDeterministicPipeline() && (oc == nil || !oc.Enabled()) {
 		return Result{}, fmt.Errorf("opencode is required for extraction")
 	}
 	if cfg.Runtime.Workers <= 0 {
@@ -260,19 +261,21 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	if o.captureDir != "" {
 		_ = os.MkdirAll(o.captureDir, 0o755)
 	}
-	o.wireBridges(oc)
-	if o.pauser != nil {
-		o.wd = llmrun.NewWatchdog(o.pauser, o.sessionDir, 2*time.Second)
-		o.wd.SetSink(sink)
-		o.wd.Start(ctx)
-	}
-	o.sessionManager()
-	defer func() {
-		if o.wd != nil {
-			o.wd.Stop()
+	if !cfg.IsDeterministicPipeline() {
+		o.wireBridges(oc)
+		if o.pauser != nil {
+			o.wd = llmrun.NewWatchdog(o.pauser, o.sessionDir, 2*time.Second)
+			o.wd.SetSink(sink)
+			o.wd.Start(ctx)
 		}
-	}()
-	defer o.sessionManager().Close()
+		o.sessionManager()
+		defer func() {
+			if o.wd != nil {
+				o.wd.Stop()
+			}
+		}()
+		defer o.sessionManager().Close()
+	}
 	defer func() {
 		if err := snap.Close(); err != nil {
 			util.Warn("agents.orchestrator", "snapshot close failed", map[string]any{"error": err})
@@ -299,6 +302,9 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	// moment of the call, exactly as before).
 	haltFailure := func(stage, jobID, objectiveID, entityName string, err error, extra map[string]any) (Result, error) {
 		return o.buildFailure(ctx, start, state, unresolved, warnings, stage, jobID, objectiveID, entityName, err, extra)
+	}
+	if cfg.IsDeterministicPipeline() {
+		return o.runDeterministicOnly(ctx, progress, start, state, unresolved, warnings, haltFailure)
 	}
 
 	// --- Stage 0: repo facts ---
@@ -566,6 +572,139 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, oc openCod
 	return o.assembleResult(ctx, start, exposures, dependencies, conns, unresolved, warnings), nil
 }
 
+func (o *orchestrator) runDeterministicOnly(
+	ctx context.Context,
+	progress *ProgressReporter,
+	start time.Time,
+	state IntermediateState,
+	unresolved []model.UnresolvedItem,
+	warnings []string,
+	haltFailure func(stage, jobID, objectiveID, entityName string, err error, extra map[string]any) (Result, error),
+) (Result, error) {
+	util.Info("agents.orchestrator", "deterministic-only pipeline starting", map[string]any{
+		"repo": o.repoPath,
+	})
+
+	o.emit(events.Event{
+		Kind: events.KindStageCompleted, Stage: "repo_facts",
+		Status: events.StatusSkipped, Message: "deterministic pipeline does not run repo_facts",
+	})
+
+	if err := o.runASTIndexStage(ctx); err != nil {
+		return haltFailure("ast_index", "ast_index", "", "", err, nil)
+	}
+
+	allObjectives := objectives.Default()
+	deterministic := o.runDeterministicDiscovery(ctx, allObjectives)
+
+	seeds := make([]detailJob, 0)
+	exposureObjectives := map[string]objectives.Objective{}
+	for _, d := range deterministic {
+		if d.Objective.Kind == model.KindClient {
+			o.clients = append(o.clients, discoverystage.ClientsFromCandidates(d.Items)...)
+			continue
+		}
+		if d.Objective.Kind == model.KindExposure {
+			exposureObjectives[d.Objective.Type] = d.Objective
+			state.ExposureObjs[d.Objective.Type] = d.Objective.ID
+		}
+		for _, it := range d.Items {
+			seeds = append(seeds, detailJob{Objective: d.Objective, Seed: it})
+		}
+	}
+	state.DiscoverySeeds = append([]detailJob(nil), seeds...)
+	state.ReexamSeeds = append([]detailJob(nil), seeds...)
+	o.persistStageState("connection_clients.json", o.clients)
+	o.persistStageState("discovery.json", state.DiscoverySeeds)
+	o.persistStageState("reexamination.json", state.ReexamSeeds)
+	o.persistStageState("exposure_objectives.json", state.ExposureObjs)
+	o.emit(events.Event{
+		Kind: events.KindStageCompleted, Stage: "discovery",
+		Status: events.StatusSkipped, Message: "deterministic pipeline uses deterministic_discovery output",
+	})
+	o.emit(events.Event{
+		Kind: events.KindStageCompleted, Stage: "reexamination",
+		Status: events.StatusSkipped, Message: "deterministic pipeline does not run LLM re-examination",
+	})
+
+	exposures, dependencies := o.seedsToEntities(seeds, &unresolved)
+	exposures = reconcile.DedupeExposures(exposures)
+	dependencies = reconcile.DedupeDependencies(dependencies)
+	provenance.NormalizeDeterministic(exposures, dependencies, nil)
+	state.Exposures = append([]model.Exposure(nil), exposures...)
+	state.Dependencies = append([]model.Dependency(nil), dependencies...)
+	o.persistStageState("entities_exposures.json", state.Exposures)
+	o.persistStageState("entities_dependencies.json", state.Dependencies)
+	if o.astIndex != nil {
+		dependencies = connectionstage.AugmentDependencies(o.astIndex, exposures, dependencies, o.cfg.Quality.MinConfidence)
+		discoverystage.StampInferredDBPlatform(o.astIndex, dependencies)
+		discoverystage.HarvestPhysicalTables(o.astIndex, dependencies)
+		o.clients = discoverystage.MergeClients(o.clients, discoverystage.DetectClients(o.astIndex))
+		o.clients = discoverystage.PropagateClientInstances(o.astIndex, o.clients, exposures, dependencies)
+		o.persistStageState("connection_clients.json", o.clients)
+		discoverystage.EnrichExposuresFromAnnotations(o.astIndex, exposures)
+		discoverystage.EnrichExposuresFromParams(o.astIndex, exposures)
+		dependencies = reconcile.DedupeDependencies(dependencies)
+		provenance.NormalizeDeterministic(exposures, dependencies, nil)
+		state.Dependencies = append([]model.Dependency(nil), dependencies...)
+		o.persistStageState("entities_dependencies.json", state.Dependencies)
+	}
+
+	progress.StartPhase("connections", len(exposures), 65, 82, "Mapping deterministic exposure-to-dependency paths per exposure.")
+	o.emit(events.Event{Kind: events.KindStageStarted, Stage: "connections", Status: events.StatusRunning, Payload: map[string]any{"total": len(exposures), "tip": "Mapping deterministic exposure-to-dependency paths per exposure."}})
+	conns, connUnresolved, connErr, connFailedExposure := o.runConnectionsBatch(ctx, exposures, dependencies, exposureObjectives, nil, progress.Advance)
+	progress.CompletePhase()
+	if connErr != nil {
+		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "connections", Status: events.StatusFailed})
+		return haltFailure("connections", "connections."+connFailedExposure, "", connFailedExposure, connErr, nil)
+	}
+	if o.cfg.Runtime.ImportLegacyArchfile {
+		if archSeed, archPath, err := o.loadDeterministicArchfileSeed(); err != nil {
+			warnings = append(warnings, "deterministic archfile seed ignored: "+err.Error())
+			util.Warn("agents.orchestrator", "deterministic archfile seed ignored", map[string]any{"error": err.Error()})
+		} else if len(archSeed.Exposures)+len(archSeed.Dependencies)+len(archSeed.Connections) > 0 {
+			exposures, dependencies, conns = mergeArchfileSeed(archSeed, exposures, dependencies, conns)
+			provenance.NormalizeDeterministic(exposures, dependencies, conns)
+			state.Exposures = append([]model.Exposure(nil), exposures...)
+			state.Dependencies = append([]model.Dependency(nil), dependencies...)
+			state.Connections = append([]model.Connection(nil), conns...)
+			o.persistStageState("entities_exposures.json", state.Exposures)
+			o.persistStageState("entities_dependencies.json", state.Dependencies)
+			o.persistStageState("connections.json", state.Connections)
+			util.Info("agents.orchestrator", "deterministic archfile seed merged", map[string]any{
+				"path": archPath, "exposures": len(archSeed.Exposures), "dependencies": len(archSeed.Dependencies), "connections": len(archSeed.Connections),
+			})
+		}
+	}
+	o.emitStageCompleted("connections", events.StatusSuccess, map[string]any{"connections": len(conns)})
+	unresolved = append(unresolved, connUnresolved...)
+	provenance.NormalizeDeterministic(exposures, dependencies, conns)
+	state.Connections = append([]model.Connection(nil), conns...)
+	o.persistStageState("connections.json", state.Connections)
+	o.emit(events.Event{
+		Kind: events.KindStageCompleted, Stage: "connection_repair",
+		Status: events.StatusSkipped, Message: "deterministic pipeline does not run LLM connection repair",
+	})
+
+	progress.StartPhase("reconcile", 1, 90, 98, "Reconciling deterministic entities and dropping orphan connections.")
+	o.emit(events.Event{Kind: events.KindStageStarted, Stage: "reconcile", Status: events.StatusRunning, Payload: map[string]any{"total": 1, "tip": "Reconciling deterministic entities and dropping orphan connections."}})
+	reconciled := (reconcile.Runner{}).Run(reconcile.Input{
+		Exposures: exposures, Dependencies: dependencies, Connections: conns, Unresolved: unresolved,
+	})
+	exposures = reconciled.Exposures
+	dependencies = reconciled.Dependencies
+	conns = reconciled.Connections
+	unresolved = reconciled.Unresolved
+	provenance.NormalizeDeterministic(exposures, dependencies, conns)
+	progress.Advance()
+	progress.CompletePhase()
+	o.emitStageCompleted("reconcile", events.StatusSuccess, nil)
+
+	result := o.assembleResult(ctx, start, exposures, dependencies, conns, unresolved, warnings)
+	result.Intermediate = state
+	return result, nil
+}
+
 // assembleResult builds the final Result, logs the completion summary, and
 // emits the terminal run event (completed/cancelled) with token totals.
 func (o *orchestrator) assembleResult(ctx context.Context, start time.Time, exposures []model.Exposure, dependencies []model.Dependency, conns []model.Connection, unresolved []model.UnresolvedItem, warnings []string) Result {
@@ -652,7 +791,8 @@ func (o *orchestrator) emitRunStarted() {
 	cfg := o.cfg
 	util.Info("agents.orchestrator", "multi-step pipeline starting", map[string]any{
 		"repo": o.repoPath, "source_session_dir": o.sourceSessionDir, "snapshot": o.snap.Path, "sub_dir": o.subDir,
-		"workers": cfg.Runtime.Workers, "max_catalog_items": cfg.Runtime.MaxCatalogItems,
+		"pipeline": cfg.Pipeline(),
+		"workers":  cfg.Runtime.Workers, "max_catalog_items": cfg.Runtime.MaxCatalogItems,
 		"reuse_session": cfg.Runtime.ReuseOpenCodeSession, "min_confidence": cfg.Quality.MinConfidence,
 		"discovery_verify": cfg.Runtime.DiscoveryVerify, "discovery_verify_mode": cfg.Runtime.DiscoveryVerifyMode,
 		"discovery_verify_samples": cfg.Runtime.DiscoveryVerifySamples, "discovery_framework_scope": cfg.Runtime.DiscoveryFrameworkScope,
@@ -669,6 +809,7 @@ func (o *orchestrator) emitRunStarted() {
 			"repo":                           o.repoPath,
 			"snapshot":                       o.snap.Path,
 			"sub_dir":                        o.subDir,
+			"pipeline":                       cfg.Pipeline(),
 			"workers":                        cfg.Runtime.Workers,
 			"max_catalog_items":              cfg.Runtime.MaxCatalogItems,
 			"min_confidence":                 cfg.Quality.MinConfidence,

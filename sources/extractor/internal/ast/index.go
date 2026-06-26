@@ -82,6 +82,7 @@ func Build(ctx context.Context, repoRoot, primaryLanguage string, workers int, p
 
 	// Step 2: parse source files in parallel
 	idx := &ProjectIndex{
+		RepoRoot:   repoRoot,
 		Files:      make(map[string]*FileAST),
 		Symbols:    make(map[string][]SymbolDef),
 		CallGraph:  make(map[string][]CallSite),

@@ -138,3 +138,245 @@ public class Publisher {
 		t.Errorf("expected kafka publish to orders-topic, got %+v", got[0].Details)
 	}
 }
+
+func TestDeterministicRedisCacheOperations(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"cache.py": `import redis
+
+def handle():
+    redis_client = redis.Redis(host="localhost")
+    redis_client.get("traffic")
+    redis_client.set("traffic", "value")
+    redis_client.delete("traffic")
+    pipeline = redis_client.pipeline()
+    pipeline.get("other")
+`,
+	})
+	got := DeterministicCacheOperations(idx)
+	if len(got) != 3 {
+		t.Fatalf("expected read/write/evict redis cache operations, got %d: %+v", len(got), got)
+	}
+	ops := map[string]bool{}
+	for _, e := range got {
+		if e.Type != "cache_operation" || e.Details["cache"] != "redis" || e.Details["cache_type"] != "redis" {
+			t.Fatalf("unexpected cache entity: %+v", e)
+		}
+		ops[e.Details["operation"].(string)] = true
+		if e.Details["operation"] == "read" && len(e.Locations) != 2 {
+			t.Fatalf("read redis should preserve both call-site anchors, got %+v", e.Locations)
+		}
+	}
+	for _, op := range []string{"read", "write", "evict"} {
+		if !ops[op] {
+			t.Fatalf("missing redis %s operation in %+v", op, got)
+		}
+	}
+}
+
+func TestDeterministicRedisCachePrecision(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"plain.py": `def handle(client, pipeline):
+    client.get("not-cache")
+    pipeline.get("not-cache")
+`,
+	})
+	if got := DeterministicCacheOperations(idx); len(got) != 0 {
+		t.Fatalf("generic get/pipeline calls must not become cache operations: %+v", got)
+	}
+}
+
+func TestDeterministicRedisCacheSkipsLocalUtilityArtifacts(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"app/cache.py": `import redis
+
+def write():
+    redis_client = redis.Redis(host="localhost")
+    redis_client.set("traffic", "value")
+`,
+		"local_redis_utils/redis_local_starter.py": `import redis
+
+def bootstrap():
+    redis_client = redis.Redis(host="localhost")
+    redis_client.set("traffic", "value")
+`,
+	})
+	got := DeterministicCacheOperations(idx)
+	if len(got) != 1 {
+		t.Fatalf("expected one production write redis operation, got %+v", got)
+	}
+	if got[0].Details["operation"] != "write" {
+		t.Fatalf("expected write operation, got %+v", got[0].Details)
+	}
+	if len(got[0].Locations) != 1 || got[0].Locations[0].File != "app/cache.py" {
+		t.Fatalf("local utility location should not anchor production dependency: %+v", got[0].Locations)
+	}
+}
+
+func TestDeterministicPythonLambdaEntrypoint(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"sync/main.py": `from sentry_sdk.integrations.aws_lambda import AwsLambdaIntegration
+
+def handler(event, *_):
+    process(event["Records"])
+
+def process(records):
+    return records
+`,
+	})
+	got := DeterministicCLIEntrypoints(idx)
+	if len(got) != 1 {
+		t.Fatalf("expected one Lambda cli_command, got %d: %+v", len(got), got)
+	}
+	if got[0].Type != "cli_command" || got[0].Name != "sync.main.handler" {
+		t.Fatalf("unexpected Lambda entrypoint: %+v", got[0])
+	}
+	if got[0].Details["handler"] != "handler" || got[0].Details["entry_method"] != "handler" {
+		t.Fatalf("handler details must resolve to the AST function symbol: %+v", got[0].Details)
+	}
+}
+
+func TestDeterministicSAMDynamoDBStreamConsumer(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"template.yaml": `Transform: AWS::Serverless-2016-10-31
+Resources:
+  TrafficMgmtInfoSyncLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: sync.handler
+      Events:
+        TrafficInfoEvent:
+          Type: DynamoDB
+          Properties:
+            Stream:
+              Fn::If:
+                - IsProduction
+                - "arn:aws:dynamodb:eu-west-1:123456789012:table/traffic-info/stream/2019-02-28T10:12:29.588"
+                - Fn::ImportValue: !Sub "${StagePrefix}traffic-info-dynamodb-stream-arn"
+            StartingPosition: LATEST
+            BatchSize: 1
+`,
+	})
+	got := DeterministicSAMQueueConsumers(idx)
+	if len(got) != 1 {
+		t.Fatalf("expected one SAM DynamoDB stream consumer, got %d: %+v", len(got), got)
+	}
+	if got[0].Type != "queue_consumer" || got[0].Name != "traffic-info" {
+		t.Fatalf("unexpected SAM consumer: %+v", got[0])
+	}
+	if got[0].Details["platform"] != "dynamodb_stream" || got[0].Details["table"] != "traffic-info" {
+		t.Fatalf("unexpected SAM consumer details: %+v", got[0].Details)
+	}
+	if len(got[0].Evidence) == 0 || got[0].Evidence[0].File != "template.yaml" {
+		t.Fatalf("expected template evidence, got %+v", got[0].Evidence)
+	}
+}
+
+func TestDeterministicDynamoDBTemplateOperations(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"src/main/resources/application.yml": `services:
+  routing:
+    dynamodb-table: traffic-info
+`,
+		"src/main/java/com/example/TrafficInfoDynamoDBService.java": `package com.example;
+
+import io.awspring.cloud.dynamodb.DynamoDbTemplate;
+import software.amazon.awssdk.enhanced.dynamodb.Key;
+
+public class TrafficInfoDynamoDBService {
+    private DynamoDbTemplate dynamoDbTemplate;
+
+    public void save(TrafficData trafficInfo) {
+        dynamoDbTemplate.save(trafficInfo);
+    }
+
+    public TrafficData load(String id) {
+        return dynamoDbTemplate.load(Key.builder().partitionValue(id).build(), TrafficData.class);
+    }
+}
+`,
+	})
+	got := DeterministicDynamoDBOperations(idx)
+	if len(got) != 2 {
+		t.Fatalf("expected read/write DynamoDB operations, got %d: %+v", len(got), got)
+	}
+	byName := map[string]llmEntity{}
+	for _, e := range got {
+		byName[e.Name] = e
+	}
+	for _, name := range []string{"read traffic-info", "write traffic-info"} {
+		e, ok := byName[name]
+		if !ok {
+			t.Fatalf("missing %s in %+v", name, got)
+		}
+		if e.Details["platform"] != "dynamodb" || e.Details["table"] != "traffic-info" {
+			t.Fatalf("bad DynamoDB details for %s: %+v", name, e.Details)
+		}
+		if len(e.Evidence) == 0 || e.Evidence[0].File == "" {
+			t.Fatalf("expected evidence for %s: %+v", name, e.Evidence)
+		}
+	}
+}
+
+func TestDeterministicPythonLambdaEntrypointPrecision(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"handlers.py": `def handler(request):
+    return request
+
+class Worker:
+    def handler(self, event):
+        return event
+`,
+	})
+	if got := DeterministicCLIEntrypoints(idx); len(got) != 0 {
+		t.Fatalf("non-Lambda handler shapes must not become cli_command: %+v", got)
+	}
+}
+
+func TestDeterministicPythonArgparseEntrypoint(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"local_redis_utils/redis_migrate.py": `import argparse
+
+def run():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("environment")
+    return parser.parse_args()
+
+if __name__ == "__main__":
+    run()
+`,
+	})
+	got := DeterministicCLIEntrypoints(idx)
+	if len(got) != 1 {
+		t.Fatalf("expected one argparse cli_command, got %d: %+v", len(got), got)
+	}
+	if got[0].Type != "cli_command" || got[0].Name != "local_redis_utils/redis_migrate.py" {
+		t.Fatalf("unexpected argparse entrypoint: %+v", got[0])
+	}
+	if got[0].Details["discovered_by"] != "ast_python_argparse" {
+		t.Fatalf("unexpected details: %+v", got[0].Details)
+	}
+}
+
+func TestDeterministicSpringBootMainEntrypoint(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"src/main/java/com/example/Application.java": `package com.example;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class Application {
+    public static void main(String[] args) {
+        SpringApplication.run(Application.class, args);
+    }
+}
+`,
+	})
+	got := DeterministicCLIEntrypoints(idx)
+	if len(got) != 1 {
+		t.Fatalf("expected one Spring Boot cli_command, got %d: %+v", len(got), got)
+	}
+	if got[0].Details["discovered_by"] != "ast_spring_boot_main" {
+		t.Fatalf("unexpected details: %+v", got[0].Details)
+	}
+}

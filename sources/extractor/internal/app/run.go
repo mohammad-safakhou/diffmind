@@ -41,6 +41,7 @@ func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 	logProgress("bootstrap", 0, "Initializing run context and validating configuration.")
 	util.Info("app.run", "starting run", map[string]any{
 		"repo_input":       in.RepoPath,
+		"pipeline":         in.Config.Pipeline(),
 		"opencode_enabled": in.Config.OpenCode.BaseURL != "",
 		"workers":          in.Config.Runtime.Workers,
 		"min_confidence":   in.Config.Quality.MinConfidence,
@@ -58,7 +59,7 @@ func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 	// SeverityFail aborts the run with a clear message. The UI
 	// handler does the same on the HTTP edge; the CLI path covers
 	// `diffmind run` invocations that bypass the dashboard.
-	{
+	if !in.Config.IsDeterministicPipeline() {
 		checks := preflight.DefaultChecks(preflight.OptionsFromConfig(in.Config))
 		rep := preflight.NewRunner(checks).Run(ctx)
 		if rep.HasFail() {

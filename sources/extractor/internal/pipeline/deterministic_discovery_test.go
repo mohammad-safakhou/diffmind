@@ -1,6 +1,8 @@
 package pipeline
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -98,6 +100,75 @@ func TestEntityFromFrameworkBindingHTTPRoute(t *testing.T) {
 	}
 	if !isCompleteDeterministicSeed(obj, &got) {
 		t.Fatal("expected route seed to be complete")
+	}
+}
+
+func TestEntityFromFrameworkBindingRetrofitHTTPCallResolvesConfigTarget(t *testing.T) {
+	obj := objectiveByType(t, "outbound_http")
+	idx := &astpkg.ProjectIndex{Configs: map[string]*astpkg.ConfigFile{
+		"application.yml": {Path: "application.yml", Entries: []astpkg.ConfigEntry{{
+			Key:   "client.routing-service.baseUrl",
+			Value: "${ATS_URL:https://routing-service.internal}",
+		}}},
+	}}
+	got, ok := entityFromFrameworkBinding(idx, obj, astpkg.FrameworkBinding{
+		Framework:     "retrofit",
+		Kind:          "http_client",
+		Symbol:        "com.example.RoutingApi.getCampaign",
+		Trigger:       "GET /campaigns/{campaignId}",
+		TriggerSource: "@GET(\"/campaigns/{campaignId}\")",
+		File:          "src/main/java/com/example/RoutingApi.java",
+		Range:         astpkg.Range{StartLine: 10, EndLine: 11},
+	})
+	if !ok {
+		t.Fatal("expected binding to produce entity")
+	}
+	if got.Details["target_service"] != "routing-service" {
+		t.Fatalf("target_service = %v, want routing-service; details=%+v", got.Details["target_service"], got.Details)
+	}
+	if got.Details["url_template"] == "" || got.Details["instance"] != "routing-service" {
+		t.Fatalf("missing propagated target details: details=%+v", got.Details)
+	}
+}
+
+func TestEntityFromFrameworkBindingUsesConfiguredHTTPTarget(t *testing.T) {
+	obj := objectiveByType(t, "outbound_http")
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "diffmind-configuration.yaml"), []byte(`
+http_targets:
+  - id: catalogue
+    service_ref: checkout-service
+    client_class: CatalogueApiClient
+    config_key: services.catalogue.url
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx := &astpkg.ProjectIndex{
+		RepoRoot: repo,
+		Configs: map[string]*astpkg.ConfigFile{
+			"application.yml": {Path: "application.yml", Entries: []astpkg.ConfigEntry{{
+				Key:   "services.catalogue.url",
+				Value: "${FMA_URL:https://checkout-service.internal}",
+			}}},
+		},
+	}
+	got, ok := entityFromFrameworkBinding(idx, obj, astpkg.FrameworkBinding{
+		Framework:     "feign",
+		Kind:          "http_client",
+		Symbol:        "com.example.CatalogueApiClient.getCampaignById",
+		Trigger:       "GET /campaigns/{id}",
+		TriggerSource: "@GetMapping(\"/campaigns/{id}\")",
+		File:          "src/main/java/com/example/CatalogueApiClient.java",
+		Range:         astpkg.Range{StartLine: 10, EndLine: 11},
+	})
+	if !ok {
+		t.Fatal("expected binding to produce entity")
+	}
+	if got.Details["target_service"] != "checkout-service" {
+		t.Fatalf("target_service = %v, want checkout-service; details=%+v", got.Details["target_service"], got.Details)
+	}
+	if got.Details["instance"] != "checkout-service" || got.Details["url_template"] == "" {
+		t.Fatalf("missing configured target details: %+v", got.Details)
 	}
 }
 

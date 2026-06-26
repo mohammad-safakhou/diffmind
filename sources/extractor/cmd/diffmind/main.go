@@ -47,6 +47,7 @@ func run(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	repo := fs.String("repo", "", "absolute path to target codebase")
 	cfgPath := fs.String("config", "", "path to diffmind json config")
+	pipelineName := fs.String("pipeline", "", "pipeline to run: llm or deterministic (empty = config/default llm)")
 	opencodeURL := fs.String("opencode-url", "", "OpenCode server base URL")
 	opencodeUsername := fs.String("opencode-username", "", "OpenCode basic auth username (default: opencode)")
 	opencodePassword := fs.String("opencode-password", "", "OpenCode basic auth password")
@@ -61,6 +62,7 @@ func run(args []string) {
 	opencodeDeleteDelaySeconds := fs.Int("opencode-delete-delay-seconds", 0, "delay before deleting OpenCode sessions when cleanup is enabled")
 	reuseOpenCodeSession := fs.Bool("reuse-opencode-session", false, "reuse a single OpenCode session across prompts in a run")
 	skipReexamination := fs.Bool("skip-reexamination", false, "skip stage 2 (LLM re-ask for low-signal seeds) for faster, lower-accuracy runs")
+	importLegacyArchfile := fs.Bool("import-legacy-archfile", false, "import legacy diffmind.yaml into deterministic runs as imported compatibility facts")
 	discoveryVerify := fs.Bool("discovery-verify", false, "enable the stage-1.5 discovery verification pass (gated to high-variance objectives; fail-soft, keep-biased)")
 	discoveryVerifyMode := fs.String("discovery-verify-mode", "", "verification strategy when --discovery-verify is on: reask (re-open + find-missed) or ksample (run K times and union) (empty = use config default reask)")
 	discoveryVerifySamples := fs.Int("discovery-verify-samples", 0, "K for ksample verify mode, floored to [1,5] (0 = use config default 2)")
@@ -78,7 +80,7 @@ func run(args []string) {
 	util.Info("cli.run", "run command started", map[string]any{
 		"repo": *repo, "config": *cfgPath, "opencode_url": *opencodeURL, "workers": *workers,
 		"max_catalog_items": *maxCatalogItems, "opencode_timeout_seconds": *opencodeTimeoutSeconds, "model_variant": *modelVariant,
-		"cleanup_opencode_sessions": *cleanupOpenCodeSessions, "opencode_delete_delay_seconds": *opencodeDeleteDelaySeconds, "reuse_opencode_session": *reuseOpenCodeSession,
+		"pipeline": *pipelineName, "cleanup_opencode_sessions": *cleanupOpenCodeSessions, "opencode_delete_delay_seconds": *opencodeDeleteDelaySeconds, "reuse_opencode_session": *reuseOpenCodeSession,
 	})
 
 	if *repo == "" {
@@ -114,6 +116,9 @@ func run(args []string) {
 	if *outDir != "" {
 		cfg.Artifacts.BaseDir = *outDir
 	}
+	if *pipelineName != "" {
+		cfg.Runtime.Pipeline = config.NormalizePipeline(*pipelineName)
+	}
 	if *workers > 0 {
 		cfg.Runtime.Workers = *workers
 	}
@@ -123,6 +128,8 @@ func run(args []string) {
 	cfg.Runtime.CleanupOpenCodeSessions = *cleanupOpenCodeSessions
 	cfg.Runtime.ReuseOpenCodeSession = *reuseOpenCodeSession
 	cfg.Runtime.SkipReexamination = *skipReexamination
+	flagSet := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { flagSet[f.Name] = true })
 	if *discoveryVerifyMode != "" {
 		cfg.Runtime.DiscoveryVerifyMode = *discoveryVerifyMode
 	}
@@ -132,13 +139,14 @@ func run(args []string) {
 	// The verify/framework-scope toggles override the config file only when the
 	// flag was explicitly passed, so the flag's false default can't silently
 	// clobber a config-file value (Sanitize later floors samples / coerces mode).
-	flagSet := map[string]bool{}
-	fs.Visit(func(f *flag.Flag) { flagSet[f.Name] = true })
 	if flagSet["discovery-verify"] {
 		cfg.Runtime.DiscoveryVerify = *discoveryVerify
 	}
 	if flagSet["discovery-framework-scope"] {
 		cfg.Runtime.DiscoveryFrameworkScope = *discoveryFrameworkScope
+	}
+	if flagSet["import-legacy-archfile"] {
+		cfg.Runtime.ImportLegacyArchfile = *importLegacyArchfile
 	}
 	if *opencodeDeleteDelaySeconds > 0 {
 		cfg.Runtime.OpenCodeDeleteDelaySec = *opencodeDeleteDelaySeconds

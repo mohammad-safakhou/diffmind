@@ -182,6 +182,7 @@ type RunManifest struct {
 	RepoGitDirty      bool              `json:"repo_git_dirty,omitempty"`
 	DiffMindVersion   string            `json:"diffmind_version,omitempty"`
 	SchemaVersion     string            `json:"schema_version"`
+	Pipeline          string            `json:"pipeline,omitempty"`
 	OpenCodeURL       string            `json:"opencode_url,omitempty"`
 	ConfidenceMinimum float64           `json:"confidence_minimum"`
 	Counts            map[string]int    `json:"counts"`

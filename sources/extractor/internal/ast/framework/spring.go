@@ -26,7 +26,7 @@ func (d *springDetector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
 			}
 			cls := enclosingClassForSymbol(fa, sym, classes)
 			for _, ann := range sym.Annotations {
-				bindings := springAnnotationToBindings(sym, cls, ann)
+				bindings := springAnnotationToBindings(fa, sym, cls, ann)
 				if len(bindings) > 0 {
 					out = append(out, bindings...)
 				}
@@ -86,9 +86,13 @@ func springHasExternalCache(idx *ast.ProjectIndex) bool {
 	return false
 }
 
-func springAnnotationToBindings(sym ast.SymbolDef, cls *ast.SymbolDef, ann ast.Annotation) []ast.FrameworkBinding {
+func springAnnotationToBindings(fa *ast.FileAST, sym ast.SymbolDef, cls *ast.SymbolDef, ann ast.Annotation) []ast.FrameworkBinding {
 	name := ann.Name
 	args := ann.Arguments
+
+	if method, ok := retrofitHTTPMethod(name); ok && fileImportsRetrofitHTTP(fa) && cls != nil && cls.Kind == ast.SymbolKindInterface {
+		return retrofitHTTPBindings(sym, ann, method)
+	}
 
 	// HTTP route mappings.
 	httpMethods := map[string]string{
@@ -185,6 +189,48 @@ func springAnnotationToBindings(sym ast.SymbolDef, cls *ast.SymbolDef, ann ast.A
 	}
 
 	return nil
+}
+
+func retrofitHTTPMethod(name string) (string, bool) {
+	switch name {
+	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS":
+		return name, true
+	default:
+		return "", false
+	}
+}
+
+func fileImportsRetrofitHTTP(fa *ast.FileAST) bool {
+	if fa == nil {
+		return false
+	}
+	for _, imp := range fa.Imports {
+		if strings.HasPrefix(imp.Path, "retrofit2.http") {
+			return true
+		}
+	}
+	return false
+}
+
+func retrofitHTTPBindings(sym ast.SymbolDef, ann ast.Annotation, method string) []ast.FrameworkBinding {
+	path := extractFirstStringArg(ann.Arguments)
+	if strings.TrimSpace(path) == "" {
+		path = "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return []ast.FrameworkBinding{{
+		Framework:        "retrofit",
+		Kind:             "http_client",
+		Direction:        "outbound",
+		Symbol:           sym.Qualified,
+		Trigger:          method + " " + path,
+		TriggerSource:    "@" + ann.Name + "(" + ann.Arguments + ")",
+		File:             sym.File,
+		Range:            sym.Range,
+		ConfidenceReason: "retrofit_client_mapping_literal",
+	}}
 }
 
 func springHTTPBindings(sym ast.SymbolDef, cls *ast.SymbolDef, ann ast.Annotation, defaultMethod string) []ast.FrameworkBinding {

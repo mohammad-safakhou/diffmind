@@ -237,6 +237,9 @@ func chooseDepsForSymbol(sym string, deps []model.Dependency) []model.Dependency
 	if len(exact) > 0 {
 		return exact
 	}
+	if allCallSiteNarrow(deps) {
+		return deps
+	}
 	sort.SliceStable(deps, func(i, j int) bool {
 		if len(deps[i].Name) != len(deps[j].Name) {
 			return len(deps[i].Name) > len(deps[j].Name)
@@ -244,4 +247,26 @@ func chooseDepsForSymbol(sym string, deps []model.Dependency) []model.Dependency
 		return deps[i].ID < deps[j].ID
 	})
 	return []model.Dependency{deps[0]}
+}
+
+func allCallSiteNarrow(deps []model.Dependency) bool {
+	if len(deps) == 0 {
+		return false
+	}
+	for _, dep := range deps {
+		if len(dep.Locations) == 0 {
+			return false
+		}
+		narrow := false
+		for _, loc := range dep.Locations {
+			if loc.File != "" && loc.StartLine > 0 && loc.EndLine-loc.StartLine <= 2 {
+				narrow = true
+				break
+			}
+		}
+		if !narrow {
+			return false
+		}
+	}
+	return true
 }

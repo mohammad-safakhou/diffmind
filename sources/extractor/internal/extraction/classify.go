@@ -263,6 +263,8 @@ func QueuePlatform(text, hint string) string {
 		return "rabbitmq"
 	case strings.Contains(t, "kinesis"):
 		return "kinesis"
+	case strings.Contains(t, "dynamodb") && strings.Contains(t, "stream"):
+		return "dynamodb_stream"
 	}
 	return "queue"
 }
