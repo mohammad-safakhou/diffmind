@@ -24,6 +24,10 @@ import "strings"
 // ProjectIndex is the complete AST analysis of one repository. Built once,
 // queried by every pipeline stage after ast_index runs.
 type ProjectIndex struct {
+	// RepoRoot is the absolute repository path used to build this index.
+	// Deterministic resolvers use it to load repo-local configuration hints.
+	RepoRoot string
+
 	// Files is the per-file AST analysis, keyed by relative path.
 	Files map[string]*FileAST
 

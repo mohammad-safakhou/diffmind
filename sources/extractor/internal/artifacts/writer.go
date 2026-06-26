@@ -12,7 +12,10 @@ import (
 
 	"github.com/mohammad-safakhou/diffmind/internal/extraction"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
+	"github.com/mohammad-safakhou/diffmind/internal/provenance"
+	"github.com/mohammad-safakhou/diffmind/internal/serviceconfig"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
+	"github.com/mohammad-safakhou/protocol"
 	"gopkg.in/yaml.v3"
 )
 
@@ -42,24 +45,62 @@ func gitOutput(path string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func gitDirty(path string) bool {
+func gitDirty(path string, deterministic bool, importLegacyArchfile bool) bool {
 	out := gitOutput(path, "status", "--porcelain")
-	return out != ""
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if deterministic && ignoredDeterministicDirtyPath(line, importLegacyArchfile) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func ignoredDeterministicDirtyPath(statusLine string, importLegacyArchfile bool) bool {
+	path := strings.TrimSpace(statusLine)
+	if len(path) > 3 {
+		path = strings.TrimSpace(path[3:])
+	}
+	if i := strings.Index(path, " -> "); i >= 0 {
+		path = strings.TrimSpace(path[i+4:])
+	}
+	path = filepath.ToSlash(strings.Trim(path, `"`))
+	if path == "" {
+		return false
+	}
+	base := filepath.Base(path)
+	switch {
+	case strings.HasPrefix(path, ".diffmind/"), strings.HasPrefix(path, ".diffmind/"):
+		return true
+	case path == ".project", path == ".settings" || strings.HasPrefix(path, ".settings/") || strings.Contains(path, "/.settings/"):
+		return true
+	case base == ".classpath" || base == ".factorypath" || base == ".project" || base == ".settings":
+		return true
+	case !importLegacyArchfile && (path == "diffmind.yaml" || path == "diffmind.curated.yaml"):
+		return true
+	default:
+		return false
+	}
 }
 
 type WriteInput struct {
-	RunID         string
-	BaseDir       string
-	RepoPath      string
-	OpenCodeURL   string
-	MinConfidence float64
-	Exposures     []model.Exposure
-	Dependencies  []model.Dependency
-	Connections   []model.Connection
-	Unresolved    []model.UnresolvedItem
-	Warnings      []string
-	StartedAt     time.Time
-	FinishedAt    time.Time
+	RunID                string
+	BaseDir              string
+	RepoPath             string
+	OpenCodeURL          string
+	MinConfidence        float64
+	Exposures            []model.Exposure
+	Dependencies         []model.Dependency
+	Connections          []model.Connection
+	Unresolved           []model.UnresolvedItem
+	Warnings             []string
+	Pipeline             string
+	ImportLegacyArchfile bool
+	StartedAt            time.Time
+	FinishedAt           time.Time
 	// TokenTotals — when present — get persisted under the
 	// manifest's `token_totals` field so the `validate` command and
 	// the dashboard's runs sidebar can show per-stage cost summaries
@@ -75,6 +116,11 @@ func Write(in WriteInput) (string, error) {
 		util.Error("artifacts", "failed creating run dir", map[string]any{"run_dir": runDir, "error": err})
 		return "", err
 	}
+	pipeline := pipelineName(in)
+	deterministic := pipeline == "deterministic"
+	if deterministic {
+		provenance.NormalizeDeterministic(in.Exposures, in.Dependencies, in.Connections)
+	}
 	if err := writeEntities(filepath.Join(runDir, "exposures"), exposuresByType(in.Exposures)); err != nil {
 		return "", err
 	}
@@ -87,6 +133,10 @@ func Write(in WriteInput) (string, error) {
 	if err := writeUnresolved(filepath.Join(runDir, "unresolved"), unresolvedByType(in.Unresolved)); err != nil {
 		return "", err
 	}
+	schemaVersion := SchemaVersion
+	if deterministic {
+		schemaVersion = protocol.SchemaServiceV1
+	}
 	manifest := model.RunManifest{
 		RunID:             in.RunID,
 		StartedAt:         in.StartedAt,
@@ -96,9 +146,10 @@ func Write(in WriteInput) (string, error) {
 		RepoGitSHA:        gitHeadSHA(in.RepoPath),
 		RepoGitBranch:     gitOutput(in.RepoPath, "rev-parse", "--abbrev-ref", "HEAD"),
 		RepoGitRemoteURL:  gitOutput(in.RepoPath, "remote", "get-url", "origin"),
-		RepoGitDirty:      gitDirty(in.RepoPath),
+		RepoGitDirty:      gitDirty(in.RepoPath, deterministic, in.ImportLegacyArchfile),
 		DiffMindVersion:   DiffMindVersion,
-		SchemaVersion:     SchemaVersion,
+		SchemaVersion:     schemaVersion,
+		Pipeline:          pipeline,
 		OpenCodeURL:       in.OpenCodeURL,
 		ConfidenceMinimum: in.MinConfidence,
 		Counts: map[string]int{
@@ -115,6 +166,9 @@ func Write(in WriteInput) (string, error) {
 	if err := writeJSON(filepath.Join(runDir, "run_manifest.json"), manifest); err != nil {
 		return "", err
 	}
+	if err := writeDiffMind protocolArtifacts(runDir, in, manifest); err != nil {
+		return "", err
+	}
 	util.Info("artifacts", "artifact write complete", map[string]any{
 		"run_dir":      runDir,
 		"exposures":    len(in.Exposures),
@@ -125,22 +179,82 @@ func Write(in WriteInput) (string, error) {
 	return runDir, nil
 }
 
-func repoTeam(repoPath string) string {
-	type archfileHeader struct {
-		Team string `yaml:"team"`
+func pipelineName(in WriteInput) string {
+	if p := strings.TrimSpace(in.Pipeline); p != "" {
+		return p
 	}
-	data, err := os.ReadFile(filepath.Join(repoPath, "diffmind.yaml"))
+	if strings.TrimSpace(in.OpenCodeURL) == "" {
+		return "deterministic"
+	}
+	return "llm"
+}
+
+func writeDiffMind protocolArtifacts(runDir string, in WriteInput, manifest model.RunManifest) error {
+	doc, err := buildDiffMind protocol(in, manifest)
 	if err != nil {
-		return "default"
+		return err
 	}
-	var h archfileHeader
-	if err := yaml.Unmarshal(data, &h); err != nil {
-		return "default"
+	jsonPath := filepath.Join(runDir, DiffMind protocolServiceJSON)
+	if err := os.MkdirAll(filepath.Dir(jsonPath), 0o755); err != nil {
+		return err
 	}
-	if team := strings.TrimSpace(h.Team); team != "" {
+	jf, err := os.Create(jsonPath)
+	if err != nil {
+		return err
+	}
+	if err := protocolEncodeJSON(jf, doc); err != nil {
+		_ = jf.Close()
+		return err
+	}
+	if err := jf.Close(); err != nil {
+		return err
+	}
+	yf, err := os.Create(filepath.Join(runDir, DiffMind protocolServiceYAML))
+	if err != nil {
+		return err
+	}
+	if err := protocolEncodeYAML(yf, doc); err != nil {
+		_ = yf.Close()
+		return err
+	}
+	return yf.Close()
+}
+
+func repoTeam(repoPath string) string {
+	if cfg, err := serviceconfig.Load(repoPath); err == nil {
+		if team := strings.TrimSpace(cfg.Service.Team); team != "" {
+			return team
+		}
+	}
+	if team := catalogInfoOwner(repoPath); team != "" {
 		return team
 	}
 	return "default"
+}
+
+func catalogInfoOwner(repoPath string) string {
+	data, err := os.ReadFile(filepath.Join(repoPath, "catalog-info.yaml"))
+	if err != nil {
+		return ""
+	}
+	dec := yaml.NewDecoder(strings.NewReader(string(data)))
+	for {
+		var doc struct {
+			Kind string `yaml:"kind"`
+			Spec struct {
+				Owner string `yaml:"owner"`
+			} `yaml:"spec"`
+		}
+		if err := dec.Decode(&doc); err != nil {
+			break
+		}
+		if strings.EqualFold(strings.TrimSpace(doc.Kind), "Component") {
+			if owner := strings.TrimSpace(doc.Spec.Owner); owner != "" {
+				return owner
+			}
+		}
+	}
+	return ""
 }
 
 func CollectRepoMetrics(repoPath string, facts *extraction.RepoFacts) *model.RepoMetrics {

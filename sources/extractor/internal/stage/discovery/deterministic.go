@@ -55,12 +55,20 @@ func (DeterministicRunner) Run(input DeterministicInput) DeterministicOutput {
 		}
 		outMap[obj.ID] = append(outMap[obj.ID], e)
 	}
+	if obj, ok := byObjective["queue_consumer"]; ok {
+		for _, e := range DeterministicSAMQueueConsumers(input.Index) {
+			outMap[obj.ID] = append(outMap[obj.ID], e)
+		}
+	}
 
 	// Call-graph-derived dependencies (not framework-binding based). These
 	// reuse the connections stage's proven repository-call predicates. Only
 	// emitted when the objective is in scope for this run.
 	if dbObj, ok := objectiveByTypeIn(input.Objectives, "db_operation"); ok {
 		for _, e := range DeterministicDBOperations(input.Index) {
+			outMap[dbObj.ID] = append(outMap[dbObj.ID], e)
+		}
+		for _, e := range DeterministicDynamoDBOperations(input.Index) {
 			outMap[dbObj.ID] = append(outMap[dbObj.ID], e)
 		}
 		// Raw-SQL leg (F6): language-agnostic, covers stacks the repository
@@ -92,6 +100,16 @@ func (DeterministicRunner) Run(input DeterministicInput) DeterministicOutput {
 	}
 	if obj, ok := objectiveByTypeIn(input.Objectives, "stream_consume"); ok {
 		for _, e := range DeterministicStreamConsume(input.Index) {
+			outMap[obj.ID] = append(outMap[obj.ID], e)
+		}
+	}
+	if obj, ok := objectiveByTypeIn(input.Objectives, "cache_operation"); ok {
+		for _, e := range DeterministicCacheOperations(input.Index) {
+			outMap[obj.ID] = append(outMap[obj.ID], e)
+		}
+	}
+	if obj, ok := objectiveByTypeIn(input.Objectives, "cli_command"); ok {
+		for _, e := range DeterministicCLIEntrypoints(input.Index) {
 			outMap[obj.ID] = append(outMap[obj.ID], e)
 		}
 	}
@@ -321,7 +339,7 @@ func supportedDeterministicObjectives(objs []objectives.Objective) map[string]ob
 		switch obj.Kind {
 		case model.KindExposure:
 			switch obj.Type {
-			case "http_route", "queue_consumer", "scheduled_job":
+			case "http_route", "queue_consumer", "scheduled_job", "cli_command":
 				out[obj.Type] = obj
 			}
 		case model.KindDependency:
@@ -411,6 +429,17 @@ func EntityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objecti
 		e.Summary = fmt.Sprintf("%s outbound HTTP client detected from framework binding", displayFramework(b.Framework))
 		e.Details["method"] = method
 		e.Details["path"] = path
+		if target := configuredHTTPTargetForOperation(idx, handler, path); target.serviceRef != "" {
+			applyConfiguredHTTPTargetDetails(e.Details, target)
+		} else if strings.EqualFold(b.Framework, "retrofit") {
+			if target := retrofitTargetFromHandler(idx, handler); target.logicalName != "" {
+				e.Details["instance"] = target.logicalName
+				e.Details["target_service"] = target.logicalName
+				e.Details["url_template"] = target.urlTemplate
+				e.Details["base_url"] = target.urlTemplate
+				e.Details["config_source"] = target.configKey
+			}
+		}
 	case "queue_consumer":
 		platform, queue := parseQueueTrigger(trigger)
 		// Resolve ${...} property placeholders to the real queue name using the
@@ -452,6 +481,31 @@ func EntityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objecti
 		return llmEntity{}, false
 	}
 	return e, true
+}
+
+func applyConfiguredHTTPTargetDetails(details map[string]any, target configuredHTTPTarget) {
+	service := normalizeConfiguredServiceRef(target.serviceRef)
+	if service == "" {
+		return
+	}
+	details["instance"] = service
+	details["target_service"] = service
+	if target.urlTemplate != "" {
+		details["url_template"] = target.urlTemplate
+		details["base_url"] = target.urlTemplate
+	}
+	if target.baseURL != "" {
+		details["base_url"] = target.baseURL
+	}
+	if target.host != "" {
+		details["host"] = target.host
+	}
+	if target.configKey != "" {
+		details["config_source"] = target.configKey
+	}
+	if target.external {
+		details["target_type"] = "external"
+	}
 }
 
 // parseCacheTrigger splits a "cache: <op> <name>" trigger.
@@ -515,6 +569,89 @@ func displayFramework(s string) string {
 		return "Framework"
 	}
 	return s
+}
+
+type retrofitTarget struct {
+	logicalName string
+	urlTemplate string
+	configKey   string
+}
+
+func retrofitTargetFromHandler(idx *astpkg.ProjectIndex, handler string) retrofitTarget {
+	if idx == nil {
+		return retrofitTarget{}
+	}
+	className := handler
+	if i := strings.LastIndex(className, "."); i >= 0 {
+		className = className[:i]
+	}
+	className = lastIdentOf(className)
+	tokens := camelTokens(strings.TrimSuffix(className, "Api"))
+	if len(tokens) == 0 {
+		return retrofitTarget{}
+	}
+	var bestKey, bestValue string
+	bestScore := 0
+	for _, path := range sortedConfigPaths(idx) {
+		for _, entry := range idx.Configs[path].Entries {
+			key := strings.ToLower(strings.TrimSpace(entry.Key))
+			if !strings.HasSuffix(key, "baseurl") && !strings.HasSuffix(key, "base-url") && !strings.HasSuffix(key, ".url") {
+				continue
+			}
+			score := tokenMatchScore(key, tokens)
+			if score > bestScore {
+				bestScore = score
+				bestKey = entry.Key
+				bestValue = strings.TrimSpace(entry.Value)
+			}
+		}
+	}
+	if bestScore == 0 || bestKey == "" {
+		return retrofitTarget{}
+	}
+	value, ok := ConfigValue(idx, bestKey)
+	if ok {
+		bestValue = value
+	}
+	return retrofitTarget{logicalName: KeySegmentName(bestKey), urlTemplate: bestValue, configKey: bestKey}
+}
+
+func camelTokens(s string) []string {
+	var words []string
+	var b strings.Builder
+	flush := func() {
+		if b.Len() == 0 {
+			return
+		}
+		words = append(words, strings.ToLower(b.String()))
+		b.Reset()
+	}
+	for i, r := range s {
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			flush()
+		}
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			flush()
+		}
+	}
+	flush()
+	return words
+}
+
+func tokenMatchScore(text string, tokens []string) int {
+	score := 0
+	for _, token := range tokens {
+		token = strings.ToLower(strings.TrimSpace(token))
+		if token == "" || token == "api" || token == "client" {
+			continue
+		}
+		if strings.Contains(text, token) {
+			score++
+		}
+	}
+	return score
 }
 
 func MergeDiscoveryResults(baseline, deterministic []discoveryResult) []discoveryResult {

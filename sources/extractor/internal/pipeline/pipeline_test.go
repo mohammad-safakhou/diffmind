@@ -3,6 +3,8 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -245,6 +247,50 @@ func TestRunBuildsExposuresDependenciesAndConnections(t *testing.T) {
 	}
 	if fake.rec.roles["reexamination"] != 0 {
 		t.Fatalf("expected 0 reexamination calls when seeds are clean, got %d", fake.rec.roles["reexamination"])
+	}
+}
+
+func TestRunDeterministicPipelineDoesNotRequireOpenCode(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.Workers = 4
+	cfg.Runtime.Pipeline = config.PipelineDeterministic
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "app.py"), []byte(`
+from flask import Flask
+import redis
+
+app = Flask(__name__)
+cache = redis.Redis()
+
+@app.route("/health", methods=["GET"])
+def health():
+    cache.get("status")
+    return "ok"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Run(context.Background(), cfg, repo, nil)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if result.Failure != nil {
+		t.Fatalf("deterministic run should not fail: %+v", result.Failure)
+	}
+	if len(result.Exposures) != 1 {
+		t.Fatalf("expected deterministic Flask route, got %+v", result.Exposures)
+	}
+	if result.Exposures[0].Type != "http_route" || result.Exposures[0].Details["path"] != "/health" {
+		t.Fatalf("unexpected deterministic exposure: %+v", result.Exposures[0])
+	}
+	foundCache := false
+	for _, dep := range result.Dependencies {
+		if dep.Type == "cache_operation" && dep.Operation == "read" {
+			foundCache = true
+		}
+	}
+	if !foundCache {
+		t.Fatalf("expected deterministic redis cache read, got %+v", result.Dependencies)
 	}
 }
 

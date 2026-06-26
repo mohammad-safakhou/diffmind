@@ -49,12 +49,43 @@ func PropagateClientInstances(idx *astpkg.ProjectIndex, clients []model.Connecti
 // independently. Returns nil when the anchor is absent or its value carries no
 // resolvable instance (invariant #6: stamp nothing rather than guess).
 func resolveClientRef(idx *astpkg.ProjectIndex, c model.ConnectionClient) *model.InstanceRef {
+	if c.Kind == "http" {
+		if configured := configuredHTTPTargetForClient(idx, c); configured.serviceRef != "" {
+			fallback := model.InstanceRef{}
+			if c.InstanceRef != nil {
+				fallback = *c.InstanceRef
+			}
+			if ref := configuredHTTPTargetInstanceRef(configured, fallback); ref != nil {
+				return ref
+			}
+		}
+	}
 	anchor := strings.TrimSpace(c.ConfigAnchor)
 	if anchor == "" {
 		return nil
 	}
 	value, ok := ConfigValue(idx, anchor)
 	if !ok {
+		if c.Kind == "db" {
+			if ref := configuredDBRefFromProfiles(idx, anchor); ref != nil {
+				return ref
+			}
+		}
+		if c.Kind == "http" && configKeyExists(idx, anchor) {
+			logical := KeySegmentName(anchor)
+			if logical == "" {
+				logical = c.LogicalName
+			}
+			if logical == "" {
+				return nil
+			}
+			return &model.InstanceRef{
+				Kind:         "http",
+				LogicalName:  logical,
+				URLTemplate:  "${" + anchor + "}",
+				ConfigSource: anchor,
+			}
+		}
 		return nil
 	}
 	value = strings.TrimSpace(value)
@@ -112,6 +143,79 @@ func resolveClientRef(idx *astpkg.ProjectIndex, c model.ConnectionClient) *model
 		return ref
 	}
 	return nil
+}
+
+func configuredDBRefFromProfiles(idx *astpkg.ProjectIndex, anchor string) *model.InstanceRef {
+	var matches []dbConfigMatch
+	for _, path := range sortedConfigPaths(idx) {
+		cf := idx.Configs[path]
+		if cf == nil {
+			continue
+		}
+		for _, e := range cf.Entries {
+			if !strings.EqualFold(strings.TrimSpace(e.Key), strings.TrimSpace(anchor)) {
+				continue
+			}
+			profile := configProfile(path)
+			if e.Profile != "" {
+				profile = e.Profile
+			}
+			value := strings.TrimSpace(e.Value)
+			platform := dbPlatformFromConfigValue(value)
+			database := databaseFromConnectionURL(idx, stripPlaceholderDefault(value))
+			if platform == "" || database == "" {
+				continue
+			}
+			matches = append(matches, dbConfigMatch{profile: profile, value: value, platform: platform, database: database})
+		}
+	}
+	for _, profiles := range [][]string{{"production", "prod"}, {"stage", "staging"}, {""}, {"dev", "local"}} {
+		ref := dbRefForProfiles(anchor, matches, profiles)
+		if ref != nil {
+			return ref
+		}
+	}
+	return dbRefForProfiles(anchor, matches, nil)
+}
+
+type dbConfigMatch struct {
+	profile, value, platform, database string
+}
+
+func dbRefForProfiles(anchor string, matches []dbConfigMatch, profiles []string) *model.InstanceRef {
+	profileAllowed := func(profile string) bool {
+		if profiles == nil {
+			return true
+		}
+		for _, p := range profiles {
+			if strings.EqualFold(profile, p) {
+				return true
+			}
+		}
+		return false
+	}
+	var chosen []dbConfigMatch
+	for _, m := range matches {
+		if profileAllowed(m.profile) {
+			chosen = append(chosen, m)
+		}
+	}
+	if len(chosen) == 0 {
+		return nil
+	}
+	platform, database := chosen[0].platform, chosen[0].database
+	for _, m := range chosen[1:] {
+		if !strings.EqualFold(m.platform, platform) || !strings.EqualFold(m.database, database) {
+			return nil
+		}
+	}
+	return &model.InstanceRef{
+		Kind:         platform,
+		LogicalName:  database,
+		Database:     database,
+		URLTemplate:  "${" + anchor + "}",
+		ConfigSource: anchor,
+	}
 }
 
 // stampOpsFromClients fans each resolved client's identity onto every operation
@@ -187,7 +291,7 @@ func matchClient(idx *astpkg.ProjectIndex, d *model.BaseEntity, opKind string, b
 		return c != nil && kindCompatible(opKind, c.Kind)
 	}
 	// 1. The op names a client/repository/datasource symbol directly.
-	for _, key := range []string{"client", "client_class", "repository_class", "repository", "datasource", "source_call_symbol", "client_type"} {
+	for _, key := range []string{"client", "client_class", "repository_class", "repository", "datasource", "source_call_symbol", "client_type", "handler"} {
 		raw := scalarDetail(d, key)
 		if raw == "" {
 			continue
@@ -214,6 +318,11 @@ func matchClient(idx *astpkg.ProjectIndex, d *model.BaseEntity, opKind string, b
 		cs = append(cs, byKind["queue"]...)
 	}
 	if len(cs) == 1 {
+		if opPlat := opPlatform(d); opPlat != "" {
+			if clientPlat := clientPlatform(cs[0]); clientPlat != "" && clientPlat != opPlat {
+				return nil
+			}
+		}
 		return cs[0]
 	}
 	if len(cs) > 1 {
@@ -387,12 +496,28 @@ func applyClientInstance(idx *astpkg.ProjectIndex, c *model.ConnectionClient, d 
 			cp := *ref
 			d.InstanceRef = &cp
 		}
+		if d.Details == nil {
+			d.Details = map[string]any{}
+		}
 		if ref.LogicalName != "" && genericInstance(idx, d.Instance, d.Platform) {
 			d.Instance = ref.LogicalName
-			if d.Details == nil {
-				d.Details = map[string]any{}
-			}
 			d.Details["instance"] = ref.LogicalName
+		}
+		if ref.LogicalName != "" {
+			d.Details["target_service"] = ref.LogicalName
+		}
+		if ref.URLTemplate != "" {
+			d.Details["url_template"] = ref.URLTemplate
+			d.Details["base_url"] = ref.URLTemplate
+		}
+		if ref.ResolvedURL != "" {
+			d.Details["resolved_url"] = ref.ResolvedURL
+		}
+		if ref.Host != "" {
+			d.Details["host"] = ref.Host
+		}
+		if ref.ConfigSource != "" {
+			d.Details["config_source"] = ref.ConfigSource
 		}
 	case "queue", "stream":
 		if d.InstanceRef == nil {

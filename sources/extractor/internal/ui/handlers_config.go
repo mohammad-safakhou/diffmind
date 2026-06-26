@@ -34,6 +34,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			"timeout_seconds": cfg.OpenCode.TimeoutSec,
 		},
 		"runtime": map[string]any{
+			"pipeline":                  cfg.Pipeline(),
 			"workers":                   cfg.Runtime.Workers,
 			"max_catalog_items":         cfg.Runtime.MaxCatalogItems,
 			"idle_timeout_seconds":      cfg.Runtime.IdleTimeoutSec,

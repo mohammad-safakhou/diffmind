@@ -106,6 +106,11 @@ func stampDatastoreInstance(idx *astpkg.ProjectIndex, ref *model.InstanceRef, d 
 	if d.Type == "cache_operation" && ref.Kind != "redis" {
 		return
 	}
+	if opPlat := opPlatform(d); opPlat != "" {
+		if refPlat := platformClass(ref.Kind); refPlat != "" && refPlat != opPlat {
+			return
+		}
+	}
 	if d.InstanceRef == nil {
 		r := *ref
 		d.InstanceRef = &r
@@ -435,12 +440,39 @@ func genericInstance(idx *astpkg.ProjectIndex, instance, platform string) bool {
 	if strings.HasPrefix(s, "map[") {
 		return true
 	}
+	if looksLikeHTTPOperationLabel(s) || looksLikeHTTPMethodSlug(s) {
+		return true
+	}
 	if _, isKey := ConfigValue(idx, s); isKey {
 		return true
 	}
 	// Dotted, path-less, space-less strings are property keys, not instances
 	// (covers keys from profiles the index didn't capture).
 	return strings.Contains(s, ".") && !strings.ContainsAny(s, "/ :")
+}
+
+func looksLikeHTTPOperationLabel(raw string) bool {
+	fields := strings.Fields(strings.TrimSpace(raw))
+	if len(fields) < 2 {
+		return false
+	}
+	switch strings.ToUpper(fields[0]) {
+	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS":
+		return strings.HasPrefix(fields[1], "/")
+	default:
+		return false
+	}
+}
+
+func looksLikeHTTPMethodSlug(raw string) bool {
+	raw = strings.TrimPrefix(strings.TrimSpace(raw), "service.")
+	raw = strings.ReplaceAll(strings.ToLower(raw), "_", "-")
+	for _, method := range []string{"get", "post", "put", "patch", "delete", "head", "options"} {
+		if raw == method || strings.HasPrefix(raw, method+"-") {
+			return true
+		}
+	}
+	return false
 }
 
 // databaseFromConnectionURL extracts the database name (last path segment) from
@@ -466,9 +498,34 @@ func databaseFromConnectionURL(idx *astpkg.ProjectIndex, raw string) string {
 		if v, ok := ResolvePlaceholder(idx, seg, 0); ok && !IsPlaceholder(v) {
 			return strings.TrimSpace(v)
 		}
+		if name := databaseNameFromEnvPlaceholder(seg); name != "" {
+			return name
+		}
 		return ""
 	}
 	return strings.TrimSpace(seg)
+}
+
+func databaseNameFromEnvPlaceholder(seg string) string {
+	body, _, ok := SplitPlaceholder(seg)
+	if !ok {
+		return ""
+	}
+	name := strings.ToLower(strings.TrimSpace(body))
+	name = strings.NewReplacer("-", "_", ".", "_").Replace(name)
+	for _, suffix := range []string{"_database_name", "_database", "_db_name", "_dbname"} {
+		if strings.HasSuffix(name, suffix) {
+			name = strings.TrimSuffix(name, suffix)
+			break
+		}
+	}
+	name = strings.Trim(name, "_")
+	switch name {
+	case "", "db", "database", "postgres", "postgresql", "mysql":
+		return ""
+	default:
+		return name
+	}
 }
 
 // hostFromConnectionURL returns the host[:port] part of a connection URL.

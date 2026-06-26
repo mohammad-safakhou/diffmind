@@ -52,6 +52,7 @@ func TestBuildConfigFromRequest_PositiveValuesOverrideDefaults(t *testing.T) {
 	body := []byte(`{
         "opencode": {"base_url":"http://x","timeout_seconds":600},
         "runtime": {
+            "pipeline": "deterministic",
             "workers": 16,
             "max_catalog_items": 50,
             "idle_timeout_seconds": 240,
@@ -72,6 +73,9 @@ func TestBuildConfigFromRequest_PositiveValuesOverrideDefaults(t *testing.T) {
 	got := buildConfigFromRequest(req)
 	if got.OpenCode.TimeoutSec != 600 {
 		t.Errorf("TimeoutSec = %d, want 600", got.OpenCode.TimeoutSec)
+	}
+	if got.Pipeline() != config.PipelineDeterministic {
+		t.Errorf("Pipeline = %q, want deterministic", got.Pipeline())
 	}
 	if got.Runtime.IdleTimeoutSec != 240 {
 		t.Errorf("IdleTimeoutSec = %d, want 240", got.Runtime.IdleTimeoutSec)

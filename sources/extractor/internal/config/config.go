@@ -3,6 +3,12 @@ package config
 import (
 	"encoding/json"
 	"os"
+	"strings"
+)
+
+const (
+	PipelineLLM           = "llm"
+	PipelineDeterministic = "deterministic"
 )
 
 type OpenCode struct {
@@ -20,12 +26,14 @@ type Quality struct {
 }
 
 type Runtime struct {
-	Workers                 int  `json:"workers"`
-	MaxCatalogItems         int  `json:"max_catalog_items"`
-	CleanupOpenCodeSessions bool `json:"cleanup_opencode_sessions"`
-	OpenCodeDeleteDelaySec  int  `json:"opencode_delete_delay_seconds"`
-	ReuseOpenCodeSession    bool `json:"reuse_opencode_session"`
-	SkipReexamination       bool `json:"skip_reexamination"`
+	Pipeline                string `json:"pipeline"`
+	Workers                 int    `json:"workers"`
+	MaxCatalogItems         int    `json:"max_catalog_items"`
+	CleanupOpenCodeSessions bool   `json:"cleanup_opencode_sessions"`
+	OpenCodeDeleteDelaySec  int    `json:"opencode_delete_delay_seconds"`
+	ReuseOpenCodeSession    bool   `json:"reuse_opencode_session"`
+	SkipReexamination       bool   `json:"skip_reexamination"`
+	ImportLegacyArchfile    bool   `json:"import_legacy_archfile"`
 
 	// PromptRetryCount is how many times DiffMind retries a prompt after
 	// the liveness watchdog declares it stuck. The initial attempt is not
@@ -136,6 +144,7 @@ func Default() Config {
 			//   spawns ripgrep / LSP / file globbers in parallel.
 			// - Provider rate limits are also less likely to trip.
 			// Power users can still bump it via --workers / the form.
+			Pipeline:                PipelineLLM,
 			Workers:                 6,
 			MaxCatalogItems:         80,
 			CleanupOpenCodeSessions: false,
@@ -162,6 +171,25 @@ func Default() Config {
 			Languages: nil, // auto-detect from source tree
 		},
 	}
+}
+
+func NormalizePipeline(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", PipelineLLM:
+		return PipelineLLM
+	case PipelineDeterministic:
+		return PipelineDeterministic
+	default:
+		return PipelineLLM
+	}
+}
+
+func (c Config) Pipeline() string {
+	return NormalizePipeline(c.Runtime.Pipeline)
+}
+
+func (c Config) IsDeterministicPipeline() bool {
+	return c.Pipeline() == PipelineDeterministic
 }
 
 func Load(path string) (Config, error) {

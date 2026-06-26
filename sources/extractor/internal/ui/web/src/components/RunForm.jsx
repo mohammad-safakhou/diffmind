@@ -21,8 +21,9 @@ import { runMeta, preflight } from '../lib/store.js'
 // Bumped to v4 when the dead controls (deterministic_discovery select +
 // indexer block) were removed — removing fields from DEFAULTS requires a
 // bump so a stale saved value can't resurrect a control that no longer exists.
-const STORAGE_KEY = 'diffmind:form-defaults-v4'
-const LEGACY_STORAGE_KEYS = ['diffmind:form-defaults', 'diffmind:form-defaults-v2', 'diffmind:form-defaults-v3']
+// Bumped to v6 for runtime.pipeline and removal of the temporary testing toggle.
+const STORAGE_KEY = 'diffmind:form-defaults-v6'
+const LEGACY_STORAGE_KEYS = ['diffmind:form-defaults', 'diffmind:form-defaults-v2', 'diffmind:form-defaults-v3', 'diffmind:form-defaults-v4', 'diffmind:form-defaults-v5']
 
 // `timeout_seconds` is the raw http.Client.Timeout on the transport.
 // We DELIBERATELY do not surface it as a primary control — the
@@ -43,6 +44,7 @@ const DEFAULTS = {
     timeout_seconds: 0, // 0 = use server default (4h fail-safe)
   },
   runtime: {
+    pipeline: 'llm',
     workers: 6,
     max_catalog_items: 80,
     reuse_opencode_session: false,
@@ -122,7 +124,7 @@ function sanitizePrefill(p) {
     return o
   }
   if (p.opencode) out.opencode = pick(p.opencode, ['base_url', 'username', 'provider_id', 'model_id', 'model_variant', 'timeout_seconds'])
-  if (p.runtime) out.runtime = pick(p.runtime, ['workers', 'max_catalog_items', 'idle_timeout_seconds', 'max_call_seconds', 'liveness_poll_seconds', 'prompt_retry_count', 'skip_reexamination', 'discovery_verify', 'discovery_verify_mode', 'discovery_verify_samples', 'discovery_framework_scope', 'reuse_opencode_session'])
+  if (p.runtime) out.runtime = pick(p.runtime, ['pipeline', 'workers', 'max_catalog_items', 'idle_timeout_seconds', 'max_call_seconds', 'liveness_poll_seconds', 'prompt_retry_count', 'skip_reexamination', 'discovery_verify', 'discovery_verify_mode', 'discovery_verify_samples', 'discovery_framework_scope', 'reuse_opencode_session'])
   if (p.quality) out.quality = pick(p.quality, ['min_confidence'])
   return out
 }
@@ -142,12 +144,13 @@ export function RunForm({ onLaunched, prefill, gateOnActiveRun = true }) {
   // global active run (multiple runs are allowed). The detail view still
   // gates to avoid double-submitting the run it is watching.
   const running = gateOnActiveRun && (meta?.status === 'running' || meta?.status === 'cancelling')
+  const deterministic = form.runtime.pipeline === 'deterministic'
 
   // Preflight gate: any SeverityFail across the system-status
   // checks disables the Run button. The user can still type into
   // the form (so they can FIX the cause); only submit is blocked.
   const pf = preflight.value
-  const preflightBlocked = pf && pf.overall === 'fail'
+  const preflightBlocked = !deterministic && pf && pf.overall === 'fail'
 
   const update = (path, value) => {
     setForm((f) => {
@@ -171,6 +174,7 @@ export function RunForm({ onLaunched, prefill, gateOnActiveRun = true }) {
   // server's loaded defaults). Debounced so a fast typist doesn't
   // generate one request per keystroke.
   useEffect(() => {
+    if (deterministic) return
     const handle = setTimeout(() => {
       pushPreflightOptions({
         opencode: {
@@ -189,6 +193,7 @@ export function RunForm({ onLaunched, prefill, gateOnActiveRun = true }) {
     form.opencode.password,
     form.opencode.provider_id,
     form.opencode.model_id,
+    deterministic,
   ])
 
   const cli = useMemo(() => buildCLI(form), [form])
@@ -206,13 +211,15 @@ export function RunForm({ onLaunched, prefill, gateOnActiveRun = true }) {
       setError('Repository path should be an absolute path.')
       return
     }
-    if (!form.opencode.base_url?.trim()) {
-      setError('OpenCode URL is required.')
-      return
-    }
-    if (!form.opencode.provider_id?.trim() || !form.opencode.model_id?.trim()) {
-      setError('Provider id and model id are required (run `opencode auth login` first).')
-      return
+    if (!deterministic) {
+      if (!form.opencode.base_url?.trim()) {
+        setError('OpenCode URL is required.')
+        return
+      }
+      if (!form.opencode.provider_id?.trim() || !form.opencode.model_id?.trim()) {
+        setError('Provider id and model id are required (run `opencode auth login` first).')
+        return
+      }
     }
     setBusy(true)
     try {
@@ -239,6 +246,16 @@ export function RunForm({ onLaunched, prefill, gateOnActiveRun = true }) {
         <input value={form.repo_path} onInput={(e) => update('repo_path', e.target.value)} placeholder="/abs/path/to/repo" disabled={running} />
       </div>
 
+      <div class="field">
+        <label>Pipeline</label>
+        <select value={form.runtime.pipeline} onInput={(e) => update('runtime.pipeline', e.target.value)} disabled={running}>
+          <option value="llm">LLM assisted</option>
+          <option value="deterministic">Deterministic only</option>
+        </select>
+      </div>
+
+      {!deterministic && (
+        <>
       <div class="row-3">
         <div class="field">
           <label>OpenCode URL</label>
@@ -289,27 +306,31 @@ export function RunForm({ onLaunched, prefill, gateOnActiveRun = true }) {
           </select>
         </div>
       </div>
+        </>
+      )}
 
-      <div class="row-3">
+      <div class={deterministic ? 'row-2' : 'row-3'}>
         <div class="field">
           <label>Workers</label>
           <input type="number" value={form.runtime.workers} onInput={(e) => update('runtime.workers', Number(e.target.value))} disabled={running} />
         </div>
-        <div class="field">
-          <label>Catalog batch</label>
-          <input type="number" value={form.runtime.max_catalog_items} onInput={(e) => update('runtime.max_catalog_items', Number(e.target.value))} disabled={running} />
-        </div>
+        {!deterministic && (
+          <div class="field">
+            <label>Catalog batch</label>
+            <input type="number" value={form.runtime.max_catalog_items} onInput={(e) => update('runtime.max_catalog_items', Number(e.target.value))} disabled={running} />
+          </div>
+        )}
         <div class="field">
           <label>Min confidence</label>
           <input type="number" step="0.05" min="0" max="1" value={form.quality.min_confidence} onInput={(e) => update('quality.min_confidence', Number(e.target.value))} disabled={running} />
         </div>
       </div>
 
-      <button class="btn secondary" type="button" onClick={() => setAdvanced((v) => !v)}>
+      {!deterministic && <button class="btn secondary" type="button" onClick={() => setAdvanced((v) => !v)}>
         {advanced ? '\u25BE' : '\u25B8'} Advanced
-      </button>
+      </button>}
 
-      {advanced && (
+      {!deterministic && advanced && (
         <div style="display:flex; flex-direction:column; gap: 8px; padding-left: 4px; border-left: 2px solid var(--border);">
           <div class="row-3">
             <div class="field">
@@ -430,27 +451,29 @@ export function RunForm({ onLaunched, prefill, gateOnActiveRun = true }) {
 }
 
 function buildCLI(f) {
+  const deterministic = f.runtime.pipeline === 'deterministic'
   const parts = ['go run ./cmd/diffmind run', `  --repo ${q(f.repo_path || '<repo>')}`]
-  if (f.opencode.base_url) parts.push(`  --opencode-url ${q(f.opencode.base_url)}`)
-  if (f.opencode.username) parts.push(`  --opencode-username ${q(f.opencode.username)}`)
-  if (f.opencode.password) parts.push(`  --opencode-password ${q('***')}`)
-  if (f.opencode.provider_id) parts.push(`  --provider-id ${q(f.opencode.provider_id)}`)
-  if (f.opencode.model_id) parts.push(`  --model-id ${q(f.opencode.model_id)}`)
-  if (f.opencode.model_variant) parts.push(`  --model-variant ${f.opencode.model_variant}`)
-  if (f.opencode.timeout_seconds) parts.push(`  --opencode-timeout-seconds ${f.opencode.timeout_seconds}`)
+  if (deterministic) parts.push('  --pipeline deterministic')
+  if (!deterministic && f.opencode.base_url) parts.push(`  --opencode-url ${q(f.opencode.base_url)}`)
+  if (!deterministic && f.opencode.username) parts.push(`  --opencode-username ${q(f.opencode.username)}`)
+  if (!deterministic && f.opencode.password) parts.push(`  --opencode-password ${q('***')}`)
+  if (!deterministic && f.opencode.provider_id) parts.push(`  --provider-id ${q(f.opencode.provider_id)}`)
+  if (!deterministic && f.opencode.model_id) parts.push(`  --model-id ${q(f.opencode.model_id)}`)
+  if (!deterministic && f.opencode.model_variant) parts.push(`  --model-variant ${f.opencode.model_variant}`)
+  if (!deterministic && f.opencode.timeout_seconds) parts.push(`  --opencode-timeout-seconds ${f.opencode.timeout_seconds}`)
   if (f.runtime.workers) parts.push(`  --workers ${f.runtime.workers}`)
-  if (f.runtime.max_catalog_items) parts.push(`  --max-catalog-items ${f.runtime.max_catalog_items}`)
-  if (f.runtime.idle_timeout_seconds) parts.push(`  --idle-timeout-seconds ${f.runtime.idle_timeout_seconds}`)
-  if (f.runtime.prompt_retry_count !== undefined && f.runtime.prompt_retry_count !== null) parts.push(`  --prompt-retry-count ${f.runtime.prompt_retry_count}`)
-  if (f.runtime.max_call_seconds) parts.push(`  --max-call-seconds ${f.runtime.max_call_seconds}`)
-  if (f.runtime.liveness_poll_seconds) parts.push(`  --liveness-poll-seconds ${f.runtime.liveness_poll_seconds}`)
-  if (f.runtime.reuse_opencode_session) parts.push('  --reuse-opencode-session')
-  if (f.runtime.cleanup_opencode_sessions) parts.push('  --cleanup-opencode-sessions')
-  if (f.runtime.skip_reexamination) parts.push('  --skip-reexamination')
-  if (f.runtime.discovery_verify) parts.push('  --discovery-verify')
-  if (f.runtime.discovery_verify && f.runtime.discovery_verify_mode) parts.push(`  --discovery-verify-mode ${f.runtime.discovery_verify_mode}`)
-  if (f.runtime.discovery_verify && f.runtime.discovery_verify_mode === 'ksample' && f.runtime.discovery_verify_samples) parts.push(`  --discovery-verify-samples ${f.runtime.discovery_verify_samples}`)
-  if (f.runtime.discovery_framework_scope) parts.push('  --discovery-framework-scope')
+  if (!deterministic && f.runtime.max_catalog_items) parts.push(`  --max-catalog-items ${f.runtime.max_catalog_items}`)
+  if (!deterministic && f.runtime.idle_timeout_seconds) parts.push(`  --idle-timeout-seconds ${f.runtime.idle_timeout_seconds}`)
+  if (!deterministic && f.runtime.prompt_retry_count !== undefined && f.runtime.prompt_retry_count !== null) parts.push(`  --prompt-retry-count ${f.runtime.prompt_retry_count}`)
+  if (!deterministic && f.runtime.max_call_seconds) parts.push(`  --max-call-seconds ${f.runtime.max_call_seconds}`)
+  if (!deterministic && f.runtime.liveness_poll_seconds) parts.push(`  --liveness-poll-seconds ${f.runtime.liveness_poll_seconds}`)
+  if (!deterministic && f.runtime.reuse_opencode_session) parts.push('  --reuse-opencode-session')
+  if (!deterministic && f.runtime.cleanup_opencode_sessions) parts.push('  --cleanup-opencode-sessions')
+  if (!deterministic && f.runtime.skip_reexamination) parts.push('  --skip-reexamination')
+  if (!deterministic && f.runtime.discovery_verify) parts.push('  --discovery-verify')
+  if (!deterministic && f.runtime.discovery_verify && f.runtime.discovery_verify_mode) parts.push(`  --discovery-verify-mode ${f.runtime.discovery_verify_mode}`)
+  if (!deterministic && f.runtime.discovery_verify && f.runtime.discovery_verify_mode === 'ksample' && f.runtime.discovery_verify_samples) parts.push(`  --discovery-verify-samples ${f.runtime.discovery_verify_samples}`)
+  if (!deterministic && f.runtime.discovery_framework_scope) parts.push('  --discovery-framework-scope')
   if (f.quality.min_confidence) parts.push(`  --min-confidence ${f.quality.min_confidence}`)
   return parts.join(' \\\n')
 }

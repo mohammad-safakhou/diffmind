@@ -81,6 +81,25 @@ interface Root {
 	}
 }
 
+func TestJavaRetrofitInterfaceBecomesOutboundHTTP(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "RoutingApi.java", `package com.example;
+
+import retrofit2.Call;
+import retrofit2.http.GET;
+import retrofit2.http.Path;
+
+public interface RoutingApi {
+    @GET("/campaigns/{campaignId}")
+    Call<String> getCampaign(@Path("campaignId") String campaignId);
+}
+`)
+
+	idx := buildIndex(t, dir)
+	assertBinding(t, idx.Frameworks, "retrofit", "http_client", "GET /campaigns/{campaignId}", "RoutingApi.getCampaign")
+	assertNoBinding(t, idx.Frameworks, "retrofit", "http_handler", "GET /campaigns/{campaignId}")
+}
+
 func TestNestDetectorRequiresControllerContext(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "users.controller.ts", `import { Controller, Get } from '@nestjs/common';
@@ -157,6 +176,59 @@ router.post(dynamicPath(), handler)
 	assertBinding(t, idx.Frameworks, "express", "http_handler", "GET /users", "")
 	assertNoBinding(t, idx.Frameworks, "express", "http_handler", "GET /not-route")
 	assertNoBinding(t, idx.Frameworks, "express", "http_handler", "POST /dynamic")
+}
+
+func TestFlaskRouteDecoratorLiteralPath(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "routes.py", `from flask import Blueprint
+
+management = Blueprint("management", __name__)
+
+@management.route("/clean-all-caches")
+def clean_all_caches():
+    return "ok"
+
+@management.route("/traffic-specifications", methods=["POST"])
+def traffic_specifications():
+    return "ok"
+
+@not_web.route(dynamic_path())
+def dynamic():
+    return "no"
+`)
+	idx := buildIndex(t, dir)
+	assertBinding(t, idx.Frameworks, "flask", "http_handler", "GET /clean-all-caches", "clean_all_caches")
+	assertBinding(t, idx.Frameworks, "flask", "http_handler", "POST /traffic-specifications", "traffic_specifications")
+	assertNoBinding(t, idx.Frameworks, "flask", "http_handler", "GET /dynamic")
+}
+
+func TestFlaskBlueprintURLPrefixComposesRoutes(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "app.py", `from flask import Flask
+from routes import management
+
+def create_app():
+    app = Flask(__name__)
+    app.register_blueprint(management, url_prefix="/-/")
+    return app
+`)
+	writeFile(t, dir, "routes.py", `from flask import Blueprint
+
+management = Blueprint("management", __name__)
+
+@management.route("/clean-all-caches")
+def clean_all_caches():
+    return "ok"
+
+@management.route("/traffic-specifications", methods=["POST"])
+def traffic_specifications():
+    return "ok"
+`)
+	idx := buildIndex(t, dir)
+	assertBinding(t, idx.Frameworks, "flask", "http_handler", "GET /-/clean-all-caches", "clean_all_caches")
+	assertBinding(t, idx.Frameworks, "flask", "http_handler", "POST /-/traffic-specifications", "traffic_specifications")
+	assertNoBinding(t, idx.Frameworks, "flask", "http_handler", "GET /clean-all-caches")
+	assertNoBinding(t, idx.Frameworks, "flask", "http_handler", "POST /traffic-specifications")
 }
 
 // E1: route paths must come only from the positional arg or value=/path=,

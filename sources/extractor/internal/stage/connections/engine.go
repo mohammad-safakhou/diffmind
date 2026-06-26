@@ -171,10 +171,10 @@ func runASTConnections(
 	cfg := astpkg.WalkConfig{
 		IsTarget:          isTarget,
 		Context:           ctx,
-		MaxDepth:          12,
-		MaxPathsPerTarget: 8,
-		MaxPathsTotal:     4000,
-		MaxVisitedEdges:   250000,
+		MaxDepth:          32,
+		MaxPathsPerTarget: 24,
+		MaxPathsTotal:     1000000,
+		MaxVisitedEdges:   50000000,
 	}
 
 	// Per-exposure parallel walk.
@@ -563,6 +563,9 @@ func buildASTConnectionsForExposure(
 	minConfidence float64,
 ) ([]model.Connection, []model.UnresolvedItem) {
 	if len(entrySymbols) == 0 {
+		if skipASTExposureResolution(exposure) {
+			return nil, nil
+		}
 		return nil, []model.UnresolvedItem{{
 			Kind:       model.KindExposure,
 			Type:       exposure.Type,
@@ -659,6 +662,30 @@ func buildASTConnectionsForExposure(
 		})
 	}
 	return conns, unresolved
+}
+
+func skipASTExposureResolution(exposure model.Exposure) bool {
+	if exposure.Type != "queue_consumer" && exposure.Type != "scheduled_job" {
+		return false
+	}
+	lower := strings.ToLower(strings.Join(append([]string{
+		exposure.Platform,
+		detailString(exposure.Details, "platform"),
+		detailString(exposure.Details, "discovered_by"),
+		detailString(exposure.Details, "event_source_type"),
+	}, exposure.Tags...), " "))
+	switch {
+	case strings.Contains(lower, "aws_sam_event_source"):
+		return true
+	case strings.Contains(lower, "dynamodb_stream"):
+		return true
+	case strings.Contains(lower, "aws-sam"):
+		return true
+	case strings.Contains(lower, "kubernetes") || strings.Contains(lower, "helm"):
+		return true
+	default:
+		return false
+	}
 }
 
 // directContainment reports whether one of the dependency's pinned locations is

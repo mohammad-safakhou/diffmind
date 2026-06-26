@@ -35,13 +35,14 @@ type startRunRequest struct {
 	} `json:"opencode"`
 
 	Runtime struct {
-		Workers                 int  `json:"workers"`
-		MaxCatalogItems         int  `json:"max_catalog_items"`
-		ReuseOpenCodeSession    bool `json:"reuse_opencode_session"`
-		CleanupOpenCodeSessions bool `json:"cleanup_opencode_sessions"`
-		OpenCodeDeleteDelaySec  int  `json:"opencode_delete_delay_seconds"`
-		SkipReexamination       bool `json:"skip_reexamination"`
-		PromptRetryCount        *int `json:"prompt_retry_count"`
+		Pipeline                string `json:"pipeline"`
+		Workers                 int    `json:"workers"`
+		MaxCatalogItems         int    `json:"max_catalog_items"`
+		ReuseOpenCodeSession    bool   `json:"reuse_opencode_session"`
+		CleanupOpenCodeSessions bool   `json:"cleanup_opencode_sessions"`
+		OpenCodeDeleteDelaySec  int    `json:"opencode_delete_delay_seconds"`
+		SkipReexamination       bool   `json:"skip_reexamination"`
+		PromptRetryCount        *int   `json:"prompt_retry_count"`
 		// Liveness watchdog knobs. 0 = use config default. See
 		// config.Runtime for field semantics.
 		IdleTimeoutSec  int `json:"idle_timeout_seconds"`
@@ -81,6 +82,9 @@ func buildConfigFromRequest(req startRunRequest) config.Config {
 	cfg.OpenCode.ModelVariant = req.OpenCode.ModelVariant
 	if req.OpenCode.TimeoutSec > 0 {
 		cfg.OpenCode.TimeoutSec = req.OpenCode.TimeoutSec
+	}
+	if req.Runtime.Pipeline != "" {
+		cfg.Runtime.Pipeline = config.NormalizePipeline(req.Runtime.Pipeline)
 	}
 	if req.Runtime.Workers > 0 {
 		cfg.Runtime.Workers = req.Runtime.Workers
@@ -138,13 +142,12 @@ func (s *Server) handleRunCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("repo_path is not accessible: %w", err))
 		return
 	}
-	if strings.TrimSpace(req.OpenCode.BaseURL) == "" {
+	cfg := buildConfigFromRequest(req)
+	cfg.Artifacts.BaseDir = s.baseDir
+	if !cfg.IsDeterministicPipeline() && strings.TrimSpace(req.OpenCode.BaseURL) == "" {
 		writeErr(w, http.StatusBadRequest, errors.New("opencode.base_url is required"))
 		return
 	}
-
-	cfg := buildConfigFromRequest(req)
-	cfg.Artifacts.BaseDir = s.baseDir
 
 	// Hard-rejection gate: run a synchronous preflight against
 	// the EFFECTIVE config we are about to launch with. We
@@ -156,30 +159,32 @@ func (s *Server) handleRunCreate(w http.ResponseWriter, r *http.Request) {
 	// Any SeverityFail aborts the request with 422 + a payload
 	// listing every failed check so the UI can surface clear
 	// remediation. Warnings are allowed through.
-	checks := preflight.DefaultChecks(preflight.OptionsFromConfig(cfg))
-	rep := preflight.NewRunner(checks).Run(r.Context())
-	if rep.HasFail() {
-		failures := rep.Failures()
-		// Build a single-line summary for the legacy `error` field
-		// + the full structured payload for the new UI.
-		var brief strings.Builder
-		brief.WriteString("preflight rejected the run: ")
-		for i, f := range failures {
-			if i > 0 {
-				brief.WriteString("; ")
+	if !cfg.IsDeterministicPipeline() {
+		checks := preflight.DefaultChecks(preflight.OptionsFromConfig(cfg))
+		rep := preflight.NewRunner(checks).Run(r.Context())
+		if rep.HasFail() {
+			failures := rep.Failures()
+			// Build a single-line summary for the legacy `error` field
+			// + the full structured payload for the new UI.
+			var brief strings.Builder
+			brief.WriteString("preflight rejected the run: ")
+			for i, f := range failures {
+				if i > 0 {
+					brief.WriteString("; ")
+				}
+				brief.WriteString(f.Title + " - " + f.Message)
 			}
-			brief.WriteString(f.Title + " - " + f.Message)
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			writeJSON(w, map[string]any{
+				"error":     brief.String(),
+				"preflight": rep,
+			})
+			util.Warn("ui.api", "run rejected by preflight", map[string]any{
+				"repo":     repo,
+				"failures": len(failures),
+			})
+			return
 		}
-		w.WriteHeader(http.StatusUnprocessableEntity)
-		writeJSON(w, map[string]any{
-			"error":     brief.String(),
-			"preflight": rep,
-		})
-		util.Warn("ui.api", "run rejected by preflight", map[string]any{
-			"repo":     repo,
-			"failures": len(failures),
-		})
-		return
 	}
 
 	// Log the effective config the dashboard is about to launch. We
@@ -189,6 +194,7 @@ func (s *Server) handleRunCreate(w http.ResponseWriter, r *http.Request) {
 	// such regression is one grep away.
 	util.Info("ui.api", "starting run from dashboard", map[string]any{
 		"repo":                           repo,
+		"pipeline":                       cfg.Pipeline(),
 		"opencode_transport_timeout_sec": cfg.OpenCode.TimeoutSec,
 		"idle_timeout_sec":               cfg.Runtime.IdleTimeoutSec,
 		"prompt_retry_count":             cfg.Runtime.PromptRetryCount,

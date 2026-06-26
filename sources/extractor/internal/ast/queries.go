@@ -131,12 +131,11 @@ var pythonQueries = &languageQueries{
     arguments: (argument_list) @args))
 
 (decorator
-  (attribute
-    attribute: (identifier) @name))
+  (attribute) @name)
 
 (decorator
   (call
-    function: (attribute attribute: (identifier) @name)
+    function: (attribute) @name
     arguments: (argument_list) @args))
 `),
 }

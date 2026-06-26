@@ -93,7 +93,7 @@ func TestOrchestratorSanitizesBadTransportTimeout(t *testing.T) {
 	// And the run_started payload must include the watchdog values
 	// so future debugging is one grep away.
 	for _, field := range []string{
-		"idle_timeout_sec", "max_call_sec", "liveness_poll_sec",
+		"pipeline", "idle_timeout_sec", "max_call_sec", "liveness_poll_sec",
 		"discovery_ast_hints", "discovery_verify", "discovery_verify_mode",
 		"discovery_verify_samples", "discovery_framework_scope",
 	} {

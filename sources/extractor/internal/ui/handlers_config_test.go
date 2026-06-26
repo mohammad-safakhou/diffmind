@@ -14,7 +14,7 @@ import (
 func TestConfigEndpointPrefill(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("DIFFMIND_HOME", home)
-	cfgJSON := `{"opencode":{"base_url":"http://pref:4096","provider_id":"openai","model_id":"gpt","password":"secret"},"runtime":{"workers":7}}`
+	cfgJSON := `{"opencode":{"base_url":"http://pref:4096","provider_id":"openai","model_id":"gpt","password":"secret"},"runtime":{"pipeline":"deterministic","workers":7}}`
 	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(cfgJSON), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -47,6 +47,9 @@ func TestConfigEndpointPrefill(t *testing.T) {
 	rt, _ := body["runtime"].(map[string]any)
 	if rt["workers"].(float64) != 7 {
 		t.Fatalf("workers = %v", rt["workers"])
+	}
+	if rt["pipeline"] != "deterministic" {
+		t.Fatalf("pipeline = %v", rt["pipeline"])
 	}
 }
 

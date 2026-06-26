@@ -264,8 +264,9 @@ func TestDatabaseFromConnectionURL(t *testing.T) {
 		{"jdbc:postgresql://db:5432/ats", "ats"},      // plain
 		{"jdbc:mysql://db/shop?useSSL=false", "shop"}, // query params stripped
 		{"mongodb://h:27017/catalog", "catalog"},      // non-jdbc scheme
-		{"jdbc:postgresql://db:5432/", ""},            // no db segment
-		{"redis://cache:6379", ""},                    // no path
+		{"jdbc:postgresql://${HOST}/${ROUTING_DB_NAME}", "routing"},
+		{"jdbc:postgresql://db:5432/", ""}, // no db segment
+		{"redis://cache:6379", ""},         // no path
 	}
 	for _, c := range cases {
 		if got := databaseFromConnectionURL(idx, c.url); got != c.want {

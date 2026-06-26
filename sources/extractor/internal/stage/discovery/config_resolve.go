@@ -227,7 +227,7 @@ func KeySegmentName(key string) string {
 	parts := strings.Split(key, ".")
 	for len(parts) > 0 {
 		switch strings.ToLower(parts[len(parts)-1]) {
-		case "url", "uri", "name", "arn", "queue", "topic", "endpoint", "destination", "stream", "value":
+		case "url", "uri", "baseurl", "base-url", "name", "arn", "queue", "topic", "endpoint", "destination", "stream", "value":
 			parts = parts[:len(parts)-1]
 		default:
 			return strings.TrimSpace(parts[len(parts)-1])
