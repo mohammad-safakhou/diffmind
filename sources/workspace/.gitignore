@@ -8,6 +8,7 @@
 # Test output
 testdata/output/
 .gocache/
+.gomodcache/
 
 # DiffMind runtime data
 .diffmind/
