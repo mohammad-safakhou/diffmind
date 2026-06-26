@@ -51,9 +51,9 @@ func hasAnyAnnotation(sym ast.SymbolDef, names ...string) bool {
 	return false
 }
 
-func joinPath(prefix, sub string) string {
+func joinPath(paths ...string) string {
 	parts := []string{}
-	for _, p := range []string{prefix, sub} {
+	for _, p := range paths {
 		p = strings.TrimSpace(strings.Trim(p, `"'`))
 		p = strings.Trim(p, "/")
 		if p != "" {

@@ -164,6 +164,39 @@ func (Root) get(name string) {}
 	assertNoBinding(t, idx.Frameworks, "express", "http_handler", "GET /FIELD_ID")
 }
 
+func TestEchoDetectorComposesGroupPrefixes(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "payment.go", `package payment
+
+import "github.com/labstack/echo/v4"
+
+type Dependencies struct {
+	Echo *echo.Echo
+	Prefix string
+}
+
+type Controller struct{}
+
+func Init(d Dependencies, c Controller) {
+	ug := d.Echo.Group(d.Prefix + "/financial")
+	ug.POST("/pay", c.Pay)
+	ug.GET("/payments/:id/status", c.Status)
+
+	ag := d.Echo.Group(d.Prefix + "/admin")
+	ag.POST("/manual-payment", c.CreateManual)
+}
+
+func (Controller) Pay(c echo.Context) error { return nil }
+func (Controller) Status(c echo.Context) error { return nil }
+func (Controller) CreateManual(c echo.Context) error { return nil }
+`)
+	idx := buildIndex(t, dir)
+	assertBinding(t, idx.Frameworks, "echo", "http_handler", "POST /financial/pay", "Pay")
+	assertBinding(t, idx.Frameworks, "echo", "http_handler", "GET /financial/payments/:id/status", "Status")
+	assertBinding(t, idx.Frameworks, "echo", "http_handler", "POST /admin/manual-payment", "CreateManual")
+	assertNoBinding(t, idx.Frameworks, "gin", "http_handler", "POST /pay")
+}
+
 func TestExpressDetectorRequiresKnownReceiverLiteralPathAndHandler(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "routes.js", `function handler(req, res) {}
