@@ -556,6 +556,9 @@ func (d *ginDetector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
 		if fa.Language != "go" {
 			continue
 		}
+		if fileImportsEcho(fa) {
+			continue
+		}
 		for _, call := range fa.Calls {
 			b := ginCallToBinding(call)
 			if b != nil {
