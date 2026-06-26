@@ -22,15 +22,8 @@ function ServiceDetail({ s }) {
     return (
       <div class="detail-sec">
         <h4>{title} <span class="muted">({arr.length})</span></h4>
-        <ul class="detail-list">
-          {arr.map((it, i) => (
-            <li key={i}>
-              <button class="detail-link" type="button">
-                {typeof it === 'string' ? it : (it.name || it.summary || '-')}
-              </button>
-            </li>
-          ))}
-        </ul>
+        {arr.slice(0, 80).map((it, i) => <ObjectCard key={i} item={typeof it === 'string' ? { name: it } : it} />)}
+        {arr.length > 80 && <p class="muted small">Showing first 80 extracted objects. Use graph groups to inspect more focused slices.</p>}
       </div>
     )
   }
@@ -50,11 +43,27 @@ function ServiceDetail({ s }) {
       {s.connections && s.connections.length > 0 && (
         <div class="detail-sec">
           <h4>Object traces <span class="muted">({s.connections.length})</span></h4>
-          <ul class="detail-list">
-            {s.connections.map((c, i) => <li key={i}><code>{c.from_name}</code>{' -> '}<code>{c.to_name}</code> {c.summary && <span class="muted small">{c.summary}</span>}</li>)}
-          </ul>
+          {s.connections.slice(0, 120).map((c, i) => <TraceCard key={i} trace={c} />)}
+          {s.connections.length > 120 && <p class="muted small">Showing first 120 traces.</p>}
         </div>
       )}
+    </div>
+  )
+}
+
+function TraceCard({ trace }) {
+  return (
+    <div class="object-card trace-card">
+      <KV rows={compactRows([
+        ['From', trace.from_name || trace.from],
+        ['To', trace.to_name || trace.to],
+        ['Kind', trace.kind || trace.type],
+        ['Reachability', trace.reachability],
+        ['Confidence', trace.confidence],
+      ])} compact />
+      {trace.summary && <p class="object-summary">{trace.summary}</p>}
+      <DetailJSON title="Condition" value={trace.condition} />
+      <DetailJSON title="Data dependencies" value={trace.data_dependencies} />
     </div>
   )
 }

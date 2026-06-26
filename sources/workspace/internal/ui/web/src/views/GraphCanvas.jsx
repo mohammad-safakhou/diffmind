@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
 import * as d3 from 'd3'
 import dagre from 'dagre'
 
@@ -498,6 +498,9 @@ export function GraphCanvas({ graph, onSelect }) {
   const graphLayoutKeyRef = useRef('')
   const userMovedRef = useRef(false)
   const programmaticZoomRef = useRef(false)
+  const [mode, setMode] = useState('focus')
+  const [focusService, setFocusService] = useState('')
+  const [activeSelection, setActiveSelection] = useState(null)
   const renderKey = graphRenderKey(graph)
   const layoutKey = graphLayoutKey(graph)
 
@@ -514,13 +517,24 @@ export function GraphCanvas({ graph, onSelect }) {
     const serviceNames = new Set(services.map((s) => s.name))
     const visibleResourceIDs = sharedResourceMeta(graph, serviceNames)
     const displayEdges = edges
+    const serviceModels = new Map(services.map((s) => [s.name, buildServiceModel(s, edges)]))
     const top = new dagre.graphlib.Graph({ compound: false, multigraph: true })
     top.setGraph({ rankdir: 'LR', nodesep: 100, ranksep: 190, edgesep: 45, marginx: 90, marginy: 90 })
     top.setDefaultEdgeLabel(() => ({}))
 
     const nodeInfo = new Map()
     services.forEach((svc) => {
-      top.setNode(svc.name, { width: COMPACT_SERVICE_W, height: COMPACT_SERVICE_H, type: 'service', data: svc, label: svc.name })
+      const model = serviceModels.get(svc.name)
+      const expanded = mode === 'detail' || (mode === 'focus' && focusService === svc.name)
+      top.setNode(svc.name, {
+        width: expanded ? model.width : COMPACT_SERVICE_W,
+        height: expanded ? model.height : COMPACT_SERVICE_H,
+        type: 'service',
+        data: svc,
+        label: svc.name,
+        model,
+        expanded,
+      })
       nodeInfo.set(svc.name, { type: 'service', data: svc, label: svc.name })
     })
     ;(graph.external_nodes || []).forEach((n) => addTopNode(top, nodeInfo, n.name, 'external', n, cleanLabel(n.name)))
@@ -541,7 +555,7 @@ export function GraphCanvas({ graph, onSelect }) {
     const previousLayoutKey = graphLayoutKeyRef.current
     const preserveUserView = userMovedRef.current && previousLayoutKey === layoutKey
     const rootG = svg.append('g')
-    const zoom = d3.zoom().scaleExtent([0.08, 2.4]).on('zoom', (ev) => {
+    const zoom = d3.zoom().scaleExtent([0.035, 2.4]).on('zoom', (ev) => {
       transformRef.current = ev.transform
       if (!programmaticZoomRef.current && ev.sourceEvent) userMovedRef.current = true
       rootG.attr('transform', ev.transform)
@@ -563,7 +577,8 @@ export function GraphCanvas({ graph, onSelect }) {
     services.forEach((svc) => {
       const name = svc.name
       const n = top.node(name)
-      if (n) servicePorts.set(name, computeCompactServicePorts(n.x, n.y, n.width, n.height))
+      if (!n) return
+      servicePorts.set(name, n.expanded ? computeServicePorts(n.model, n.x, n.y) : computeCompactServicePorts(n.x, n.y, n.width, n.height))
     })
 
     const frameGroup = rootG.append('g').attr('class', 'team-frames')
@@ -580,6 +595,7 @@ export function GraphCanvas({ graph, onSelect }) {
         .attr('d', line(pointsForCurve(from, to)))
         .attr('data-from', edge.from)
         .attr('data-to', edge.to)
+        .attr('data-type', edge.type || '')
         .attr('data-count', edge.count || 1)
         .style('stroke-width', Math.min(4, 1.5 + Math.log2(edge.count || 1) * 0.55))
         .attr('marker-end', `url(#arr-${edge.type || 'http'})`)
@@ -591,30 +607,42 @@ export function GraphCanvas({ graph, onSelect }) {
       const n = top.node(id)
       if (!n) return
       if (n.type === 'service') {
-        drawCompactServiceNode(nodeGroup, n, selectThing)
+        if (n.expanded) drawServiceNode(nodeGroup, n.model, n.x, n.y, onSelect, selectThing)
+        else drawCompactServiceNode(nodeGroup, n, selectThing)
       } else {
         drawResourceNode(nodeGroup, id, n, onSelect, selectThing)
       }
     })
 
     function selectThing(sel) {
+      setActiveSelection(sel)
+      if (!sel) setFocusService('')
+      if (sel?.kind === 'service') setFocusService(sel.data?.name || sel.id || '')
+      if ((sel?.kind === 'group' || sel?.kind === 'fact') && sel.data?.service) setFocusService(sel.data.service)
+      applyVisualSelection(sel)
+      onSelect && onSelect(sel)
+    }
+
+    function applyVisualSelection(sel) {
       rootG.selectAll('[data-select-id]').classed('selected', false).classed('hl-dimmed', false)
       rootG.selectAll('.edge').classed('hl-active', false).classed('hl-dimmed', false)
       if (!sel) {
-        onSelect && onSelect(null)
         return
       }
       const selectedID = sel.id || (sel.data && (sel.data.name || sel.data.id)) || sel.kind
       rootG.selectAll(`[data-select-id="${cssEscape(selectedID)}"]`).classed('selected', true)
       if (sel.kind !== 'edge' && selectedID) {
+        const impact = sel.kind === 'group' || sel.kind === 'fact' ? impactEdgeSet(sel, displayEdges) : null
         rootG.selectAll('.edge').each(function () {
           const el = d3.select(this)
-          const active = el.attr('data-from') === selectedID || el.attr('data-to') === selectedID
+          const key = `${el.attr('data-from')}|${el.attr('data-to')}|${el.attr('data-type') || ''}`
+          const active = impact ? impact.has(key) : el.attr('data-from') === selectedID || el.attr('data-to') === selectedID
           el.classed(active ? 'hl-active' : 'hl-dimmed', true)
         })
       }
-      onSelect && onSelect(sel)
     }
+
+    applyVisualSelection(activeSelection)
 
     graphLayoutKeyRef.current = layoutKey
     programmaticZoomRef.current = true
@@ -625,7 +653,8 @@ export function GraphCanvas({ graph, onSelect }) {
       const graphH = top.graph().height || 700
       const pad = 60
       const fitScale = Math.min((W - pad * 2) / graphW, (H - pad * 2) / graphH, 1.05)
-      const scale = Math.min(Math.max(fitScale, 0.12), 1.05)
+      const minScale = mode === 'detail' ? 0.04 : 0.12
+      const scale = Math.min(Math.max(fitScale, minScale), 1.05)
       const tx = (W - graphW * scale) / 2
       const ty = (H - graphH * scale) / 2
       transformRef.current = d3.zoomIdentity.translate(tx, ty).scale(scale)
@@ -637,9 +666,18 @@ export function GraphCanvas({ graph, onSelect }) {
     return () => {
       svg.on('.zoom', null)
     }
-  }, [renderKey])
+  }, [renderKey, mode, focusService, activeSelection])
 
-  return <svg ref={svgRef} class="graph-svg-full graph-svg-instance" />
+  return (
+    <div class="graph-canvas-shell">
+      <div class="graph-mode-toolbar" aria-label="Graph detail mode">
+        <button type="button" class={mode === 'overview' ? 'active' : ''} onClick={() => { setMode('overview'); setFocusService('') }}>Overview</button>
+        <button type="button" class={mode === 'focus' ? 'active' : ''} onClick={() => setMode('focus')}>Expand selected</button>
+        <button type="button" class={mode === 'detail' ? 'active' : ''} onClick={() => setMode('detail')}>Full detail</button>
+      </div>
+      <svg ref={svgRef} class="graph-svg-full graph-svg-instance" />
+    </div>
+  )
 }
 
 function graphLayoutKey(graph) {
@@ -764,6 +802,73 @@ function serviceAnchor(serviceName, edge, role, servicePorts) {
   return role === 'source' ? ports.hullOut : ports.hullIn
 }
 
+function impactEdgeSet(sel, edges) {
+  const out = new Set()
+  const data = sel.data || {}
+  const service = data.service || ''
+  const kind = data.kind || ''
+  const keys = new Set([normalizeKey(data.name), normalizeKey(data.kind)])
+  ;(data.items || []).forEach((item) => {
+    if (Array.isArray(item.items)) {
+      item.items.forEach((raw) => addImpactKeys(keys, raw))
+    } else {
+      addImpactKeys(keys, item)
+    }
+  })
+  edges.forEach((edge) => {
+    if (!service) return
+    const fromService = edge.from === service
+    const toService = edge.to === service
+    if (kind === 'http_inbound' || kind === 'event_inbound' || kind === 'scheduled_jobs' || kind === 'cli_commands' || kind === 'webhooks') {
+      if (fromService || toService) out.add(edgeKey(edge))
+      return
+    }
+    if (!fromService && !toService) return
+    const hay = edgeHaystack(edge)
+    for (const key of keys) {
+      if (key && hay.includes(key)) {
+        out.add(edgeKey(edge))
+        return
+      }
+    }
+    if (kind === 'http_outbound' && edge.type === 'http' && fromService) out.add(edgeKey(edge))
+    if (kind === 'db_operations' && edge.type === 'database' && fromService) out.add(edgeKey(edge))
+    if (kind === 'cache_operations' && edge.type === 'cache' && fromService) out.add(edgeKey(edge))
+    if (kind === 'event_outbound' && edge.type === 'queue_publish' && fromService) out.add(edgeKey(edge))
+  })
+  return out
+}
+
+function edgeKey(edge) {
+  return `${edge.from}|${edge.to}|${edge.type || ''}`
+}
+
+function edgeHaystack(edge) {
+  const parts = [edge.from, edge.to, edge.type, edge.label]
+  ;(edge.details || []).forEach((detail) => {
+    parts.push(detail?.name, detail?.summary)
+    const d = detailsOf(detail)
+    Object.values(d).forEach((value) => {
+      if (typeof value === 'string') parts.push(value, hostFromURL(value))
+      if (Array.isArray(value)) parts.push(...value.map((v) => String(v)))
+    })
+  })
+  return normalizeKey(parts.filter(Boolean).join(' '))
+}
+
+function addImpactKeys(keys, item) {
+  keys.add(normalizeKey(item?.name))
+  keys.add(normalizeKey(item?.summary))
+  const d = detailsOf(item)
+  Object.values(d).forEach((value) => {
+    if (typeof value === 'string') {
+      keys.add(normalizeKey(value))
+      keys.add(normalizeKey(hostFromURL(value)))
+    }
+    if (Array.isArray(value)) value.forEach((v) => keys.add(normalizeKey(String(v))))
+  })
+}
+
 function drawCompactServiceNode(parent, n, selectThing) {
   const service = n.data || {}
   const x = n.x - n.width / 2
@@ -834,9 +939,9 @@ function drawServiceNode(parent, model, cx, cy, onSelect, selectThing) {
     })
 
   drawServiceBoundary(g, model, cx, cy)
-  model.objectives.forEach((group) => drawGroup(g, group, cx + group.x, cy + group.y, 'objective', ports, selectThing))
-  model.left.forEach((group) => drawGroup(g, group, cx + group.x, cy + group.y, 'exposure', ports, selectThing))
-  model.right.forEach((group) => drawGroup(g, group, cx + group.x, cy + group.y, 'dependency', ports, selectThing))
+  model.objectives.forEach((group) => drawGroup(g, group, cx + group.x, cy + group.y, 'objective', ports, selectThing, model.service.name))
+  model.left.forEach((group) => drawGroup(g, group, cx + group.x, cy + group.y, 'exposure', ports, selectThing, model.service.name))
+  model.right.forEach((group) => drawGroup(g, group, cx + group.x, cy + group.y, 'dependency', ports, selectThing, model.service.name))
 
   drawHull(g, model, cx + model.hull.x, cy + model.hull.y)
 
@@ -941,14 +1046,14 @@ function drawTeamFrames(parent, services, topPositions) {
   })
 }
 
-function drawGroup(g, group, cx, cy, kind, ports, selectThing) {
+function drawGroup(g, group, cx, cy, kind, ports, selectThing, serviceName) {
   const colors = GROUP_COLORS[kind]
   const gg = g.append('g')
     .attr('class', `objective-group ${kind}-group`)
-    .attr('data-select-id', `${group.key}:${group.title}`)
+    .attr('data-select-id', `${serviceName}:${group.key}:${group.title}`)
     .on('click', (ev) => {
       ev.stopPropagation()
-      selectThing({ kind: 'group', id: `${group.key}:${group.title}`, data: { name: group.title, kind: group.key, count: group.items.length, items: group.items } })
+      selectThing({ kind: 'group', id: `${serviceName}:${group.key}:${group.title}`, data: { name: group.title, kind: group.key, service: serviceName, count: group.items.length, items: group.items } })
     })
   const x = cx - group.width / 2
   const y = cy - group.height / 2
@@ -961,19 +1066,19 @@ function drawGroup(g, group, cx, cy, kind, ports, selectThing) {
   drawText(gg, group.subtitle, x + 18, y + 49, 'group-subtitle', 'start')
 
   const chipW = (group.width - 48) / 2
-  group.items.forEach((item, i) => drawFactChip(gg, group, item, x + 18 + (i % 2) * (chipW + 12), y + 66 + Math.floor(i / 2) * (CHIP_H + CHIP_ROW_GAP), chipW, colors, selectThing))
+  group.items.forEach((item, i) => drawFactChip(gg, group, item, x + 18 + (i % 2) * (chipW + 12), y + 66 + Math.floor(i / 2) * (CHIP_H + CHIP_ROW_GAP), chipW, colors, selectThing, serviceName))
 
   const port = ports.groups[group.key]
   if (port) gg.append('circle').attr('class', `${kind}-port group-port`).attr('cx', port.x).attr('cy', port.y).attr('r', 11)
 }
 
-function drawFactChip(g, group, item, x, y, width, colors, selectThing) {
+function drawFactChip(g, group, item, x, y, width, colors, selectThing, serviceName) {
   const chip = g.append('g')
     .attr('class', 'instance-fact fact-chip')
-    .attr('data-select-id', `${group.key}:${item.key}`)
+    .attr('data-select-id', `${serviceName}:${group.key}:${item.key}`)
     .on('click', (ev) => {
       ev.stopPropagation()
-      selectThing({ kind: 'fact', id: `${group.key}:${item.key}`, data: { name: item.label, kind: group.key, count: item.items.length, items: item.items } })
+      selectThing({ kind: 'fact', id: `${serviceName}:${group.key}:${item.key}`, data: { name: item.label, kind: group.key, service: serviceName, count: item.items.length, items: item.items } })
     })
   chip.append('rect').attr('x', x).attr('y', y).attr('width', width).attr('height', 23).attr('rx', 6)
     .attr('fill', '#111827').attr('stroke', colors.inner)

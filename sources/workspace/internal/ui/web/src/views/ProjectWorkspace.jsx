@@ -340,7 +340,6 @@ function Inspector({ selection, live, onSync, onDiffMind, onYaml, onDelete, busy
   }
   if (selection.kind === 'service') {
     const svc = selection.data
-    const metrics = svc.repo_metrics
     return (
       <div class="inspector">
         <h2>{svc.name}</h2>
@@ -348,14 +347,7 @@ function Inspector({ selection, live, onSync, onDiffMind, onYaml, onDelete, busy
           <span>{svc.team || 'default'}</span>
           <span class={'freshness ' + (svc.diffmind_freshness || 'unknown')}>{svc.diffmind_freshness || 'unknown'}</span>
         </div>
-        <KV rows={[
-          ['Repo', svc.repo_path || '-'],
-          ['Primary language', metrics?.languages?.[0]?.language || '-'],
-          ['LOC', metrics?.total_loc || 0],
-          ['Routes', (svc.http_routes || []).length],
-          ['Dependencies', (svc.dependencies || []).length],
-          ['Flows', (svc.connections || []).length],
-        ]} />
+        <GraphDetailBody sel={selection} />
       </div>
     )
   }
