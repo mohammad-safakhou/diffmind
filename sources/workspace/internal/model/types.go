@@ -3,7 +3,11 @@
 // deserialise run output directly.
 package model
 
-import "time"
+import (
+	"time"
+
+	"github.com/mohammad-safakhou/protocol"
+)
 
 // ---------------------------------------------------------------------------
 // DiffMind-compatible types (mirror of diffmind/internal/model)
@@ -186,6 +190,7 @@ type ServiceArchitecture struct {
 	ServiceName  string
 	RepoPath     string
 	Manifest     *RunManifest
+	DiffMind protocol         *protocol.Document
 	Resources    []Resource
 	Exposures    []Exposure
 	Dependencies []Dependency

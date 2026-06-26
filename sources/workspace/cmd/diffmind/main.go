@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/mohammad-safakhou/diffmind/internal/config"
@@ -24,6 +25,7 @@ const usage = `DiffMind — Cross-service dependency graph builder.
 
 Usage:
   diffmind [ui]                       Launch the web UI and run manager (default)
+  diffmind graph --project <id>       Build a project graph and exit
   diffmind list projects              List projects
   diffmind list runs --project <id>   List graph runs for a project
   diffmind help                       Show this help
@@ -43,7 +45,7 @@ func main() {
 		case "help", "--help", "-h":
 			fmt.Print(usage)
 			return
-		case "ui", "list":
+		case "ui", "list", "graph":
 			cmd = args[0]
 			args = args[1:]
 		default:
@@ -56,10 +58,115 @@ func main() {
 		cmdUI(args)
 	case "list":
 		cmdList(args)
+	case "graph":
+		cmdGraph(args)
 	default:
 		fmt.Print(usage)
 		os.Exit(1)
 	}
+}
+
+type repeatFlag []string
+
+func (f *repeatFlag) String() string {
+	return strings.Join(*f, ",")
+}
+
+func (f *repeatFlag) Set(v string) error {
+	*f = append(*f, v)
+	return nil
+}
+
+func cmdGraph(args []string) {
+	fs := flag.NewFlagSet("graph", flag.ExitOnError)
+	project := fs.String("project", "", "project id")
+	logLevel := fs.String("log-level", "info", "Log level: info, debug, trace")
+	var repoRuns repeatFlag
+	fs.Var(&repoRuns, "repo", "repo_id=diffmind_run_id; repeat to select explicit runs")
+	_ = fs.Parse(args)
+	if *project == "" {
+		fmt.Fprintln(os.Stderr, "--project is required")
+		os.Exit(2)
+	}
+
+	st, err := store.New(config.Home())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "store init failed: %v\n", err)
+		os.Exit(1)
+	}
+	if _, err := st.GetProject(*project); err != nil {
+		fmt.Fprintf(os.Stderr, "project not found: %v\n", err)
+		os.Exit(1)
+	}
+
+	refs, err := graphRefs(st, *project, repoRuns)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "graph refs: %v\n", err)
+		os.Exit(1)
+	}
+	mgr := runmgr.New(st, newLogger(*logLevel), config.DiffMindRunsDir())
+	run, err := mgr.Start(*project, refs, map[string]any{"source": "diffmind graph"})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "start graph run: %v\n", err)
+		os.Exit(1)
+	}
+	mgr.WaitFor(*project, run.ID)
+
+	done, err := st.GetRun(*project, run.ID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "read graph run: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("%s\t%s\tservices=%d edges=%d\n", done.ID, done.Status, done.ServiceCount, done.EdgeCount)
+	if done.Error != "" {
+		fmt.Fprintln(os.Stderr, done.Error)
+	}
+	if done.Status != store.RunCompleted {
+		os.Exit(1)
+	}
+}
+
+func graphRefs(st *store.Store, project string, explicit []string) ([]store.RunRepoRef, error) {
+	if len(explicit) == 0 {
+		repos, err := st.ListRepos(project)
+		if err != nil {
+			return nil, err
+		}
+		refs := make([]store.RunRepoRef, 0, len(repos))
+		for _, repo := range repos {
+			if repo.Kind == "infra_repo" || strings.TrimSpace(repo.LastDiffMindRunID) == "" {
+				continue
+			}
+			refs = append(refs, store.RunRepoRef{RepoID: repo.ID, DiffMindRunID: repo.LastDiffMindRunID})
+		}
+		if len(refs) == 0 {
+			return nil, fmt.Errorf("no repos have last_diffmind_run_id; pass --repo repo_id=run_id")
+		}
+		return refs, nil
+	}
+
+	refs := make([]store.RunRepoRef, 0, len(explicit))
+	for _, raw := range explicit {
+		repoID, runID, ok := strings.Cut(raw, "=")
+		if !ok || strings.TrimSpace(repoID) == "" || strings.TrimSpace(runID) == "" {
+			return nil, fmt.Errorf("invalid --repo %q, expected repo_id=run_id", raw)
+		}
+		repoID = strings.TrimSpace(repoID)
+		runID = strings.TrimSpace(runID)
+		if _, err := st.GetRepo(project, repoID); err != nil {
+			return nil, fmt.Errorf("repo %s: %w", repoID, err)
+		}
+		if _, err := st.UpdateRepo(project, repoID, func(repo *store.Repo) {
+			repo.LastDiffMindRunID = runID
+			if repo.DiffMindFreshness == "stale" {
+				repo.DiffMindFreshness = "unknown"
+			}
+		}); err != nil {
+			return nil, fmt.Errorf("update repo %s: %w", repoID, err)
+		}
+		refs = append(refs, store.RunRepoRef{RepoID: repoID, DiffMindRunID: runID})
+	}
+	return refs, nil
 }
 
 func newLogger(level string) *util.Logger {

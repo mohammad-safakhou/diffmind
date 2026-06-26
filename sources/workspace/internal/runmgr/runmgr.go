@@ -146,6 +146,20 @@ func (m *Manager) finish(pid string, manifest store.RunManifest, ar *activeRun, 
 			manifest.ServiceCount = result.ServiceCount
 			manifest.EdgeCount = result.EdgeCount
 		}
+		graph, graphErr := m.persistArchitectureGraph(pid, manifest)
+		if graphErr != nil {
+			manifest.Status = store.RunFailed
+			manifest.Error = "persist architecture graph: " + graphErr.Error()
+			termEvent = "run_failed"
+		} else if graph != nil {
+			manifest.ServiceCount = len(graph.Services)
+			manifest.EdgeCount = len(graph.Edges)
+		}
+		if stats := m.architectureStats(pid, manifest); stats.serviceCount > 0 {
+			manifest.ServiceCount = stats.serviceCount
+			manifest.EdgeCount = stats.edgeCount
+			manifest.GraphQuality = &stats.quality
+		}
 	}
 	if e := m.store.SaveRun(pid, manifest); e != nil {
 		m.log.Error("save run manifest failed", "error", e.Error())

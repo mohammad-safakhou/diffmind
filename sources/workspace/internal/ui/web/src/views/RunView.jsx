@@ -60,6 +60,7 @@ export function RunView({ pid, rid }) {
 
       {error && <div class="banner error">{error}</div>}
       {run && run.error && <div class="banner error">{run.error}</div>}
+      <GraphQualityBanner quality={run?.graph_quality} />
 
       <div class="run-stage">
         {!graph && <div class="graph-empty muted">{active ? 'Graph will appear when the run completes…' : 'No graph available.'}</div>}
@@ -90,6 +91,22 @@ export function RunView({ pid, rid }) {
         )}
       </div>
     </div>
+  )
+}
+
+function GraphQualityBanner({ quality }) {
+  const warnings = quality?.warnings || []
+  if (!warnings.length) return null
+  return (
+    <details class="banner warn graph-quality">
+      <summary>
+        <strong>Graph quality warnings</strong>
+        <span>{warnings.length}</span>
+      </summary>
+      <ul>
+        {warnings.map((w, i) => <li key={i}>{w}</li>)}
+      </ul>
+    </details>
   )
 }
 

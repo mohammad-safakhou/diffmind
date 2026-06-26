@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
 import { navigate } from '../lib/router.js'
-import { createRepo, createRun, deleteRepo, getDiffMindYaml, getWorkspace, putDiffMindYaml, startRepoDiffMind, syncRepo } from '../lib/api.js'
+import { createRepo, createRun, deleteRepo, getDiffMindConfigurationYaml, getWorkspace, putDiffMindConfigurationYaml, startRepoDiffMind, syncRepo } from '../lib/api.js'
 import { Modal, ConfirmDialog } from '../components/Modal.jsx'
 import { GraphCanvas } from './GraphCanvas.jsx'
 import { StatusBadge } from './tabs/RunsTab.jsx'
@@ -9,22 +9,69 @@ export function ProjectWorkspace({ pid }) {
   const [workspace, setWorkspace] = useState(null)
   const [selected, setSelected] = useState(null)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState('')
+  const [pendingDiffMind, setPendingDiffMind] = useState({})
+  const [pendingGraphRun, setPendingGraphRun] = useState(null)
   const [addOpen, setAddOpen] = useState(false)
   const [yamlRepo, setYamlRepo] = useState(null)
+  const [diffmindRepo, setDiffMindRepo] = useState(null)
   const [deleteTarget, setDeleteTarget] = useState(null)
 
   const refresh = async () => {
-    try { setWorkspace(await getWorkspace(pid)); setError('') }
+    try {
+      const next = await getWorkspace(pid)
+      setWorkspace(next)
+      setSelected((cur) => {
+        if (cur?.kind === 'repo') {
+          const repo = (next.repos || []).find((r) => r.id === cur.data.id)
+          return repo ? { kind: 'repo', data: repo } : cur
+        }
+        if (cur?.kind === 'service') {
+          const svc = (next.graph?.services || []).find((s) => s.name === cur.data.name)
+          return svc ? { kind: 'service', data: svc } : cur
+        }
+        return cur
+      })
+      setPendingDiffMind((cur) => {
+        const nextPending = { ...cur }
+        for (const repo of next.repos || []) {
+          if (repo.sync_status && repo.sync_status !== 'diffmind_running') {
+            delete nextPending[repo.id]
+          }
+        }
+        return nextPending
+      })
+      setPendingGraphRun((cur) => {
+        const run = next.current_run
+        if (!cur && !isGraphRunActive(run)) return null
+        if (isGraphRunActive(run)) return run
+        if (cur && run?.id === cur.id) return null
+        return null
+      })
+      if (!(next.repos || []).some((repo) => repo.sync_status === 'diffmind_running') && !isGraphRunActive(next.current_run)) {
+        setNotice('')
+      }
+      setError('')
+    }
     catch (e) { setError(e.message) }
   }
   useEffect(() => { refresh() }, [pid])
+  const repos = (workspace?.repos || []).map((repo) => {
+    const pending = pendingDiffMind[repo.id]
+    if (!pending) return repo
+    if (repo.sync_status && repo.sync_status !== 'unknown' && repo.sync_status !== 'diffmind_running') return repo
+    return { ...repo, sync_status: 'diffmind_running', sync_error: '', pending_diffmind_started_at: pending.started_at }
+  })
+  const hasRunningDiffMind = repos.some((r) => r.sync_status === 'diffmind_running')
+  const currentGraphRun = workspace?.current_run || null
+  const activeGraphRun = isGraphRunActive(currentGraphRun) ? currentGraphRun : pendingGraphRun
+  const graphIsRunning = Boolean(activeGraphRun)
   useEffect(() => {
-    const t = setInterval(refresh, 10000)
+    const t = setInterval(refresh, hasRunningDiffMind || graphIsRunning ? 2000 : 10000)
     return () => clearInterval(t)
-  }, [pid])
+  }, [pid, hasRunningDiffMind, graphIsRunning])
 
-  const repos = workspace?.repos || []
   const graph = workspace?.graph
   const selectedRepo = selected?.kind === 'repo' ? selected.data : null
   const selectedService = selected?.kind === 'service' ? selected.data : null
@@ -33,18 +80,38 @@ export function ProjectWorkspace({ pid }) {
   const graphRun = async () => {
     setBusy('graph')
     try {
-      const refs = repos
-        .filter((r) => r.latest_diffmind_run?.run_id && r.latest_diffmind_run.run_id !== 'repo:diffmind.yaml')
-        .map((r) => ({ repo_id: r.id, diffmind_run_id: r.latest_diffmind_run.run_id }))
-      if (!refs.length) throw new Error('No DiffMind runs available for graph build.')
-      await createRun(pid, { repos: refs })
-      setTimeout(refresh, 2500)
+      const serviceRepos = repos.filter((r) => (r.kind || 'service_repo') !== 'infra_repo')
+      const missing = serviceRepos.filter((r) => !isGeneratedDiffMindRun(r.latest_diffmind_run))
+      if (missing.length) {
+        throw new Error(`Cannot build full graph. Missing generated DiffMind runs for: ${missing.map((r) => r.name).join(', ')}. Run DiffMind deterministic for those repos first.`)
+      }
+      const refs = serviceRepos.map((r) => ({ repo_id: r.id, diffmind_run_id: r.latest_diffmind_run.run_id }))
+      if (!refs.length) throw new Error('No service repositories are available for graph build.')
+      const run = await createRun(pid, { repos: refs })
+      setPendingGraphRun(run)
+      setNotice(`Graph build ${run.id} started from ${refs.length} DiffMind runs. Status refreshes every 2 seconds while it is running.`)
+      setTimeout(refresh, 500)
     } catch (e) { setError(e.message) }
     finally { setBusy('') }
   }
 
   const doSync = async (repo) => runAction('sync:' + repo.id, async () => { await syncRepo(pid, repo.id); await refresh() })
-  const doDiffMind = async (repo) => runAction('diffmind:' + repo.id, async () => { await startRepoDiffMind(pid, repo.id); setTimeout(refresh, 1500) })
+  const updateRepoStatus = (repoID, patch) => {
+    setWorkspace((cur) => cur ? {
+      ...cur,
+      repos: (cur.repos || []).map((repo) => repo.id === repoID ? { ...repo, ...patch } : repo),
+    } : cur)
+    setSelected((cur) => cur?.kind === 'repo' && cur.data.id === repoID ? { kind: 'repo', data: { ...cur.data, ...patch } } : cur)
+  }
+  const doDiffMind = async (repo, options) => runAction('diffmind:' + repo.id, async () => {
+    const startedAt = new Date().toISOString()
+    await startRepoDiffMind(pid, repo.id, options)
+    setPendingDiffMind((cur) => ({ ...cur, [repo.id]: { started_at: startedAt, options } }))
+    updateRepoStatus(repo.id, { sync_status: 'diffmind_running', sync_error: '', pending_diffmind_started_at: startedAt })
+    setNotice(`DiffMind ${options.pipeline || 'deterministic'} run started for ${repo.name}. Status refreshes every 2 seconds while it is running.`)
+    setDiffMindRepo(null)
+    setTimeout(refresh, 500)
+  })
   const doDelete = async (repo) => runAction('delete:' + repo.id, async () => { await deleteRepo(pid, repo.id); setDeleteTarget(null); await refresh() })
   const runAction = async (key, fn) => {
     setBusy(key); setError('')
@@ -63,11 +130,20 @@ export function ProjectWorkspace({ pid }) {
         <div class="workspace-actions">
           <button class="btn ghost" onClick={refresh}>Refresh</button>
           <button class="btn ghost" onClick={() => setAddOpen(true)}>Add repo</button>
-          <button class="btn" disabled={busy === 'graph'} onClick={graphRun}>{busy === 'graph' ? 'Starting...' : 'Build graph'}</button>
+          <button class="btn" disabled={busy === 'graph' || graphIsRunning} onClick={graphRun}>{graphIsRunning ? 'Building graph...' : busy === 'graph' ? 'Starting...' : 'Build graph'}</button>
         </div>
       </header>
 
       {error && <div class="workspace-error banner error">{error}</div>}
+      {currentGraphRun?.status === 'failed' && currentGraphRun.error && <div class="workspace-error banner error">Graph build failed: {currentGraphRun.error}</div>}
+      {notice && <div class="workspace-notice banner ok">{notice}</div>}
+      <GraphQualityBanner quality={(currentGraphRun?.graph_quality || workspace?.latest_run?.graph_quality)} />
+      {(hasRunningDiffMind || graphIsRunning) && (
+        <div class="workspace-activity-stack">
+          {hasRunningDiffMind && <DiffMindActivity repos={repos} />}
+          {graphIsRunning && <GraphActivity run={activeGraphRun} />}
+        </div>
+      )}
 
       <aside class="workspace-left">
         <div class="rail-title">Teams</div>
@@ -93,7 +169,7 @@ export function ProjectWorkspace({ pid }) {
           selection={selected}
           live={selectedRepo ? live[selectedRepo.id] : null}
           onSync={selectedRepo ? () => doSync(selectedRepo) : null}
-          onDiffMind={selectedRepo ? () => doDiffMind(selectedRepo) : null}
+          onDiffMind={selectedRepo ? () => setDiffMindRepo(selectedRepo) : null}
           onYaml={selectedRepo ? () => setYamlRepo(selectedRepo) : null}
           onDelete={selectedRepo ? () => setDeleteTarget(selectedRepo) : null}
           busy={busy}
@@ -104,11 +180,13 @@ export function ProjectWorkspace({ pid }) {
         <span>{repos.length} repos</span>
         <span>{(workspace?.teams || []).length} teams</span>
         <span>{graph ? `${(graph.services || []).length} services` : 'no graph yet'}</span>
+        <span>{currentGraphRun ? `graph ${currentGraphRun.status}` : 'graph idle'}</span>
         <span>{repos.filter((r) => r.freshness === 'stale').length} stale</span>
       </footer>
 
       {addOpen && <AddRepoModal pid={pid} onClose={() => setAddOpen(false)} onDone={() => { setAddOpen(false); refresh() }} />}
       {yamlRepo && <YamlModal pid={pid} repo={yamlRepo} onClose={() => setYamlRepo(null)} onSaved={() => { setYamlRepo(null); refresh() }} />}
+      {diffmindRepo && <DiffMindRunModal repo={diffmindRepo} busy={busy === 'diffmind:' + diffmindRepo.id} onClose={() => setDiffMindRepo(null)} onRun={(options) => doDiffMind(diffmindRepo, options)} />}
       {deleteTarget && (
         <ConfirmDialog
           title="Remove repository?"
@@ -122,14 +200,65 @@ export function ProjectWorkspace({ pid }) {
   )
 }
 
+function GraphQualityBanner({ quality }) {
+  const warnings = quality?.warnings || []
+  if (!warnings.length) return null
+  return (
+    <details class="banner warn graph-quality">
+      <summary>
+        <strong>Graph quality warnings</strong>
+        <span>{warnings.length}</span>
+      </summary>
+      <ul>
+        {warnings.map((w, i) => <li key={i}>{w}</li>)}
+      </ul>
+    </details>
+  )
+}
+
 function RepoButton({ repo, live, active, onClick }) {
   const primary = repo.repo_metrics?.languages?.[0]?.language || 'unknown'
+  const status = runStatusLabel(repo.sync_status)
   return (
     <button class={'repo-pill ' + (active ? 'active ' : '') + (repo.freshness === 'stale' ? 'stale' : '')} onClick={onClick}>
       <span class="repo-name">{repo.name}</span>
       <span class="repo-meta">{primary} · {repo.freshness || 'unknown'} · PR {live?.pull_requests ?? '-'}</span>
+      {status && <span class={'repo-run-status ' + status.kind}>{status.label}</span>}
     </button>
   )
+}
+
+function DiffMindActivity({ repos }) {
+  const running = repos.filter((r) => r.sync_status === 'diffmind_running')
+  return (
+    <div class="diffmind-activity" role="status" aria-live="polite">
+      <div class="activity-spinner" />
+      <div>
+        <strong>DiffMind running</strong>
+        <span>{running.map((r) => r.name).join(', ')}</span>
+      </div>
+    </div>
+  )
+}
+
+function GraphActivity({ run }) {
+  return (
+    <div class="graph-activity" role="status" aria-live="polite">
+      <div class="activity-spinner" />
+      <div>
+        <strong>Graph build {run?.status || 'running'}</strong>
+        <span>{run?.id || 'starting'} · {(run?.repos || []).length} DiffMind runs</span>
+      </div>
+    </div>
+  )
+}
+
+function isGeneratedDiffMindRun(run) {
+  return Boolean(run?.run_id && run.run_id !== 'repo:diffmind.yaml')
+}
+
+function isGraphRunActive(run) {
+  return run?.status === 'running' || run?.status === 'cancelling'
 }
 
 function EmptyBoard({ repos, onAdd }) {
@@ -147,6 +276,7 @@ function Inspector({ selection, live, onSync, onDiffMind, onYaml, onDelete, busy
   if (selection.kind === 'repo') {
     const repo = selection.data
     const metrics = repo.repo_metrics
+    const isRunning = repo.sync_status === 'diffmind_running'
     return (
       <div class="inspector">
         <h2>{repo.name}</h2>
@@ -154,7 +284,24 @@ function Inspector({ selection, live, onSync, onDiffMind, onYaml, onDelete, busy
           <span class={'freshness ' + (repo.freshness || 'unknown')}>{repo.freshness || 'unknown'}</span>
           <span>{repo.effective_team || 'default'}</span>
           <span>{repo.source_type || 'local'}</span>
+          {repo.sync_status && <span class={'run-state ' + repo.sync_status}>{repo.sync_status}</span>}
         </div>
+        <div class="inspector-actions">
+          <button class="btn ghost" disabled={busy === 'sync:' + repo.id || isRunning} onClick={onSync}>Sync git</button>
+          <button class="btn" disabled={busy === 'diffmind:' + repo.id || isRunning} onClick={onDiffMind}>{isRunning ? 'DiffMind running...' : 'Configure run'}</button>
+          <button class="btn ghost" onClick={onYaml}>Configuration</button>
+          <button class="btn danger" onClick={onDelete}>Remove</button>
+        </div>
+        {isRunning && (
+          <div class="run-progress-card">
+            <div class="activity-spinner" />
+            <div>
+              <strong>Run in progress</strong>
+              <span>DiffMind is polling this repository every 2 seconds.</span>
+            </div>
+          </div>
+        )}
+        {repo.sync_status === 'diffmind_failed' && repo.sync_error && <div class="banner error">{repo.sync_error}</div>}
         <KV rows={[
           ['Path', repo.path],
           ['Git URL', repo.git_url || '-'],
@@ -162,17 +309,13 @@ function Inspector({ selection, live, onSync, onDiffMind, onYaml, onDelete, busy
           ['HEAD', shortSha(repo.head_sha)],
           ['Remote', shortSha(repo.remote_head_sha)],
           ['DiffMind run', repo.latest_diffmind_run?.run_id || '-'],
+          ['Status', repo.sync_status || '-'],
+          ['Error', repo.sync_error || '-'],
           ['LOC', metrics?.total_loc || 0],
           ['Open PRs', live?.pull_requests ?? '-'],
           ['Open issues', live?.issues ?? '-'],
           ['Actions', live?.actions_state || '-'],
         ]} />
-        <div class="inspector-actions">
-          <button class="btn ghost" disabled={busy === 'sync:' + repo.id} onClick={onSync}>Sync git</button>
-          <button class="btn" disabled={busy === 'diffmind:' + repo.id} onClick={onDiffMind}>Run DiffMind</button>
-          <button class="btn ghost" onClick={onYaml}>diffmind.yaml</button>
-          <button class="btn danger" onClick={onDelete}>Remove</button>
-        </div>
       </div>
     )
   }
@@ -203,6 +346,21 @@ function Inspector({ selection, live, onSync, onDiffMind, onYaml, onDelete, busy
       <KV rows={Object.entries(selection.data || {}).slice(0, 12).map(([k, v]) => [k, typeof v === 'object' ? JSON.stringify(v) : String(v)])} />
     </div>
   )
+}
+
+function runStatusLabel(status) {
+  switch (status) {
+    case 'diffmind_running':
+      return { kind: 'running', label: 'Running' }
+    case 'diffmind_completed':
+      return { kind: 'completed', label: 'Completed' }
+    case 'diffmind_failed':
+      return { kind: 'failed', label: 'Failed' }
+    case 'syncing':
+      return { kind: 'running', label: 'Syncing' }
+    default:
+      return null
+  }
 }
 
 function KV({ rows }) {
@@ -240,17 +398,234 @@ function AddRepoModal({ pid, onClose, onDone }) {
   )
 }
 
+const defaultDiffMindOptions = {
+  pipeline: 'deterministic',
+  config_path: '',
+  out_dir: '',
+  log_file: '',
+  workers: '',
+  max_catalog_items: '',
+  min_confidence: '',
+  opencode_url: '',
+  opencode_username: '',
+  opencode_password: '',
+  opencode_timeout_seconds: '',
+  provider_id: '',
+  model_id: '',
+  model_variant: '',
+  cleanup_opencode_sessions: false,
+  opencode_delete_delay_seconds: '',
+  reuse_opencode_session: false,
+  skip_reexamination: false,
+  discovery_verify: false,
+  discovery_verify_mode: '',
+  discovery_verify_samples: '',
+  discovery_framework_scope: false,
+  idle_timeout_seconds: '',
+  prompt_retry_count: '',
+  max_call_seconds: '',
+  liveness_poll_seconds: '',
+  verbose: false,
+  trace: false,
+}
+
+function DiffMindRunModal({ repo, busy, onClose, onRun }) {
+  const [opts, setOpts] = useState(defaultDiffMindOptions)
+  const [error, setError] = useState('')
+  const set = (key, value) => setOpts((cur) => ({ ...cur, [key]: value }))
+  const payload = diffmindPayload(opts)
+  const command = diffmindCommandPreview(repo.path, payload)
+  const run = async () => {
+    setError('')
+    try { await onRun(payload) }
+    catch (e) { setError(e.message) }
+  }
+  const llm = opts.pipeline === 'llm'
+  return (
+    <Modal title={`DiffMind run · ${repo.name}`} onClose={onClose} wide>
+      <div class="run-options-layout">
+        <section class="run-options-section">
+          <h3>Run</h3>
+          <div class="field">
+            <label>Pipeline</label>
+            <div class="segmented">
+              <button class={opts.pipeline === 'deterministic' ? 'active' : ''} onClick={() => set('pipeline', 'deterministic')}>Deterministic</button>
+              <button class={opts.pipeline === 'llm' ? 'active' : ''} onClick={() => set('pipeline', 'llm')}>LLM</button>
+            </div>
+          </div>
+          <TextField label="Config JSON" value={opts.config_path} onInput={(v) => set('config_path', v)} placeholder="/abs/path/config.json" />
+          <TextField label="Output directory" value={opts.out_dir} onInput={(v) => set('out_dir', v)} placeholder="default ~/.diffmind/runs" />
+          <TextField label="Log file" value={opts.log_file} onInput={(v) => set('log_file', v)} placeholder="/abs/path/diffmind.log" />
+          <div class="option-grid">
+            <NumberField label="Workers" value={opts.workers} onInput={(v) => set('workers', v)} />
+            <NumberField label="Max catalog items" value={opts.max_catalog_items} onInput={(v) => set('max_catalog_items', v)} />
+            <NumberField label="Min confidence" value={opts.min_confidence} onInput={(v) => set('min_confidence', v)} step="0.01" min="0" max="1" />
+          </div>
+          <div class="check-grid">
+            <Check label="Verbose" checked={opts.verbose} onInput={(v) => set('verbose', v)} />
+            <Check label="Trace" checked={opts.trace} onInput={(v) => set('trace', v)} />
+          </div>
+        </section>
+
+        <section class={'run-options-section ' + (llm ? '' : 'muted-section')}>
+          <h3>LLM / OpenCode</h3>
+          <TextField label="OpenCode URL" value={opts.opencode_url} onInput={(v) => set('opencode_url', v)} placeholder="http://localhost:3000" disabled={!llm} />
+          <div class="option-grid">
+            <TextField label="Provider ID" value={opts.provider_id} onInput={(v) => set('provider_id', v)} disabled={!llm} />
+            <TextField label="Model ID" value={opts.model_id} onInput={(v) => set('model_id', v)} disabled={!llm} />
+            <TextField label="Model variant" value={opts.model_variant} onInput={(v) => set('model_variant', v)} placeholder="low, medium, high, max" disabled={!llm} />
+          </div>
+          <div class="option-grid">
+            <TextField label="Username" value={opts.opencode_username} onInput={(v) => set('opencode_username', v)} disabled={!llm} />
+            <TextField label="Password" type="password" value={opts.opencode_password} onInput={(v) => set('opencode_password', v)} disabled={!llm} />
+            <NumberField label="HTTP timeout seconds" value={opts.opencode_timeout_seconds} onInput={(v) => set('opencode_timeout_seconds', v)} disabled={!llm} />
+          </div>
+          <div class="check-grid">
+            <Check label="Reuse session" checked={opts.reuse_opencode_session} onInput={(v) => set('reuse_opencode_session', v)} disabled={!llm} />
+            <Check label="Cleanup sessions" checked={opts.cleanup_opencode_sessions} onInput={(v) => set('cleanup_opencode_sessions', v)} disabled={!llm} />
+            <Check label="Skip reexamination" checked={opts.skip_reexamination} onInput={(v) => set('skip_reexamination', v)} disabled={!llm} />
+          </div>
+          <NumberField label="Delete delay seconds" value={opts.opencode_delete_delay_seconds} onInput={(v) => set('opencode_delete_delay_seconds', v)} disabled={!llm} />
+        </section>
+
+        <section class="run-options-section">
+          <h3>Verification and Limits</h3>
+          <div class="check-grid">
+            <Check label="Discovery verify" checked={opts.discovery_verify} onInput={(v) => set('discovery_verify', v)} />
+            <Check label="Framework scope" checked={opts.discovery_framework_scope} onInput={(v) => set('discovery_framework_scope', v)} />
+          </div>
+          <div class="option-grid">
+            <SelectField label="Verify mode" value={opts.discovery_verify_mode} onInput={(v) => set('discovery_verify_mode', v)} options={[['', 'Default'], ['reask', 'Reask'], ['ksample', 'K-sample']]} />
+            <NumberField label="Verify samples" value={opts.discovery_verify_samples} onInput={(v) => set('discovery_verify_samples', v)} min="1" max="5" />
+            <NumberField label="Prompt retries" value={opts.prompt_retry_count} onInput={(v) => set('prompt_retry_count', v)} placeholder="-1 default, 0 disable" />
+          </div>
+          <div class="option-grid">
+            <NumberField label="Idle timeout seconds" value={opts.idle_timeout_seconds} onInput={(v) => set('idle_timeout_seconds', v)} />
+            <NumberField label="Max call seconds" value={opts.max_call_seconds} onInput={(v) => set('max_call_seconds', v)} />
+            <NumberField label="Liveness poll seconds" value={opts.liveness_poll_seconds} onInput={(v) => set('liveness_poll_seconds', v)} />
+          </div>
+        </section>
+
+        <section class="run-options-section command-section">
+          <h3>Command Preview</h3>
+          <pre class="command-preview">{command}</pre>
+        </section>
+      </div>
+      {error && <div class="banner error">{error}</div>}
+      <div class="actions">
+        <button class="btn" disabled={busy} onClick={run}>{busy ? 'Starting...' : 'Start run'}</button>
+        <button class="btn ghost" disabled={busy} onClick={onClose}>Cancel</button>
+      </div>
+    </Modal>
+  )
+}
+
+function TextField({ label, value, onInput, placeholder, type = 'text', disabled, min, max, step }) {
+  return (
+    <div class="field">
+      <label>{label}</label>
+      <input type={type} value={value} disabled={disabled} min={min} max={max} step={step} placeholder={placeholder || ''} onInput={(e) => onInput(e.target.value)} />
+    </div>
+  )
+}
+
+function NumberField({ label, value, onInput, placeholder, disabled, min, max, step = '1' }) {
+  return <TextField label={label} type="number" value={value} disabled={disabled} placeholder={placeholder} onInput={onInput} min={min} max={max} step={step} />
+}
+
+function SelectField({ label, value, onInput, options }) {
+  return (
+    <div class="field">
+      <label>{label}</label>
+      <select value={value} onInput={(e) => onInput(e.target.value)}>
+        {options.map(([v, text]) => <option value={v} key={v}>{text}</option>)}
+      </select>
+    </div>
+  )
+}
+
+function Check({ label, checked, onInput, disabled }) {
+  return (
+    <label class={'check-row ' + (disabled ? 'disabled' : '')}>
+      <input type="checkbox" checked={checked} disabled={disabled} onInput={(e) => onInput(e.target.checked)} />
+      <span>{label}</span>
+    </label>
+  )
+}
+
+function diffmindPayload(opts) {
+  const out = { pipeline: opts.pipeline || 'deterministic' }
+  const stringKeys = ['config_path', 'out_dir', 'log_file', 'discovery_verify_mode']
+  stringKeys.forEach((k) => { if (opts[k]) out[k] = opts[k] })
+  const intKeys = ['workers', 'max_catalog_items', 'discovery_verify_samples', 'idle_timeout_seconds', 'max_call_seconds', 'liveness_poll_seconds']
+  intKeys.forEach((k) => {
+    if (opts[k] !== '') out[k] = Number(opts[k])
+  })
+  const boolKeys = ['discovery_verify', 'discovery_framework_scope', 'verbose', 'trace']
+  boolKeys.forEach((k) => { if (opts[k]) out[k] = true })
+  if (out.pipeline === 'llm') {
+    ;['opencode_url', 'opencode_username', 'opencode_password', 'provider_id', 'model_id', 'model_variant'].forEach((k) => { if (opts[k]) out[k] = opts[k] })
+    ;['opencode_timeout_seconds', 'opencode_delete_delay_seconds'].forEach((k) => { if (opts[k] !== '') out[k] = Number(opts[k]) })
+    ;['cleanup_opencode_sessions', 'reuse_opencode_session', 'skip_reexamination'].forEach((k) => { if (opts[k]) out[k] = true })
+  }
+  if (opts.min_confidence !== '') out.min_confidence = Number(opts.min_confidence)
+  if (opts.prompt_retry_count !== '') out.prompt_retry_count = Number(opts.prompt_retry_count)
+  return out
+}
+
+function diffmindCommandPreview(repoPath, opts) {
+  const args = ['diffmind', 'run', '--repo', shellArg(repoPath || '<repo>'), '--pipeline', shellArg(opts.pipeline || 'deterministic')]
+  const add = (flag, value, secret) => {
+    if (value !== undefined && value !== null && value !== '') args.push(flag, shellArg(secret ? '********' : value))
+  }
+  const addBool = (flag, value) => { if (value) args.push(flag) }
+  add('--config', opts.config_path)
+  add('--out', opts.out_dir)
+  add('--log-file', opts.log_file)
+  add('--workers', opts.workers)
+  add('--max-catalog-items', opts.max_catalog_items)
+  add('--min-confidence', opts.min_confidence)
+  add('--opencode-url', opts.opencode_url)
+  add('--opencode-username', opts.opencode_username)
+  add('--opencode-password', opts.opencode_password, true)
+  add('--opencode-timeout-seconds', opts.opencode_timeout_seconds)
+  add('--provider-id', opts.provider_id)
+  add('--model-id', opts.model_id)
+  add('--model-variant', opts.model_variant)
+  addBool('--cleanup-opencode-sessions', opts.cleanup_opencode_sessions)
+  add('--opencode-delete-delay-seconds', opts.opencode_delete_delay_seconds)
+  addBool('--reuse-opencode-session', opts.reuse_opencode_session)
+  addBool('--skip-reexamination', opts.skip_reexamination)
+  addBool('--discovery-verify', opts.discovery_verify)
+  add('--discovery-verify-mode', opts.discovery_verify_mode)
+  add('--discovery-verify-samples', opts.discovery_verify_samples)
+  addBool('--discovery-framework-scope', opts.discovery_framework_scope)
+  add('--idle-timeout-seconds', opts.idle_timeout_seconds)
+  add('--prompt-retry-count', opts.prompt_retry_count)
+  add('--max-call-seconds', opts.max_call_seconds)
+  add('--liveness-poll-seconds', opts.liveness_poll_seconds)
+  addBool('--verbose', opts.verbose)
+  addBool('--trace', opts.trace)
+  return args.join(' ')
+}
+
+function shellArg(v) {
+  const s = String(v)
+  if (/^[A-Za-z0-9_./:=@+-]+$/.test(s)) return s
+  return `'${s.replace(/'/g, `'\\''`)}'`
+}
+
 function YamlModal({ pid, repo, onClose, onSaved }) {
   const [body, setBody] = useState('')
   const [error, setError] = useState('')
-  useEffect(() => { getDiffMindYaml(pid, repo.id).then((r) => setBody(r.body || '')).catch((e) => setError(e.message)) }, [pid, repo.id])
+  useEffect(() => { getDiffMindConfigurationYaml(pid, repo.id).then((r) => setBody(r.body || '')).catch((e) => setError(e.message)) }, [pid, repo.id])
   const save = async () => {
     setError('')
-    try { await putDiffMindYaml(pid, repo.id, body); onSaved() }
+    try { await putDiffMindConfigurationYaml(pid, repo.id, body); onSaved() }
     catch (e) { setError(e.message) }
   }
   return (
-    <Modal title={`diffmind.yaml · ${repo.name}`} onClose={onClose} wide>
+    <Modal title={`diffmind-configuration.yaml · ${repo.name}`} onClose={onClose} wide>
       <textarea class="code-editor" rows="24" value={body} onInput={(e) => setBody(e.target.value)} spellcheck={false} />
       {error && <div class="banner error">{error}</div>}
       <div class="actions"><button class="btn" onClick={save}>Save</button><button class="btn ghost" onClick={onClose}>Cancel</button></div>

@@ -1,0 +1,221 @@
+package ui
+
+import (
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+func TestBuildArchitectureGraphUsesDiffMind protocolTargetsAndResourceKinds(t *testing.T) {
+	root := t.TempDir()
+	atsRun := filepath.Join(root, "ats")
+	boostRun := filepath.Join(root, "boost")
+	writeDiffMind protocolRun(t, atsRun, `{
+  "schema": "diffmind.service.v1",
+  "service": {"id": "routing-service", "name": "routing-service"},
+  "objects": {},
+  "flows": [],
+  "observations": [],
+  "evidence": []
+}`)
+	writeDiffMind protocolRun(t, boostRun, `{
+  "schema": "diffmind.service.v1",
+  "service": {"id": "pricing-service", "name": "pricing-service"},
+  "objects": {
+    "http_calls": [
+      {
+        "id": "httpcall.score",
+        "kind": "http_call",
+        "name": "Get ATS score",
+        "method": "GET",
+        "url_template": "http://routing-service/score/{storeCode}",
+        "target": {"type": "unresolved", "ref": "service.routing_service", "unresolved": true},
+        "status": "confirmed",
+        "confidence": "high",
+        "origin": "deterministic"
+      },
+      {
+        "id": "httpcall.operation_name",
+        "kind": "http_call",
+        "name": "GET /campaigns/{id}",
+        "method": "GET",
+        "target": {"type": "unresolved", "ref": "service.get_campaigns_id", "unresolved": true},
+        "status": "confirmed",
+        "confidence": "medium",
+        "origin": "deterministic"
+      }
+    ],
+    "cache_operations": [{
+      "id": "cache.redis_read",
+      "kind": "cache_operation",
+      "name": "Redis read",
+      "platform": "database",
+      "operation": "read",
+      "target": {"cache": "redis-main"},
+      "status": "confirmed",
+      "confidence": "high",
+      "origin": "deterministic"
+    }],
+    "db_queries": [{
+      "id": "dbq.read_traffic_info",
+      "kind": "db_query",
+      "name": "Read traffic-info",
+      "engine": "dynamodb",
+      "operation": "read",
+      "access": "read",
+      "target": {"database": "dynamodb", "tables": ["traffic-info"]},
+      "metadata": {"details": {"database_type": "dynamodb", "table": "traffic-info"}},
+      "status": "confirmed",
+      "confidence": "high",
+      "origin": "deterministic"
+    }],
+    "queue_consumers": [{
+      "id": "queue.consume_stream",
+      "kind": "queue_consumer",
+      "name": "sync.handler (DynamoDB Stream traffic-info)",
+      "platform": "queue",
+      "topic": "DynamoDB Stream traffic-info",
+      "status": "confirmed",
+      "confidence": "high",
+      "origin": "deterministic"
+    }]
+  },
+  "flows": [],
+  "observations": [],
+  "evidence": []
+}`)
+
+	graph := buildArchitectureGraph("run-1", map[string]string{
+		"routing-service": atsRun,
+		"pricing-service":   boostRun,
+	})
+
+	foundATS := false
+	for _, edge := range graph.Edges {
+		if edge.Type == "http" && edge.From == "pricing-service" && edge.To == "routing-service" {
+			foundATS = true
+		}
+	}
+	if !foundATS {
+		t.Fatalf("expected canonical service HTTP edge, edges=%+v", graph.Edges)
+	}
+	for _, n := range graph.ExternalNodes {
+		if strings.HasPrefix(n.Name, "GET /") || looksLikeHTTPMethodSlug(n.Name) {
+			t.Fatalf("operation label became external service node: %+v", n)
+		}
+	}
+	foundRedis := false
+	for _, n := range graph.DatabaseNodes {
+		if n.Name == "redis-main" && n.Kind == "redis" {
+			foundRedis = true
+		}
+	}
+	if !foundRedis {
+		t.Fatalf("expected redis cache resource node, got %+v", graph.DatabaseNodes)
+	}
+	foundDynamoTable := false
+	for _, n := range graph.DatabaseNodes {
+		if n.Name == "traffic-info" && n.Kind == "dynamodb" {
+			foundDynamoTable = true
+		}
+		if n.Name == "dynamodb" && n.Kind == "dynamodb" {
+			t.Fatalf("generic DynamoDB platform became the resource name: %+v", n)
+		}
+	}
+	if !foundDynamoTable {
+		t.Fatalf("expected DynamoDB table resource node, got %+v", graph.DatabaseNodes)
+	}
+	foundStream := false
+	for _, n := range graph.QueueNodes {
+		if n.Kind == "dynamodb_stream" {
+			foundStream = true
+		}
+	}
+	if !foundStream {
+		t.Fatalf("expected DynamoDB stream queue node, got %+v", graph.QueueNodes)
+	}
+}
+
+func TestBuildArchitectureGraphUsesConfiguredServiceAliases(t *testing.T) {
+	root := t.TempDir()
+	atsRepo := filepath.Join(root, "routing-service-repo")
+	if err := os.MkdirAll(atsRepo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(atsRepo, "diffmind-configuration.yaml"), []byte(`
+service:
+  id: routing-service
+  name: routing-service
+aliases:
+  services:
+    routing-service:
+      - ats-api
+      - routing_service
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	atsRun := filepath.Join(root, "ats-run")
+	callerRun := filepath.Join(root, "caller-run")
+	writeDiffMind protocolRunWithRepoPath(t, atsRun, atsRepo, `{
+  "schema": "diffmind.service.v1",
+  "service": {"id": "routing-service", "name": "routing-service"},
+  "objects": {},
+  "flows": [],
+  "observations": [],
+  "evidence": []
+}`)
+	writeDiffMind protocolRun(t, callerRun, `{
+  "schema": "diffmind.service.v1",
+  "service": {"id": "caller", "name": "caller"},
+  "objects": {
+    "http_calls": [{
+      "id": "httpcall.ats",
+      "kind": "http_call",
+      "name": "Call ATS",
+      "method": "GET",
+      "target": {"type": "service", "ref": "service.ats-api", "unresolved": false},
+      "status": "confirmed",
+      "confidence": "high",
+      "origin": "deterministic"
+    }]
+  },
+  "flows": [],
+  "observations": [],
+  "evidence": []
+}`)
+
+	graph := buildArchitectureGraph("run-1", map[string]string{
+		"routing-service": atsRun,
+		"caller":                    callerRun,
+	})
+	for _, edge := range graph.Edges {
+		if edge.Type == "http" && edge.From == "caller" && edge.To == "routing-service" {
+			return
+		}
+	}
+	t.Fatalf("expected alias target to join known service, edges=%+v external=%+v", graph.Edges, graph.ExternalNodes)
+}
+
+func writeDiffMind protocolRun(t *testing.T, runDir, body string) {
+	writeDiffMind protocolRunWithRepoPath(t, runDir, "", body)
+}
+
+func writeDiffMind protocolRunWithRepoPath(t *testing.T, runDir, repoPath, body string) {
+	t.Helper()
+	contextDir := filepath.Join(runDir, ".diffmind", "context")
+	if err := os.MkdirAll(contextDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"run_id":"run-1","schema_version":"diffmind.service.v1"}`
+	if repoPath != "" {
+		manifest = `{"run_id":"run-1","schema_version":"diffmind.service.v1","repo_path":` + strconv.Quote(repoPath) + `}`
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "run_manifest.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(contextDir, "service.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

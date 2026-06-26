@@ -98,4 +98,17 @@ type RunManifest struct {
 	Error        string         `json:"error,omitempty"`
 	ServiceCount int            `json:"service_count"`
 	EdgeCount    int            `json:"edge_count"`
+	GraphQuality *GraphQuality  `json:"graph_quality,omitempty"`
+}
+
+// GraphQuality stores deterministic graph quality counters surfaced after a
+// graph build. These are warnings, not hard failures: they tell the user where
+// configuration aliases or detectors should be improved.
+type GraphQuality struct {
+	UnresolvedExternalServices int      `json:"unresolved_external_services"`
+	PathShapedExternalNodes    int      `json:"path_shaped_external_nodes"`
+	MissingEvidenceObjects     int      `json:"missing_evidence_objects"`
+	StaleRepos                 int      `json:"stale_repos"`
+	DirtyRepos                 int      `json:"dirty_repos"`
+	Warnings                   []string `json:"warnings,omitempty"`
 }

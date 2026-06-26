@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -25,6 +26,7 @@ type workspaceResponse struct {
 	Project      *store.Project                         `json:"project"`
 	Repos        []workspaceRepo                        `json:"repos"`
 	Teams        []workspaceTeam                        `json:"teams"`
+	CurrentRun   *store.RunManifest                     `json:"current_run,omitempty"`
 	LatestRun    *store.RunManifest                     `json:"latest_run,omitempty"`
 	Graph        *ArchGraph                             `json:"graph,omitempty"`
 	LiveStatus   map[string]repoLive                    `json:"live_status"`
@@ -70,6 +72,8 @@ func (s *Server) handleWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	current := s.latestWorkspaceRun(pid)
+	s.enrichRunGraphCounts(pid, current)
 	latest, graph := s.latestWorkspaceGraph(pid, repos)
 	live := s.liveStatusForRepos(r.Context(), repos)
 	teams := workspaceTeams(repos, graph)
@@ -80,7 +84,7 @@ func (s *Server) handleWorkspace(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, workspaceResponse{
-		Project: project, Repos: repos, Teams: teams, LatestRun: latest, Graph: graph,
+		Project: project, Repos: repos, Teams: teams, CurrentRun: current, LatestRun: latest, Graph: graph,
 		LiveStatus: live, DiffMindRuns: runs, GeneratedAt: time.Now().UTC(),
 	})
 }
@@ -115,11 +119,7 @@ func (s *Server) diffmindRunsForRepo(repoPath string) ([]artifacts.DiffMindRunIn
 	if err != nil {
 		return nil, err
 	}
-	runs := append([]artifacts.DiffMindRunInfo(nil), groups[repoPath]...)
-	if info, ok := artifacts.RepoArchfileRunInfo(repoPath); ok {
-		runs = append([]artifacts.DiffMindRunInfo{info}, runs...)
-	}
-	return runs, nil
+	return appendRepoArchfileFallback(repoPath, groups[repoPath]), nil
 }
 
 func diffmindFreshness(repo store.Repo, latest *artifacts.DiffMindRunInfo) string {
@@ -149,10 +149,26 @@ func (s *Server) latestWorkspaceGraph(pid string, repos []workspaceRepo) (*store
 		if err != nil {
 			continue
 		}
+		run.ServiceCount = len(graph.Services)
+		run.EdgeCount = len(graph.Edges)
+		if serviceCount, edgeCount, quality := s.runs.ArchitectureStats(pid, run); quality != nil {
+			run.ServiceCount = serviceCount
+			run.EdgeCount = edgeCount
+			run.GraphQuality = quality
+		}
 		annotateGraphServices(graph, repos)
 		return &run, graph
 	}
 	return nil, nil
+}
+
+func (s *Server) latestWorkspaceRun(pid string) *store.RunManifest {
+	runs, err := s.store.ListRuns(pid)
+	if err != nil || len(runs) == 0 {
+		return nil
+	}
+	run := runs[0]
+	return &run
 }
 
 func (s *Server) archGraphForRun(pid string, mft *store.RunManifest) (*ArchGraph, error) {
@@ -365,14 +381,63 @@ func (s *Server) handleStartDiffMindRepoRun(w http.ResponseWriter, r *http.Reque
 		s.writeStoreErr(w, err)
 		return
 	}
+	opts, err := decodeDiffMindRunOptions(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
 	_, _ = s.store.UpdateRepo(pid, rid, func(rp *store.Repo) { rp.SyncStatus = "diffmind_running"; rp.SyncError = "" })
-	go s.runDiffMindForRepo(pid, rid, repo.Path)
-	writeJSON(w, http.StatusAccepted, map[string]any{"status": "diffmind_running"})
+	go s.runDiffMindForRepo(pid, rid, *repo, opts)
+	writeJSON(w, http.StatusAccepted, map[string]any{"status": "diffmind_running", "options": opts})
 }
 
-func (s *Server) runDiffMindForRepo(pid, rid, repoPath string) {
+func decodeDiffMindRunOptions(r *http.Request) (orchestrator.DiffMindRunOptions, error) {
+	var opts orchestrator.DiffMindRunOptions
+	if r.Body == nil {
+		return opts, nil
+	}
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		return opts, err
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return opts, nil
+	}
+	var req struct {
+		Options orchestrator.DiffMindRunOptions `json:"options"`
+	}
+	if err := json.Unmarshal(data, &req); err != nil {
+		return opts, err
+	}
+	opts = req.Options
+	switch opts.Pipeline {
+	case "", "deterministic", "llm":
+	default:
+		return opts, fmt.Errorf("pipeline must be deterministic or llm")
+	}
+	return opts, nil
+}
+
+func (s *Server) runDiffMindForRepo(pid, rid string, repo store.Repo, opts orchestrator.DiffMindRunOptions) {
+	repoPath := repo.Path
+	if repoPath == "" {
+		repoPath = repo.ClonePath
+	}
+	if _, statErr := os.Stat(repoPath); statErr != nil && repo.GitURL != "" {
+		if updated, syncErr := s.syncGitRepo(context.Background(), pid, repo); syncErr == nil && updated != nil {
+			repo = *updated
+			repoPath = repo.Path
+		} else if syncErr != nil {
+			_, _ = s.store.UpdateRepo(pid, rid, func(rp *store.Repo) {
+				rp.SyncStatus = "diffmind_failed"
+				rp.SyncError = "sync before DiffMind failed: " + syncErr.Error()
+				rp.DiffMindFreshness = "unknown"
+			})
+			return
+		}
+	}
 	binary := firstNonEmpty(os.Getenv("DIFFMIND_BINARY"), config.NewDefault().DiffMind.BinaryPath)
-	err := orchestrator.RunDiffMind(binary, repoPath, "", s.log)
+	err := orchestrator.RunDiffMind(binary, repoPath, opts, s.log)
 	runs, _ := s.diffmindRunsForRepo(repoPath)
 	var latest string
 	var team string
@@ -401,13 +466,13 @@ func (s *Server) runDiffMindForRepo(pid, rid, repoPath string) {
 	})
 }
 
-func (s *Server) handleGetDiffMindYAML(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleGetDiffMindConfigurationYAML(w http.ResponseWriter, r *http.Request) {
 	repo, err := s.store.GetRepo(r.PathValue("pid"), r.PathValue("rid"))
 	if err != nil {
 		s.writeStoreErr(w, err)
 		return
 	}
-	path := artifacts.RepoArchfilePath(repo.Path)
+	path := artifacts.RepoConfigurationPath(repo.Path)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -420,7 +485,7 @@ func (s *Server) handleGetDiffMindYAML(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"path": path, "body": string(data)})
 }
 
-func (s *Server) handlePutDiffMindYAML(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handlePutDiffMindConfigurationYAML(w http.ResponseWriter, r *http.Request) {
 	repo, err := s.store.GetRepo(r.PathValue("pid"), r.PathValue("rid"))
 	if err != nil {
 		s.writeStoreErr(w, err)
@@ -433,12 +498,12 @@ func (s *Server) handlePutDiffMindYAML(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	path := artifacts.RepoArchfilePath(repo.Path)
+	path := artifacts.RepoConfigurationPath(repo.Path)
 	if err := os.WriteFile(path, []byte(req.Body), 0o644); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	team := artifacts.RepoArchfileTeam(repo.Path)
+	team := artifacts.RepoConfigurationTeam(repo.Path)
 	updated, _ := s.store.UpdateRepo(r.PathValue("pid"), r.PathValue("rid"), func(rp *store.Repo) { rp.Team = team })
 	writeJSON(w, http.StatusOK, map[string]any{"path": path, "repo": updated})
 }

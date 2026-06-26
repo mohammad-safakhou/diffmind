@@ -90,6 +90,12 @@ func TestRunManagerFullRun(t *testing.T) {
 	if got.ServiceCount < 2 {
 		t.Fatalf("service count = %d, want >= 2", got.ServiceCount)
 	}
+	if got.EdgeCount == 0 {
+		t.Fatalf("edge count was not persisted")
+	}
+	if got.GraphQuality == nil {
+		t.Fatalf("graph quality stats were not persisted")
+	}
 
 	runDir := m.store.RunDir(pid, run.ID)
 	for _, f := range []string{"graph.json", "events.jsonl", "manifest.json"} {

@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	ArchfileSchema    = "diffmind.discovery.v1"
-	RepoArchfileRunID = "repo:diffmind.yaml"
+	ArchfileSchema        = "diffmind.discovery.v1"
+	RepoArchfileRunID     = "repo:diffmind.yaml"
+	RepoConfigurationFile = "diffmind-configuration.yaml"
 )
 
 const maxIncludeDepth = 20
@@ -77,6 +78,30 @@ type resolvedArchFile struct {
 	Exposures    []rawEntity
 	Dependencies []rawEntity
 	Connections  []rawConn
+}
+
+type rawRepoConfiguration struct {
+	Team    string `yaml:"team,omitempty"`
+	Service struct {
+		Team string `yaml:"team,omitempty"`
+	} `yaml:"service,omitempty"`
+}
+
+// RepoConfigurationPath returns the manual deterministic-pipeline hint file.
+func RepoConfigurationPath(repoPath string) string {
+	return filepath.Join(repoPath, RepoConfigurationFile)
+}
+
+func RepoConfigurationTeam(repoPath string) string {
+	data, err := os.ReadFile(RepoConfigurationPath(repoPath))
+	if err != nil {
+		return "default"
+	}
+	var cfg rawRepoConfiguration
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return "default"
+	}
+	return firstString(cfg.Service.Team, cfg.Team, "default")
 }
 
 // RepoArchfilePath returns the conventional DiffMind discovery file path for a repo.
@@ -167,6 +192,9 @@ func ReadDiffMindArchfile(path string) (*model.ServiceArchitecture, error) {
 func ReadDiffMindFileMaps(path string) (map[string][]map[string]any, map[string][]map[string]any, map[string][]map[string]any) {
 	if isYAMLFile(path) {
 		return readArchfileMaps(path)
+	}
+	if exp, dep, conn, ok := protocolFileMaps(path); ok {
+		return exp, dep, conn
 	}
 	return readRunDirMaps(path)
 }

@@ -15,11 +15,11 @@ import (
 // ReadDiffMindRun reads the latest DiffMind run artifacts from a service repo.
 // It looks for .diffmind/runs/<runid>/ directories and picks the latest one.
 func ReadDiffMindRun(repoPath string) (*model.ServiceArchitecture, error) {
-	if HasRepoArchfile(repoPath) {
-		return ReadDiffMindArchfile(RepoArchfilePath(repoPath))
-	}
 	runsDir := filepath.Join(repoPath, ".diffmind", "runs")
 	if _, err := os.Stat(runsDir); os.IsNotExist(err) {
+		if HasRepoArchfile(repoPath) {
+			return ReadDiffMindArchfile(RepoArchfilePath(repoPath))
+		}
 		return nil, fmt.Errorf("no DiffMind runs found at %s", runsDir)
 	}
 	return readLatestRun(repoPath, runsDir)
@@ -32,6 +32,9 @@ func ReadDiffMindArtifacts(artifactsDir string) (*model.ServiceArchitecture, err
 	}
 	// Check if this is a runs directory or a specific run.
 	if _, err := os.Stat(filepath.Join(artifactsDir, "run_manifest.json")); err == nil {
+		if hasDiffMind protocol(artifactsDir) {
+			return readDiffMind protocolRunDir("", artifactsDir)
+		}
 		return readRunDir("", artifactsDir)
 	}
 	// Maybe it's the runs parent dir.
@@ -58,6 +61,9 @@ func readLatestRun(repoPath, runsDir string) (*model.ServiceArchitecture, error)
 	sort.Sort(sort.Reverse(sort.StringSlice(runDirs)))
 	latestDir := filepath.Join(runsDir, runDirs[0])
 
+	if hasDiffMind protocol(latestDir) {
+		return readDiffMind protocolRunDir(repoPath, latestDir)
+	}
 	return readRunDir(repoPath, latestDir)
 }
 

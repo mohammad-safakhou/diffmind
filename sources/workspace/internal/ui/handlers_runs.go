@@ -21,10 +21,7 @@ func (s *Server) handleDiffMindRuns(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
-		runs := append([]artifacts.DiffMindRunInfo(nil), groups[repoPath]...)
-		if info, ok := artifacts.RepoArchfileRunInfo(repoPath); ok {
-			runs = append([]artifacts.DiffMindRunInfo{info}, runs...)
-		}
+		runs := appendRepoArchfileFallback(repoPath, groups[repoPath])
 		writeJSON(w, http.StatusOK, map[string]any{"runs": runs})
 		return
 	}
@@ -41,11 +38,23 @@ func (s *Server) handleDiffMindRuns(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"runs": all, "by_repo": groups})
 }
 
+func appendRepoArchfileFallback(repoPath string, runs []artifacts.DiffMindRunInfo) []artifacts.DiffMindRunInfo {
+	out := append([]artifacts.DiffMindRunInfo(nil), runs...)
+	if info, ok := artifacts.RepoArchfileRunInfo(repoPath); ok {
+		out = append(out, info)
+	}
+	return out
+}
+
 func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
-	runs, err := s.store.ListRuns(r.PathValue("pid"))
+	pid := r.PathValue("pid")
+	runs, err := s.store.ListRuns(pid)
 	if err != nil {
 		s.writeStoreErr(w, err)
 		return
+	}
+	for i := range runs {
+		s.enrichRunGraphCounts(pid, &runs[i])
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"runs": runs})
 }
@@ -84,7 +93,27 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreErr(w, err)
 		return
 	}
+	s.enrichRunGraphCounts(r.PathValue("pid"), run)
 	writeJSON(w, http.StatusOK, map[string]any{"run": run, "active": s.runs.IsActive(r.PathValue("pid"), r.PathValue("rid"))})
+}
+
+func (s *Server) enrichRunGraphCounts(pid string, run *store.RunManifest) {
+	if run == nil || run.Status != store.RunCompleted {
+		return
+	}
+	graph, err := s.archGraphForRun(pid, run)
+	if err != nil || graph == nil {
+		return
+	}
+	run.ServiceCount = len(graph.Services)
+	run.EdgeCount = len(graph.Edges)
+	if run.GraphQuality == nil {
+		if serviceCount, edgeCount, quality := s.runs.ArchitectureStats(pid, *run); quality != nil {
+			run.ServiceCount = serviceCount
+			run.EdgeCount = edgeCount
+			run.GraphQuality = quality
+		}
+	}
 }
 
 func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
@@ -110,9 +139,19 @@ func (s *Server) handleDeleteRun(w http.ResponseWriter, r *http.Request) {
 // handleRunGraph serves the persisted graph.json for a finished run.
 func (s *Server) handleRunGraph(w http.ResponseWriter, r *http.Request) {
 	pid, rid := r.PathValue("pid"), r.PathValue("rid")
-	if _, err := s.store.GetRun(pid, rid); err != nil {
+	run, err := s.store.GetRun(pid, rid)
+	if err != nil {
 		s.writeStoreErr(w, err)
 		return
+	}
+	if graph, err := s.archGraphForRun(pid, run); err == nil {
+		runDir := s.store.RunDir(pid, rid)
+		if data, err := json.MarshalIndent(graph, "", "  "); err == nil {
+			_ = os.WriteFile(filepath.Join(runDir, "graph.json"), append(data, '\n'), 0o644)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(append(data, '\n'))
+			return
+		}
 	}
 	data, err := os.ReadFile(filepath.Join(s.store.RunDir(pid, rid), "graph.json"))
 	if err != nil {
