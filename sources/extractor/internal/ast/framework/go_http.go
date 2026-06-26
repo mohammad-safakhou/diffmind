@@ -137,10 +137,13 @@ func (d *echoDetector) Name() string { return "echo" }
 func (d *echoDetector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
 	var out []ast.FrameworkBinding
 	for _, fa := range idx.Files {
-		if fa.Language != "go" || !fileImportsEcho(fa) {
+		if fa.Language != "go" {
 			continue
 		}
 		prefixes := echoGroupPrefixes(idx, fa)
+		if !fileImportsEcho(fa) && len(prefixes) == 0 {
+			continue
+		}
 		for _, call := range fa.Calls {
 			if b := echoCallToBinding(call, prefixes); b != nil {
 				out = append(out, *b)

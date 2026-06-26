@@ -556,10 +556,11 @@ func (d *ginDetector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
 		if fa.Language != "go" {
 			continue
 		}
-		if fileImportsEcho(fa) {
-			continue
-		}
+		echoPrefixes := echoGroupPrefixes(idx, fa)
 		for _, call := range fa.Calls {
+			if echoRouteReceiver(call, echoPrefixes) {
+				continue
+			}
 			b := ginCallToBinding(call)
 			if b != nil {
 				out = append(out, *b)
@@ -567,6 +568,23 @@ func (d *ginDetector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
 		}
 	}
 	return out
+}
+
+func echoRouteReceiver(call ast.CallSite, prefixes map[string]string) bool {
+	raw := call.CalleeRaw
+	receiver := strings.TrimSpace(call.ReceiverRaw)
+	if dot := strings.LastIndex(raw, "."); dot >= 0 && receiver == "" {
+		receiver = strings.TrimSpace(raw[:dot])
+	}
+	if receiver == "" {
+		return false
+	}
+	if prefixes != nil {
+		if _, ok := prefixes[receiver]; ok {
+			return true
+		}
+	}
+	return strings.Contains(strings.ToLower(receiver), ".echo")
 }
 
 func ginCallToBinding(call ast.CallSite) *ast.FrameworkBinding {

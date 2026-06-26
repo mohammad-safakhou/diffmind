@@ -2,7 +2,9 @@ package discovery
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -29,6 +31,8 @@ func DeterministicCLIEntrypoints(idx *astpkg.ProjectIndex) []llmEntity {
 			continue
 		}
 		switch fa.Language {
+		case "go":
+			appendCobraCommands(idx, &out, seen, path, fa)
 		case "python":
 			for _, sym := range fa.Symbols {
 				switch {
@@ -71,6 +75,67 @@ func DeterministicCLIEntrypoints(idx *astpkg.ProjectIndex) []llmEntity {
 		}
 	}
 	return out
+}
+
+var cobraCommandRE = regexp.MustCompile(`(?s)(?:var\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*)?&cobra\.Command\s*\{.*?Use:\s*"([^"]+)".*?(?:RunE?|PreRunE?|PostRunE?):\s*([A-Za-z_][A-Za-z0-9_]*)`)
+
+func appendCobraCommands(idx *astpkg.ProjectIndex, out *[]llmEntity, seen map[string]struct{}, path string, fa *astpkg.FileAST) {
+	if idx == nil || fa == nil || !fileImports(fa, "github.com/spf13/cobra") {
+		return
+	}
+	b, err := os.ReadFile(filepath.Join(idx.RepoRoot, path))
+	if err != nil {
+		return
+	}
+	src := string(b)
+	for _, m := range cobraCommandRE.FindAllStringSubmatchIndex(src, -1) {
+		if len(m) < 8 {
+			continue
+		}
+		use := src[m[4]:m[5]]
+		handler := src[m[6]:m[7]]
+		varName := ""
+		if m[2] >= 0 {
+			varName = src[m[2]:m[3]]
+		}
+		line := 1 + strings.Count(src[:m[0]], "\n")
+		name := strings.Fields(use)
+		cmdName := use
+		if len(name) > 0 {
+			cmdName = name[0]
+		}
+		key := strings.ToLower(path + "|" + cmdName)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		loc := llmLocation{File: path, StartLine: line, EndLine: line}
+		*out = append(*out, llmEntity{
+			Type:       "cli_command",
+			Name:       cmdName,
+			Summary:    "AST-derived Go Cobra command entrypoint",
+			Confidence: 1.0,
+			Tags:       []string{"deterministic", "cobra", "go"},
+			Details: map[string]any{
+				"command":       cmdName,
+				"binary":        cmdName,
+				"handler":       handler,
+				"entry_method":  handler,
+				"variable":      varName,
+				"runtime":       "go",
+				"platform":      "process",
+				"discovered_by": "ast_go_cobra_command",
+			},
+			Locations: []llmLocation{loc},
+			Evidence: []llmEvidence{{
+				File:      loc.File,
+				StartLine: loc.StartLine,
+				EndLine:   loc.EndLine,
+				Snippet:   `cobra.Command{Use: "` + use + `"}`,
+				Source:    "deterministic_ast",
+			}},
+		})
+	}
 }
 
 func appendCLI(out *[]llmEntity, seen map[string]struct{}, path, name, summary string, tags []string, details map[string]any, sym astpkg.SymbolDef, snippet string) {

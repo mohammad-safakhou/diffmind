@@ -47,7 +47,7 @@ func TestNormalizers(t *testing.T) {
 	if got := CanonicalRoutePath("//Orders/<int:id>/"); got != "/orders/{}" {
 		t.Fatalf("CanonicalRoutePath() = %q", got)
 	}
-	if got := NormalizeDBOperation("hardDeleteAll"); got != "write" {
+	if got := NormalizeDBOperation("hardDeleteAll"); got != "delete" {
 		t.Fatalf("NormalizeDBOperation() = %q", got)
 	}
 }

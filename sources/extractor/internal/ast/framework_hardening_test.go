@@ -197,6 +197,26 @@ func (Controller) CreateManual(c echo.Context) error { return nil }
 	assertNoBinding(t, idx.Frameworks, "gin", "http_handler", "POST /pay")
 }
 
+func TestEchoDetectorComposesGroupPrefixesThroughWrapper(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "payment.go", `package payment
+
+import sharedhttp "example/internal/shared/http"
+
+type Controller struct{}
+
+func Init(d sharedhttp.Dependencies, c Controller) {
+	ug := d.Echo.Group(d.Prefix + "/financial")
+	ug.POST("/pay", c.Pay)
+}
+
+func (Controller) Pay(any) error { return nil }
+`)
+	idx := buildIndex(t, dir)
+	assertBinding(t, idx.Frameworks, "echo", "http_handler", "POST /financial/pay", "Pay")
+	assertNoBinding(t, idx.Frameworks, "gin", "http_handler", "POST /pay")
+}
+
 func TestExpressDetectorRequiresKnownReceiverLiteralPathAndHandler(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "routes.js", `function handler(req, res) {}

@@ -98,6 +98,11 @@ func (DeterministicRunner) Run(input DeterministicInput) DeterministicOutput {
 			outMap[obj.ID] = append(outMap[obj.ID], e)
 		}
 	}
+	if obj, ok := objectiveByTypeIn(input.Objectives, "outbound_http"); ok {
+		for _, e := range DeterministicOutboundHTTP(input.Index) {
+			outMap[obj.ID] = append(outMap[obj.ID], e)
+		}
+	}
 	if obj, ok := objectiveByTypeIn(input.Objectives, "stream_consume"); ok {
 		for _, e := range DeterministicStreamConsume(input.Index) {
 			outMap[obj.ID] = append(outMap[obj.ID], e)

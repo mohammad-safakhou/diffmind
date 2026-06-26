@@ -15,12 +15,12 @@ func TestParseSQLStatement(t *testing.T) {
 		{"WITH recent AS (...) SELECT * FROM recent", "read", "recent"},
 		{"INSERT INTO order_events (id) VALUES ($1)", "write", "order_events"},
 		{"UPDATE orders SET total = $1 WHERE id = $2", "write", "orders"},
-		{"DELETE FROM order_events WHERE created < $1", "write", "order_events"},
+		{"DELETE FROM order_events WHERE created < $1", "delete", "order_events"},
 		{"update `orders` set x = 1", "write", "orders"},
-		{"SELECT 1", "read", ""},                  // no table
-		{"select * from " + "$1", "read", ""},     // placeholder table
-		{"TRUNCATE orders", "", ""},               // not a curated statement
-		{"selected items from cart", "", ""},      // prose, not SQL
+		{"SELECT 1", "read", ""},              // no table
+		{"select * from " + "$1", "read", ""}, // placeholder table
+		{"TRUNCATE orders", "", ""},           // not a curated statement
+		{"selected items from cart", "", ""},  // prose, not SQL
 		{"", "", ""},
 	}
 	for _, c := range cases {
@@ -45,7 +45,7 @@ func TestDeterministicSQLOperations(t *testing.T) {
 			call("main.go", "db.QueryContext", "ctx", `"SELECT id FROM orders WHERE id = $1"`),
 			call("main.go", "db.QueryContext", "ctx", `"SELECT total FROM orders WHERE id = $1"`), // same fact
 			call("main.go", "db.ExecContext", "ctx", `"INSERT INTO order_events (id) VALUES ($1)"`),
-			call("main.go", "log.Printf", `"select failed: %v"`, "err"),      // not a query API
+			call("main.go", "log.Printf", `"select failed: %v"`, "err"),     // not a query API
 			call("main.go", "db.QueryContext", "ctx", "buildQuery(filter)"), // not a literal
 		}},
 	}}

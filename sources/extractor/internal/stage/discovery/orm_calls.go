@@ -2,6 +2,9 @@ package discovery
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -59,6 +62,9 @@ func DeterministicORMOperations(idx *astpkg.ProjectIndex) []llmEntity {
 		switch langOf(cs.File) {
 		case "go":
 			f = matchGORM(idx, cs)
+			if f == nil {
+				f = matchBun(idx, cs)
+			}
 		case "python":
 			f = matchDjangoORM(cs)
 		case "javascript", "typescript", "tsx", "jsx":
@@ -123,6 +129,113 @@ func DeterministicORMOperations(idx *astpkg.ProjectIndex) []llmEntity {
 		})
 	}
 	return out
+}
+
+// --- Bun (Go) ----------------------------------------------------------------
+
+var bunOps = map[string]string{
+	"NewSelect": "read",
+	"NewInsert": "write",
+	"NewUpdate": "write",
+	"NewDelete": "delete",
+}
+
+func matchBun(idx *astpkg.ProjectIndex, cs astpkg.CallSite) *ormCallFact {
+	r, callee := splitCall(cs)
+	opKind, ok := bunOps[callee]
+	if !ok {
+		return nil
+	}
+	rl := strings.ToLower(r)
+	if rl != "db" && rl != "tx" && !strings.Contains(rl, "bun") {
+		return nil
+	}
+	table := bunTableForCall(idx, cs)
+	if table == "" {
+		return nil
+	}
+	return &ormCallFact{
+		orm: "bun", table: table,
+		opKind: opKind, receiver: r, corroborated: true,
+	}
+}
+
+var bunModelRE = regexp.MustCompile(`\.Model\s*\(\s*&?\s*(?:\[\]\s*)?([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)(?:\s*\{\s*\})?\s*\)`)
+
+func bunTableForCall(idx *astpkg.ProjectIndex, cs astpkg.CallSite) string {
+	src := callWindowSource(idx, cs, 8)
+	if src != "" {
+		if m := bunModelRE.FindStringSubmatch(src); len(m) == 2 {
+			model := strings.TrimSpace(m[1])
+			if dot := strings.LastIndexByte(model, '.'); dot >= 0 {
+				model = model[dot+1:]
+			}
+			if isCapitalizedIdent(model) {
+				return pluralizeSnake(snakeCase(model))
+			}
+			if isLowerIdent(model) {
+				if typ := idx.LocalTypes[cs.Caller+"."+model]; typ != "" {
+					typ = strings.TrimPrefix(strings.TrimPrefix(typ, "*"), "[]")
+					if dot := strings.LastIndexByte(typ, '.'); dot >= 0 {
+						typ = typ[dot+1:]
+					}
+					if isCapitalizedIdent(typ) {
+						return pluralizeSnake(snakeCase(typ))
+					}
+				}
+				if len(model) > 2 {
+					return pluralizeSnake(snakeCase(model))
+				}
+			}
+		}
+	}
+	return tableFromGoRepositoryPath(cs.File)
+}
+
+func callWindowSource(idx *astpkg.ProjectIndex, cs astpkg.CallSite, extraLines int) string {
+	if idx == nil || idx.RepoRoot == "" || cs.File == "" {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(idx.RepoRoot, cs.File))
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(b), "\n")
+	start := int(cs.Range.StartLine)
+	if start < 0 || start >= len(lines) {
+		return ""
+	}
+	if start > extraLines {
+		start -= extraLines
+	} else {
+		start = 0
+	}
+	end := int(cs.Range.StartLine) + extraLines + 1
+	if end > len(lines) {
+		end = len(lines)
+	}
+	return strings.Join(lines[start:end], "\n")
+}
+
+func tableFromGoRepositoryPath(path string) string {
+	path = filepath.ToSlash(path)
+	parts := strings.Split(path, "/")
+	for i := len(parts) - 1; i >= 0; i-- {
+		part := strings.TrimSpace(parts[i])
+		if strings.HasSuffix(part, "_repo") {
+			name := strings.TrimSuffix(part, "_repo")
+			if name != "" {
+				return pluralizeSnake(name)
+			}
+		}
+		if strings.HasSuffix(part, "repo") && len(part) > len("repo") {
+			name := strings.TrimSuffix(part, "repo")
+			if name != "" {
+				return pluralizeSnake(name)
+			}
+		}
+	}
+	return ""
 }
 
 // --- GORM (Go) ---------------------------------------------------------------
