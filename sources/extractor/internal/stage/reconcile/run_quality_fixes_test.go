@@ -6,10 +6,10 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 )
 
-// Item 6: embedded-verb method names must fold to read/write.
+// Item 6: embedded-verb method names must fold to stable DB operation classes.
 func TestNormalizeDBOpEmbeddedVerb(t *testing.T) {
 	cases := map[string]string{
-		"hardDeleteAllSubTargets": "write",
+		"hardDeleteAllSubTargets": "delete",
 		"batchInsertRows":         "write",
 		"findByCampaignId":        "read",
 		"SELECT":                  "read",

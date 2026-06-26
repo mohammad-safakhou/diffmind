@@ -173,6 +173,27 @@ def handle():
 	}
 }
 
+func TestDeterministicGoRedisCacheOperations(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"internal/shared/adapter/outbound/redis/cache_repo/get.go": `package cache_repo
+
+import "github.com/redis/go-redis/v9"
+
+type Repository struct { redisClient *redis.Client }
+
+func (r *Repository) Get(ctx any, key string) {
+    r.redisClient.Get(ctx, key).Result()
+    r.redisClient.Set(ctx, key, "v", 0).Err()
+    r.redisClient.Del(ctx, key).Err()
+}
+`,
+	})
+	got := DeterministicCacheOperations(idx)
+	if len(got) != 3 {
+		t.Fatalf("expected read/write/evict go redis operations, got %d: %+v", len(got), got)
+	}
+}
+
 func TestDeterministicRedisCachePrecision(t *testing.T) {
 	idx := buildAgentsIndex(t, map[string]string{
 		"plain.py": `def handle(client, pipeline):
@@ -378,5 +399,95 @@ public class Application {
 	}
 	if got[0].Details["discovered_by"] != "ast_spring_boot_main" {
 		t.Fatalf("unexpected details: %+v", got[0].Details)
+	}
+}
+
+func TestDeterministicGoCobraCommands(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"cmd/app/http.go": `package app
+
+import "github.com/spf13/cobra"
+
+var HttpCommand = &cobra.Command{
+    Use: "http",
+    Run: HttpRun,
+}
+
+func HttpRun(_ *cobra.Command, _ []string) {}
+`,
+	})
+	got := DeterministicCLIEntrypoints(idx)
+	if len(got) != 1 {
+		t.Fatalf("expected one cobra command, got %+v", got)
+	}
+	if got[0].Name != "http" || got[0].Details["handler"] != "HttpRun" {
+		t.Fatalf("unexpected cobra command: %+v", got[0])
+	}
+}
+
+func TestDeterministicBunOperations(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"internal/financial/adapter/outbound/repository/sql/payment_repo/pay.go": `package payment_repo
+
+func (r Repository) Pay(ctx any, payment Payment) error {
+    db, _ := r.db.GetTX(ctx, nil)
+    _, err := db.NewInsert().Model(&payment).Exec(ctx)
+    return err
+}
+`,
+	})
+	got := DeterministicORMOperations(idx)
+	if len(got) != 1 {
+		t.Fatalf("expected one bun operation, got %+v", got)
+	}
+	if got[0].Details["orm"] != "bun" || got[0].Details["operation"] != "write" {
+		t.Fatalf("unexpected bun operation: %+v", got[0])
+	}
+}
+
+func TestDeterministicRestyOutboundHTTP(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"internal/financial/adapter/outbound/anygate_http/pay.go": `package anygate_http
+
+import "net/url"
+
+func (p PaymentGateway) Pay(ctx any) {
+    req := p.client.R().SetContext(ctx)
+    path, _ := url.JoinPath(p.Uri, "/api/v1/gateway/get-or-new")
+    req.Execute("POST", path)
+}
+`,
+		"diffmind-configuration.yaml": `http_targets:
+  - id: anygate
+    service_ref: service.anygate
+    external: true
+    aliases: [PaymentGateway, anygate_http, anygate]
+`,
+	})
+	got := DeterministicOutboundHTTP(idx)
+	if len(got) != 1 {
+		t.Fatalf("expected one resty outbound call, got %+v", got)
+	}
+	if got[0].Details["target_service"] != "anygate" || got[0].Details["method"] != "POST" ||
+		got[0].Details["path"] != "/api/v1/gateway/get-or-new" {
+		t.Fatalf("unexpected resty details: %+v", got[0].Details)
+	}
+}
+
+func TestDeterministicGoGRPCServiceClient(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"internal/report/adapter/outbound/metadata_grpc/get_metadata.go": `package metadata_grpc
+
+func (cc MetadataClient) GetMetadata(ctx any) {
+    cc.metadataServiceClient.Get(ctx, nil)
+}
+`,
+	})
+	got := DeterministicOutboundRPC(idx)
+	if len(got) != 1 {
+		t.Fatalf("expected one go grpc client call, got %+v", got)
+	}
+	if got[0].Details["service"] != "metadata" || got[0].Details["method"] != "Get" {
+		t.Fatalf("unexpected grpc details: %+v", got[0].Details)
 	}
 }

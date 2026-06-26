@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -119,6 +120,9 @@ func DeterministicOutboundRPC(idx *astpkg.ProjectIndex) []llmEntity {
 	forEachCall(idx, func(cs astpkg.CallSite) {
 		service, method, ok := MatchGRPCStubCall(cs)
 		if !ok {
+			service, method, ok = matchGoGRPCClientCall(cs)
+		}
+		if !ok {
 			return
 		}
 		loc := callLoc(cs)
@@ -144,6 +148,70 @@ func DeterministicOutboundRPC(idx *astpkg.ProjectIndex) []llmEntity {
 			},
 			Locations: []llmLocation{loc},
 			Evidence:  []llmEvidence{callEvidence(cs)},
+		})
+	})
+	return out
+}
+
+// DeterministicOutboundHTTP finds high-precision Resty HTTP client operations.
+// It accepts Resty's explicit verbs and Execute(method, url/path), and only
+// emits calls from source paths/import contexts that look like outbound HTTP
+// adapters.
+func DeterministicOutboundHTTP(idx *astpkg.ProjectIndex) []llmEntity {
+	if idx == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var out []llmEntity
+	forEachCall(idx, func(cs astpkg.CallSite) {
+		fa := idx.Files[cs.File]
+		if fa == nil || fa.Language != "go" || !looksLikeRestyOperationContext(fa, cs.File) {
+			return
+		}
+		method, path := restyHTTPCall(cs, callWindowSource(idx, cs, 5))
+		if method == "" || path == "" {
+			return
+		}
+		loc := callLoc(cs)
+		if loc.File == "" {
+			return
+		}
+		targetName := serviceNameFromOutboundHTTPPath(cs.File)
+		details := map[string]any{
+			"method":         method,
+			"path":           path,
+			"url_template":   path,
+			"target_service": targetName,
+			"discovered_by":  "ast_go_resty_call",
+		}
+		target := configuredHTTPTargetForOperation(idx, cs.Caller, path)
+		if target.serviceRef == "" && targetName != "" {
+			target = configuredHTTPTargetForOperation(idx, targetName, path)
+		}
+		if target.serviceRef != "" {
+			applyConfiguredHTTPTargetDetails(details, target)
+			if target.host != "" && strings.HasPrefix(path, "/") {
+				details["url_template"] = strings.TrimRight(target.urlTemplate, "/") + path
+			}
+		}
+		name := strings.TrimSpace(method + " " + path)
+		if targetName != "" {
+			name = targetName + " " + name
+		}
+		key := strings.ToLower(firstNonEmptyString(stringAny(details["target_service"]), targetName) + "|" + method + "|" + path)
+		if _, dup := seen[key]; dup {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, llmEntity{
+			Type:       "outbound_http",
+			Name:       name,
+			Summary:    "AST-derived Resty outbound HTTP call",
+			Confidence: 1.0,
+			Tags:       []string{"deterministic", "resty", "go"},
+			Details:    details,
+			Locations:  []llmLocation{loc},
+			Evidence:   []llmEvidence{callEvidence(cs)},
 		})
 	})
 	return out
@@ -208,16 +276,135 @@ func MatchGRPCStubCall(cs astpkg.CallSite) (service, method string, ok bool) {
 	return deriveGRPCService(r), m, true
 }
 
+func matchGoGRPCClientCall(cs astpkg.CallSite) (service, method string, ok bool) {
+	r, m := splitCall(cs)
+	rl := strings.ToLower(r)
+	if !strings.HasSuffix(rl, "serviceclient") {
+		return "", "", false
+	}
+	if m == "" {
+		return "", "", false
+	}
+	service = deriveGRPCService(r)
+	if fromPath := serviceNameFromGRPCPath(cs.File); fromPath != "" {
+		service = fromPath
+	}
+	return service, m, true
+}
+
 // deriveGRPCService strips the stub suffix from a stub variable/type to recover
 // the service name (fooServiceBlockingStub -> fooService).
 func deriveGRPCService(stub string) string {
 	s := strings.TrimSpace(stub)
-	for _, suf := range []string{"BlockingStub", "FutureStub", "Stub", "blockingStub", "futureStub", "stub"} {
+	for _, suf := range []string{"BlockingStub", "FutureStub", "ServiceClient", "serviceClient", "Stub", "blockingStub", "futureStub", "stub"} {
 		if strings.HasSuffix(s, suf) {
 			return strings.TrimSuffix(s, suf)
 		}
 	}
 	return s
+}
+
+func looksLikeRestyOperationContext(fa *astpkg.FileAST, path string) bool {
+	if fa != nil {
+		for _, imp := range fa.Imports {
+			if strings.Contains(strings.ToLower(strings.Trim(imp.Path, `"`)), "go-resty/resty") {
+				return true
+			}
+		}
+	}
+	p := strings.ToLower(strings.ReplaceAll(path, "\\", "/"))
+	return strings.Contains(p, "/adapter/outbound/") && (strings.Contains(p, "_http/") || strings.Contains(p, "/http/"))
+}
+
+func restyHTTPCall(cs astpkg.CallSite, src string) (method, path string) {
+	_, callee := splitCall(cs)
+	switch strings.ToLower(callee) {
+	case "execute":
+		if len(cs.Arguments) > 0 {
+			method = strings.ToUpper(strings.Trim(strings.TrimSpace(cs.Arguments[0].Source), "\"'`"))
+		}
+		if len(cs.Arguments) > 1 {
+			path = strings.Trim(strings.TrimSpace(cs.Arguments[1].Source), "\"'`")
+		}
+	case "get", "post", "put", "patch", "delete":
+		method = strings.ToUpper(callee)
+		if len(cs.Arguments) > 0 {
+			path = strings.Trim(strings.TrimSpace(cs.Arguments[0].Source), "\"'`")
+		}
+	default:
+		return "", ""
+	}
+	if path == "" || strings.ContainsAny(path, "()") || isPlainIdent(path) {
+		if p := restyJoinedPath(src); p != "" {
+			path = p
+		}
+	}
+	if method == "" || path == "" {
+		return "", ""
+	}
+	if !strings.HasPrefix(path, "/") && !strings.HasPrefix(strings.ToLower(path), "http://") && !strings.HasPrefix(strings.ToLower(path), "https://") {
+		return "", ""
+	}
+	return method, path
+}
+
+func isPlainIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || i > 0 && c >= '0' && c <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+var urlJoinPathRE = regexp.MustCompile(`url\.JoinPath\s*\([^,\n]+,\s*"([^"]+)"`)
+
+func restyJoinedPath(src string) string {
+	if m := urlJoinPathRE.FindStringSubmatch(src); len(m) == 2 {
+		return m[1]
+	}
+	return ""
+}
+
+func serviceNameFromOutboundHTTPPath(path string) string {
+	path = strings.ToLower(strings.ReplaceAll(path, "\\", "/"))
+	for _, part := range strings.Split(path, "/") {
+		if strings.HasSuffix(part, "_http") {
+			return strings.TrimSuffix(part, "_http")
+		}
+	}
+	return ""
+}
+
+func serviceNameFromGRPCPath(path string) string {
+	path = strings.ToLower(strings.ReplaceAll(path, "\\", "/"))
+	for _, part := range strings.Split(path, "/") {
+		if strings.HasSuffix(part, "_grpc") {
+			return strings.TrimSuffix(part, "_grpc")
+		}
+	}
+	return ""
+}
+
+func firstNonEmptyString(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func stringAny(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }
 
 // MatchCommandExec reports whether a call site is a process execution, by a

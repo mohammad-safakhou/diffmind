@@ -6,9 +6,9 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 )
 
-// C5: the emitted operation_kind for db/cache ops must be the canonical
-// read/write fold (not a raw verb like delete/insert/saveAll), while the raw
-// verb is preserved in details["operation"].
+// C5: the emitted operation_kind for db/cache ops must be canonicalized while
+// preserving destructive delete as a first-class operation. The raw verb is
+// preserved in details["operation"].
 func TestEnrichEntityGroupingCanonicalOperationKind(t *testing.T) {
 	cases := []struct {
 		rawOp    string
@@ -16,7 +16,7 @@ func TestEnrichEntityGroupingCanonicalOperationKind(t *testing.T) {
 	}{
 		{"SELECT", "read"},
 		{"INSERT then UPDATE", "write"},
-		{"DELETE (bulk hard delete, no WHERE clause)", "write"},
+		{"DELETE (bulk hard delete, no WHERE clause)", "delete"},
 		{"saveAll", "write"},
 		{"findByCampaignIdInAndTargetDate", "read"},
 		{"UPDATE", "write"},

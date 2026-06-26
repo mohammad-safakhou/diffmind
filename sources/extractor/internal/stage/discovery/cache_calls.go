@@ -2,6 +2,9 @@ package discovery
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -24,6 +27,7 @@ var redisCacheOps = map[string]string{
 	"incr":      "write",
 	"decr":      "write",
 	"delete":    "evict",
+	"del":       "evict",
 	"unlink":    "evict",
 	"flushdb":   "evict",
 	"flushall":  "evict",
@@ -46,7 +50,7 @@ func DeterministicCacheOperations(idx *astpkg.ProjectIndex) []llmEntity {
 	var order []string
 	forEachCall(idx, func(cs astpkg.CallSite) {
 		fa := idx.Files[cs.File]
-		if fa == nil || fa.Language != "python" {
+		if fa == nil || (fa.Language != "python" && fa.Language != "go") {
 			return
 		}
 		if isLowSignalCacheArtifactPath(cs.File) {
@@ -76,6 +80,21 @@ func DeterministicCacheOperations(idx *astpkg.ProjectIndex) []llmEntity {
 		a.locations = append(a.locations, loc)
 		a.evidence = append(a.evidence, callEvidence(cs))
 	})
+	for _, e := range deterministicGoRedisSourceOperations(idx) {
+		op := stringAny(e.Details["operation"])
+		if op == "" {
+			continue
+		}
+		key := "redis|" + op
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		a := &agg{op: op, seenLoc: map[string]struct{}{}}
+		a.locations = append(a.locations, e.Locations...)
+		a.evidence = append(a.evidence, e.Evidence...)
+		seen[key] = a
+		order = append(order, key)
+	}
 	sort.Strings(order)
 	out := make([]llmEntity, 0, len(order))
 	for _, key := range order {
@@ -100,6 +119,72 @@ func DeterministicCacheOperations(idx *astpkg.ProjectIndex) []llmEntity {
 	return out
 }
 
+var goRedisCallRE = regexp.MustCompile(`\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?(?:redisClient|cacheRepo|cache)\s*\.\s*(Get|Set|Del|Delete|Exists|Expire)\s*\(`)
+
+func deterministicGoRedisSourceOperations(idx *astpkg.ProjectIndex) []llmEntity {
+	if idx == nil || idx.RepoRoot == "" {
+		return nil
+	}
+	var out []llmEntity
+	seen := map[string]struct{}{}
+	paths := make([]string, 0, len(idx.Files))
+	for p := range idx.Files {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		fa := idx.Files[path]
+		if fa == nil || fa.Language != "go" || isLowSignalCacheArtifactPath(path) {
+			continue
+		}
+		if !fileImportsRedis(fa) && !strings.Contains(strings.ToLower(path), "/cache") && !strings.Contains(strings.ToLower(path), "/redis") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(idx.RepoRoot, path))
+		if err != nil {
+			continue
+		}
+		src := string(b)
+		for _, m := range goRedisCallRE.FindAllStringSubmatchIndex(src, -1) {
+			method := src[m[2]:m[3]]
+			op, ok := redisCacheOps[strings.ToLower(method)]
+			if !ok {
+				continue
+			}
+			key := "redis|" + op
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			line := 1 + strings.Count(src[:m[0]], "\n")
+			loc := llmLocation{File: path, StartLine: line, EndLine: line}
+			out = append(out, llmEntity{
+				Type:       "cache_operation",
+				Name:       op + " redis",
+				Summary:    fmt.Sprintf("AST-derived Redis cache %s", op),
+				Confidence: 1.0,
+				Tags:       []string{"deterministic", "cache:redis", "go"},
+				Details: map[string]any{
+					"cache":         "redis",
+					"cache_type":    "redis",
+					"operation":     op,
+					"platform":      "redis",
+					"discovered_by": "ast_go_redis_source",
+				},
+				Locations: []llmLocation{loc},
+				Evidence: []llmEvidence{{
+					File:      loc.File,
+					StartLine: loc.StartLine,
+					EndLine:   loc.EndLine,
+					Snippet:   src[m[0]:m[1]],
+					Source:    "deterministic_ast",
+				}},
+			})
+		}
+	}
+	return out
+}
+
 func looksLikeRedisReceiver(receiver string, fa *astpkg.FileAST) bool {
 	r := strings.ToLower(strings.TrimSpace(receiver))
 	if r == "" {
@@ -119,7 +204,9 @@ func fileImportsRedis(fa *astpkg.FileAST) bool {
 		return false
 	}
 	for _, imp := range fa.Imports {
-		if strings.EqualFold(imp.Path, "redis") || strings.HasPrefix(strings.ToLower(imp.Path), "redis.") {
+		p := strings.ToLower(strings.Trim(imp.Path, `"`))
+		if p == "redis" || strings.HasPrefix(p, "redis.") ||
+			strings.Contains(p, "/redis") || strings.Contains(p, "go-redis") {
 			return true
 		}
 	}

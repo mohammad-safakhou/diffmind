@@ -143,7 +143,7 @@ func parseSQLStatement(sql string) (opKind, table string) {
 	case strings.HasPrefix(s, "update "):
 		return "write", tokenAfter("update ")
 	case strings.HasPrefix(s, "delete "):
-		return "write", tokenAfter("from ")
+		return "delete", tokenAfter("from ")
 	case strings.HasPrefix(s, "upsert ") || strings.HasPrefix(s, "merge "):
 		return "write", tokenAfter("into ")
 	}

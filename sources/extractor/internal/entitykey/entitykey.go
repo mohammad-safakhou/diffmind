@@ -149,7 +149,8 @@ func routeParameter(segment string) bool {
 		(strings.HasPrefix(segment, "<") && strings.HasSuffix(segment, ">"))
 }
 
-// NormalizeDBOperation folds common datastore verbs into read/write classes.
+// NormalizeDBOperation folds common datastore verbs into stable operation
+// classes while preserving destructive deletes as their own semantic class.
 func NormalizeDBOperation(operation string) string {
 	operation = strings.ToLower(strings.TrimSpace(operation))
 	switch {
@@ -157,9 +158,13 @@ func NormalizeDBOperation(operation string) string {
 		return ""
 	case hasAnyPrefix(operation, "read", "select", "find", "get", "list", "query", "search", "exists", "count", "scan", "load", "fetch"):
 		return "read"
-	case hasAnyPrefix(operation, "write", "insert", "update", "save", "upsert", "delete", "remove", "put", "merge", "persist", "store"):
+	case hasAnyPrefix(operation, "delete", "remove"):
+		return "delete"
+	case hasAnyPrefix(operation, "write", "insert", "update", "save", "upsert", "put", "merge", "persist", "store"):
 		return "write"
-	case containsAny(operation, "delete", "insert", "update", "upsert", "remove", "persist", "truncate", "merge"):
+	case containsAny(operation, "delete", "remove", "truncate"):
+		return "delete"
+	case containsAny(operation, "insert", "update", "upsert", "persist", "merge"):
 		return "write"
 	case containsAny(operation, "select", "findby", "fetch", "search", "exists", "query"):
 		return "read"
