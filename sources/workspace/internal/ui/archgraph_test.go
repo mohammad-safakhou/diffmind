@@ -198,6 +198,120 @@ aliases:
 	t.Fatalf("expected alias target to join known service, edges=%+v external=%+v", graph.Edges, graph.ExternalNodes)
 }
 
+func TestArchitectureGraphLayoutIsStableAndRanksSharedResourceFlow(t *testing.T) {
+	root := t.TempDir()
+	boostRun := filepath.Join(root, "boost")
+	syncRun := filepath.Join(root, "sync")
+	shapingRun := filepath.Join(root, "shaping")
+	writeDiffMind protocolRun(t, boostRun, `{
+  "schema": "diffmind.service.v1",
+  "service": {"id": "pricing-service", "name": "pricing-service"},
+  "objects": {
+    "db_queries": [{
+      "id": "dbq.write_traffic_info",
+      "kind": "db_query",
+      "name": "Write traffic-info",
+      "engine": "dynamodb",
+      "operation": "write",
+      "access": "write",
+      "target": {"database": "dynamodb", "tables": ["traffic-info"]},
+      "status": "confirmed",
+      "confidence": "high",
+      "origin": "deterministic"
+    }]
+  },
+  "flows": [],
+  "observations": [],
+  "evidence": []
+}`)
+	writeDiffMind protocolRun(t, syncRun, `{
+  "schema": "diffmind.service.v1",
+  "service": {"id": "sync-service", "name": "sync-service"},
+  "objects": {
+    "db_queries": [{
+      "id": "dbq.read_traffic_info",
+      "kind": "db_query",
+      "name": "Read traffic-info",
+      "engine": "dynamodb",
+      "operation": "read",
+      "access": "read",
+      "target": {"database": "dynamodb", "tables": ["traffic-info"]},
+      "status": "confirmed",
+      "confidence": "high",
+      "origin": "deterministic"
+    }],
+    "cache_operations": [{
+      "id": "cache.write_redis",
+      "kind": "cache_operation",
+      "name": "Write Redis",
+      "platform": "redis",
+      "operation": "write",
+      "target": {"cache": "redis"},
+      "status": "confirmed",
+      "confidence": "high",
+      "origin": "deterministic"
+    }]
+  },
+  "flows": [],
+  "observations": [],
+  "evidence": []
+}`)
+	writeDiffMind protocolRun(t, shapingRun, `{
+  "schema": "diffmind.service.v1",
+  "service": {"id": "gateway-service", "name": "gateway-service"},
+  "objects": {
+    "cache_operations": [{
+      "id": "cache.read_redis",
+      "kind": "cache_operation",
+      "name": "Read Redis",
+      "platform": "redis",
+      "operation": "read",
+      "target": {"cache": "redis"},
+      "status": "confirmed",
+      "confidence": "high",
+      "origin": "deterministic"
+    }]
+  },
+  "flows": [],
+  "observations": [],
+  "evidence": []
+}`)
+
+	runs := map[string]string{
+		"pricing-service":      boostRun,
+		"sync-service": syncRun,
+		"gateway-service":          shapingRun,
+	}
+	first := buildArchitectureGraph("run-1", runs)
+	second := buildArchitectureGraph("run-1", runs)
+	if first.Layout == nil || second.Layout == nil {
+		t.Fatal("expected persisted layout")
+	}
+	if len(first.Layout.Nodes) != len(second.Layout.Nodes) {
+		t.Fatalf("layout node count changed: %d/%d", len(first.Layout.Nodes), len(second.Layout.Nodes))
+	}
+	for i := range first.Layout.Nodes {
+		if first.Layout.Nodes[i] != second.Layout.Nodes[i] {
+			t.Fatalf("layout is not stable at %d: %+v != %+v", i, first.Layout.Nodes[i], second.Layout.Nodes[i])
+		}
+	}
+
+	ranks := map[string]int{}
+	for _, n := range first.Layout.Nodes {
+		ranks[n.ID] = n.Rank
+	}
+	assertBefore := func(a, b string) {
+		t.Helper()
+		if ranks[a] >= ranks[b] {
+			t.Fatalf("expected %s before %s, ranks=%v", a, b, ranks)
+		}
+	}
+	assertBefore("pricing-service", "db:dynamodb_traffic-info")
+	assertBefore("db:dynamodb_traffic-info", "sync-service")
+	assertBefore("sync-service", "db:redis_redis")
+	assertBefore("db:redis_redis", "gateway-service")
+}
+
 func writeDiffMind protocolRun(t *testing.T, runDir, body string) {
 	writeDiffMind protocolRunWithRepoPath(t, runDir, "", body)
 }

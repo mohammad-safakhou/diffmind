@@ -75,11 +75,13 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// Repos (G3).
 	mux.HandleFunc("GET /api/projects/{pid}/repos", s.handleListRepos)
 	mux.HandleFunc("POST /api/projects/{pid}/repos", s.handleCreateRepo)
+	mux.HandleFunc("POST /api/projects/{pid}/repo-imports", s.handleImportRepos)
 	mux.HandleFunc("GET /api/projects/{pid}/repos/{rid}", s.handleGetRepo)
 	mux.HandleFunc("PATCH /api/projects/{pid}/repos/{rid}", s.handlePatchRepo)
 	mux.HandleFunc("DELETE /api/projects/{pid}/repos/{rid}", s.handleDeleteRepo)
 	mux.HandleFunc("POST /api/projects/{pid}/repos/{rid}/sync", s.handleSyncRepo)
 	mux.HandleFunc("POST /api/projects/{pid}/repos/{rid}/diffmind-runs", s.handleStartDiffMindRepoRun)
+	mux.HandleFunc("POST /api/projects/{pid}/diffmind-runs/batch", s.handleStartDiffMindBatchRun)
 	mux.HandleFunc("GET /api/projects/{pid}/repos/{rid}/diffmind-configuration-yaml", s.handleGetDiffMindConfigurationYAML)
 	mux.HandleFunc("PUT /api/projects/{pid}/repos/{rid}/diffmind-configuration-yaml", s.handlePutDiffMindConfigurationYAML)
 	mux.HandleFunc("GET /api/projects/{pid}/repos/{rid}/diffmind-yaml", s.handleGetDiffMindConfigurationYAML)

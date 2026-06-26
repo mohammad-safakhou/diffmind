@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'preact/hooks'
 import { navigate } from '../lib/router.js'
-import { createRepo, createRun, deleteRepo, getDiffMindConfigurationYaml, getWorkspace, putDiffMindConfigurationYaml, startRepoDiffMind, syncRepo } from '../lib/api.js'
+import { createRepo, createRun, deleteRepo, getDiffMindConfigurationYaml, getWorkspace, importRepos, putDiffMindConfigurationYaml, startDiffMindBatch, startRepoDiffMind, syncRepo } from '../lib/api.js'
 import { Modal, ConfirmDialog } from '../components/Modal.jsx'
 import { GraphCanvas } from './GraphCanvas.jsx'
+import { GraphDetailBody } from './GraphDetails.jsx'
 import { StatusBadge } from './tabs/RunsTab.jsx'
 
 export function ProjectWorkspace({ pid }) {
@@ -14,6 +15,8 @@ export function ProjectWorkspace({ pid }) {
   const [pendingDiffMind, setPendingDiffMind] = useState({})
   const [pendingGraphRun, setPendingGraphRun] = useState(null)
   const [addOpen, setAddOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
+  const [batchOpen, setBatchOpen] = useState(false)
   const [yamlRepo, setYamlRepo] = useState(null)
   const [diffmindRepo, setDiffMindRepo] = useState(null)
   const [deleteTarget, setDeleteTarget] = useState(null)
@@ -113,6 +116,18 @@ export function ProjectWorkspace({ pid }) {
     setTimeout(refresh, 500)
   })
   const doDelete = async (repo) => runAction('delete:' + repo.id, async () => { await deleteRepo(pid, repo.id); setDeleteTarget(null); await refresh() })
+  const doImport = async (body) => runAction('import', async () => {
+    const res = await importRepos(pid, body)
+    setImportOpen(false)
+    setNotice(`Repository import processed ${res.count || 0} repositories.`)
+    await refresh()
+  })
+  const doBatchDiffMind = async (body) => runAction('batch-diffmind', async () => {
+    const res = await startDiffMindBatch(pid, body)
+    setBatchOpen(false)
+    setNotice(`Batch DiffMind started for ${res.count || 0} repositories with concurrency ${res.concurrency || body.concurrency || 4}.`)
+    setTimeout(refresh, 500)
+  })
   const runAction = async (key, fn) => {
     setBusy(key); setError('')
     try { await fn() } catch (e) { setError(e.message) }
@@ -129,7 +144,9 @@ export function ProjectWorkspace({ pid }) {
         </div>
         <div class="workspace-actions">
           <button class="btn ghost" onClick={refresh}>Refresh</button>
+          <button class="btn ghost" onClick={() => setImportOpen(true)}>Import org</button>
           <button class="btn ghost" onClick={() => setAddOpen(true)}>Add repo</button>
+          <button class="btn ghost" disabled={!repos.length || hasRunningDiffMind || busy === 'batch-diffmind'} onClick={() => setBatchOpen(true)}>{busy === 'batch-diffmind' ? 'Starting batch...' : 'Run DiffMind all'}</button>
           <button class="btn" disabled={busy === 'graph' || graphIsRunning} onClick={graphRun}>{graphIsRunning ? 'Building graph...' : busy === 'graph' ? 'Starting...' : 'Build graph'}</button>
         </div>
       </header>
@@ -185,6 +202,8 @@ export function ProjectWorkspace({ pid }) {
       </footer>
 
       {addOpen && <AddRepoModal pid={pid} onClose={() => setAddOpen(false)} onDone={() => { setAddOpen(false); refresh() }} />}
+      {importOpen && <ImportOrgModal busy={busy === 'import'} onClose={() => setImportOpen(false)} onImport={doImport} />}
+      {batchOpen && <BatchDiffMindModal repoCount={repos.length} busy={busy === 'batch-diffmind'} onClose={() => setBatchOpen(false)} onRun={doBatchDiffMind} />}
       {yamlRepo && <YamlModal pid={pid} repo={yamlRepo} onClose={() => setYamlRepo(null)} onSaved={() => { setYamlRepo(null); refresh() }} />}
       {diffmindRepo && <DiffMindRunModal repo={diffmindRepo} busy={busy === 'diffmind:' + diffmindRepo.id} onClose={() => setDiffMindRepo(null)} onRun={(options) => doDiffMind(diffmindRepo, options)} />}
       {deleteTarget && (
@@ -340,6 +359,14 @@ function Inspector({ selection, live, onSync, onDiffMind, onYaml, onDelete, busy
       </div>
     )
   }
+  if (['edge', 'group', 'fact', 'queue', 'db', 'scheduler'].includes(selection.kind)) {
+    return (
+      <div class="inspector">
+        <h2>{selection.data?.name || selection.id || selection.kind}</h2>
+        <GraphDetailBody sel={selection} />
+      </div>
+    )
+  }
   return (
     <div class="inspector">
       <h2>{selection.data?.name || selection.kind}</h2>
@@ -398,6 +425,59 @@ function AddRepoModal({ pid, onClose, onDone }) {
   )
 }
 
+function ImportOrgModal({ busy, onClose, onImport }) {
+  const [org, setOrg] = useState('')
+  const [apiBase, setAPIBase] = useState('')
+  const [include, setInclude] = useState('')
+  const [exclude, setExclude] = useState('')
+  const [team, setTeam] = useState('default')
+  const [limit, setLimit] = useState('')
+  const [clone, setClone] = useState(true)
+  const [dryRun, setDryRun] = useState(false)
+  const [error, setError] = useState('')
+  const submit = async () => {
+    setError('')
+    try {
+      await onImport({
+        provider: 'github',
+        org,
+        api_base: apiBase,
+        include,
+        exclude,
+        team,
+        limit: limit === '' ? 0 : Number(limit),
+        clone,
+        dry_run: dryRun,
+        concurrency: 4,
+      })
+    } catch (e) { setError(e.message) }
+  }
+  return (
+    <Modal title="Import GitHub organization" onClose={onClose} wide>
+      <div class="option-grid">
+        <TextField label="GitHub org" value={org} onInput={setOrg} placeholder="company" />
+        <TextField label="API base" value={apiBase} onInput={setAPIBase} placeholder="https://api.github.com" />
+        <TextField label="Team" value={team} onInput={setTeam} />
+      </div>
+      <div class="option-grid">
+        <TextField label="Include regex" value={include} onInput={setInclude} placeholder=".*-api$" />
+        <TextField label="Exclude regex" value={exclude} onInput={setExclude} placeholder="archive|template" />
+        <NumberField label="Limit" value={limit} onInput={setLimit} placeholder="0 = all" min="0" />
+      </div>
+      <div class="check-grid">
+        <Check label="Clone after import" checked={clone} onInput={setClone} />
+        <Check label="Dry run only" checked={dryRun} onInput={setDryRun} />
+      </div>
+      <p class="muted small">Uses <code>GITHUB_TOKEN</code> when set. Imported repos are added as service repositories.</p>
+      {error && <div class="banner error">{error}</div>}
+      <div class="actions">
+        <button class="btn" disabled={busy || !org.trim()} onClick={submit}>{busy ? 'Importing...' : dryRun ? 'Preview import' : 'Import repositories'}</button>
+        <button class="btn ghost" disabled={busy} onClick={onClose}>Cancel</button>
+      </div>
+    </Modal>
+  )
+}
+
 const defaultDiffMindOptions = {
   pipeline: 'deterministic',
   config_path: '',
@@ -427,6 +507,53 @@ const defaultDiffMindOptions = {
   liveness_poll_seconds: '',
   verbose: false,
   trace: false,
+}
+
+function BatchDiffMindModal({ repoCount, busy, onClose, onRun }) {
+  const [opts, setOpts] = useState({ ...defaultDiffMindOptions, pipeline: 'deterministic' })
+  const [concurrency, setConcurrency] = useState('4')
+  const [skipFresh, setSkipFresh] = useState(true)
+  const [error, setError] = useState('')
+  const set = (key, value) => setOpts((cur) => ({ ...cur, [key]: value }))
+  const payload = diffmindPayload(opts)
+  const run = async () => {
+    setError('')
+    try {
+      await onRun({
+        all: true,
+        skip_fresh: skipFresh,
+        concurrency: concurrency === '' ? 4 : Number(concurrency),
+        options: payload,
+      })
+    } catch (e) { setError(e.message) }
+  }
+  return (
+    <Modal title="Run DiffMind on all repositories" onClose={onClose} wide>
+      <div class="run-options-layout">
+        <section class="run-options-section">
+          <h3>Batch</h3>
+          <KV rows={[['Repositories', repoCount], ['Pipeline', 'deterministic']]} />
+          <NumberField label="Concurrency" value={concurrency} onInput={setConcurrency} min="1" max="16" />
+          <Check label="Skip fresh repositories" checked={skipFresh} onInput={setSkipFresh} />
+          <NumberField label="Workers per DiffMind run" value={opts.workers} onInput={(v) => set('workers', v)} />
+          <NumberField label="Min confidence" value={opts.min_confidence} onInput={(v) => set('min_confidence', v)} step="0.01" min="0" max="1" />
+          <div class="check-grid">
+            <Check label="Verbose" checked={opts.verbose} onInput={(v) => set('verbose', v)} />
+            <Check label="Trace" checked={opts.trace} onInput={(v) => set('trace', v)} />
+          </div>
+        </section>
+        <section class="run-options-section command-section">
+          <h3>Command Preview</h3>
+          <pre class="command-preview">{`diffmind run --repo <each selected repo> --pipeline deterministic\nbatch concurrency: ${concurrency || 4}`}</pre>
+        </section>
+      </div>
+      {error && <div class="banner error">{error}</div>}
+      <div class="actions">
+        <button class="btn" disabled={busy} onClick={run}>{busy ? 'Starting...' : 'Start batch'}</button>
+        <button class="btn ghost" disabled={busy} onClick={onClose}>Cancel</button>
+      </div>
+    </Modal>
+  )
 }
 
 function DiffMindRunModal({ repo, busy, onClose, onRun }) {

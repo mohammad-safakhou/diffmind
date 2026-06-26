@@ -511,8 +511,7 @@ export function GraphCanvas({ graph, onSelect }) {
     const edges = graph.edges || []
     const serviceNames = new Set(services.map((s) => s.name))
     const visibleResourceIDs = sharedResourceMeta(graph, serviceNames)
-    const inferredShared = sharedResourceFacts(graph)
-    const displayEdges = [...edges, ...inferredShared.edges]
+    const displayEdges = edges
     const serviceModels = new Map(services.map((s) => [s.name, buildServiceModel(s, edges)]))
 
     const top = new dagre.graphlib.Graph({ compound: false, multigraph: true })
@@ -526,16 +525,19 @@ export function GraphCanvas({ graph, onSelect }) {
       nodeInfo.set(svc.name, { type: 'service', data: svc, label: svc.name })
     })
     ;(graph.external_nodes || []).forEach((n) => addTopNode(top, nodeInfo, n.name, 'external', n, cleanLabel(n.name)))
-    ;(graph.queue_nodes || []).forEach((n) => { const id = `queue:${n.id}`; if (visibleResourceIDs.has(id)) addTopNode(top, nodeInfo, id, 'queue', { ...n, shared: visibleResourceIDs.get(id) }, cleanLabel(n.name)) })
-    ;(graph.database_nodes || []).forEach((n) => { const id = `db:${n.id}`; if (visibleResourceIDs.has(id)) addTopNode(top, nodeInfo, id, 'db', { ...n, shared: visibleResourceIDs.get(id) }, cleanLabel(n.name)) })
-    ;(graph.scheduler_nodes || []).forEach((n) => { const id = `sched:${n.id}`; if (visibleResourceIDs.has(id)) addTopNode(top, nodeInfo, id, 'scheduler', { ...n, shared: visibleResourceIDs.get(id) }, cleanLabel(n.name)) })
-    inferredShared.nodes.forEach((n) => addTopNode(top, nodeInfo, n.id, n.type, n, cleanLabel(n.name)))
-
+    ;(graph.queue_nodes || []).forEach((n) => { const id = `queue:${n.id}`; addTopNode(top, nodeInfo, id, 'queue', { ...n, shared: visibleResourceIDs.get(id) }, cleanLabel(n.name)) })
+    ;(graph.database_nodes || []).forEach((n) => { const id = `db:${n.id}`; addTopNode(top, nodeInfo, id, 'db', { ...n, shared: visibleResourceIDs.get(id) }, cleanLabel(n.name)) })
+    ;(graph.scheduler_nodes || []).forEach((n) => { const id = `sched:${n.id}`; addTopNode(top, nodeInfo, id, 'scheduler', { ...n, shared: visibleResourceIDs.get(id) }, cleanLabel(n.name)) })
     displayEdges.forEach((e, i) => {
       if (top.hasNode(e.from) && top.hasNode(e.to)) top.setEdge(e.from, e.to, { type: e.type, data: e }, `e${i}`)
     })
 
-    dagre.layout(top)
+    const persistedLayout = layoutPositionMap(graph)
+    if (hasCompleteLayout(top, persistedLayout)) {
+      applyPersistedLayout(top, persistedLayout)
+    } else {
+      dagre.layout(top)
+    }
 
     const previousLayoutKey = graphLayoutKeyRef.current
     const preserveUserView = userMovedRef.current && previousLayoutKey === layoutKey
@@ -650,7 +652,14 @@ function graphLayoutKey(graph) {
     ...(graph.database_nodes || []).map((n) => `db:${n.id || n.name}`),
     ...(graph.scheduler_nodes || []).map((n) => `sched:${n.id || n.name}`),
   ].sort()
-  return JSON.stringify({ run: graph.run_id || '', services, edges, resources })
+  return JSON.stringify({
+    run: graph.run_id || '',
+    layout: graph.layout?.algorithm || '',
+    seed: graph.layout?.seed || '',
+    services,
+    edges,
+    resources,
+  })
 }
 
 function graphRenderKey(graph) {
@@ -663,6 +672,35 @@ function graphRenderKey(graph) {
     s.repo_metrics?.languages?.[0]?.language || '',
   ]).sort()
   return JSON.stringify({ layout: graphLayoutKey(graph), services })
+}
+
+function layoutPositionMap(graph) {
+  const nodes = graph?.layout?.nodes || []
+  const out = new Map()
+  nodes.forEach((n) => {
+    if (n && n.id) out.set(n.id, n)
+  })
+  return out
+}
+
+function hasCompleteLayout(top, positions) {
+  if (!positions || positions.size === 0) return false
+  return top.nodes().every((id) => positions.has(id))
+}
+
+function applyPersistedLayout(top, positions) {
+  let maxX = 0
+  let maxY = 0
+  top.nodes().forEach((id) => {
+    const node = top.node(id)
+    const pos = positions.get(id)
+    if (!node || !pos) return
+    node.x = Number(pos.x) || 0
+    node.y = Number(pos.y) || 0
+    maxX = Math.max(maxX, node.x + node.width / 2 + 120)
+    maxY = Math.max(maxY, node.y + node.height / 2 + 120)
+  })
+  top.setGraph({ ...top.graph(), width: maxX || 1000, height: maxY || 700 })
 }
 
 function addTopNode(top, nodeInfo, id, type, data, label) {

@@ -20,12 +20,30 @@ import (
 // ArchGraph is the architecture graph for a single run.
 type ArchGraph struct {
 	RunID          string           `json:"run_id"`
+	Layout         *GraphLayout     `json:"layout,omitempty"`
 	Services       []*ServiceNode   `json:"services"`
 	ExternalNodes  []*ExternalNode  `json:"external_nodes"`
 	QueueNodes     []*QueueNode     `json:"queue_nodes"`
 	DatabaseNodes  []*DatabaseNode  `json:"database_nodes"`
 	SchedulerNodes []*SchedulerNode `json:"scheduler_nodes"`
 	Edges          []*GraphEdge     `json:"edges"`
+}
+
+type GraphLayout struct {
+	Algorithm string       `json:"algorithm"`
+	Seed      string       `json:"seed"`
+	Nodes     []LayoutNode `json:"nodes"`
+}
+
+type LayoutNode struct {
+	ID      string  `json:"id"`
+	X       float64 `json:"x"`
+	Y       float64 `json:"y"`
+	Width   float64 `json:"width"`
+	Height  float64 `json:"height"`
+	Rank    int     `json:"rank"`
+	Cluster string  `json:"cluster,omitempty"`
+	Role    string  `json:"role,omitempty"`
 }
 
 type SchedulerNode struct {
@@ -112,7 +130,8 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 	allCacheOps := map[string][]dbRef{}           // source svc -> caches
 
 	// Phase 1: Load all DiffMind data per service
-	for name, diffmindDir := range serviceRepoDirs {
+	for _, name := range sortedStringKeys(serviceRepoDirs) {
+		diffmindDir := serviceRepoDirs[name]
 		exposures, dependencies, connections := loadDiffMindData(diffmindDir)
 
 		svc := &ServiceNode{
@@ -247,7 +266,9 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 	dbMap := map[string]*DatabaseNode{}
 
 	// Databases
-	for svcName, dbs := range allDBs {
+	for _, svcName := range sortedStringKeys(allDBs) {
+		dbs := allDBs[svcName]
+		sortDBRefs(dbs)
 		for _, db := range dbs {
 			dbID := normalizeID(db.kind + "_" + db.name)
 			if _, ok := dbMap[dbID]; !ok {
@@ -262,7 +283,9 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 	}
 
 	// Caches
-	for svcName, ops := range allCacheOps {
+	for _, svcName := range sortedStringKeys(allCacheOps) {
+		ops := allCacheOps[svcName]
+		sortDBRefs(ops)
 		for _, op := range ops {
 			dbID := normalizeID(op.kind + "_" + op.name)
 			if _, ok := dbMap[dbID]; !ok {
@@ -277,7 +300,9 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 	}
 
 	// Queues - publish
-	for svcName, pubs := range allQueuePublish {
+	for _, svcName := range sortedStringKeys(allQueuePublish) {
+		pubs := allQueuePublish[svcName]
+		sortQueueRefs(pubs)
 		for _, q := range pubs {
 			qID := normalizeID(q.name)
 			if _, ok := queueMap[qID]; !ok {
@@ -291,7 +316,9 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 	}
 
 	// Queues - consume
-	for svcName, cons := range allQueueConsume {
+	for _, svcName := range sortedStringKeys(allQueueConsume) {
+		cons := allQueueConsume[svcName]
+		sortQueueRefs(cons)
 		for _, q := range cons {
 			qID := normalizeID(q.name)
 			if _, ok := queueMap[qID]; !ok {
@@ -305,7 +332,9 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 	}
 
 	// Outbound HTTP
-	for svcName, targets := range allOutboundHTTP {
+	for _, svcName := range sortedStringKeys(allOutboundHTTP) {
+		targets := allOutboundHTTP[svcName]
+		sortOutboundRefs(targets)
 		for _, t := range targets {
 			targetName := t.target
 			if canonical, ok := canonicalKnownService(knownServices, targetName); ok {
@@ -388,7 +417,10 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 		}
 	}
 
+	sortSchedulers(g.SchedulerNodes)
 	sortServices(g.Services)
+	sortEdges(g.Edges)
+	g.Layout = buildLayout(g)
 
 	return g
 }
@@ -848,4 +880,385 @@ func sortQueues(s []*QueueNode) {
 }
 func sortDatabases(s []*DatabaseNode) {
 	sort.Slice(s, func(i, j int) bool { return s[i].Name < s[j].Name })
+}
+func sortSchedulers(s []*SchedulerNode) {
+	sort.Slice(s, func(i, j int) bool {
+		if s[i].Service != s[j].Service {
+			return s[i].Service < s[j].Service
+		}
+		return s[i].Name < s[j].Name
+	})
+}
+
+func sortEdges(s []*GraphEdge) {
+	sort.Slice(s, func(i, j int) bool {
+		a, b := s[i], s[j]
+		if a.From != b.From {
+			return a.From < b.From
+		}
+		if a.To != b.To {
+			return a.To < b.To
+		}
+		if a.Type != b.Type {
+			return a.Type < b.Type
+		}
+		return a.Label < b.Label
+	})
+}
+
+func sortedStringKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortDBRefs(items []dbRef) {
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].kind != items[j].kind {
+			return items[i].kind < items[j].kind
+		}
+		if items[i].name != items[j].name {
+			return items[i].name < items[j].name
+		}
+		return items[i].operation < items[j].operation
+	})
+}
+
+func sortQueueRefs(items []queueRef) {
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].kind != items[j].kind {
+			return items[i].kind < items[j].kind
+		}
+		return items[i].name < items[j].name
+	})
+}
+
+func sortOutboundRefs(items []outboundRef) {
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].target != items[j].target {
+			return items[i].target < items[j].target
+		}
+		return items[i].endpoints.Name < items[j].endpoints.Name
+	})
+}
+
+type layoutConstraint struct {
+	from string
+	to   string
+}
+
+func buildLayout(g *ArchGraph) *GraphLayout {
+	nodeIDs := graphNodeIDs(g)
+	if len(nodeIDs) == 0 {
+		return &GraphLayout{Algorithm: "protocol-layered-v1", Seed: layoutSeed(g)}
+	}
+	nodeSet := make(map[string]struct{}, len(nodeIDs))
+	for _, id := range nodeIDs {
+		nodeSet[id] = struct{}{}
+	}
+	constraints := layoutConstraints(g, nodeSet)
+	ranks := layoutRanks(nodeIDs, constraints)
+	ordered := layoutOrder(nodeIDs, ranks, constraints)
+
+	const rankSep = 1180.0
+	const rowSep = 690.0
+	const x0 = 220.0
+	const y0 = 180.0
+	out := &GraphLayout{
+		Algorithm: "protocol-layered-v1",
+		Seed:      layoutSeed(g),
+		Nodes:     make([]LayoutNode, 0, len(nodeIDs)),
+	}
+	for rank := 0; rank < len(ordered); rank++ {
+		nodes := ordered[rank]
+		for row, id := range nodes {
+			w, h := layoutSize(id)
+			out.Nodes = append(out.Nodes, LayoutNode{
+				ID:      id,
+				X:       x0 + float64(rank)*rankSep,
+				Y:       y0 + float64(row)*rowSep,
+				Width:   w,
+				Height:  h,
+				Rank:    rank,
+				Cluster: layoutCluster(g, id),
+				Role:    layoutRole(id),
+			})
+		}
+	}
+	return out
+}
+
+func graphNodeIDs(g *ArchGraph) []string {
+	var ids []string
+	for _, n := range g.Services {
+		ids = append(ids, n.Name)
+	}
+	for _, n := range g.ExternalNodes {
+		ids = append(ids, n.Name)
+	}
+	for _, n := range g.QueueNodes {
+		ids = append(ids, "queue:"+n.ID)
+	}
+	for _, n := range g.DatabaseNodes {
+		ids = append(ids, "db:"+n.ID)
+	}
+	for _, n := range g.SchedulerNodes {
+		ids = append(ids, "sched:"+n.ID)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func layoutConstraints(g *ArchGraph, nodeSet map[string]struct{}) []layoutConstraint {
+	var out []layoutConstraint
+	adj := map[string]map[string]struct{}{}
+	add := func(from, to string) {
+		if from == "" || to == "" || from == to {
+			return
+		}
+		if _, ok := nodeSet[from]; !ok {
+			return
+		}
+		if _, ok := nodeSet[to]; !ok {
+			return
+		}
+		if reaches(adj, to, from) {
+			return
+		}
+		if adj[from] == nil {
+			adj[from] = map[string]struct{}{}
+		}
+		if _, exists := adj[from][to]; exists {
+			return
+		}
+		adj[from][to] = struct{}{}
+		out = append(out, layoutConstraint{from: from, to: to})
+	}
+	for _, e := range g.Edges {
+		switch e.Type {
+		case "queue_consume", "queue_publish", "http", "scheduler":
+			add(e.From, e.To)
+		case "database", "cache":
+			switch layoutOperationDirection(e.Label) {
+			case "read":
+				add(e.To, e.From)
+			case "write":
+				add(e.From, e.To)
+			default:
+				add(e.From, e.To)
+			}
+		default:
+			add(e.From, e.To)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].from != out[j].from {
+			return out[i].from < out[j].from
+		}
+		return out[i].to < out[j].to
+	})
+	return out
+}
+
+func reaches(adj map[string]map[string]struct{}, from, to string) bool {
+	if from == to {
+		return true
+	}
+	seen := map[string]bool{from: true}
+	stack := []string{from}
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for next := range adj[n] {
+			if next == to {
+				return true
+			}
+			if !seen[next] {
+				seen[next] = true
+				stack = append(stack, next)
+			}
+		}
+	}
+	return false
+}
+
+func layoutOperationDirection(label string) string {
+	lower := strings.ToLower(label)
+	switch {
+	case strings.Contains(lower, "insert"),
+		strings.Contains(lower, "create"),
+		strings.Contains(lower, "write"),
+		strings.Contains(lower, "update"),
+		strings.Contains(lower, "delete"),
+		strings.Contains(lower, "upsert"),
+		strings.Contains(lower, "evict"),
+		strings.Contains(lower, "publish"):
+		return "write"
+	case strings.Contains(lower, "read"),
+		strings.Contains(lower, "select"),
+		strings.Contains(lower, "query"),
+		strings.Contains(lower, "scan"),
+		strings.Contains(lower, "get"),
+		strings.Contains(lower, "find"),
+		strings.Contains(lower, "load"):
+		return "read"
+	default:
+		return ""
+	}
+}
+
+func layoutRanks(nodeIDs []string, constraints []layoutConstraint) map[string]int {
+	rank := make(map[string]int, len(nodeIDs))
+	for _, id := range nodeIDs {
+		rank[id] = 0
+	}
+	for i := 0; i < len(nodeIDs); i++ {
+		changed := false
+		for _, c := range constraints {
+			next := rank[c.from] + 1
+			if rank[c.to] < next {
+				rank[c.to] = next
+				changed = true
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+	return rank
+}
+
+func layoutOrder(nodeIDs []string, ranks map[string]int, constraints []layoutConstraint) [][]string {
+	maxRank := 0
+	for _, r := range ranks {
+		if r > maxRank {
+			maxRank = r
+		}
+	}
+	byRank := make([][]string, maxRank+1)
+	for _, id := range nodeIDs {
+		r := ranks[id]
+		byRank[r] = append(byRank[r], id)
+	}
+	for i := range byRank {
+		sort.Strings(byRank[i])
+	}
+
+	position := func() map[string]int {
+		pos := map[string]int{}
+		for _, nodes := range byRank {
+			for i, id := range nodes {
+				pos[id] = i
+			}
+		}
+		return pos
+	}
+	for pass := 0; pass < 4; pass++ {
+		pos := position()
+		for r := 1; r < len(byRank); r++ {
+			sortByBarycenter(byRank[r], constraints, pos, true)
+		}
+		pos = position()
+		for r := len(byRank) - 2; r >= 0; r-- {
+			sortByBarycenter(byRank[r], constraints, pos, false)
+		}
+	}
+	return byRank
+}
+
+func sortByBarycenter(nodes []string, constraints []layoutConstraint, pos map[string]int, useIncoming bool) {
+	if len(nodes) < 2 {
+		return
+	}
+	score := map[string]float64{}
+	for _, id := range nodes {
+		var total float64
+		var count float64
+		for _, c := range constraints {
+			var other string
+			if useIncoming && c.to == id {
+				other = c.from
+			}
+			if !useIncoming && c.from == id {
+				other = c.to
+			}
+			if other == "" {
+				continue
+			}
+			if p, ok := pos[other]; ok {
+				total += float64(p)
+				count++
+			}
+		}
+		if count == 0 {
+			score[id] = float64(pos[id])
+		} else {
+			score[id] = total / count
+		}
+	}
+	sort.SliceStable(nodes, func(i, j int) bool {
+		if score[nodes[i]] == score[nodes[j]] {
+			return nodes[i] < nodes[j]
+		}
+		return score[nodes[i]] < score[nodes[j]]
+	})
+}
+
+func layoutSize(id string) (float64, float64) {
+	switch {
+	case strings.HasPrefix(id, "db:"), strings.HasPrefix(id, "queue:"):
+		return 280, 120
+	case strings.HasPrefix(id, "sched:"):
+		return 220, 90
+	default:
+		return 920, 520
+	}
+}
+
+func layoutCluster(g *ArchGraph, id string) string {
+	for _, svc := range g.Services {
+		if svc.Name == id {
+			return firstNonEmpty(svc.Team, "default")
+		}
+	}
+	return layoutRole(id)
+}
+
+func layoutRole(id string) string {
+	switch {
+	case strings.HasPrefix(id, "db:"):
+		return "resource.database"
+	case strings.HasPrefix(id, "queue:"):
+		return "resource.queue"
+	case strings.HasPrefix(id, "sched:"):
+		return "activation.scheduler"
+	default:
+		return "service"
+	}
+}
+
+func layoutSeed(g *ArchGraph) string {
+	parts := []string{g.RunID}
+	for _, n := range g.Services {
+		parts = append(parts, "svc:"+n.Name)
+	}
+	for _, n := range g.ExternalNodes {
+		parts = append(parts, "ext:"+n.Name)
+	}
+	for _, n := range g.QueueNodes {
+		parts = append(parts, "queue:"+n.ID)
+	}
+	for _, n := range g.DatabaseNodes {
+		parts = append(parts, "db:"+n.ID)
+	}
+	for _, n := range g.SchedulerNodes {
+		parts = append(parts, "sched:"+n.ID)
+	}
+	for _, e := range g.Edges {
+		parts = append(parts, e.From+">"+e.To+":"+e.Type+":"+e.Label)
+	}
+	return strings.Join(parts, "|")
 }

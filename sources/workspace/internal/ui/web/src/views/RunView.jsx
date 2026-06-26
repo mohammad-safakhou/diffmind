@@ -3,6 +3,7 @@ import { getRun, getRunArchGraph, cancelRun, runEventsURL } from '../lib/api.js'
 import { navigate } from '../lib/router.js'
 import { StatusBadge } from './tabs/RunsTab.jsx'
 import { GraphCanvas } from './GraphCanvas.jsx'
+import { GraphDetailBody, graphDetailTitle } from './GraphDetails.jsx'
 
 // RunView shows a single graph run full-screen: the architecture graph fills the
 // viewport, live progress events live in a collapsible drawer, and clicking a
@@ -85,8 +86,8 @@ export function RunView({ pid, rid }) {
 
         {sel && (
           <aside class="drawer drawer-right">
-            <div class="drawer-head"><h3>{detailTitle(sel)}</h3><button class="btn ghost tiny" onClick={() => setSel(null)}>×</button></div>
-            <DetailBody sel={sel} />
+            <div class="drawer-head"><h3>{graphDetailTitle(sel)}</h3><button class="btn ghost tiny" onClick={() => setSel(null)}>×</button></div>
+            <GraphDetailBody sel={sel} />
           </aside>
         )}
       </div>
