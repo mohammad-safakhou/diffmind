@@ -439,6 +439,45 @@ textarea { resize: vertical; }
   font-size: 11px;
   font-weight: 700;
 }
+.service-compact .compact-service-card {
+  fill: #111b2e;
+  stroke: #2e70d6;
+  stroke-width: 1.7;
+  filter: drop-shadow(0 14px 24px rgba(0, 0, 0, 0.32));
+}
+.service-compact:hover .compact-service-card {
+  stroke: #5aa2ff;
+}
+.service-compact.selected .compact-service-card {
+  stroke: #80b7ff;
+  stroke-width: 2.6;
+  filter: drop-shadow(0 0 18px rgba(79, 140, 255, 0.34));
+}
+.compact-service-name {
+  fill: #fff;
+  font-size: 16px;
+  font-weight: 780;
+}
+.compact-service-subtitle {
+  fill: #9aa6c0;
+  font-size: 11px;
+  font-weight: 560;
+}
+.compact-service-counts {
+  fill: #dbeafe;
+  font-size: 11px;
+  font-weight: 760;
+}
+.compact-service-badge {
+  fill: rgba(7, 11, 18, 0.92);
+  stroke: rgba(154, 166, 192, 0.22);
+  stroke-width: 1;
+}
+.compact-service-badge-text {
+  fill: #cbd5e1;
+  font-size: 9px;
+  font-weight: 820;
+}
 .service-port,
 .group-port {
   stroke: var(--bg);

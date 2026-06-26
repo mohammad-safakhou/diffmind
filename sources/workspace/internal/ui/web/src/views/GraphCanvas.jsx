@@ -32,6 +32,8 @@ const HULL_MIN_W = 390
 const HULL_H = 156
 const CHIP_H = 23
 const CHIP_ROW_GAP = 7
+const COMPACT_SERVICE_W = 300
+const COMPACT_SERVICE_H = 116
 
 function cleanLabel(s) {
   if (!s) return ''
@@ -512,16 +514,13 @@ export function GraphCanvas({ graph, onSelect }) {
     const serviceNames = new Set(services.map((s) => s.name))
     const visibleResourceIDs = sharedResourceMeta(graph, serviceNames)
     const displayEdges = edges
-    const serviceModels = new Map(services.map((s) => [s.name, buildServiceModel(s, edges)]))
-
     const top = new dagre.graphlib.Graph({ compound: false, multigraph: true })
     top.setGraph({ rankdir: 'LR', nodesep: 100, ranksep: 190, edgesep: 45, marginx: 90, marginy: 90 })
     top.setDefaultEdgeLabel(() => ({}))
 
     const nodeInfo = new Map()
     services.forEach((svc) => {
-      const model = serviceModels.get(svc.name)
-      top.setNode(svc.name, { width: model.width, height: model.height, type: 'service', data: svc, model })
+      top.setNode(svc.name, { width: COMPACT_SERVICE_W, height: COMPACT_SERVICE_H, type: 'service', data: svc, label: svc.name })
       nodeInfo.set(svc.name, { type: 'service', data: svc, label: svc.name })
     })
     ;(graph.external_nodes || []).forEach((n) => addTopNode(top, nodeInfo, n.name, 'external', n, cleanLabel(n.name)))
@@ -561,13 +560,14 @@ export function GraphCanvas({ graph, onSelect }) {
     top.nodes().forEach((id) => topPositions.set(id, top.node(id)))
 
     const servicePorts = new Map()
-    serviceModels.forEach((model, name) => {
+    services.forEach((svc) => {
+      const name = svc.name
       const n = top.node(name)
-      if (n) servicePorts.set(name, computeServicePorts(model, n.x, n.y))
+      if (n) servicePorts.set(name, computeCompactServicePorts(n.x, n.y, n.width, n.height))
     })
 
     const frameGroup = rootG.append('g').attr('class', 'team-frames')
-    drawTeamFrames(frameGroup, services, serviceModels, topPositions)
+    drawTeamFrames(frameGroup, services, topPositions)
 
     const edgeGroup = rootG.append('g').attr('class', 'instance-edges')
     visualEdges(displayEdges).forEach((edge) => {
@@ -591,7 +591,7 @@ export function GraphCanvas({ graph, onSelect }) {
       const n = top.node(id)
       if (!n) return
       if (n.type === 'service') {
-        drawServiceNode(nodeGroup, n.model, n.x, n.y, onSelect, selectThing)
+        drawCompactServiceNode(nodeGroup, n, selectThing)
       } else {
         drawResourceNode(nodeGroup, id, n, onSelect, selectThing)
       }
@@ -685,7 +685,14 @@ function layoutPositionMap(graph) {
 
 function hasCompleteLayout(top, positions) {
   if (!positions || positions.size === 0) return false
-  return top.nodes().every((id) => positions.has(id))
+  return top.nodes().every((id) => {
+    const node = top.node(id)
+    const pos = positions.get(id)
+    if (!node || !pos) return false
+    const staleWidth = Math.abs((Number(pos.width) || node.width) - node.width) > Math.max(80, node.width * 0.6)
+    const staleHeight = Math.abs((Number(pos.height) || node.height) - node.height) > Math.max(60, node.height * 0.6)
+    return !staleWidth && !staleHeight
+  })
 }
 
 function applyPersistedLayout(top, positions) {
@@ -726,6 +733,16 @@ function computeServicePorts(model, cx, cy) {
   return ports
 }
 
+function computeCompactServicePorts(cx, cy, width, height) {
+  return {
+    hullIn: { x: cx - width / 2, y: cy },
+    hullOut: { x: cx + width / 2, y: cy },
+    hullTop: { x: cx, y: cy - height / 2 },
+    groups: {},
+    items: [],
+  }
+}
+
 function assignGroupPorts(ports, group, cx, cy, side) {
   const portX = side === 'exposure' ? cx + group.width / 2 : side === 'dependency' ? cx - group.width / 2 : cx
   const portY = side === 'objective' ? cy + group.height / 2 : cy
@@ -745,6 +762,65 @@ function serviceAnchor(serviceName, edge, role, servicePorts) {
   const groupKey = groupForEdge(edge, role)
   if (ports.groups[groupKey]) return ports.groups[groupKey]
   return role === 'source' ? ports.hullOut : ports.hullIn
+}
+
+function drawCompactServiceNode(parent, n, selectThing) {
+  const service = n.data || {}
+  const x = n.x - n.width / 2
+  const y = n.y - n.height / 2
+  const g = parent.append('g')
+    .attr('class', 'service-system service-compact')
+    .attr('data-select-id', service.name)
+    .on('click', (ev) => {
+      ev.stopPropagation()
+      selectThing({ kind: 'service', data: service, id: service.name })
+    })
+
+  g.append('rect')
+    .attr('class', 'compact-service-card')
+    .attr('x', x)
+    .attr('y', y)
+    .attr('width', n.width)
+    .attr('height', n.height)
+    .attr('rx', 12)
+    .append('title').text(`${service.name} service. Select to inspect endpoints, dependencies, evidence, and flows.`)
+
+  drawText(g, shortLabel(service.name, 31), n.x, y + 32, 'compact-service-name')
+  drawText(g, serviceCompactSubtitle(service), n.x, y + 56, 'compact-service-subtitle')
+  drawText(g, serviceCompactCounts(service), n.x, y + 83, 'compact-service-counts')
+
+  const badges = compactServiceBadges(service)
+  const totalW = badges.reduce((sum, b) => sum + Math.max(48, b.length * 7 + 20), 0) + Math.max(0, badges.length - 1) * 6
+  let bx = n.x - totalW / 2
+  badges.forEach((badge) => {
+    const bw = Math.max(48, badge.length * 7 + 20)
+    g.append('rect').attr('class', 'compact-service-badge').attr('x', bx).attr('y', y + 94).attr('width', bw).attr('height', 18).attr('rx', 9)
+    drawText(g, shortLabel(badge, 18), bx + bw / 2, y + 107, 'compact-service-badge-text')
+    bx += bw + 6
+  })
+
+  g.append('circle').attr('class', 'service-port exposure-port').attr('cx', x).attr('cy', n.y).attr('r', 8)
+  g.append('circle').attr('class', 'service-port dependency-port').attr('cx', x + n.width).attr('cy', n.y).attr('r', 8)
+  return g
+}
+
+function serviceCompactSubtitle(service) {
+  const metrics = service.repo_metrics || {}
+  const lang = metrics.languages && metrics.languages[0] ? metrics.languages[0].language : ''
+  return [service.team || 'default', lang, service.diffmind_freshness || ''].filter(Boolean).join(' · ')
+}
+
+function serviceCompactCounts(service) {
+  const routes = (service.http_routes || []).length
+  const deps = (service.dependencies || []).length
+  const traces = (service.connections || []).length
+  return `${routes} routes · ${deps} deps · ${traces} traces`
+}
+
+function compactServiceBadges(service) {
+  const metrics = service.repo_metrics || {}
+  const loc = metrics.total_loc ? `${Math.round(metrics.total_loc / 100) / 10}k LOC` : ''
+  return [service.domain, service.criticality, loc].filter(Boolean).slice(0, 3)
 }
 
 function drawServiceNode(parent, model, cx, cy, onSelect, selectThing) {
@@ -837,18 +913,19 @@ function drawServiceBadges(g, service, cx, y) {
   })
 }
 
-function drawTeamFrames(parent, services, serviceModels, topPositions) {
+function drawTeamFrames(parent, services, topPositions) {
   const teams = new Map()
   services.forEach((svc) => {
     const pos = topPositions.get(svc.name)
-    const model = serviceModels.get(svc.name)
-    if (!pos || !model) return
+    if (!pos) return
     const team = svc.team || 'default'
     const item = teams.get(team) || { name: team, minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity, count: 0 }
-    item.minX = Math.min(item.minX, pos.x - model.width / 2 - 54)
-    item.maxX = Math.max(item.maxX, pos.x + model.width / 2 + 54)
-    item.minY = Math.min(item.minY, pos.y - model.height / 2 - 60)
-    item.maxY = Math.max(item.maxY, pos.y + model.height / 2 + 60)
+    const w = pos.width || COMPACT_SERVICE_W
+    const h = pos.height || COMPACT_SERVICE_H
+    item.minX = Math.min(item.minX, pos.x - w / 2 - 54)
+    item.maxX = Math.max(item.maxX, pos.x + w / 2 + 54)
+    item.minY = Math.min(item.minY, pos.y - h / 2 - 60)
+    item.maxY = Math.max(item.maxY, pos.y + h / 2 + 60)
     item.count += 1
     teams.set(team, item)
   })

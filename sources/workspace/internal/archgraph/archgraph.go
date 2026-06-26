@@ -963,10 +963,10 @@ func buildLayout(g *ArchGraph) *GraphLayout {
 	ranks := layoutRanks(nodeIDs, constraints)
 	ordered := layoutOrder(nodeIDs, ranks, constraints)
 
-	const rankSep = 1180.0
-	const rowSep = 690.0
-	const x0 = 220.0
-	const y0 = 180.0
+	const rankSep = 460.0
+	const rowSep = 170.0
+	const x0 = 190.0
+	const y0 = 130.0
 	out := &GraphLayout{
 		Algorithm: "protocol-layered-v1",
 		Seed:      layoutSeed(g),
@@ -975,7 +975,7 @@ func buildLayout(g *ArchGraph) *GraphLayout {
 	for rank := 0; rank < len(ordered); rank++ {
 		nodes := ordered[rank]
 		for row, id := range nodes {
-			w, h := layoutSize(id)
+			w, h := layoutSize(g, id)
 			out.Nodes = append(out.Nodes, LayoutNode{
 				ID:      id,
 				X:       x0 + float64(rank)*rankSep,
@@ -1207,15 +1207,26 @@ func sortByBarycenter(nodes []string, constraints []layoutConstraint, pos map[st
 	})
 }
 
-func layoutSize(id string) (float64, float64) {
+func layoutSize(g *ArchGraph, id string) (float64, float64) {
 	switch {
 	case strings.HasPrefix(id, "db:"), strings.HasPrefix(id, "queue:"):
-		return 280, 120
+		return 220, 88
 	case strings.HasPrefix(id, "sched:"):
-		return 220, 90
+		return 190, 72
+	case isServiceNode(g, id):
+		return 300, 116
 	default:
-		return 920, 520
+		return 220, 86
 	}
+}
+
+func isServiceNode(g *ArchGraph, id string) bool {
+	for _, svc := range g.Services {
+		if svc.Name == id {
+			return true
+		}
+	}
+	return false
 }
 
 func layoutCluster(g *ArchGraph, id string) string {

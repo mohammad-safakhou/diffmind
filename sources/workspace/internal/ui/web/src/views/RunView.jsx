@@ -128,11 +128,11 @@ function Legend() {
   return (
     <div class="legend-box">
       <div class="legend-title">Legend</div>
-      <div class="legend-row"><span class="legend-swatch" style="background:#0d1424;border:1.5px solid #4f8cff;border-radius:4px"></span>Service island</div>
-      <div class="legend-row"><span class="legend-swatch" style="background:#e9f7f5;border:1.5px solid #1d8b83;border-radius:8px"></span>Exposure group</div>
-      <div class="legend-row"><span class="legend-swatch" style="background:#fff2e3;border:1.5px solid #b8671e;border-radius:8px"></span>Dependency group</div>
-      <div class="legend-row"><span class="legend-swatch" style="background:#eef3ff;border:1.5px solid #5372c8;border-radius:8px"></span>Objective metadata</div>
-      <div class="legend-row"><span class="legend-swatch" style="background:#f5f7fa;border:1.5px solid #8c98a4;border-radius:8px"></span>External/resource</div>
+      <div class="legend-row"><span class="legend-swatch" style="background:#111b2e;border:1.5px solid #4f8cff;border-radius:5px"></span>Service</div>
+      <div class="legend-row"><span class="legend-swatch" style="background:#16141e;border:1.5px solid #9b7cf9;border-radius:999px"></span>External service</div>
+      <div class="legend-row"><span class="legend-swatch" style="background:#0e1a16;border:1.5px solid #22c997;border-radius:999px"></span>Queue/topic</div>
+      <div class="legend-row"><span class="legend-swatch" style="background:#1a1510;border:1.5px solid #f5943a;border-radius:999px"></span>Database/cache</div>
+      <div class="legend-row"><span class="legend-swatch" style="background:#151118;border:1.5px solid #f0c040;border-radius:999px"></span>Scheduler</div>
       <div class="legend-row" style="margin-top:4px"><span class="legend-line" style="background:#3b9eff"></span>HTTP</div>
       <div class="legend-row"><span class="legend-line" style="background:#22c997"></span>Queue</div>
       <div class="legend-row"><span class="legend-line" style="background:#f5943a"></span>Database</div>
