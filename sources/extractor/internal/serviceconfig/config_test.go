@@ -19,6 +19,7 @@ func TestLoadMissingReturnsEmptyConfig(t *testing.T) {
 func TestLoadConfiguration(t *testing.T) {
 	dir := t.TempDir()
 	body := []byte(`
+schema: diffmind.config.v1
 service:
   id: gateway-service
   team: cfp
@@ -41,7 +42,7 @@ resource_patterns:
     resource_ref: traffic-info-redis
     config_key: DE_REDIS_URL
 detectors:
-  disabled: ["llm"]
+  disabled: ["java.http.spring"]
 patterns:
   - id: example.cronjob
     kind: activation
@@ -63,5 +64,48 @@ patterns:
 	}
 	if len(cfg.ResourcePatterns) != 1 || cfg.ResourcePatterns[0].Platform != "redis" {
 		t.Fatalf("unexpected config: %+v", cfg)
+	}
+}
+
+func TestLoadRejectsUnsupportedSchema(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte(`schema: diffmind.config.v2`)
+	if err := os.WriteFile(filepath.Join(dir, FileName), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir); err == nil {
+		t.Fatal("expected unsupported schema error")
+	}
+}
+
+func TestLoadRejectsUnknownDetector(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte(`
+schema: diffmind.config.v1
+detectors:
+  enabled: ["java.http.unknown"]
+`)
+	if err := os.WriteFile(filepath.Join(dir, FileName), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir); err == nil {
+		t.Fatal("expected unknown detector error")
+	}
+}
+
+func TestLoadRejectsBadCustomPatternRegex(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte(`
+schema: diffmind.config.v1
+patterns:
+  - id: company.route
+    kind: route
+    regex: "["
+`)
+	if err := os.WriteFile(filepath.Join(dir, FileName), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir); err == nil {
+		t.Fatal("expected bad regex error")
 	}
 }

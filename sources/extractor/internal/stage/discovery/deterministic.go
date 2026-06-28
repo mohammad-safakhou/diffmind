@@ -13,10 +13,10 @@ import (
 )
 
 type (
-	llmEntity       = extraction.Candidate
-	llmLocation     = extraction.Location
-	llmEvidence     = extraction.Evidence
-	discoveryResult = extraction.DiscoveryResult
+	candidate         = extraction.Candidate
+	candidateLocation = extraction.Location
+	candidateEvidence = extraction.Evidence
+	discoveryResult   = extraction.DiscoveryResult
 )
 
 type DeterministicRunner struct{}
@@ -129,7 +129,7 @@ func (DeterministicRunner) Run(input DeterministicInput) DeterministicOutput {
 		if input.PathMapper != nil {
 			input.PathMapper.ApplyToEntities(items)
 		}
-		extraction.SortLLMEntities(items)
+		extraction.SortCandidates(items)
 		total += len(items)
 		results = append(results, extraction.DiscoveryResult{Objective: obj, Items: items})
 	}
@@ -229,13 +229,13 @@ func StampInferredDBPlatform(idx *astpkg.ProjectIndex, deps []model.Dependency) 
 	}
 }
 
-func DeterministicDBOperations(idx *astpkg.ProjectIndex) []llmEntity {
+func DeterministicDBOperations(idx *astpkg.ProjectIndex) []candidate {
 	if idx == nil || len(idx.CallGraph) == 0 {
 		return nil
 	}
 	type agg struct {
 		table, opKind string
-		loc           llmLocation
+		loc           candidateLocation
 		owner         string
 		hits          int
 	}
@@ -271,7 +271,7 @@ func DeterministicDBOperations(idx *astpkg.ProjectIndex) []llmEntity {
 				table:  table,
 				opKind: opKind,
 				owner:  owner,
-				loc:    llmLocation{File: cs.File, StartLine: int(cs.Range.StartLine) + 1, EndLine: int(cs.Range.EndLine) + 1},
+				loc:    candidateLocation{File: cs.File, StartLine: int(cs.Range.StartLine) + 1, EndLine: int(cs.Range.EndLine) + 1},
 			}
 			seen[key] = a
 			order = append(order, key)
@@ -295,7 +295,7 @@ func DeterministicDBOperations(idx *astpkg.ProjectIndex) []llmEntity {
 		}
 	}
 
-	out := make([]llmEntity, 0, len(order))
+	out := make([]candidate, 0, len(order))
 	for _, key := range order {
 		a := seen[key]
 		loc := a.loc
@@ -303,7 +303,7 @@ func DeterministicDBOperations(idx *astpkg.ProjectIndex) []llmEntity {
 			continue
 		}
 		name := a.opKind + " " + a.table
-		out = append(out, llmEntity{
+		out = append(out, candidate{
 			Type:       "db_operation",
 			Name:       name,
 			Summary:    fmt.Sprintf("AST-derived %s on %s (via %s)", a.opKind, a.table, a.owner),
@@ -315,8 +315,8 @@ func DeterministicDBOperations(idx *astpkg.ProjectIndex) []llmEntity {
 				"repository":    a.owner,
 				"discovered_by": "ast_repository_call",
 			},
-			Locations: []llmLocation{loc},
-			Evidence: []llmEvidence{{
+			Locations: []candidateLocation{loc},
+			Evidence: []candidateEvidence{{
 				File:      loc.File,
 				StartLine: loc.StartLine,
 				EndLine:   loc.EndLine,
@@ -382,18 +382,18 @@ func objectiveForBinding(objs map[string]objectives.Objective, b astpkg.Framewor
 	}
 }
 
-func EntityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objective, b astpkg.FrameworkBinding) (llmEntity, bool) {
+func EntityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objective, b astpkg.FrameworkBinding) (candidate, bool) {
 	file := strings.TrimSpace(b.File)
 	if file == "" {
-		return llmEntity{}, false
+		return candidate{}, false
 	}
 	start := int(b.Range.StartLine) + 1
 	end := int(b.Range.EndLine) + 1
 	if end < start {
 		end = start
 	}
-	loc := llmLocation{File: file, StartLine: start, EndLine: end}
-	ev := llmEvidence{
+	loc := candidateLocation{File: file, StartLine: start, EndLine: end}
+	ev := candidateEvidence{
 		File:      file,
 		StartLine: start,
 		EndLine:   end,
@@ -404,7 +404,7 @@ func EntityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objecti
 	handler := strings.TrimSpace(b.Symbol)
 	trigger := strings.TrimSpace(b.Trigger)
 
-	e := llmEntity{
+	e := candidate{
 		Type:       obj.Type,
 		Confidence: 1.0,
 		Tags:       tags,
@@ -414,15 +414,15 @@ func EntityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objecti
 			"direction": b.Direction,
 			"reason":    b.ConfidenceReason,
 		},
-		Locations: []llmLocation{loc},
-		Evidence:  []llmEvidence{ev},
+		Locations: []candidateLocation{loc},
+		Evidence:  []candidateEvidence{ev},
 	}
 
 	switch obj.Type {
 	case "http_route":
 		method, path := parseHTTPTrigger(trigger)
 		if method == "" || path == "" {
-			return llmEntity{}, false
+			return candidate{}, false
 		}
 		e.Name = strings.TrimSpace(method + " " + path)
 		e.Summary = fmt.Sprintf("%s HTTP route detected from framework binding", displayFramework(b.Framework))
@@ -431,7 +431,7 @@ func EntityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objecti
 	case "outbound_http":
 		method, path := parseHTTPTrigger(trigger)
 		if method == "" || path == "" {
-			return llmEntity{}, false
+			return candidate{}, false
 		}
 		e.Name = strings.TrimSpace(method + " " + path)
 		e.Summary = fmt.Sprintf("%s outbound HTTP client detected from framework binding", displayFramework(b.Framework))
@@ -451,7 +451,7 @@ func EntityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objecti
 	case "rpc_endpoint":
 		protocol, service, method := parseRPCTrigger(trigger)
 		if protocol == "" || service == "" {
-			return llmEntity{}, false
+			return candidate{}, false
 		}
 		e.Name = service + "/" + method
 		e.Summary = fmt.Sprintf("%s RPC endpoint detected from framework binding", displayFramework(b.Framework))
@@ -465,7 +465,7 @@ func EntityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objecti
 		// (e.g. catalogue-target-response-sqs) rather than the raw placeholder.
 		queue = ResolveResourceName(idx, queue)
 		if queue == "" {
-			return llmEntity{}, false
+			return candidate{}, false
 		}
 		e.Name = queue
 		e.Summary = fmt.Sprintf("%s queue consumer detected from framework binding", displayFramework(b.Framework))
@@ -474,7 +474,7 @@ func EntityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objecti
 	case "scheduled_job":
 		schedule := parseScheduleTrigger(trigger)
 		if schedule == "" {
-			return llmEntity{}, false
+			return candidate{}, false
 		}
 		e.Name = schedule
 		if handler != "" {
@@ -489,14 +489,14 @@ func EntityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objecti
 			cache = lastIdentOf(handler)
 		}
 		if cache == "" || op == "" {
-			return llmEntity{}, false
+			return candidate{}, false
 		}
 		e.Name = op + " " + cache
 		e.Summary = fmt.Sprintf("%s cache operation detected from framework binding", displayFramework(b.Framework))
 		e.Details["operation"] = op
 		e.Details["cache"] = cache
 	default:
-		return llmEntity{}, false
+		return candidate{}, false
 	}
 	return e, true
 }
@@ -700,13 +700,13 @@ func MergeDiscoveryResults(baseline, deterministic []discoveryResult) []discover
 	out := make([]discoveryResult, 0, len(baseline)+len(deterministic))
 	index := map[string]int{}
 	for _, r := range baseline {
-		out = append(out, discoveryResult{Objective: r.Objective, Items: append([]llmEntity(nil), r.Items...), Err: r.Err, PeerCancelled: r.PeerCancelled})
+		out = append(out, discoveryResult{Objective: r.Objective, Items: append([]candidate(nil), r.Items...), Err: r.Err, PeerCancelled: r.PeerCancelled})
 		index[r.Objective.ID] = len(out) - 1
 	}
 	for _, d := range deterministic {
 		pos, ok := index[d.Objective.ID]
 		if !ok {
-			out = append(out, discoveryResult{Objective: d.Objective, Items: append([]llmEntity(nil), d.Items...)})
+			out = append(out, discoveryResult{Objective: d.Objective, Items: append([]candidate(nil), d.Items...)})
 			index[d.Objective.ID] = len(out) - 1
 			continue
 		}
@@ -715,8 +715,8 @@ func MergeDiscoveryResults(baseline, deterministic []discoveryResult) []discover
 	return out
 }
 
-func DeterministicByObjective(results []discoveryResult) map[string][]llmEntity {
-	out := map[string][]llmEntity{}
+func DeterministicByObjective(results []discoveryResult) map[string][]candidate {
+	out := map[string][]candidate{}
 	for _, r := range results {
 		if len(r.Items) == 0 {
 			continue
@@ -773,8 +773,8 @@ func RouteHandlerManifest(bindings []astpkg.FrameworkBinding) []RouteManifestEnt
 	return out
 }
 
-func mergeEntitiesForObjective(obj objectives.Objective, baseline, deterministic []llmEntity) []llmEntity {
-	out := make([]llmEntity, 0, len(baseline)+len(deterministic))
+func mergeEntitiesForObjective(obj objectives.Objective, baseline, deterministic []candidate) []candidate {
+	out := make([]candidate, 0, len(baseline)+len(deterministic))
 	index := map[string]int{}
 	for _, e := range baseline {
 		k := extraction.DiscoverySemanticKey(obj, e)
@@ -790,28 +790,28 @@ func mergeEntitiesForObjective(obj objectives.Objective, baseline, deterministic
 		index[k] = len(out)
 		out = append(out, e)
 	}
-	extraction.SortLLMEntities(out)
+	extraction.SortCandidates(out)
 	return out
 }
 
-func mergeDeterministicDuplicate(llm, det llmEntity) llmEntity {
+func mergeDeterministicDuplicate(base, det candidate) candidate {
 	out := det
 	if strings.TrimSpace(out.Summary) == "" {
-		out.Summary = llm.Summary
+		out.Summary = base.Summary
 	}
 	if len(out.Actions) == 0 {
-		out.Actions = llm.Actions
+		out.Actions = base.Actions
 	}
 	if len(out.Inputs) == 0 {
-		out.Inputs = llm.Inputs
+		out.Inputs = base.Inputs
 	}
-	out.Tags = extraction.DedupeStrings(append(append([]string(nil), det.Tags...), llm.Tags...))
-	out.Locations = UnionLocations(det.Locations, llm.Locations)
-	out.Evidence = append(append([]llmEvidence(nil), det.Evidence...), llm.Evidence...)
+	out.Tags = extraction.DedupeStrings(append(append([]string(nil), det.Tags...), base.Tags...))
+	out.Locations = UnionLocations(det.Locations, base.Locations)
+	out.Evidence = append(append([]candidateEvidence(nil), det.Evidence...), base.Evidence...)
 	if out.Details == nil {
 		out.Details = map[string]any{}
 	}
-	for k, v := range llm.Details {
+	for k, v := range base.Details {
 		if _, ok := out.Details[k]; !ok {
 			out.Details[k] = v
 		}
@@ -819,10 +819,10 @@ func mergeDeterministicDuplicate(llm, det llmEntity) llmEntity {
 	return out
 }
 
-func UnionLocations(a, b []llmLocation) []llmLocation {
+func UnionLocations(a, b []candidateLocation) []candidateLocation {
 	seen := map[string]struct{}{}
-	out := make([]llmLocation, 0, len(a)+len(b))
-	for _, loc := range append(append([]llmLocation(nil), a...), b...) {
+	out := make([]candidateLocation, 0, len(a)+len(b))
+	for _, loc := range append(append([]candidateLocation(nil), a...), b...) {
 		key := fmt.Sprintf("%s:%d:%d", loc.File, loc.StartLine, loc.EndLine)
 		if _, ok := seen[key]; ok {
 			continue

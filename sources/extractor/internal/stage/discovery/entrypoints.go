@@ -14,11 +14,11 @@ import (
 // DeterministicCLIEntrypoints emits high-precision process entrypoints that are
 // not framework bindings: Python Lambda handlers, argparse scripts, and Java
 // Spring Boot main launchers.
-func DeterministicCLIEntrypoints(idx *astpkg.ProjectIndex) []llmEntity {
+func DeterministicCLIEntrypoints(idx *astpkg.ProjectIndex) []candidate {
 	if idx == nil {
 		return nil
 	}
-	var out []llmEntity
+	var out []candidate
 	seen := map[string]struct{}{}
 	paths := make([]string, 0, len(idx.Files))
 	for p := range idx.Files {
@@ -79,7 +79,7 @@ func DeterministicCLIEntrypoints(idx *astpkg.ProjectIndex) []llmEntity {
 
 var cobraCommandRE = regexp.MustCompile(`(?s)(?:var\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*)?&cobra\.Command\s*\{.*?Use:\s*"([^"]+)".*?(?:RunE?|PreRunE?|PostRunE?):\s*([A-Za-z_][A-Za-z0-9_]*)`)
 
-func appendCobraCommands(idx *astpkg.ProjectIndex, out *[]llmEntity, seen map[string]struct{}, path string, fa *astpkg.FileAST) {
+func appendCobraCommands(idx *astpkg.ProjectIndex, out *[]candidate, seen map[string]struct{}, path string, fa *astpkg.FileAST) {
 	if idx == nil || fa == nil || !fileImports(fa, "github.com/spf13/cobra") {
 		return
 	}
@@ -109,8 +109,8 @@ func appendCobraCommands(idx *astpkg.ProjectIndex, out *[]llmEntity, seen map[st
 			continue
 		}
 		seen[key] = struct{}{}
-		loc := llmLocation{File: path, StartLine: line, EndLine: line}
-		*out = append(*out, llmEntity{
+		loc := candidateLocation{File: path, StartLine: line, EndLine: line}
+		*out = append(*out, candidate{
 			Type:       "cli_command",
 			Name:       cmdName,
 			Summary:    "AST-derived Go Cobra command entrypoint",
@@ -126,8 +126,8 @@ func appendCobraCommands(idx *astpkg.ProjectIndex, out *[]llmEntity, seen map[st
 				"platform":      "process",
 				"discovered_by": "ast_go_cobra_command",
 			},
-			Locations: []llmLocation{loc},
-			Evidence: []llmEvidence{{
+			Locations: []candidateLocation{loc},
+			Evidence: []candidateEvidence{{
 				File:      loc.File,
 				StartLine: loc.StartLine,
 				EndLine:   loc.EndLine,
@@ -138,26 +138,26 @@ func appendCobraCommands(idx *astpkg.ProjectIndex, out *[]llmEntity, seen map[st
 	}
 }
 
-func appendCLI(out *[]llmEntity, seen map[string]struct{}, path, name, summary string, tags []string, details map[string]any, sym astpkg.SymbolDef, snippet string) {
+func appendCLI(out *[]candidate, seen map[string]struct{}, path, name, summary string, tags []string, details map[string]any, sym astpkg.SymbolDef, snippet string) {
 	key := strings.ToLower(path + "|" + name)
 	if _, dup := seen[key]; dup {
 		return
 	}
 	seen[key] = struct{}{}
-	loc := llmLocation{
+	loc := candidateLocation{
 		File:      sym.File,
 		StartLine: int(sym.Range.StartLine) + 1,
 		EndLine:   int(sym.Range.EndLine) + 1,
 	}
-	*out = append(*out, llmEntity{
+	*out = append(*out, candidate{
 		Type:       "cli_command",
 		Name:       name,
 		Summary:    summary,
 		Confidence: 1.0,
 		Tags:       tags,
 		Details:    details,
-		Locations:  []llmLocation{loc},
-		Evidence: []llmEvidence{{
+		Locations:  []candidateLocation{loc},
+		Evidence: []candidateEvidence{{
 			File:      loc.File,
 			StartLine: loc.StartLine,
 			EndLine:   loc.EndLine,

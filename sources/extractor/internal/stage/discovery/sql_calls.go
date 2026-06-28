@@ -36,14 +36,14 @@ var sqlCallees = map[string]struct{}{
 // DeterministicSQLOperations scans call sites for SQL literals and emits one
 // high-level db_operation per (table, operation-kind), the same granularity as
 // the repository deriver and the (resource, operation) dedup key.
-func DeterministicSQLOperations(idx *astpkg.ProjectIndex) []llmEntity {
+func DeterministicSQLOperations(idx *astpkg.ProjectIndex) []candidate {
 	if idx == nil {
 		return nil
 	}
 	type agg struct {
 		table, opKind string
-		loc           llmLocation
-		ev            llmEvidence
+		loc           candidateLocation
+		ev            candidateEvidence
 	}
 	seen := map[string]*agg{}
 	var order []string
@@ -69,10 +69,10 @@ func DeterministicSQLOperations(idx *astpkg.ProjectIndex) []llmEntity {
 		order = append(order, key)
 	})
 
-	out := make([]llmEntity, 0, len(order))
+	out := make([]candidate, 0, len(order))
 	for _, key := range order {
 		a := seen[key]
-		out = append(out, llmEntity{
+		out = append(out, candidate{
 			Type:       "db_operation",
 			Name:       a.opKind + " " + a.table,
 			Summary:    fmt.Sprintf("AST-derived %s on %s (raw SQL)", a.opKind, a.table),
@@ -83,8 +83,8 @@ func DeterministicSQLOperations(idx *astpkg.ProjectIndex) []llmEntity {
 				"operation":     a.opKind,
 				"discovered_by": "ast_sql_literal",
 			},
-			Locations: []llmLocation{a.loc},
-			Evidence:  []llmEvidence{a.ev},
+			Locations: []candidateLocation{a.loc},
+			Evidence:  []candidateEvidence{a.ev},
 		})
 	}
 	return out

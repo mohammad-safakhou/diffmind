@@ -18,12 +18,12 @@ import (
 
 // DeterministicCommandExec finds process-execution dependencies (Runtime.exec,
 // ProcessBuilder, Go os/exec.Command, Python subprocess/os.system).
-func DeterministicCommandExec(idx *astpkg.ProjectIndex) []llmEntity {
+func DeterministicCommandExec(idx *astpkg.ProjectIndex) []candidate {
 	if idx == nil {
 		return nil
 	}
 	seen := map[string]struct{}{}
-	var out []llmEntity
+	var out []candidate
 	forEachCall(idx, func(cs astpkg.CallSite) {
 		if !MatchCommandExec(cs) {
 			return
@@ -48,15 +48,15 @@ func DeterministicCommandExec(idx *astpkg.ProjectIndex) []llmEntity {
 		} else {
 			details["command"] = name
 		}
-		out = append(out, llmEntity{
+		out = append(out, candidate{
 			Type:       "command_exec",
 			Name:       name,
 			Summary:    "AST-derived process execution",
 			Confidence: 1.0,
 			Tags:       []string{"deterministic", "exec"},
 			Details:    details,
-			Locations:  []llmLocation{loc},
-			Evidence:   []llmEvidence{callEvidence(cs)},
+			Locations:  []candidateLocation{loc},
+			Evidence:   []candidateEvidence{callEvidence(cs)},
 		})
 	})
 	return out
@@ -67,12 +67,12 @@ func DeterministicCommandExec(idx *astpkg.ProjectIndex) []llmEntity {
 // StreamBridge, AWS SDK SQS/SNS clients). Only emitted when the destination is
 // resolvable from a literal argument (or a ${...} config placeholder), so the
 // emitted name is a real queue/topic, never a guess.
-func DeterministicQueuePublish(idx *astpkg.ProjectIndex) []llmEntity {
+func DeterministicQueuePublish(idx *astpkg.ProjectIndex) []candidate {
 	if idx == nil {
 		return nil
 	}
 	seen := map[string]struct{}{}
-	var out []llmEntity
+	var out []candidate
 	forEachCall(idx, func(cs astpkg.CallSite) {
 		platform, ok := MatchQueuePublish(cs)
 		if !ok {
@@ -91,7 +91,7 @@ func DeterministicQueuePublish(idx *astpkg.ProjectIndex) []llmEntity {
 			return
 		}
 		seen[key] = struct{}{}
-		out = append(out, llmEntity{
+		out = append(out, candidate{
 			Type:       "queue_publish",
 			Name:       dest,
 			Summary:    fmt.Sprintf("AST-derived %s publish to %s", platform, dest),
@@ -102,8 +102,8 @@ func DeterministicQueuePublish(idx *astpkg.ProjectIndex) []llmEntity {
 				"destination":   dest,
 				"discovered_by": "ast_publish_call",
 			},
-			Locations: []llmLocation{loc},
-			Evidence:  []llmEvidence{callEvidence(cs)},
+			Locations: []candidateLocation{loc},
+			Evidence:  []candidateEvidence{callEvidence(cs)},
 		})
 	})
 	return out
@@ -112,12 +112,12 @@ func DeterministicQueuePublish(idx *astpkg.ProjectIndex) []llmEntity {
 // DeterministicOutboundRPC finds gRPC client calls through generated blocking/
 // future stubs (e.g. fooServiceBlockingStub.getThing(req)). Matched on the
 // generated stub naming convention, which is gRPC-specific (never a plain var).
-func DeterministicOutboundRPC(idx *astpkg.ProjectIndex) []llmEntity {
+func DeterministicOutboundRPC(idx *astpkg.ProjectIndex) []candidate {
 	if idx == nil {
 		return nil
 	}
 	seen := map[string]struct{}{}
-	var out []llmEntity
+	var out []candidate
 	forEachCall(idx, func(cs astpkg.CallSite) {
 		service, method, ok := MatchGRPCStubCall(cs)
 		if !ok {
@@ -135,7 +135,7 @@ func DeterministicOutboundRPC(idx *astpkg.ProjectIndex) []llmEntity {
 			return
 		}
 		seen[key] = struct{}{}
-		out = append(out, llmEntity{
+		out = append(out, candidate{
 			Type:       "outbound_rpc",
 			Name:       service + "." + method,
 			Summary:    "AST-derived gRPC client call",
@@ -147,8 +147,8 @@ func DeterministicOutboundRPC(idx *astpkg.ProjectIndex) []llmEntity {
 				"method":        method,
 				"discovered_by": "ast_grpc_stub_call",
 			},
-			Locations: []llmLocation{loc},
-			Evidence:  []llmEvidence{callEvidence(cs)},
+			Locations: []candidateLocation{loc},
+			Evidence:  []candidateEvidence{callEvidence(cs)},
 		})
 	})
 	return out
@@ -158,12 +158,12 @@ func DeterministicOutboundRPC(idx *astpkg.ProjectIndex) []llmEntity {
 // accepts Resty's explicit verbs and stdlib net/http request construction, and
 // only emits calls from source paths/import contexts that look like outbound
 // HTTP adapters.
-func DeterministicOutboundHTTP(idx *astpkg.ProjectIndex) []llmEntity {
+func DeterministicOutboundHTTP(idx *astpkg.ProjectIndex) []candidate {
 	if idx == nil {
 		return nil
 	}
 	seen := map[string]struct{}{}
-	var out []llmEntity
+	var out []candidate
 	forEachCall(idx, func(cs astpkg.CallSite) {
 		fa := idx.Files[cs.File]
 		if fa == nil || fa.Language != "go" {
@@ -217,15 +217,15 @@ func DeterministicOutboundHTTP(idx *astpkg.ProjectIndex) []llmEntity {
 			return
 		}
 		seen[key] = struct{}{}
-		out = append(out, llmEntity{
+		out = append(out, candidate{
 			Type:       "outbound_http",
 			Name:       name,
 			Summary:    summary,
 			Confidence: 1.0,
 			Tags:       []string{"deterministic", tag, "go"},
 			Details:    details,
-			Locations:  []llmLocation{loc},
-			Evidence:   []llmEvidence{callEvidence(cs)},
+			Locations:  []candidateLocation{loc},
+			Evidence:   []candidateEvidence{callEvidence(cs)},
 		})
 	})
 	return out
@@ -234,12 +234,12 @@ func DeterministicOutboundHTTP(idx *astpkg.ProjectIndex) []llmEntity {
 // DeterministicStreamConsume finds Kafka Streams sources (streamsBuilder.stream
 // ("topic")). Gated on a StreamsBuilder receiver so the ubiquitous Java
 // Collection.stream() never matches, and only when the topic is a literal.
-func DeterministicStreamConsume(idx *astpkg.ProjectIndex) []llmEntity {
+func DeterministicStreamConsume(idx *astpkg.ProjectIndex) []candidate {
 	if idx == nil {
 		return nil
 	}
 	seen := map[string]struct{}{}
-	var out []llmEntity
+	var out []candidate
 	forEachCall(idx, func(cs astpkg.CallSite) {
 		r, m := splitCall(cs)
 		if strings.ToLower(m) != "stream" || !strings.Contains(strings.ToLower(r), "streamsbuilder") {
@@ -257,7 +257,7 @@ func DeterministicStreamConsume(idx *astpkg.ProjectIndex) []llmEntity {
 			return
 		}
 		seen[strings.ToLower(topic)] = struct{}{}
-		out = append(out, llmEntity{
+		out = append(out, candidate{
 			Type:       "stream_consume",
 			Name:       topic,
 			Summary:    "AST-derived Kafka Streams source for " + topic,
@@ -268,8 +268,8 @@ func DeterministicStreamConsume(idx *astpkg.ProjectIndex) []llmEntity {
 				"stream":        topic,
 				"discovered_by": "ast_kafka_streams",
 			},
-			Locations: []llmLocation{loc},
-			Evidence:  []llmEvidence{callEvidence(cs)},
+			Locations: []candidateLocation{loc},
+			Evidence:  []candidateEvidence{callEvidence(cs)},
 		})
 	})
 	return out
@@ -648,13 +648,13 @@ func firstLiteralArg(args []astpkg.ArgumentExpr) string {
 	return ""
 }
 
-func callLoc(cs astpkg.CallSite) llmLocation {
-	return llmLocation{File: cs.File, StartLine: int(cs.Range.StartLine) + 1, EndLine: int(cs.Range.EndLine) + 1}
+func callLoc(cs astpkg.CallSite) candidateLocation {
+	return candidateLocation{File: cs.File, StartLine: int(cs.Range.StartLine) + 1, EndLine: int(cs.Range.EndLine) + 1}
 }
 
-func callEvidence(cs astpkg.CallSite) llmEvidence {
+func callEvidence(cs astpkg.CallSite) candidateEvidence {
 	snippet := strings.TrimSpace(strings.TrimSpace(cs.ReceiverRaw) + "." + strings.TrimSpace(cs.CalleeRaw))
-	return llmEvidence{
+	return candidateEvidence{
 		File:      cs.File,
 		StartLine: int(cs.Range.StartLine) + 1,
 		EndLine:   int(cs.Range.EndLine) + 1,

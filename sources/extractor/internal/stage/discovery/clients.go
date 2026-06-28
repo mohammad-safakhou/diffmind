@@ -31,7 +31,7 @@ func ClientsFromCandidates(items []extraction.Candidate) []model.ConnectionClien
 			Symbol:       clientDetail(it.Details, "symbol", "client_type", "type", "class"),
 			Framework:    clientDetail(it.Details, "framework"),
 			ConfigAnchor: clientDetail(it.Details, "config_anchor", "config_key", "property", "config_property"),
-			Source:       "llm",
+			Source:       "deterministic",
 		}
 		for _, l := range it.Locations {
 			if strings.TrimSpace(l.File) == "" {
