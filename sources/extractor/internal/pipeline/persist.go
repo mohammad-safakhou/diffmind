@@ -25,70 +25,10 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-// stateDir is the subdirectory under runDir where each stage's
-// intermediate output is persisted on its way to the next stage. The
-// retry command reads these files to fast-forward to the failed stage
-// without re-running everything that already worked. The canonical definition
+// stateDir is the subdirectory under runDir where each stage's intermediate
+// output is persisted on its way to the next stage. The canonical definition
 // lives in runstate; this alias keeps orchestration call sites terse.
 const stateDir = runstate.StateDir
-
-// loadResumeState reads previously-saved per-stage outputs from
-// `<runDir>/state/*.json`. It returns one tuple value per stage; nil
-// means "not found, re-execute". Any read/parse error for a single
-// file logs a warning and returns nil for that stage so a corrupt
-// state file doesn't prevent the operator from retrying with the
-// remaining stages still skipped.
-//
-// Note: entities are NOT resumed from disk. The seed→entity conversion is
-// deterministic and instant, so a resume re-derives exposures/dependencies from
-// the persisted reexamination seeds rather than reloading them.
-func (o *orchestrator) loadResumeState(dir string) (
-	rf *repoFacts,
-	seeds []detailJob,
-	expObjs map[string]string,
-	reexam []detailJob,
-) {
-	if strings.TrimSpace(dir) == "" {
-		return
-	}
-	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-		util.Warn("agents.resume", "state dir missing or not a directory", map[string]any{"dir": dir, "error": err})
-		return
-	}
-	read := func(name string, into any) bool {
-		path := filepath.Join(dir, name)
-		b, err := os.ReadFile(path)
-		if err != nil {
-			return false
-		}
-		if err := json.Unmarshal(b, into); err != nil {
-			util.Warn("agents.resume", "could not parse state file", map[string]any{"path": path, "error": err})
-			return false
-		}
-		return true
-	}
-	rf = &repoFacts{}
-	if !read("repo_facts.json", rf) {
-		rf = nil
-	}
-	if !read("discovery.json", &seeds) {
-		seeds = nil
-	}
-	if !read("exposure_objectives.json", &expObjs) {
-		expObjs = nil
-	}
-	if !read("reexamination.json", &reexam) {
-		reexam = nil
-	}
-	util.Info("agents.resume", "loaded resume state", map[string]any{
-		"dir":           dir,
-		"repo_facts":    rf != nil,
-		"discovery":     len(seeds),
-		"exposure_objs": len(expObjs),
-		"reexamination": len(reexam),
-	})
-	return
-}
 
 // loadClientsState reads connection_clients.json from a previous run's state
 // directory so a resume can repopulate the connection backbones without
@@ -134,10 +74,10 @@ func (o *orchestrator) persistStageState(filename string, payload any) {
 	}
 }
 
-// writeFailureReport writes both run_failure.json and run_failure.md
-// alongside whatever partial artifacts were saved. The JSON is the
-// machine-readable contract used by `diffmind retry`; the markdown is
-// the human-readable summary the operator skims to decide what to do.
+// writeFailureReport writes both run_failure.json and run_failure.md alongside
+// whatever partial artifacts were saved. The JSON is machine-readable; the
+// markdown is the human-readable summary the operator skims to decide what to
+// fix before starting a new deterministic run.
 //
 // The function is forgiving: any I/O error is logged and swallowed
 // because the caller is already returning a hard error to the user; we
@@ -183,36 +123,10 @@ func renderFailureMarkdown(f *Failure, runDir, snapshotPath string) string {
 	if !f.OccurredAt.IsZero() {
 		fmt.Fprintf(&b, "- **At**: %s\n", f.OccurredAt.Format(time.RFC3339))
 	}
-	if f.SessionID != "" {
-		fmt.Fprintf(&b, "- **OpenCode session**: `%s`\n", f.SessionID)
-	}
 
 	fmt.Fprintf(&b, "\n## Error message\n\n```\n%s\n```\n", f.Error)
 
 	fmt.Fprintf(&b, "\n## Files to inspect\n\n")
-	// Only list files that actually exist on disk. The capture pipeline
-	// writes .json on a structured success, .raw + .text on a parsed-
-	// text or failed-parse path, and may write only a subset of those
-	// when the call short-circuited. Listing files that were never
-	// written would send the operator to read a non-existent path.
-	if fileExists(f.PromptPath) {
-		fmt.Fprintf(&b, "- Prompt: `%s`\n", f.PromptPath)
-	}
-	if f.ResponsePath != "" {
-		base := strings.TrimSuffix(f.ResponsePath, filepath.Ext(f.ResponsePath))
-		for _, suffix := range []string{".json", ".raw", ".text"} {
-			path := base + suffix
-			if !fileExists(path) {
-				continue
-			}
-			label := map[string]string{
-				".json": "Response (parsed JSON)",
-				".raw":  "Response (raw HTTP body)",
-				".text": "Response (text fallback)",
-			}[suffix]
-			fmt.Fprintf(&b, "- %s: `%s`\n", label, path)
-		}
-	}
 	if runDir != "" {
 		fmt.Fprintf(&b, "- Run dir: `%s`\n", runDir)
 		events := filepath.Join(runDir, "events.jsonl")
@@ -221,36 +135,14 @@ func renderFailureMarkdown(f *Failure, runDir, snapshotPath string) string {
 		}
 	}
 	if snapshotPath != "" && fileExists(snapshotPath) {
-		fmt.Fprintf(&b, "- Snapshot (retained for retry): `%s`\n", snapshotPath)
+		fmt.Fprintf(&b, "- Snapshot: `%s`\n", snapshotPath)
 	}
 
-	fmt.Fprintf(&b, "\n## How to retry\n\n")
-	fmt.Fprintf(&b, "After inspecting the prompt/response and fixing the underlying issue, replay the failed stage with:\n\n")
-	fmt.Fprintf(&b, "```sh\n")
-	fmt.Fprintf(&b, "diffmind retry %s\n", filepath.Base(runDir))
-	fmt.Fprintf(&b, "```\n\n")
-	fmt.Fprintf(&b, "The retry command reads `state/*.json`, re-attaches to the retained snapshot, and runs the failing stage forward. Earlier successful stages are not re-executed.\n")
+	fmt.Fprintf(&b, "\n## Next step\n\n")
+	fmt.Fprintf(&b, "Fix the deterministic input/configuration issue, then start a new run with `diffmind run --repo <path>`.\n")
 
-	if f.ErrorClass == "rate_limit" {
-		fmt.Fprintf(&b, "\n> Tip: this looks like a rate-limit. Lower `runtime.workers` or pause until the provider quota resets before retrying.\n")
-	}
 	if f.ErrorClass == "schema" {
-		fmt.Fprintf(&b, "\n> Tip: the model didn't honour the requested JSON schema. Inspect `*.response.raw` to see the actual reply and consider switching providers/models.\n")
-	}
-	if f.ErrorClass == "timeout" {
-		fmt.Fprintf(&b, "\n> Tip: the call timed out. Increase `opencode.timeout_sec` and/or shrink `runtime.max_catalog_items` so each prompt is smaller.\n")
-	}
-	if f.ErrorClass == "stuck" {
-		fmt.Fprintf(&b, "\n> Tip: the liveness watchdog declared this call stuck because the OpenCode session stopped emitting parts AND no tool was running AND no permission was pending. The aborted prompt's response is in the response files above — inspect it to see what the model was doing right before it froze. If this objective genuinely needs more thinking time (very large file), raise `runtime.idle_timeout_seconds`.\n")
-	}
-	if f.ErrorClass == "http_4xx" && f.HTTPStatus == 401 {
-		fmt.Fprintf(&b, "\n> Tip: 401 Unauthorized. Verify `DIFFMIND_OPENCODE_USERNAME`/`PASSWORD` and that `opencode auth login` for the configured provider is current.\n")
-	}
-	if f.ErrorClass == "auth" {
-		fmt.Fprintf(&b, "\n> Tip: the provider rejected this call due to authentication. Run `opencode auth login` for the configured provider and then retry from the dashboard (or `diffmind retry --run <id>`). The retry will skip every stage that already succeeded.\n")
-	}
-	if f.ErrorClass == "quota" {
-		fmt.Fprintf(&b, "\n> Tip: the provider's quota or credit limit is exhausted. Top up your account (or switch to a provider with available credit), then retry. Stages that already completed will not be re-billed because they're loaded from `state/*.json`.\n")
+		fmt.Fprintf(&b, "\n> Tip: validate the generated DiffMind protocol JSON and detector output for missing required fields or invalid references.\n")
 	}
 	return b.String()
 }

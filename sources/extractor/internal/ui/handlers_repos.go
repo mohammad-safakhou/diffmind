@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mohammad-safakhou/diffmind/internal/archfile"
 	"github.com/mohammad-safakhou/diffmind/internal/repostore"
 )
 
@@ -18,18 +17,18 @@ import (
 // about that repo path.
 type repoView struct {
 	repostore.Repo
-	FilePresent  bool   `json:"file_present"`
 	Registered   bool   `json:"registered"`
 	RunCount     int    `json:"run_count"`
+	LastRunID    string `json:"last_run_id,omitempty"`
 	LastStatus   string `json:"last_status,omitempty"`
 	LastFinished any    `json:"last_finished_at,omitempty"`
-	NodeCount    int    `json:"node_count"`    // nodes resolved from the discovery file
-	EdgeCount    int    `json:"edge_count"`    // connections likewise
-	PendingCount int    `json:"pending_count"` // facts awaiting review (status != verified)
+	NodeCount    int    `json:"node_count"`
+	EdgeCount    int    `json:"edge_count"`
+	PendingCount int    `json:"pending_count"`
 }
 
 // repositories returns the union of registered repos and repos discovered from
-// run history, enriched with run and discovery-file facts.
+// run history, enriched with latest deterministic run facts.
 func (s *Server) repositories() ([]repoView, error) {
 	registered, err := s.repos.List()
 	if err != nil {
@@ -71,6 +70,7 @@ func (s *Server) repositories() ([]repoView, error) {
 		// Runs are listed newest-first (run_id is a sortable timestamp), so the
 		// first one seen for a repo is its latest.
 		if v.LastStatus == "" {
+			v.LastRunID = id
 			if st, ok := sum["status"].(string); ok {
 				v.LastStatus = st
 			}
@@ -83,31 +83,6 @@ func (s *Server) repositories() ([]repoView, error) {
 	out := make([]repoView, 0, len(order))
 	for _, id := range order {
 		v := byID[id]
-		if strings.TrimSpace(v.FilePath) != "" {
-			if _, statErr := os.Stat(v.FilePath); statErr == nil {
-				v.FilePresent = true
-				if resolved, err := archfile.Resolve(v.FilePath); err == nil {
-					v.NodeCount = len(resolved.Exposures) + len(resolved.Dependencies)
-					v.EdgeCount = len(resolved.Connections)
-					pending := func(s string) bool { st := strings.TrimSpace(s); return st != "" && st != "verified" }
-					for _, e := range resolved.Exposures {
-						if pending(e.Status) {
-							v.PendingCount++
-						}
-					}
-					for _, d := range resolved.Dependencies {
-						if pending(d.Status) {
-							v.PendingCount++
-						}
-					}
-					for _, c := range resolved.Connections {
-						if pending(c.Status) {
-							v.PendingCount++
-						}
-					}
-				}
-			}
-		}
 		out = append(out, *v)
 	}
 	sort.Slice(out, func(i, j int) bool {

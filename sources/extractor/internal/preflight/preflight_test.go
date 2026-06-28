@@ -137,45 +137,6 @@ func TestRunnerHonoursPerCheckTimeout(t *testing.T) {
 	}
 }
 
-// TestCredentialsCheckRejectsBlank validates the most basic gating
-// behaviour the dashboard relies on: an empty provider or model
-// produces SeverityFail.
-func TestCredentialsCheckRejectsBlank(t *testing.T) {
-	cases := []struct {
-		name        string
-		provider    string
-		model       string
-		wantSev     Severity
-		wantInMsg   string
-	}{
-		{"both empty", "", "", SeverityFail, "provider_id"},
-		{"only provider", "anthropic", "", SeverityFail, "model_id"},
-		{"only model", "", "claude", SeverityFail, "provider_id"},
-		{"ok", "anthropic", "claude-sonnet-4", SeverityOK, "Provider"},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			res := NewCredentialsCheck(c.provider, c.model).Run(context.Background())
-			if res.Severity != c.wantSev {
-				t.Errorf("Severity = %q, want %q", res.Severity, c.wantSev)
-			}
-			if c.wantInMsg != "" && !contains(res.Message, c.wantInMsg) {
-				t.Errorf("Message %q does not contain %q", res.Message, c.wantInMsg)
-			}
-		})
-	}
-}
-
-// TestOpenCodeCheckHandlesMissingURL ensures an unconfigured URL
-// yields warn (not fail) so the dashboard doesn't refuse to render
-// before the user has filled the form.
-func TestOpenCodeCheckHandlesMissingURL(t *testing.T) {
-	res := NewOpenCodeCheck("", "", "").Run(context.Background())
-	if res.Severity != SeverityWarn {
-		t.Errorf("Severity = %q, want warn", res.Severity)
-	}
-}
-
 // TestReportFailures returns only the failed checks.
 func TestReportFailures(t *testing.T) {
 	rep := Report{

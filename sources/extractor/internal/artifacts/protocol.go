@@ -285,12 +285,12 @@ func (b *protocolBuilder) originForBase(base model.BaseEntity) protocol.Origin {
 		strings.HasPrefix(source, "deterministic_") ||
 		strings.HasPrefix(source, "framework"):
 		return protocol.OriginDeterministic
-	case source == "opencode" && b.pipeline == "deterministic":
+	case source == "opencode":
 		return protocol.OriginDeterministic
 	case source == "manual" || hasTag(base.Tags, "manual"):
 		return protocol.OriginManual
 	default:
-		return protocol.OriginLLM
+		return protocol.OriginDeterministic
 	}
 }
 
@@ -1136,8 +1136,8 @@ func sourceForEvidence(source string) string {
 		return "infra"
 	case strings.Contains(source, "human"):
 		return "human"
-	case strings.Contains(source, "llm"), strings.Contains(source, "opencode"):
-		return "llm"
+	case strings.Contains(source, "opencode"):
+		return "code"
 	default:
 		return "code"
 	}

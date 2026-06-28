@@ -9,15 +9,12 @@ import (
 	"time"
 
 	"github.com/mohammad-safakhou/diffmind/internal/ast"
-	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	"github.com/mohammad-safakhou/diffmind/internal/stage/astindex"
 	connectionstage "github.com/mohammad-safakhou/diffmind/internal/stage/connections"
 	discoverystage "github.com/mohammad-safakhou/diffmind/internal/stage/discovery"
-	reexaminestage "github.com/mohammad-safakhou/diffmind/internal/stage/reexamine"
-	"github.com/mohammad-safakhou/diffmind/internal/stage/repofacts"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -133,77 +130,7 @@ func countCallEdges(idx *ast.ProjectIndex) int {
 	return astindex.CountCallEdges(idx)
 }
 
-type reexamineTrigger = reexaminestage.Trigger
-
-func (o *orchestrator) runRepoFacts(ctx context.Context) (*repoFacts, error) {
-	out, err := (repofacts.Runner{Prompt: o.promptAgent}).Run(ctx, repofacts.Input{
-		SubDir: o.subDir, SessionDir: o.sessionDir,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return out.Facts, nil
-}
-
-func (o *orchestrator) runDiscovery(
-	ctx context.Context,
-	objectives []objectives.Objective,
-	repoFacts *repoFacts,
-	onResult func(),
-) []discoveryResult {
-	out := o.discoveryRunner().Run(ctx, discoverystage.RunInput{
-		Objectives: objectives, RepoFacts: repoFacts, Progress: onResult,
-	})
-	return out.Results
-}
-
-func (o *orchestrator) runDiscoveryOne(
-	ctx context.Context,
-	objective objectives.Objective,
-	repoFacts *repoFacts,
-) ([]llmEntity, error) {
-	return o.discoveryRunner().RunObjective(ctx, objective, repoFacts)
-}
-
-func (o *orchestrator) discoveryRunner() discoverystage.Runner {
-	return discoverystage.Runner{
-		Workers:         o.cfg.Runtime.Workers,
-		RunDir:          o.runDir,
-		SubDir:          o.subDir,
-		ASTHintsEnabled: o.cfg.Runtime.DiscoveryASTHints,
-		Index:           o.astIndex,
-		Store:           o.store,
-		Prompt:          o.promptAgent,
-		Emit:            o.emit,
-		PathMapper:      o.PathMapper(),
-		Confirmed:       o.discoveryConfirmed,
-		FrameworkScope:  o.cfg.Runtime.DiscoveryFrameworkScope,
-		MinConfidence:   o.cfg.Quality.MinConfidence,
-		VerifyMode:      verifyMode(o.cfg),
-		VerifySamples:   o.cfg.Runtime.DiscoveryVerifySamples,
-	}
-}
-
-// verifyMode resolves the effective discovery-verification mode for the runner:
-// empty (the pass is off) unless DiscoveryVerify is enabled, in which case it is
-// the configured mode (Sanitize has already coerced any unknown value to a valid
-// one, with "reask" as the final fallback here for safety).
-func verifyMode(cfg config.Config) string {
-	if !cfg.Runtime.DiscoveryVerify {
-		return ""
-	}
-	switch cfg.Runtime.DiscoveryVerifyMode {
-	case "reask", "ksample":
-		return cfg.Runtime.DiscoveryVerifyMode
-	default:
-		return "reask"
-	}
-}
-
 func (o *orchestrator) hintsFor(objective objectives.Objective, fileScope []string) objectiveHints {
-	if !o.cfg.Runtime.DiscoveryASTHints {
-		return objectiveHints{}
-	}
 	return discoverystage.BuildObjectiveHints(o.astIndex, objective, o.subDir, fileScope)
 }
 
@@ -252,30 +179,6 @@ func (o *orchestrator) runDeterministicDiscovery(ctx context.Context, objectives
 		"items": out.Items, "objectives": len(out.Results),
 	})
 	return out.Results
-}
-
-func (o *orchestrator) runReexamination(
-	ctx context.Context,
-	seeds []detailJob,
-	repoFacts *repoFacts,
-	onResult func(),
-) ([]detailJob, []model.UnresolvedItem, error, reexamineTrigger) {
-	out := (reexaminestage.Runner{
-		Workers:       o.cfg.Runtime.Workers,
-		RunDir:        o.runDir,
-		SubDir:        o.subDir,
-		MinConfidence: o.cfg.Quality.MinConfidence,
-		Store:         o.store,
-		Prompt:        o.promptAgent,
-		Hints: func(objective objectives.Objective) objectiveHints {
-			return o.hintsFor(objective, nil)
-		},
-		Emit:       o.emit,
-		PathMapper: o.PathMapper(),
-	}).Run(ctx, reexaminestage.RunInput{
-		Seeds: seeds, RepoFacts: repoFacts, Progress: onResult,
-	})
-	return out.Jobs, out.Unresolved, out.Err, out.FailedTrigger
 }
 
 // runConnectionsBatch is the pipeline boundary for the deterministic

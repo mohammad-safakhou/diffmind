@@ -429,8 +429,7 @@ a:hover { text-decoration: underline; }
 ::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
 
 /* System Status header strip. Always visible directly under the
-   TopBar; tells the user at a glance whether Docker / OpenCode /
-   credentials / disk are ready. */
+   TopBar; tells the user whether host prerequisites are ready. */
 .system-status {
   border-bottom: 1px solid var(--border);
   background: var(--bg-1);

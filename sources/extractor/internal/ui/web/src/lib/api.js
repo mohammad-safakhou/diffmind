@@ -28,8 +28,7 @@ export function setToken(v) {
   }
 })()
 
-// A signal-style listener so components can react to auth failures
-// (e.g. show a "paste your token" prompt).
+// A signal-style listener so components can react to auth failures.
 let authFailureHandler = null
 export function onAuthFailure(fn) { authFailureHandler = fn }
 
@@ -99,18 +98,6 @@ export function getConfig() {
   return api('/api/config')
 }
 
-// retryRun resumes a previously-failed run. `overrides` is optional; the
-// only fields the server cares about are nested OpenCode credentials
-// (password, provider_id, model_id). Stages that completed on the
-// original run are skipped — the orchestrator reads them from
-// <runDir>/state/*.json.
-export function retryRun(runID, overrides = {}) {
-  return api(`/api/runs/${encodeURIComponent(runID)}/retry`, {
-    method: 'POST',
-    body: JSON.stringify(overrides),
-  })
-}
-
 export function getJob(runID, jobID) {
   return api(`/api/runs/${encodeURIComponent(runID)}/job/${encodeURIComponent(jobID)}`)
 }
@@ -132,62 +119,6 @@ export function getRunGraph(runID) {
   return api(`/api/runs/${encodeURIComponent(runID)}/graph`)
 }
 
-// Repo discovery-file workflow. A selected run writes .diffmind.generated.yaml;
-// merging folds its new facts into the repository-owned diffmind.yaml.
-export function mergeRepoFile(path) {
-  return api('/api/architecture/merge-file', {
-    method: 'POST',
-    body: JSON.stringify({ path }),
-  })
-}
-
-export function getFileGraph(path) {
-  return api('/api/architecture/file-graph?path=' + encodeURIComponent(path))
-}
-
-export function draftRepoFile(path, baseSHA, edits) {
-  return api('/api/architecture/file-draft', {
-    method: 'POST',
-    body: JSON.stringify({ path, base_sha: baseSHA, edits }),
-  })
-}
-
-export function applyRepoFile(path, baseSHA, yaml) {
-  return api('/api/architecture/file-apply', {
-    method: 'POST',
-    body: JSON.stringify({ path, base_sha: baseSHA, yaml }),
-  })
-}
-
-export function runProposal(path, runID) {
-  return api('/api/architecture/run-proposal', {
-    method: 'POST',
-    body: JSON.stringify({ path, run_id: runID }),
-  })
-}
-
-// reviewRepoFile applies a batch of curation edits (accept = status edits,
-// edit-then-accept = field edits, reject = deletes) in one optimistic write,
-// returning the new sha + resolved graph. `edits` is an archfile EditSet.
-export function reviewRepoFile(path, baseSHA, edits) {
-  return api('/api/architecture/file-review', {
-    method: 'POST',
-    body: JSON.stringify({ path, base_sha: baseSHA, edits }),
-  })
-}
-
-// Raw discovery-file content for the inline editor.
-export function getRepoFile(path) {
-  return api('/api/architecture/file?path=' + encodeURIComponent(path))
-}
-
-export function putRepoFile(path, content) {
-  return api('/api/architecture/file', {
-    method: 'PUT',
-    body: JSON.stringify({ path, content }),
-  })
-}
-
 // First-class repositories.
 export function listRepos() {
   return api('/api/repos')
@@ -201,22 +132,7 @@ export function deleteRepo(id) {
   return api('/api/repos/' + encodeURIComponent(id), { method: 'DELETE' })
 }
 
-// Server-side folder browser for picking a diffmind.yaml.
-export function fsList(path) {
-  return api('/api/fs/list' + (path ? '?path=' + encodeURIComponent(path) : ''))
-}
-
-// Preflight API. The dashboard's SystemStatus panel polls
-// /api/preflight every 15s and pushes form-derived options to
-// /api/preflight/options whenever the user edits the URL or
-// credentials. Both endpoints return the latest Report.
+// Preflight API. The dashboard's SystemStatus panel polls /api/preflight.
 export function getPreflight() {
   return api('/api/preflight')
-}
-
-export function pushPreflightOptions(opts) {
-  return api('/api/preflight/options', {
-    method: 'POST',
-    body: JSON.stringify(opts),
-  })
 }

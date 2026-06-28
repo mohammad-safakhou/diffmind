@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks'
-import { selection, jobs, stages, runMeta, llmCalls } from '../lib/store.js'
+import { selection, jobs, stages, runMeta } from '../lib/store.js'
 import { getJob } from '../lib/api.js'
 
 export function DetailDrawer() {
@@ -52,8 +52,6 @@ export function DetailDrawer() {
       </div>
     )
   }
-  const llm = llmCalls.value.get(id)
-
   return (
     <div class="drawer">
       <h2>{job.payload?.name || id}</h2>
@@ -72,29 +70,15 @@ export function DetailDrawer() {
         <pre>{JSON.stringify(job.payload, null, 2)}</pre>
       </details>
 
-      {llm && (
-        <details>
-          <summary>LLM call · {llm.session_id || ''}{llm.duration_ms ? ` · ${llm.duration_ms}ms` : ''}</summary>
-          <pre>{JSON.stringify(llm, null, 2)}</pre>
-        </details>
-      )}
-
       <details open>
         <summary>Event history</summary>
         <pre>{JSON.stringify(job.history, null, 2)}</pre>
       </details>
 
-      {detail && detail.prompt && (
+      {detail && Object.keys(detail).length > 0 && (
         <details>
-          <summary>Prompt</summary>
-          <pre>{detail.prompt}</pre>
-        </details>
-      )}
-
-      {detail && detail.response && (
-        <details>
-          <summary>LLM response (raw JSON)</summary>
-          <pre>{detail.response}</pre>
+          <summary>Job details</summary>
+          <pre>{JSON.stringify(detail, null, 2)}</pre>
         </details>
       )}
     </div>

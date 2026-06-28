@@ -11,15 +11,14 @@
 
 import { computed, signal } from '@preact/signals'
 
-// STAGES_MAIN is the main pipeline row in event-emission order.
-const STAGES_MAIN = ['repo_facts', 'ast_index', 'deterministic_discovery', 'discovery', 'reexamination', 'connections', 'connection_repair', 'reconcile']
+// STAGES_MAIN is the deterministic pipeline row in event-emission order.
+const STAGES_MAIN = ['ast_index', 'deterministic_discovery', 'connections', 'reconcile']
 const STAGES = [...STAGES_MAIN]
 
 export const runMeta = signal(null)
 export const stages = signal(initialStages())
 export const jobs = signal(new Map())
 export const timeline = signal([]) // newest events appended at the end
-export const llmCalls = signal(new Map()) // by jobID
 export const watchdogActions = signal([])
 export const selection = signal(null) // { type: 'job'|'stage', id }
 export const counts = computed(() => deriveCounts(jobs.value))
@@ -42,7 +41,6 @@ export function resetStore() {
   stages.value = initialStages()
   jobs.value = new Map()
   timeline.value = []
-  llmCalls.value = new Map()
   watchdogActions.value = []
   selection.value = null
 }
@@ -91,7 +89,6 @@ export function applyEvent(e) {
       }
       stages.value = initialStages()
       jobs.value = new Map()
-      llmCalls.value = new Map()
       watchdogActions.value = []
       break
     }
@@ -116,12 +113,6 @@ export function applyEvent(e) {
           // remediation surface (e.g. show the "fresh credentials"
           // panel by default when the failure was auth or quota).
           errorClass: e.payload?.error_class || prev.errorClass || '',
-          // tokensTotal is the run-wide total; the full per-stage
-          // breakdown is in payload.tokens for callers that need it
-          // (DetailDrawer renders a table).
-          tokens: e.payload?.tokens || prev.tokens,
-          tokensTotal: e.payload?.tokens?.total?.total ?? prev.tokensTotal,
-          tokensCost: e.payload?.tokens?.total?.cost ?? prev.tokensCost,
         }
       }
       // Mark any stages still showing running as either completed or
@@ -174,11 +165,6 @@ export function applyEvent(e) {
           status: e.status || 'success',
           finishedAt: e.ts,
           percent: 100,
-          // Token totals get attached to the stage record so the
-          // PipelineStrip can render a small "12.3k tokens" line
-          // under the stage's progress bar without touching every
-          // llm_call_completed event.
-          tokens: e.payload?.tokens || prev.tokens,
         })
       })
       break
@@ -210,22 +196,6 @@ export function applyEvent(e) {
         }
         m.set(id, updated)
       })
-      break
-
-    case 'llm_call_started':
-    case 'llm_call_completed':
-      {
-        const map = new Map(llmCalls.value)
-        const prev = map.get(e.job_id) || { id: e.job_id, history: [] }
-        map.set(e.job_id, {
-          ...prev,
-          status: e.status || prev.status,
-          duration_ms: e.payload?.duration_ms ?? prev.duration_ms,
-          session_id: e.payload?.session_id ?? prev.session_id,
-          history: [...prev.history, { kind: e.kind, ts: e.ts, payload: e.payload, status: e.status, message: e.message }],
-        })
-        llmCalls.value = map
-      }
       break
 
     case 'watchdog_action':

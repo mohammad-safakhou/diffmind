@@ -87,17 +87,12 @@ type Runner struct {
 // management to the concrete app package.
 type Application interface {
 	Run(context.Context, app.RunInput) (app.RunOutput, error)
-	Retry(context.Context, app.RetryInput) (app.RunOutput, error)
 }
 
 type defaultApplication struct{}
 
 func (defaultApplication) Run(ctx context.Context, input app.RunInput) (app.RunOutput, error) {
 	return app.Run(ctx, input)
-}
-
-func (defaultApplication) Retry(ctx context.Context, input app.RetryInput) (app.RunOutput, error) {
-	return app.RetryRun(ctx, input)
 }
 
 // New constructs a Runner. baseDir is the artifacts root (where each run gets
@@ -123,14 +118,6 @@ func NewWithApplication(baseDir string, bus *events.Bus, application Application
 type StartParams struct {
 	RepoPath string
 	Config   config.Config
-}
-
-// RetryParams carries everything Retry needs. The run id tells the runner
-// which previously-failed run to resume; Config is the CURRENT (possibly
-// different) config to use for the retry attempt.
-type RetryParams struct {
-	RunID  string
-	Config config.Config
 }
 
 // Start launches a new run in the background and returns its allocated run id.
@@ -168,42 +155,6 @@ func (r *Runner) Start(parent context.Context, p StartParams) (string, error) {
 	return runID, nil
 }
 
-// Retry resumes a previously-failed run. Like Start it is asynchronous and
-// returns the (existing) run id so the UI can reattach its SSE stream.
-func (r *Runner) Retry(parent context.Context, p RetryParams) (string, error) {
-	runID := p.RunID
-	if runID == "" {
-		return "", fmt.Errorf("runner: retry requires a run id")
-	}
-	persistDir := r.persistDir(runID)
-	sink, err := r.bus.StartRun(runID, persistDir)
-	if err != nil {
-		return "", fmt.Errorf("runner: start bus for retry: %w", err)
-	}
-
-	ctx, cancel := context.WithCancel(parent)
-	rn := &run{
-		cancel: cancel,
-		doneCh: make(chan struct{}),
-		state: State{
-			RunID:     runID,
-			Status:    StatusRunning,
-			StartedAt: time.Now().UTC(),
-			RunDir:    persistDir,
-		},
-	}
-
-	r.mu.Lock()
-	r.runs[runID] = rn
-	r.mu.Unlock()
-
-	r.persistState(rn.state)
-	r.emitLifecycle(LifecycleEvent{Type: "started", RunID: runID, Status: StatusRunning, At: rn.state.StartedAt})
-
-	go r.executeRetry(ctx, rn, runID, sink, p)
-	return runID, nil
-}
-
 // execute is the goroutine launched by Start.
 func (r *Runner) execute(ctx context.Context, rn *run, runID string, sink events.Sink, p StartParams) {
 	defer close(rn.doneCh)
@@ -213,19 +164,6 @@ func (r *Runner) execute(ctx context.Context, rn *run, runID string, sink events
 		Config:   p.Config,
 		Sink:     sink,
 		RunID:    runID,
-	})
-	r.finish(rn, runID, ctx, out.RunDir, err)
-}
-
-// executeRetry is the goroutine launched by Retry.
-func (r *Runner) executeRetry(ctx context.Context, rn *run, runID string, sink events.Sink, p RetryParams) {
-	defer close(rn.doneCh)
-
-	out, err := r.app.Retry(ctx, app.RetryInput{
-		BaseDir: r.baseDir,
-		RunID:   runID,
-		Config:  p.Config,
-		Sink:    sink,
 	})
 	r.finish(rn, runID, ctx, out.RunDir, err)
 }

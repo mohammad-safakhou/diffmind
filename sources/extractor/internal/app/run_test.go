@@ -9,16 +9,6 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 )
 
-func TestRunRequiresOpenCode(t *testing.T) {
-	cfg := config.Default()
-	cfg.OpenCode.BaseURL = ""
-
-	_, err := Run(context.Background(), RunInput{RepoPath: ".", Config: cfg})
-	if err == nil {
-		t.Fatalf("expected error when opencode url is missing")
-	}
-}
-
 func TestRunDeterministicPipelineDoesNotRequireOpenCode(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.WriteFile(filepath.Join(repo, "app.py"), []byte(`
@@ -33,7 +23,6 @@ def ready():
 		t.Fatal(err)
 	}
 	cfg := config.Default()
-	cfg.OpenCode.BaseURL = ""
 	cfg.Runtime.Pipeline = config.PipelineDeterministic
 	cfg.Artifacts.BaseDir = t.TempDir()
 

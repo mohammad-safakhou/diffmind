@@ -18,7 +18,6 @@ func TestWriteSanitizesUnresolvedFileNames(t *testing.T) {
 		RunID:         "run1",
 		BaseDir:       baseDir,
 		RepoPath:      "/repo",
-		OpenCodeURL:   "http://127.0.0.1:4096",
 		MinConfidence: 0.7,
 		StartedAt:     time.Now().UTC(),
 		FinishedAt:    time.Now().UTC(),
@@ -367,14 +366,11 @@ func TestIgnoredDeterministicDirtyPath(t *testing.T) {
 		"?? diffmind.curated.yaml",
 	}
 	for _, line := range ignored {
-		if !ignoredDeterministicDirtyPath(line, false) {
+		if !ignoredDeterministicDirtyPath(line) {
 			t.Fatalf("expected %q to be ignored", line)
 		}
 	}
-	if ignoredDeterministicDirtyPath("?? src/main/App.java", false) {
+	if ignoredDeterministicDirtyPath("?? src/main/App.java") {
 		t.Fatal("source file dirt must not be ignored")
-	}
-	if ignoredDeterministicDirtyPath("?? diffmind.yaml", true) {
-		t.Fatal("legacy archfile must count as input dirt when legacy import is enabled")
 	}
 }

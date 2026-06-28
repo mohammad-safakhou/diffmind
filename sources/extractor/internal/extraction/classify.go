@@ -61,6 +61,27 @@ func ForceObjectiveType(obj objectives.Objective, e *Candidate) bool {
 	return ok
 }
 
+func EntitySchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"type":       map[string]any{"type": "string"},
+			"name":       map[string]any{"type": "string"},
+			"summary":    map[string]any{"type": "string"},
+			"confidence": map[string]any{"type": "number"},
+			"details":    map[string]any{"type": "object", "additionalProperties": true},
+			"source_locations": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "object"},
+			},
+			"evidence": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "object"},
+			},
+		},
+	}
+}
+
 func EntitySchemaForObjective(obj objectives.Objective) map[string]any {
 	s := EntitySchema()
 	props, _ := s["properties"].(map[string]any)

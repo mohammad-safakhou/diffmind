@@ -3,11 +3,9 @@ import { preflight } from '../lib/store.js'
 import { getPreflight } from '../lib/api.js'
 
 // SystemStatus is the always-visible header strip that surfaces
-// host-level readiness: Docker, OpenCode, credentials, disk, etc.
-// It polls /api/preflight every 15 seconds; the server has its
-// own 30-second ticker so a worst case the user sees a result
-// up to 30s old. The expanded panel lists every check with its
-// remediation.
+// host-level readiness: Docker, disk, indexer, network, and snapshot access.
+// It polls /api/preflight every 15 seconds. The expanded panel lists every
+// check with its remediation.
 //
 // The Run button (in RunForm) reads the same preflight signal
 // and is hard-disabled when overall === 'fail'.

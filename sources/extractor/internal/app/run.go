@@ -10,7 +10,6 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/events"
 	"github.com/mohammad-safakhou/diffmind/internal/extraction"
-	"github.com/mohammad-safakhou/diffmind/internal/preflight"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -40,11 +39,10 @@ func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 	started := time.Now().UTC()
 	logProgress("bootstrap", 0, "Initializing run context and validating configuration.")
 	util.Info("app.run", "starting run", map[string]any{
-		"repo_input":       in.RepoPath,
-		"pipeline":         in.Config.Pipeline(),
-		"opencode_enabled": in.Config.OpenCode.BaseURL != "",
-		"workers":          in.Config.Runtime.Workers,
-		"min_confidence":   in.Config.Quality.MinConfidence,
+		"repo_input":     in.RepoPath,
+		"pipeline":       in.Config.Pipeline(),
+		"workers":        in.Config.Runtime.Workers,
+		"min_confidence": in.Config.Quality.MinConfidence,
 	})
 	repo, err := filepath.Abs(in.RepoPath)
 	if err != nil {
@@ -53,37 +51,6 @@ func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 	}
 	util.Debug("app.run", "resolved repo path", map[string]any{"repo": repo})
 	logProgress("bootstrap", 5, "Repository path resolved.")
-
-	// Preflight gate: run the system-readiness checks before we
-	// touch the snapshot or open any OpenCode connection. A single
-	// SeverityFail aborts the run with a clear message. The UI
-	// handler does the same on the HTTP edge; the CLI path covers
-	// `diffmind run` invocations that bypass the dashboard.
-	if !in.Config.IsDeterministicPipeline() {
-		checks := preflight.DefaultChecks(preflight.OptionsFromConfig(in.Config))
-		rep := preflight.NewRunner(checks).Run(ctx)
-		if rep.HasFail() {
-			failures := rep.Failures()
-			var msg strings.Builder
-			msg.WriteString("preflight rejected the run; ")
-			for i, f := range failures {
-				if i > 0 {
-					msg.WriteString("; ")
-				}
-				msg.WriteString(f.Title + ": " + f.Message)
-				if f.Remediation != "" {
-					msg.WriteString(" (")
-					msg.WriteString(f.Remediation)
-					msg.WriteString(")")
-				}
-			}
-			util.Error("app.run", "preflight failed", map[string]any{
-				"failures": len(failures),
-				"message":  msg.String(),
-			})
-			return RunOutput{}, fmt.Errorf("%s", msg.String())
-		}
-	}
 
 	runID := strings.TrimSpace(in.RunID)
 	if runID == "" {
@@ -94,13 +61,10 @@ func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 		Config: in.Config, Sink: in.Sink,
 		RunID: runID, RunDir: runDir, BaseDir: in.Config.Artifacts.BaseDir,
 		RepoPath: repo, StartedAt: started,
-		Component: "app.run", RequireModel: true,
-		FailureLogText: "agent pipeline failed; see failure report",
-		AfterHealth: func() {
-			logProgress("bootstrap", 10, "OpenCode health check completed.")
-		},
+		Component:      "app.run",
+		FailureLogText: "deterministic pipeline failed; see failure report",
 		AfterPipeline: func(result extraction.Result) {
-			util.Info("app.run", "agent pipeline completed", map[string]any{
+			util.Info("app.run", "deterministic pipeline completed", map[string]any{
 				"exposures":    len(result.Exposures),
 				"dependencies": len(result.Dependencies),
 				"connections":  len(result.Connections),
@@ -110,9 +74,6 @@ func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 		},
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "opencode-url is required") {
-			return RunOutput{}, fmt.Errorf("opencode-url is required; static/regex extraction path has been removed")
-		}
 		return out, err
 	}
 	logProgress("artifacts", 100, "Artifacts written successfully.")
