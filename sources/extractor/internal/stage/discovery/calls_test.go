@@ -28,7 +28,7 @@ func buildAgentsIndex(t *testing.T, files map[string]string) *astpkg.ProjectInde
 	return idx
 }
 
-func entityNames(es []llmEntity) []string {
+func entityNames(es []candidate) []string {
 	out := make([]string, len(es))
 	for i, e := range es {
 		out[i] = e.Name
@@ -320,7 +320,7 @@ public class TrafficInfoDynamoDBService {
 	if len(got) != 2 {
 		t.Fatalf("expected read/write DynamoDB operations, got %d: %+v", len(got), got)
 	}
-	byName := map[string]llmEntity{}
+	byName := map[string]candidate{}
 	for _, e := range got {
 		byName[e.Name] = e
 	}

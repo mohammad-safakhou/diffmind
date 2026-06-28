@@ -10,12 +10,12 @@ import (
 // DeterministicSAMQueueConsumers emits event-source consumers from SAM /
 // CloudFormation templates. The first supported source is DynamoDB Streams,
 // which is a queue-like service entrypoint in the DiffMind protocol graph.
-func DeterministicSAMQueueConsumers(idx *astpkg.ProjectIndex) []llmEntity {
+func DeterministicSAMQueueConsumers(idx *astpkg.ProjectIndex) []candidate {
 	if idx == nil {
 		return nil
 	}
 	paths := sortedConfigPaths(idx)
-	var out []llmEntity
+	var out []candidate
 	seen := map[string]struct{}{}
 	for _, path := range paths {
 		cf := idx.Configs[path]
@@ -48,19 +48,19 @@ func DeterministicSAMQueueConsumers(idx *astpkg.ProjectIndex) []llmEntity {
 				details["stream"] = ev.Destination
 				details["table"] = ev.Destination
 			}
-			out = append(out, llmEntity{
+			out = append(out, candidate{
 				Type:       "queue_consumer",
 				Name:       ev.Destination,
 				Summary:    "AWS SAM DynamoDB stream event source detected from template",
 				Confidence: 1.0,
 				Tags:       []string{"deterministic", "aws-sam", "dynamodb-stream"},
 				Details:    details,
-				Locations: []llmLocation{{
+				Locations: []candidateLocation{{
 					File:      path,
 					StartLine: line,
 					EndLine:   line,
 				}},
-				Evidence: []llmEvidence{{
+				Evidence: []candidateEvidence{{
 					File:      path,
 					StartLine: line,
 					EndLine:   line,
@@ -238,7 +238,7 @@ func normalizeResourceToken(raw string) string {
 	return strings.ToLower(s)
 }
 
-func firstLocationFile(e llmEntity) string {
+func firstLocationFile(e candidate) string {
 	if len(e.Locations) == 0 {
 		return ""
 	}

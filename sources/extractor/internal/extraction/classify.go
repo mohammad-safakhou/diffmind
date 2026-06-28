@@ -346,6 +346,6 @@ func ContainingName(name string) string {
 	return name
 }
 
-func SortLLMEntities(in []Candidate) {
+func SortCandidates(in []Candidate) {
 	sort.SliceStable(in, func(i, j int) bool { return in[i].Name < in[j].Name })
 }

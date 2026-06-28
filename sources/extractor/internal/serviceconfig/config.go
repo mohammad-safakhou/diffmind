@@ -4,15 +4,21 @@ package serviceconfig
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 
+	"github.com/mohammad-safakhou/diffmind/internal/detectors"
 	"gopkg.in/yaml.v3"
 )
 
 const FileName = "diffmind-configuration.yaml"
+const Schema = "diffmind.config.v1"
 
 type Config struct {
+	Schema           string                  `yaml:"schema" json:"schema"`
 	Service          ServiceConfig           `yaml:"service" json:"service"`
 	Paths            PathConfig              `yaml:"paths" json:"paths"`
 	Aliases          AliasConfig             `yaml:"aliases" json:"aliases"`
@@ -103,5 +109,50 @@ func Load(repoPath string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
+}
+
+func (c Config) Validate() error {
+	if schema := strings.TrimSpace(c.Schema); schema != "" && schema != Schema {
+		return fmt.Errorf("schema %q is unsupported; expected %s", c.Schema, Schema)
+	}
+	for _, id := range append(append([]string(nil), c.Detectors.Enabled...), c.Detectors.Disabled...) {
+		if err := detectors.ValidateID(strings.TrimSpace(id)); err != nil {
+			return err
+		}
+	}
+	for i, p := range c.Patterns {
+		if strings.TrimSpace(p.ID) == "" {
+			return fmt.Errorf("patterns[%d].id is required", i)
+		}
+		if strings.TrimSpace(p.Kind) == "" {
+			return fmt.Errorf("patterns[%d].kind is required", i)
+		}
+		if strings.TrimSpace(p.Regex) == "" {
+			return fmt.Errorf("patterns[%d].regex is required", i)
+		}
+		if _, err := regexp.Compile(p.Regex); err != nil {
+			return fmt.Errorf("patterns[%d].regex: %w", i, err)
+		}
+	}
+	for i, target := range c.HTTPTargets {
+		if strings.TrimSpace(target.ID) == "" {
+			return fmt.Errorf("http_targets[%d].id is required", i)
+		}
+		if strings.TrimSpace(target.ServiceRef) == "" {
+			return fmt.Errorf("http_targets[%d].service_ref is required", i)
+		}
+	}
+	for i, resource := range c.ResourcePatterns {
+		if strings.TrimSpace(resource.ID) == "" {
+			return fmt.Errorf("resource_patterns[%d].id is required", i)
+		}
+		if strings.TrimSpace(resource.Kind) == "" {
+			return fmt.Errorf("resource_patterns[%d].kind is required", i)
+		}
+	}
+	return nil
 }

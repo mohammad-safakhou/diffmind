@@ -44,7 +44,7 @@ type ormCallFact struct {
 
 // DeterministicORMOperations emits one db_operation per (table, operation-
 // kind) found through ORM calls, same granularity as the other two derivers.
-func DeterministicORMOperations(idx *astpkg.ProjectIndex) []llmEntity {
+func DeterministicORMOperations(idx *astpkg.ProjectIndex) []candidate {
 	if idx == nil {
 		return nil
 	}
@@ -86,7 +86,7 @@ func DeterministicORMOperations(idx *astpkg.ProjectIndex) []llmEntity {
 
 	type agg struct {
 		fact ormCallFact
-		loc  llmLocation
+		loc  candidateLocation
 	}
 	seen := map[string]*agg{}
 	var order []string
@@ -109,10 +109,10 @@ func DeterministicORMOperations(idx *astpkg.ProjectIndex) []llmEntity {
 	}
 	sort.Strings(order)
 
-	out := make([]llmEntity, 0, len(order))
+	out := make([]candidate, 0, len(order))
 	for _, key := range order {
 		a := seen[key]
-		out = append(out, llmEntity{
+		out = append(out, candidate{
 			Type:       "db_operation",
 			Name:       a.fact.opKind + " " + a.fact.table,
 			Summary:    fmt.Sprintf("AST-derived %s on %s (via %s)", a.fact.opKind, a.fact.table, a.fact.orm),
@@ -124,8 +124,8 @@ func DeterministicORMOperations(idx *astpkg.ProjectIndex) []llmEntity {
 				"orm":           a.fact.orm,
 				"discovered_by": "ast_orm_call",
 			},
-			Locations: []llmLocation{a.loc},
-			Evidence:  []llmEvidence{callEvidence(a.fact.cs)},
+			Locations: []candidateLocation{a.loc},
+			Evidence:  []candidateEvidence{callEvidence(a.fact.cs)},
 		})
 	}
 	return out

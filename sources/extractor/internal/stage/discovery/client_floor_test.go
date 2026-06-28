@@ -61,12 +61,12 @@ func TestHarvestPhysicalTables(t *testing.T) {
 // MergeClients drops an AST-floor client that duplicates an LLM one by config
 // anchor, keeping genuinely new ones.
 func TestMergeClientsDedupsByAnchor(t *testing.T) {
-	llm := []model.ConnectionClient{{LogicalName: "dataSource", Kind: "db", ConfigAnchor: "spring.datasource.url"}}
+	base := []model.ConnectionClient{{LogicalName: "dataSource", Kind: "db", ConfigAnchor: "spring.datasource.url"}}
 	ast := []model.ConnectionClient{
 		{LogicalName: "OrderRepository", Symbol: "com.app.OrderRepository", Kind: "db", ConfigAnchor: "spring.datasource.url"},
 		{LogicalName: "RedisClient", Kind: "cache", ConfigAnchor: "spring.redis.url"},
 	}
-	out := MergeClients(llm, ast)
+	out := MergeClients(base, ast)
 	if len(out) != 2 {
 		t.Fatalf("expected 2 clients (dataSource + RedisClient) after anchor dedup, got %d: %+v", len(out), out)
 	}

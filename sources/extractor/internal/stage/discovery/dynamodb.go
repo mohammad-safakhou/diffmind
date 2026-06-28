@@ -11,7 +11,7 @@ import (
 // DeterministicDynamoDBOperations detects direct Spring Cloud AWS
 // DynamoDbTemplate reads/writes. This covers services that do not expose a
 // repository interface for DynamoDB and instead call the template directly.
-func DeterministicDynamoDBOperations(idx *astpkg.ProjectIndex) []llmEntity {
+func DeterministicDynamoDBOperations(idx *astpkg.ProjectIndex) []candidate {
 	if idx == nil || len(idx.CallGraph) == 0 {
 		return nil
 	}
@@ -21,7 +21,7 @@ func DeterministicDynamoDBOperations(idx *astpkg.ProjectIndex) []llmEntity {
 	}
 	type agg struct {
 		opKind string
-		loc    llmLocation
+		loc    candidateLocation
 		hits   int
 	}
 	seen := map[string]*agg{}
@@ -40,7 +40,7 @@ func DeterministicDynamoDBOperations(idx *astpkg.ProjectIndex) []llmEntity {
 			if a == nil {
 				a = &agg{
 					opKind: opKind,
-					loc: llmLocation{
+					loc: candidateLocation{
 						File:      cs.File,
 						StartLine: int(cs.Range.StartLine) + 1,
 						EndLine:   int(cs.Range.EndLine) + 1,
@@ -53,11 +53,11 @@ func DeterministicDynamoDBOperations(idx *astpkg.ProjectIndex) []llmEntity {
 		}
 	}
 	sort.Strings(order)
-	out := make([]llmEntity, 0, len(order))
+	out := make([]candidate, 0, len(order))
 	for _, key := range order {
 		a := seen[key]
 		operation := a.opKind + " " + table
-		out = append(out, llmEntity{
+		out = append(out, candidate{
 			Type:       "db_operation",
 			Name:       operation,
 			Summary:    fmt.Sprintf("AST-derived DynamoDB %s on %s via DynamoDbTemplate", a.opKind, table),
@@ -73,8 +73,8 @@ func DeterministicDynamoDBOperations(idx *astpkg.ProjectIndex) []llmEntity {
 				"table_property":  tableKey,
 				"discovered_by":   "ast_dynamodb_template_call",
 			},
-			Locations: []llmLocation{a.loc},
-			Evidence: []llmEvidence{{
+			Locations: []candidateLocation{a.loc},
+			Evidence: []candidateEvidence{{
 				File:      a.loc.File,
 				StartLine: a.loc.StartLine,
 				EndLine:   a.loc.EndLine,

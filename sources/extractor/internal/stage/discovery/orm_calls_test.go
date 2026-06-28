@@ -24,7 +24,7 @@ func ormCall(receiver, callee string, args ...string) astpkg.CallSite {
 	return cs
 }
 
-func factNames(out []llmEntity) []string {
+func factNames(out []candidate) []string {
 	names := make([]string, 0, len(out))
 	for _, e := range out {
 		names = append(names, e.Name)

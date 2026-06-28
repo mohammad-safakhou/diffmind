@@ -26,10 +26,10 @@ func TestConfigValueProfilePrecedence(t *testing.T) {
 		wantOK bool
 	}{
 		{
-			name:   "single file resolves",
-			files:  map[string][]string{"application.yml": {"queue.name", "orders"}},
-			key:    "queue.name",
-			want:   "orders", wantOK: true,
+			name:  "single file resolves",
+			files: map[string][]string{"application.yml": {"queue.name", "orders"}},
+			key:   "queue.name",
+			want:  "orders", wantOK: true,
 		},
 		{
 			name: "all files agree",

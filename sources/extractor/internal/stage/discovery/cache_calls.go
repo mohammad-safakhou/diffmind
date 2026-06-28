@@ -36,14 +36,14 @@ var redisCacheOps = map[string]string{
 	"persist":   "expire",
 }
 
-func DeterministicCacheOperations(idx *astpkg.ProjectIndex) []llmEntity {
+func DeterministicCacheOperations(idx *astpkg.ProjectIndex) []candidate {
 	if idx == nil {
 		return nil
 	}
 	type agg struct {
 		op        string
-		locations []llmLocation
-		evidence  []llmEvidence
+		locations []candidateLocation
+		evidence  []candidateEvidence
 		seenLoc   map[string]struct{}
 	}
 	seen := map[string]*agg{}
@@ -96,10 +96,10 @@ func DeterministicCacheOperations(idx *astpkg.ProjectIndex) []llmEntity {
 		order = append(order, key)
 	}
 	sort.Strings(order)
-	out := make([]llmEntity, 0, len(order))
+	out := make([]candidate, 0, len(order))
 	for _, key := range order {
 		a := seen[key]
-		out = append(out, llmEntity{
+		out = append(out, candidate{
 			Type:       "cache_operation",
 			Name:       a.op + " redis",
 			Summary:    fmt.Sprintf("AST-derived Redis cache %s", a.op),
@@ -121,11 +121,11 @@ func DeterministicCacheOperations(idx *astpkg.ProjectIndex) []llmEntity {
 
 var goRedisCallRE = regexp.MustCompile(`\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?(?:redisClient|cacheRepo|cache)\s*\.\s*(Get|Set|Del|Delete|Exists|Expire)\s*\(`)
 
-func deterministicGoRedisSourceOperations(idx *astpkg.ProjectIndex) []llmEntity {
+func deterministicGoRedisSourceOperations(idx *astpkg.ProjectIndex) []candidate {
 	if idx == nil || idx.RepoRoot == "" {
 		return nil
 	}
-	var out []llmEntity
+	var out []candidate
 	seen := map[string]struct{}{}
 	paths := make([]string, 0, len(idx.Files))
 	for p := range idx.Files {
@@ -157,8 +157,8 @@ func deterministicGoRedisSourceOperations(idx *astpkg.ProjectIndex) []llmEntity 
 			}
 			seen[key] = struct{}{}
 			line := 1 + strings.Count(src[:m[0]], "\n")
-			loc := llmLocation{File: path, StartLine: line, EndLine: line}
-			out = append(out, llmEntity{
+			loc := candidateLocation{File: path, StartLine: line, EndLine: line}
+			out = append(out, candidate{
 				Type:       "cache_operation",
 				Name:       op + " redis",
 				Summary:    fmt.Sprintf("AST-derived Redis cache %s", op),
@@ -171,8 +171,8 @@ func deterministicGoRedisSourceOperations(idx *astpkg.ProjectIndex) []llmEntity 
 					"platform":      "redis",
 					"discovered_by": "ast_go_redis_source",
 				},
-				Locations: []llmLocation{loc},
-				Evidence: []llmEvidence{{
+				Locations: []candidateLocation{loc},
+				Evidence: []candidateEvidence{{
 					File:      loc.File,
 					StartLine: loc.StartLine,
 					EndLine:   loc.EndLine,
