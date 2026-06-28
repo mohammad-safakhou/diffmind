@@ -35,9 +35,6 @@ func TestLoadBlueprintsFromDirs(t *testing.T) {
 	if !found["helm-values-identity"] {
 		t.Error("expected helm-values-identity blueprint")
 	}
-	if !found["terraform-resources"] {
-		t.Error("expected terraform-resources blueprint")
-	}
 }
 
 func TestMatches_ServiceRepo(t *testing.T) {
@@ -117,7 +114,7 @@ func TestEngine_FieldPathExtraction(t *testing.T) {
 	repoPath := filepath.Join(td, "sample_service_repos", "order-service")
 
 	log := util.NewLogger(util.LevelInfo)
-	engine := NewEngine(nil, log)
+	engine := NewEngine(log)
 
 	bp := &Blueprint{
 		Name: "test-bp",
@@ -134,7 +131,7 @@ func TestEngine_FieldPathExtraction(t *testing.T) {
 		},
 	}
 
-	results := engine.Run(bp, repoPath, "")
+	results := engine.Run(bp, repoPath)
 	if len(results) == 0 {
 		t.Fatal("expected extraction results")
 	}

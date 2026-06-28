@@ -16,7 +16,6 @@ import (
 
 	"github.com/mohammad-safakhou/diffmind/internal/artifacts"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
-	"github.com/mohammad-safakhou/diffmind/internal/opencode"
 	"github.com/mohammad-safakhou/diffmind/internal/orchestrator"
 	"github.com/mohammad-safakhou/diffmind/internal/store"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
@@ -106,8 +105,7 @@ func (m *Manager) execute(ctx context.Context, pid string, manifest store.RunMan
 		return
 	}
 
-	client := buildClient(cfg)
-	pipeline := orchestrator.NewPipeline(cfg, client, m.log)
+	pipeline := orchestrator.NewPipeline(cfg, m.log)
 	pipeline.Progress = func(ev orchestrator.ProgressEvent) {
 		typ := "phase_" + ev.Status
 		switch ev.Status {
@@ -181,28 +179,11 @@ func (m *Manager) finish(pid string, manifest store.RunManifest, ar *activeRun, 
 	m.log.Info("graph run finished", "project", pid, "run", manifest.ID, "status", manifest.Status)
 }
 
-// buildConfig assembles a pipeline config from the project, its repos, the
-// selected DiffMind runs, and the effective OpenCode settings.
+// buildConfig assembles a pipeline config from the project, its repos, and the
+// selected DiffMind runs.
 func (m *Manager) buildConfig(pid string, manifest store.RunManifest) (*config.Config, []string, error) {
 	var warnings []string
-	project, err := m.store.GetProject(pid)
-	if err != nil {
-		return nil, warnings, err
-	}
-
-	global, err := config.LoadGlobal()
-	if err != nil {
-		warnings = append(warnings, "failed to load global config: "+err.Error())
-		global = &config.GlobalConfig{}
-	}
-
-	oc := global.OpenCode
-	if project.OpenCode != nil {
-		oc = mergeOpenCode(oc, *project.OpenCode)
-	}
-
 	cfg := &config.Config{
-		OpenCode:   oc,
 		Blueprints: config.BlueprintsConfig{Dirs: []string{m.store.BlueprintsDir(pid)}},
 		Artifacts:  config.ArtifactsConfig{BaseDir: m.store.RunDir(pid, manifest.ID)},
 	}
@@ -390,44 +371,4 @@ func (ar *activeRun) emit(e Event) {
 		default:
 		}
 	}
-}
-
-func mergeOpenCode(base config.OpenCodeConfig, over store.OpenCodeConfig) config.OpenCodeConfig {
-	if over.BaseURL != "" {
-		base.BaseURL = over.BaseURL
-	}
-	if over.ProviderID != "" {
-		base.ProviderID = over.ProviderID
-	}
-	if over.ModelID != "" {
-		base.ModelID = over.ModelID
-	}
-	if over.Variant != "" {
-		base.Variant = over.Variant
-	}
-	if over.Timeout != 0 {
-		base.Timeout = over.Timeout
-	}
-	if over.Username != "" {
-		base.Username = over.Username
-	}
-	if over.Password != "" {
-		base.Password = over.Password
-	}
-	return base
-}
-
-func buildClient(cfg *config.Config) *opencode.Client {
-	if cfg.OpenCode.BaseURL == "" {
-		return nil
-	}
-	return opencode.NewClient(
-		cfg.OpenCode.BaseURL,
-		cfg.OpenCode.ProviderID,
-		cfg.OpenCode.ModelID,
-		cfg.OpenCode.Variant,
-		cfg.OpenCode.Username,
-		cfg.OpenCode.Password,
-		time.Duration(cfg.OpenCode.Timeout)*time.Second,
-	)
 }

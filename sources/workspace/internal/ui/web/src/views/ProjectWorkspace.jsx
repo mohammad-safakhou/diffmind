@@ -111,7 +111,7 @@ export function ProjectWorkspace({ pid }) {
     await startRepoDiffMind(pid, repo.id, options)
     setPendingDiffMind((cur) => ({ ...cur, [repo.id]: { started_at: startedAt, options } }))
     updateRepoStatus(repo.id, { sync_status: 'diffmind_running', sync_error: '', pending_diffmind_started_at: startedAt })
-    setNotice(`DiffMind ${options.pipeline || 'deterministic'} run started for ${repo.name}. Status refreshes every 2 seconds while it is running.`)
+    setNotice(`DiffMind deterministic run started for ${repo.name}. Status refreshes every 2 seconds while it is running.`)
     setDiffMindRepo(null)
     setTimeout(refresh, 500)
   })
@@ -471,38 +471,17 @@ function ImportOrgModal({ busy, onClose, onImport }) {
 }
 
 const defaultDiffMindOptions = {
-  pipeline: 'deterministic',
   config_path: '',
   out_dir: '',
   log_file: '',
   workers: '',
-  max_catalog_items: '',
   min_confidence: '',
-  opencode_url: '',
-  opencode_username: '',
-  opencode_password: '',
-  opencode_timeout_seconds: '',
-  provider_id: '',
-  model_id: '',
-  model_variant: '',
-  cleanup_opencode_sessions: false,
-  opencode_delete_delay_seconds: '',
-  reuse_opencode_session: false,
-  skip_reexamination: false,
-  discovery_verify: false,
-  discovery_verify_mode: '',
-  discovery_verify_samples: '',
-  discovery_framework_scope: false,
-  idle_timeout_seconds: '',
-  prompt_retry_count: '',
-  max_call_seconds: '',
-  liveness_poll_seconds: '',
   verbose: false,
   trace: false,
 }
 
 function BatchDiffMindModal({ repoCount, busy, onClose, onRun }) {
-  const [opts, setOpts] = useState({ ...defaultDiffMindOptions, pipeline: 'deterministic' })
+  const [opts, setOpts] = useState({ ...defaultDiffMindOptions })
   const [concurrency, setConcurrency] = useState('4')
   const [skipFresh, setSkipFresh] = useState(true)
   const [error, setError] = useState('')
@@ -536,7 +515,7 @@ function BatchDiffMindModal({ repoCount, busy, onClose, onRun }) {
         </section>
         <section class="run-options-section command-section">
           <h3>Command Preview</h3>
-          <pre class="command-preview">{`diffmind run --repo <each selected repo> --pipeline deterministic\nbatch concurrency: ${concurrency || 4}`}</pre>
+          <pre class="command-preview">{`diffmind run --repo <each selected repo>\nbatch concurrency: ${concurrency || 4}`}</pre>
         </section>
       </div>
       {error && <div class="banner error">{error}</div>}
@@ -559,69 +538,22 @@ function DiffMindRunModal({ repo, busy, onClose, onRun }) {
     try { await onRun(payload) }
     catch (e) { setError(e.message) }
   }
-  const llm = opts.pipeline === 'llm'
   return (
     <Modal title={`DiffMind run · ${repo.name}`} onClose={onClose} wide>
       <div class="run-options-layout">
         <section class="run-options-section">
           <h3>Run</h3>
-          <div class="field">
-            <label>Pipeline</label>
-            <div class="segmented">
-              <button class={opts.pipeline === 'deterministic' ? 'active' : ''} onClick={() => set('pipeline', 'deterministic')}>Deterministic</button>
-              <button class={opts.pipeline === 'llm' ? 'active' : ''} onClick={() => set('pipeline', 'llm')}>LLM</button>
-            </div>
-          </div>
+          <KV rows={[['Pipeline', 'deterministic']]} />
           <TextField label="Config JSON" value={opts.config_path} onInput={(v) => set('config_path', v)} placeholder="/abs/path/config.json" />
           <TextField label="Output directory" value={opts.out_dir} onInput={(v) => set('out_dir', v)} placeholder="default ~/.diffmind/runs" />
           <TextField label="Log file" value={opts.log_file} onInput={(v) => set('log_file', v)} placeholder="/abs/path/diffmind.log" />
           <div class="option-grid">
             <NumberField label="Workers" value={opts.workers} onInput={(v) => set('workers', v)} />
-            <NumberField label="Max catalog items" value={opts.max_catalog_items} onInput={(v) => set('max_catalog_items', v)} />
             <NumberField label="Min confidence" value={opts.min_confidence} onInput={(v) => set('min_confidence', v)} step="0.01" min="0" max="1" />
           </div>
           <div class="check-grid">
             <Check label="Verbose" checked={opts.verbose} onInput={(v) => set('verbose', v)} />
             <Check label="Trace" checked={opts.trace} onInput={(v) => set('trace', v)} />
-          </div>
-        </section>
-
-        <section class={'run-options-section ' + (llm ? '' : 'muted-section')}>
-          <h3>LLM / OpenCode</h3>
-          <TextField label="OpenCode URL" value={opts.opencode_url} onInput={(v) => set('opencode_url', v)} placeholder="http://localhost:3000" disabled={!llm} />
-          <div class="option-grid">
-            <TextField label="Provider ID" value={opts.provider_id} onInput={(v) => set('provider_id', v)} disabled={!llm} />
-            <TextField label="Model ID" value={opts.model_id} onInput={(v) => set('model_id', v)} disabled={!llm} />
-            <TextField label="Model variant" value={opts.model_variant} onInput={(v) => set('model_variant', v)} placeholder="low, medium, high, max" disabled={!llm} />
-          </div>
-          <div class="option-grid">
-            <TextField label="Username" value={opts.opencode_username} onInput={(v) => set('opencode_username', v)} disabled={!llm} />
-            <TextField label="Password" type="password" value={opts.opencode_password} onInput={(v) => set('opencode_password', v)} disabled={!llm} />
-            <NumberField label="HTTP timeout seconds" value={opts.opencode_timeout_seconds} onInput={(v) => set('opencode_timeout_seconds', v)} disabled={!llm} />
-          </div>
-          <div class="check-grid">
-            <Check label="Reuse session" checked={opts.reuse_opencode_session} onInput={(v) => set('reuse_opencode_session', v)} disabled={!llm} />
-            <Check label="Cleanup sessions" checked={opts.cleanup_opencode_sessions} onInput={(v) => set('cleanup_opencode_sessions', v)} disabled={!llm} />
-            <Check label="Skip reexamination" checked={opts.skip_reexamination} onInput={(v) => set('skip_reexamination', v)} disabled={!llm} />
-          </div>
-          <NumberField label="Delete delay seconds" value={opts.opencode_delete_delay_seconds} onInput={(v) => set('opencode_delete_delay_seconds', v)} disabled={!llm} />
-        </section>
-
-        <section class="run-options-section">
-          <h3>Verification and Limits</h3>
-          <div class="check-grid">
-            <Check label="Discovery verify" checked={opts.discovery_verify} onInput={(v) => set('discovery_verify', v)} />
-            <Check label="Framework scope" checked={opts.discovery_framework_scope} onInput={(v) => set('discovery_framework_scope', v)} />
-          </div>
-          <div class="option-grid">
-            <SelectField label="Verify mode" value={opts.discovery_verify_mode} onInput={(v) => set('discovery_verify_mode', v)} options={[['', 'Default'], ['reask', 'Reask'], ['ksample', 'K-sample']]} />
-            <NumberField label="Verify samples" value={opts.discovery_verify_samples} onInput={(v) => set('discovery_verify_samples', v)} min="1" max="5" />
-            <NumberField label="Prompt retries" value={opts.prompt_retry_count} onInput={(v) => set('prompt_retry_count', v)} placeholder="-1 default, 0 disable" />
-          </div>
-          <div class="option-grid">
-            <NumberField label="Idle timeout seconds" value={opts.idle_timeout_seconds} onInput={(v) => set('idle_timeout_seconds', v)} />
-            <NumberField label="Max call seconds" value={opts.max_call_seconds} onInput={(v) => set('max_call_seconds', v)} />
-            <NumberField label="Liveness poll seconds" value={opts.liveness_poll_seconds} onInput={(v) => set('liveness_poll_seconds', v)} />
           </div>
         </section>
 
@@ -652,17 +584,6 @@ function NumberField({ label, value, onInput, placeholder, disabled, min, max, s
   return <TextField label={label} type="number" value={value} disabled={disabled} placeholder={placeholder} onInput={onInput} min={min} max={max} step={step} />
 }
 
-function SelectField({ label, value, onInput, options }) {
-  return (
-    <div class="field">
-      <label>{label}</label>
-      <select value={value} onInput={(e) => onInput(e.target.value)}>
-        {options.map(([v, text]) => <option value={v} key={v}>{text}</option>)}
-      </select>
-    </div>
-  )
-}
-
 function Check({ label, checked, onInput, disabled }) {
   return (
     <label class={'check-row ' + (disabled ? 'disabled' : '')}>
@@ -673,27 +594,21 @@ function Check({ label, checked, onInput, disabled }) {
 }
 
 function diffmindPayload(opts) {
-  const out = { pipeline: opts.pipeline || 'deterministic' }
-  const stringKeys = ['config_path', 'out_dir', 'log_file', 'discovery_verify_mode']
+  const out = {}
+  const stringKeys = ['config_path', 'out_dir', 'log_file']
   stringKeys.forEach((k) => { if (opts[k]) out[k] = opts[k] })
-  const intKeys = ['workers', 'max_catalog_items', 'discovery_verify_samples', 'idle_timeout_seconds', 'max_call_seconds', 'liveness_poll_seconds']
+  const intKeys = ['workers']
   intKeys.forEach((k) => {
     if (opts[k] !== '') out[k] = Number(opts[k])
   })
-  const boolKeys = ['discovery_verify', 'discovery_framework_scope', 'verbose', 'trace']
+  const boolKeys = ['verbose', 'trace']
   boolKeys.forEach((k) => { if (opts[k]) out[k] = true })
-  if (out.pipeline === 'llm') {
-    ;['opencode_url', 'opencode_username', 'opencode_password', 'provider_id', 'model_id', 'model_variant'].forEach((k) => { if (opts[k]) out[k] = opts[k] })
-    ;['opencode_timeout_seconds', 'opencode_delete_delay_seconds'].forEach((k) => { if (opts[k] !== '') out[k] = Number(opts[k]) })
-    ;['cleanup_opencode_sessions', 'reuse_opencode_session', 'skip_reexamination'].forEach((k) => { if (opts[k]) out[k] = true })
-  }
   if (opts.min_confidence !== '') out.min_confidence = Number(opts.min_confidence)
-  if (opts.prompt_retry_count !== '') out.prompt_retry_count = Number(opts.prompt_retry_count)
   return out
 }
 
 function diffmindCommandPreview(repoPath, opts) {
-  const args = ['diffmind', 'run', '--repo', shellArg(repoPath || '<repo>'), '--pipeline', shellArg(opts.pipeline || 'deterministic')]
+  const args = ['diffmind', 'run', '--repo', shellArg(repoPath || '<repo>')]
   const add = (flag, value, secret) => {
     if (value !== undefined && value !== null && value !== '') args.push(flag, shellArg(secret ? '********' : value))
   }
@@ -702,27 +617,7 @@ function diffmindCommandPreview(repoPath, opts) {
   add('--out', opts.out_dir)
   add('--log-file', opts.log_file)
   add('--workers', opts.workers)
-  add('--max-catalog-items', opts.max_catalog_items)
   add('--min-confidence', opts.min_confidence)
-  add('--opencode-url', opts.opencode_url)
-  add('--opencode-username', opts.opencode_username)
-  add('--opencode-password', opts.opencode_password, true)
-  add('--opencode-timeout-seconds', opts.opencode_timeout_seconds)
-  add('--provider-id', opts.provider_id)
-  add('--model-id', opts.model_id)
-  add('--model-variant', opts.model_variant)
-  addBool('--cleanup-opencode-sessions', opts.cleanup_opencode_sessions)
-  add('--opencode-delete-delay-seconds', opts.opencode_delete_delay_seconds)
-  addBool('--reuse-opencode-session', opts.reuse_opencode_session)
-  addBool('--skip-reexamination', opts.skip_reexamination)
-  addBool('--discovery-verify', opts.discovery_verify)
-  add('--discovery-verify-mode', opts.discovery_verify_mode)
-  add('--discovery-verify-samples', opts.discovery_verify_samples)
-  addBool('--discovery-framework-scope', opts.discovery_framework_scope)
-  add('--idle-timeout-seconds', opts.idle_timeout_seconds)
-  add('--prompt-retry-count', opts.prompt_retry_count)
-  add('--max-call-seconds', opts.max_call_seconds)
-  add('--liveness-poll-seconds', opts.liveness_poll_seconds)
   addBool('--verbose', opts.verbose)
   addBool('--trace', opts.trace)
   return args.join(' ')

@@ -7,30 +7,16 @@ package store
 import "time"
 
 // Project is a top-level workspace grouping repositories, blueprints, and
-// graph runs. OpenCode and SearchRoots provide per-project overrides of the
-// global defaults; Instruction is the project-level default extraction
-// instruction that repos may override.
+// graph runs. SearchRoots provide project-scoped repository discovery roots;
+// Instruction is the project-level default extraction instruction that repos may
+// override.
 type Project struct {
-	ID          string          `json:"id"`
-	Name        string          `json:"name"`
-	SearchRoots []string        `json:"search_roots,omitempty"`
-	OpenCode    *OpenCodeConfig `json:"opencode,omitempty"`
-	Instruction string          `json:"instruction,omitempty"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
-}
-
-// OpenCodeConfig mirrors config.OpenCodeConfig but lives here so the store has
-// no dependency on the run-time config package. The run manager merges this
-// over the global default when building a pipeline config.
-type OpenCodeConfig struct {
-	BaseURL    string `json:"base_url"`
-	ProviderID string `json:"provider_id"`
-	ModelID    string `json:"model_id"`
-	Variant    string `json:"variant"`
-	Timeout    int    `json:"timeout"`
-	Username   string `json:"username"`
-	Password   string `json:"password"`
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	SearchRoots []string  `json:"search_roots,omitempty"`
+	Instruction string    `json:"instruction,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // Repo is a project-scoped repository reference. Path points at the source repo

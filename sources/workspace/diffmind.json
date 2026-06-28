@@ -1,11 +1,4 @@
 {
-  "opencode": {
-    "base_url": "http://localhost:4096",
-    "provider_id": "openai",
-    "model_id": "gpt-5.4-mini",
-    "variant": "",
-    "timeout": 600
-  },
   "repos": {
     "service_repos": [
       {

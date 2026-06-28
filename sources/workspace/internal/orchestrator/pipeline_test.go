@@ -39,7 +39,7 @@ func TestPipeline_FullRun_DeterministicOnly(t *testing.T) {
 	}
 
 	log := util.NewLogger(util.LevelDebug)
-	pipeline := NewPipeline(cfg, nil, log) // no LLM client
+	pipeline := NewPipeline(cfg, log)
 
 	result, err := pipeline.Run()
 	if err != nil {
@@ -105,7 +105,7 @@ func TestPipeline_WithBlueprintExtraction(t *testing.T) {
 	}
 
 	log := util.NewLogger(util.LevelDebug)
-	pipeline := NewPipeline(cfg, nil, log)
+	pipeline := NewPipeline(cfg, log)
 
 	result, err := pipeline.Run()
 	if err != nil {

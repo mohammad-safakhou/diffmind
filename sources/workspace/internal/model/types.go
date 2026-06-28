@@ -132,7 +132,6 @@ type RunManifest struct {
 	RepoGitRemoteURL  string                 `json:"repo_git_remote_url,omitempty"`
 	RepoGitDirty      bool                   `json:"repo_git_dirty,omitempty"`
 	SchemaVersion     string                 `json:"schema_version"`
-	OpenCodeURL       string                 `json:"opencode_url,omitempty"`
 	ConfidenceMinimum float64                `json:"confidence_minimum"`
 	Counts            map[string]int         `json:"counts"`
 	RepoMetrics       *RepoMetrics           `json:"repo_metrics,omitempty"`

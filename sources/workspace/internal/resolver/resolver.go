@@ -3,11 +3,8 @@
 // each service's outbound dependencies to known service identities using
 // blueprint-derived aliases and resource identifiers.
 //
-// Resolution is intentionally deterministic only: there is no LLM fallback.
-// The same inputs always produce the same graph, and graph generation never
-// depends on OpenCode availability. (OpenCode is still used upstream during
-// blueprint extraction, where a failure surfaces as an extraction failure
-// rather than silently degrading the resolver.)
+// Resolution is intentionally deterministic only: there is no fallback or
+// external model dependency. The same inputs always produce the same graph.
 package resolver
 
 import (

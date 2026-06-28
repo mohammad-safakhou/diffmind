@@ -1,6 +1,6 @@
 {
   "name": "helm-values-identity",
-  "description": "LLM-based extraction of service identity from .example production Helm values",
+  "description": "Deterministic extraction of service identity from .example production Helm values",
   "version": "v1",
   "applies_to": {
     "kind": "service_repo",
@@ -11,17 +11,24 @@
   "extractions": [
     {
       "name": "production_identity",
-      "description": "Extract service identity from production Helm values using LLM",
+      "description": "Extract IAM role from production Helm values",
       "source": {
         "glob": ".example/config/production/values.yaml"
       },
-      "strategy": "llm",
-      "prompt_hint": "From this Helm values YAML, extract service identity as JSON: {\"iam_role\": \"...\", \"dns_aliases\": [\"subdomain.example.global\"], \"queue_identifiers\": [\"queue-name-1\"], \"database_connection\": [\"host:port/dbname\"], \"service_urls\": {\"target-service\": \"http://...\"}}. Look at iamRole field, ingress subdomain, and ALL env vars in configMaps.configmap.env for URLs (*_API, *_URL, *_HOST), SQS queues (*SQS*, *QUEUE*), databases (*DB*, *DATABASE*, *REDIS*, *DYNAMO*). Return ONLY the JSON object.",
+      "strategy": "field_path",
       "extract": [
-        {"maps_to": "iam_role"},
-        {"maps_to": "dns_aliases"},
-        {"maps_to": "queue_identifiers"},
-        {"maps_to": "database_connection"}
+        {"field": "iamRole", "maps_to": "iam_role"}
+      ]
+    },
+    {
+      "name": "production_ingress",
+      "description": "Extract ingress hosts from production Helm values",
+      "source": {
+        "glob": ".example/config/production/values.yaml"
+      },
+      "strategy": "field_path",
+      "extract": [
+        {"field": "ingress.hosts", "maps_to": "dns_aliases"}
       ]
     }
   ]

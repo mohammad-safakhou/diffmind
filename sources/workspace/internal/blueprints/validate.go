@@ -15,7 +15,7 @@ type ValidationError struct {
 }
 
 // knownStrategies are the extraction strategies the engine understands.
-var knownStrategies = map[string]bool{"": true, "field_path": true, "regex": true, "llm": true}
+var knownStrategies = map[string]bool{"": true, "field_path": true, "regex": true}
 
 // knownKinds are the applies_to kinds the matcher understands.
 var knownKinds = map[string]bool{"service_repo": true, "infra_repo": true, "any": true, "": true}
@@ -62,7 +62,7 @@ func validateStructure(bp *Blueprint) []ValidationError {
 			errs = append(errs, ValidationError{Field: base + ".name", Message: "extraction name is required"})
 		}
 		if !knownStrategies[ex.Strategy] {
-			errs = append(errs, ValidationError{Field: base + ".strategy", Message: fmt.Sprintf("unknown strategy %q (want field_path, regex, or llm)", ex.Strategy)})
+			errs = append(errs, ValidationError{Field: base + ".strategy", Message: fmt.Sprintf("unknown strategy %q (want field_path or regex)", ex.Strategy)})
 		}
 		if strings.TrimSpace(ex.Source.Glob) == "" {
 			errs = append(errs, ValidationError{Field: base + ".source.glob", Message: "source.glob is required"})

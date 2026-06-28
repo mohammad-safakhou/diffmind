@@ -17,7 +17,7 @@ func TestDiffMindCommandUsesLocalModuleDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	name, args, dir := diffmindCommand("diffmind", []string{"run", "--repo", "/tmp/repo", "--pipeline", "deterministic"})
+	name, args, dir := diffmindCommand("diffmind", []string{"run", "--repo", "/tmp/repo"})
 	if name != "go" {
 		t.Fatalf("name = %q, want go", name)
 	}

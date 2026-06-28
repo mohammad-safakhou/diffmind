@@ -410,11 +410,6 @@ func decodeDiffMindRunOptions(r *http.Request) (orchestrator.DiffMindRunOptions,
 		return opts, err
 	}
 	opts = req.Options
-	switch opts.Pipeline {
-	case "", "deterministic", "llm":
-	default:
-		return opts, fmt.Errorf("pipeline must be deterministic or llm")
-	}
 	return opts, nil
 }
 

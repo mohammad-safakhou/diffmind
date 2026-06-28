@@ -41,8 +41,7 @@ type Extraction struct {
 	Name        string           `json:"name"`
 	Description string           `json:"description"`
 	Source      ExtractionSource `json:"source"`
-	Strategy    string           `json:"strategy,omitempty"`    // field_path (default), regex, llm
-	PromptHint  string           `json:"prompt_hint,omitempty"` // hint for LLM strategy
+	Strategy    string           `json:"strategy,omitempty"` // field_path (default), regex
 	Extract     []ExtractField   `json:"extract"`
 }
 
@@ -158,8 +157,7 @@ func ToIdentity(serviceName, repoPath string, results []ExtractionResult) model.
 					id.Resources = append(id.Resources, model.OwnedResource{Kind: "queue", Identifier: q, Role: "owner"})
 				}
 			case "queue_ownership":
-				// LLM-extracted: expect map[string]string of queue_name → service_name
-				// handled at a higher level
+				// Expect map[string]string of queue_name -> service_name, handled at a higher level.
 			default:
 				if s := firstString(val); s != "" {
 					id.Metadata[mapsTo] = s

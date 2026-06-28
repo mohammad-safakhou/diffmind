@@ -18,10 +18,9 @@ func (s *Server) handleListProjects(w http.ResponseWriter, _ *http.Request) {
 }
 
 type createProjectRequest struct {
-	Name        string                `json:"name"`
-	SearchRoots []string              `json:"search_roots"`
-	OpenCode    *store.OpenCodeConfig `json:"opencode"`
-	Instruction string                `json:"instruction"`
+	Name        string   `json:"name"`
+	SearchRoots []string `json:"search_roots"`
+	Instruction string   `json:"instruction"`
 	// StarterBlueprints are blueprint bodies to seed the new project with
 	// (the SPA copies these from diffmind/blueprints/*.json templates).
 	StarterBlueprints []starterBlueprint `json:"starter_blueprints"`
@@ -45,7 +44,6 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	p, err := s.store.CreateProject(store.Project{
 		Name:        req.Name,
 		SearchRoots: req.SearchRoots,
-		OpenCode:    req.OpenCode,
 		Instruction: req.Instruction,
 	})
 	if err != nil {
@@ -73,10 +71,9 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 }
 
 type patchProjectRequest struct {
-	Name        *string               `json:"name"`
-	SearchRoots *[]string             `json:"search_roots"`
-	OpenCode    *store.OpenCodeConfig `json:"opencode"`
-	Instruction *string               `json:"instruction"`
+	Name        *string   `json:"name"`
+	SearchRoots *[]string `json:"search_roots"`
+	Instruction *string   `json:"instruction"`
 }
 
 func (s *Server) handlePatchProject(w http.ResponseWriter, r *http.Request) {
@@ -91,9 +88,6 @@ func (s *Server) handlePatchProject(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.SearchRoots != nil {
 			p.SearchRoots = *req.SearchRoots
-		}
-		if req.OpenCode != nil {
-			p.OpenCode = req.OpenCode
 		}
 		if req.Instruction != nil {
 			p.Instruction = *req.Instruction

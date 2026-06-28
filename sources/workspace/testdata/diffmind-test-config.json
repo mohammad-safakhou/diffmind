@@ -1,9 +1,4 @@
 {
-  "opencode": {
-    "base_url": "",
-    "provider_id": "",
-    "model_id": ""
-  },
   "diffmind": {
     "binary_path": "diffmind"
   },

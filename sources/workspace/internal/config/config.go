@@ -10,22 +10,10 @@ import (
 
 // Config is the top-level DiffMind configuration.
 type Config struct {
-	OpenCode   OpenCodeConfig   `json:"opencode"`
 	DiffMind   DiffMindConfig   `json:"diffmind"`
 	Repos      ReposConfig      `json:"repos"`
 	Blueprints BlueprintsConfig `json:"blueprints"`
 	Artifacts  ArtifactsConfig  `json:"artifacts"`
-}
-
-// OpenCodeConfig configures the OpenCode LLM server connection.
-type OpenCodeConfig struct {
-	BaseURL    string `json:"base_url"`
-	ProviderID string `json:"provider_id"`
-	ModelID    string `json:"model_id"`
-	Variant    string `json:"variant"`
-	Timeout    int    `json:"timeout"` // seconds
-	Username   string `json:"username"`
-	Password   string `json:"password"`
 }
 
 // DiffMindConfig configures how DiffMind invokes DiffMind.
@@ -57,29 +45,8 @@ type ArtifactsConfig struct {
 	BaseDir string `json:"base_dir"`
 }
 
-// applyDefaults fills in OpenCode connection defaults and honours the
-// OPENCODE_SERVER_* environment variables for credentials.
-func (o *OpenCodeConfig) applyDefaults() {
-	if o.BaseURL == "" {
-		o.BaseURL = "http://localhost:3000"
-	}
-	if o.Timeout == 0 {
-		o.Timeout = 120
-	}
-	if o.Variant == "" {
-		o.Variant = "medium"
-	}
-	if u := os.Getenv("OPENCODE_SERVER_USERNAME"); u != "" {
-		o.Username = u
-	}
-	if p := os.Getenv("OPENCODE_SERVER_PASSWORD"); p != "" {
-		o.Password = p
-	}
-}
-
 // Defaults applies default values to the config.
 func (c *Config) Defaults() {
-	c.OpenCode.applyDefaults()
 	if c.DiffMind.BinaryPath == "" {
 		c.DiffMind.BinaryPath = "diffmind"
 	}

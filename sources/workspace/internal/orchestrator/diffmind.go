@@ -12,34 +12,13 @@ import (
 // DiffMindRunOptions mirrors the diffmind run CLI flags DiffMind exposes.
 // Pointer fields are used where zero is a meaningful explicit value.
 type DiffMindRunOptions struct {
-	Pipeline                string   `json:"pipeline,omitempty"`
-	ConfigPath              string   `json:"config_path,omitempty"`
-	OutDir                  string   `json:"out_dir,omitempty"`
-	LogFile                 string   `json:"log_file,omitempty"`
-	Workers                 int      `json:"workers,omitempty"`
-	MaxCatalogItems         int      `json:"max_catalog_items,omitempty"`
-	MinConfidence           *float64 `json:"min_confidence,omitempty"`
-	OpenCodeURL             string   `json:"opencode_url,omitempty"`
-	OpenCodeUsername        string   `json:"opencode_username,omitempty"`
-	OpenCodePassword        string   `json:"opencode_password,omitempty"`
-	OpenCodeTimeoutSeconds  int      `json:"opencode_timeout_seconds,omitempty"`
-	ProviderID              string   `json:"provider_id,omitempty"`
-	ModelID                 string   `json:"model_id,omitempty"`
-	ModelVariant            string   `json:"model_variant,omitempty"`
-	CleanupOpenCodeSessions bool     `json:"cleanup_opencode_sessions,omitempty"`
-	OpenCodeDeleteDelaySec  int      `json:"opencode_delete_delay_seconds,omitempty"`
-	ReuseOpenCodeSession    bool     `json:"reuse_opencode_session,omitempty"`
-	SkipReexamination       bool     `json:"skip_reexamination,omitempty"`
-	DiscoveryVerify         bool     `json:"discovery_verify,omitempty"`
-	DiscoveryVerifyMode     string   `json:"discovery_verify_mode,omitempty"`
-	DiscoveryVerifySamples  int      `json:"discovery_verify_samples,omitempty"`
-	DiscoveryFrameworkScope bool     `json:"discovery_framework_scope,omitempty"`
-	IdleTimeoutSeconds      int      `json:"idle_timeout_seconds,omitempty"`
-	PromptRetryCount        *int     `json:"prompt_retry_count,omitempty"`
-	MaxCallSeconds          int      `json:"max_call_seconds,omitempty"`
-	LivenessPollSeconds     int      `json:"liveness_poll_seconds,omitempty"`
-	Verbose                 bool     `json:"verbose,omitempty"`
-	Trace                   bool     `json:"trace,omitempty"`
+	ConfigPath    string   `json:"config_path,omitempty"`
+	OutDir        string   `json:"out_dir,omitempty"`
+	LogFile       string   `json:"log_file,omitempty"`
+	Workers       int      `json:"workers,omitempty"`
+	MinConfidence *float64 `json:"min_confidence,omitempty"`
+	Verbose       bool     `json:"verbose,omitempty"`
+	Trace         bool     `json:"trace,omitempty"`
 }
 
 // RunDiffMind triggers a DiffMind run against a repository.
@@ -60,11 +39,7 @@ func RunDiffMind(binaryPath, repoPath string, opts DiffMindRunOptions, log *util
 }
 
 func (o DiffMindRunOptions) Args(repoPath string) []string {
-	pipeline := o.Pipeline
-	if pipeline == "" {
-		pipeline = "deterministic"
-	}
-	args := []string{"run", "--repo", repoPath, "--pipeline", pipeline}
+	args := []string{"run", "--repo", repoPath}
 	addString := func(flag, value string) {
 		if value != "" {
 			args = append(args, flag, value)
@@ -84,31 +59,9 @@ func (o DiffMindRunOptions) Args(repoPath string) []string {
 	addString("--out", o.OutDir)
 	addString("--log-file", o.LogFile)
 	addInt("--workers", o.Workers)
-	addInt("--max-catalog-items", o.MaxCatalogItems)
 	if o.MinConfidence != nil {
 		args = append(args, "--min-confidence", fmt.Sprint(*o.MinConfidence))
 	}
-	addString("--opencode-url", o.OpenCodeURL)
-	addString("--opencode-username", o.OpenCodeUsername)
-	addString("--opencode-password", o.OpenCodePassword)
-	addInt("--opencode-timeout-seconds", o.OpenCodeTimeoutSeconds)
-	addString("--provider-id", o.ProviderID)
-	addString("--model-id", o.ModelID)
-	addString("--model-variant", o.ModelVariant)
-	addBool("--cleanup-opencode-sessions", o.CleanupOpenCodeSessions)
-	addInt("--opencode-delete-delay-seconds", o.OpenCodeDeleteDelaySec)
-	addBool("--reuse-opencode-session", o.ReuseOpenCodeSession)
-	addBool("--skip-reexamination", o.SkipReexamination)
-	addBool("--discovery-verify", o.DiscoveryVerify)
-	addString("--discovery-verify-mode", o.DiscoveryVerifyMode)
-	addInt("--discovery-verify-samples", o.DiscoveryVerifySamples)
-	addBool("--discovery-framework-scope", o.DiscoveryFrameworkScope)
-	addInt("--idle-timeout-seconds", o.IdleTimeoutSeconds)
-	if o.PromptRetryCount != nil {
-		args = append(args, "--prompt-retry-count", fmt.Sprint(*o.PromptRetryCount))
-	}
-	addInt("--max-call-seconds", o.MaxCallSeconds)
-	addInt("--liveness-poll-seconds", o.LivenessPollSeconds)
 	addBool("--verbose", o.Verbose)
 	addBool("--trace", o.Trace)
 	return args

@@ -1,6 +1,6 @@
 // Package orchestrator implements the 3-phase DiffMind pipeline:
-// Phase 1: Collection (DiffMind artifacts + Blueprint extraction)
-// Phase 2: Resolution (LLM-driven identity matching)
+// Phase 1: Collection (DiffMind DiffMind protocol artifacts + deterministic blueprint extraction)
+// Phase 2: Deterministic resolution
 // Phase 3: Graph construction
 package orchestrator
 
@@ -15,7 +15,6 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/graph"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
-	"github.com/mohammad-safakhou/diffmind/internal/opencode"
 	"github.com/mohammad-safakhou/diffmind/internal/registry"
 	"github.com/mohammad-safakhou/diffmind/internal/resolver"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
@@ -31,11 +30,10 @@ type ProgressEvent struct {
 
 // Pipeline orchestrates the full DiffMind run.
 type Pipeline struct {
-	cfg    *config.Config
-	client *opencode.Client
-	log    *util.Logger
-	reg    *registry.Registry
-	bps    []*blueprints.Blueprint
+	cfg *config.Config
+	log *util.Logger
+	reg *registry.Registry
+	bps []*blueprints.Blueprint
 
 	// Progress, when set, receives phase transitions for live streaming.
 	Progress func(ProgressEvent)
@@ -45,12 +43,11 @@ type Pipeline struct {
 }
 
 // NewPipeline creates a new pipeline.
-func NewPipeline(cfg *config.Config, client *opencode.Client, log *util.Logger) *Pipeline {
+func NewPipeline(cfg *config.Config, log *util.Logger) *Pipeline {
 	return &Pipeline{
-		cfg:    cfg,
-		client: client,
-		log:    log,
-		reg:    registry.New(),
+		cfg: cfg,
+		log: log,
+		reg: registry.New(),
 	}
 }
 
@@ -204,21 +201,10 @@ func (p *Pipeline) phaseCollection(ctx context.Context) error {
 			// Run blueprints for identity extraction.
 			matchedBPs := blueprints.FindMatchingBlueprints(p.bps, repo.Path, "service_repo")
 			if len(matchedBPs) > 0 {
-				engine := blueprints.NewEngine(p.client, p.log)
-				// Create a session for LLM blueprint extraction if needed
-				var bpSessionID string
-				if p.client != nil {
-					session, err := p.client.CreateSession(repo.Path)
-					if err != nil {
-						p.log.Debug("could not create session for blueprint extraction", "service", repo.Name, "error", err.Error())
-					} else {
-						bpSessionID = session.ID
-						defer p.client.DeleteSession(bpSessionID)
-					}
-				}
+				engine := blueprints.NewEngine(p.log)
 				var allResults []blueprints.ExtractionResult
 				for _, bp := range matchedBPs {
-					results := engine.Run(bp, repo.Path, bpSessionID)
+					results := engine.Run(bp, repo.Path)
 					allResults = append(allResults, results...)
 				}
 				if len(allResults) > 0 {
@@ -246,19 +232,9 @@ func (p *Pipeline) phaseCollection(ctx context.Context) error {
 				p.log.Debug("no blueprints matched", "infra_repo", repo.Name)
 				return
 			}
-			engine := blueprints.NewEngine(p.client, p.log)
-			var infraSessionID string
-			if p.client != nil {
-				session, err := p.client.CreateSession(repo.Path)
-				if err != nil {
-					p.log.Debug("could not create session for infra blueprint", "repo", repo.Name, "error", err.Error())
-				} else {
-					infraSessionID = session.ID
-					defer p.client.DeleteSession(infraSessionID)
-				}
-			}
+			engine := blueprints.NewEngine(p.log)
 			for _, bp := range matchedBPs {
-				results := engine.Run(bp, repo.Path, infraSessionID)
+				results := engine.Run(bp, repo.Path)
 				p.log.Info("infra blueprint executed",
 					"repo", repo.Name,
 					"blueprint", bp.Name,
@@ -295,4 +271,3 @@ func (p *Pipeline) phaseCollection(ctx context.Context) error {
 	}
 	return nil
 }
-

@@ -11,7 +11,7 @@ import (
 // independent of the working directory.
 //
 //	~/.diffmind/
-//	  config.json                       (global defaults: search roots, opencode)
+//	  config.json                       (global defaults: search roots)
 //	  projects/<project_id>/
 //	    project.json
 //	    blueprints/<blueprint_id>.json
@@ -54,16 +54,13 @@ func DiffMindRunsDir() string {
 }
 
 // GlobalConfig is the optional ~/.diffmind/config.json. It holds defaults shared
-// across projects: global repo search roots (used when a project defines none)
-// and default OpenCode connection settings.
+// across projects, currently global repo search roots.
 type GlobalConfig struct {
-	SearchRoots []string       `json:"search_roots,omitempty"`
-	OpenCode    OpenCodeConfig `json:"opencode"`
+	SearchRoots []string `json:"search_roots,omitempty"`
 }
 
-// LoadGlobal reads ~/.diffmind/config.json if present, applying OpenCode
-// defaults. A missing file yields a zero-value GlobalConfig with defaults (not
-// an error).
+// LoadGlobal reads ~/.diffmind/config.json if present. A missing file yields a
+// zero-value GlobalConfig (not an error).
 func LoadGlobal() (*GlobalConfig, error) {
 	path := GlobalConfigPath()
 	gc := &GlobalConfig{}
@@ -74,6 +71,5 @@ func LoadGlobal() (*GlobalConfig, error) {
 	} else if !os.IsNotExist(err) {
 		return gc, err
 	}
-	gc.OpenCode.applyDefaults()
 	return gc, nil
 }
