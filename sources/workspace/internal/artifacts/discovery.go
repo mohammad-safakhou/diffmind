@@ -26,22 +26,6 @@ type DiffMindRunInfo struct {
 	Source           string             `json:"source,omitempty"`
 }
 
-// RepoArchfileRunInfo returns the synthetic run-selection record used by the UI
-// when a repository has a checked-in diffmind.yaml discovery file.
-func RepoArchfileRunInfo(repoPath string) (DiffMindRunInfo, bool) {
-	if !HasRepoArchfile(repoPath) {
-		return DiffMindRunInfo{}, false
-	}
-	path := RepoArchfilePath(repoPath)
-	return DiffMindRunInfo{
-		RunID:    RepoArchfileRunID,
-		RepoPath: repoPath,
-		Team:     RepoArchfileTeam(repoPath),
-		Dir:      path,
-		Source:   "archfile",
-	}, true
-}
-
 // DiscoverDiffMindRuns scans the central DiffMind runs directory for completed
 // runs, reading each run_manifest.json. Runs whose manifest is missing or
 // malformed are skipped (never fatal). The result is sorted newest-first

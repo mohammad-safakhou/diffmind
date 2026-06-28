@@ -273,7 +273,7 @@ function GraphActivity({ run }) {
 }
 
 function isGeneratedDiffMindRun(run) {
-  return Boolean(run?.run_id && run.run_id !== 'repo:diffmind.yaml')
+  return Boolean(run?.run_id)
 }
 
 function isGraphRunActive(run) {

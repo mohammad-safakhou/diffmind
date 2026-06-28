@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/mohammad-safakhou/diffmind/internal/archgraph"
-	"github.com/mohammad-safakhou/diffmind/internal/artifacts"
 )
 
 type ArchGraph = archgraph.ArchGraph
@@ -40,11 +39,7 @@ func (s *Server) handleRunArchGraph(w http.ResponseWriter, r *http.Request) {
 		if repo.Kind == "infra_repo" || ref.DiffMindRunID == "" {
 			continue
 		}
-		if ref.DiffMindRunID == artifacts.RepoArchfileRunID {
-			serviceRepoDirs[repo.Name] = artifacts.RepoArchfilePath(repo.Path)
-		} else {
-			serviceRepoDirs[repo.Name] = filepath.Join(s.diffmindRunsDir, ref.DiffMindRunID)
-		}
+		serviceRepoDirs[repo.Name] = filepath.Join(s.diffmindRunsDir, ref.DiffMindRunID)
 	}
 	if len(serviceRepoDirs) == 0 {
 		writeErr(w, http.StatusNotFound, errors.New("no service repos with diffmind artifacts in this run"))

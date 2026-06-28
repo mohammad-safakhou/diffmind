@@ -21,8 +21,7 @@ func (s *Server) handleDiffMindRuns(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
-		runs := appendRepoArchfileFallback(repoPath, groups[repoPath])
-		writeJSON(w, http.StatusOK, map[string]any{"runs": runs})
+		writeJSON(w, http.StatusOK, map[string]any{"runs": groups[repoPath]})
 		return
 	}
 	groups, err := artifacts.DiscoverDiffMindRunsByRepo(s.diffmindRunsDir)
@@ -36,14 +35,6 @@ func (s *Server) handleDiffMindRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"runs": all, "by_repo": groups})
-}
-
-func appendRepoArchfileFallback(repoPath string, runs []artifacts.DiffMindRunInfo) []artifacts.DiffMindRunInfo {
-	out := append([]artifacts.DiffMindRunInfo(nil), runs...)
-	if info, ok := artifacts.RepoArchfileRunInfo(repoPath); ok {
-		out = append(out, info)
-	}
-	return out
 }
 
 func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {

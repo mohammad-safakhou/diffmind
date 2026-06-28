@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mohammad-safakhou/diffmind/internal/artifacts"
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 	"github.com/mohammad-safakhou/diffmind/internal/orchestrator"
 	"github.com/mohammad-safakhou/diffmind/internal/store"
@@ -196,11 +195,7 @@ func (m *Manager) buildConfig(pid string, manifest store.RunManifest) (*config.C
 		}
 		entry := config.RepoEntry{Name: repo.Name, Path: repo.Path}
 		if ref.DiffMindRunID != "" {
-			if ref.DiffMindRunID == artifacts.RepoArchfileRunID {
-				entry.DiffMindArtifacts = artifacts.RepoArchfilePath(repo.Path)
-			} else {
-				entry.DiffMindArtifacts = filepath.Join(m.diffmindRunsDir, ref.DiffMindRunID)
-			}
+			entry.DiffMindArtifacts = filepath.Join(m.diffmindRunsDir, ref.DiffMindRunID)
 		}
 		if repo.Kind == "infra_repo" {
 			cfg.Repos.InfraRepos = append(cfg.Repos.InfraRepos, entry)

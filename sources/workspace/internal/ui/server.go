@@ -84,8 +84,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/projects/{pid}/diffmind-runs/batch", s.handleStartDiffMindBatchRun)
 	mux.HandleFunc("GET /api/projects/{pid}/repos/{rid}/diffmind-configuration-yaml", s.handleGetDiffMindConfigurationYAML)
 	mux.HandleFunc("PUT /api/projects/{pid}/repos/{rid}/diffmind-configuration-yaml", s.handlePutDiffMindConfigurationYAML)
-	mux.HandleFunc("GET /api/projects/{pid}/repos/{rid}/diffmind-yaml", s.handleGetDiffMindConfigurationYAML)
-	mux.HandleFunc("PUT /api/projects/{pid}/repos/{rid}/diffmind-yaml", s.handlePutDiffMindConfigurationYAML)
 	mux.HandleFunc("GET /api/projects/{pid}/repo-suggestions", s.handleRepoSuggestions)
 	mux.HandleFunc("GET /api/projects/{pid}/workspace", s.handleWorkspace)
 	mux.HandleFunc("GET /api/projects/{pid}/live-status", s.handleLiveStatus)

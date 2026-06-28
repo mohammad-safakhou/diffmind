@@ -119,7 +119,7 @@ func (s *Server) diffmindRunsForRepo(repoPath string) ([]artifacts.DiffMindRunIn
 	if err != nil {
 		return nil, err
 	}
-	return appendRepoArchfileFallback(repoPath, groups[repoPath]), nil
+	return groups[repoPath], nil
 }
 
 func diffmindFreshness(repo store.Repo, latest *artifacts.DiffMindRunInfo) string {
@@ -178,11 +178,7 @@ func (s *Server) archGraphForRun(pid string, mft *store.RunManifest) (*ArchGraph
 		if err != nil || repo.Kind == "infra_repo" || ref.DiffMindRunID == "" {
 			continue
 		}
-		if ref.DiffMindRunID == artifacts.RepoArchfileRunID {
-			serviceRepoDirs[repo.Name] = artifacts.RepoArchfilePath(repo.Path)
-		} else {
-			serviceRepoDirs[repo.Name] = filepath.Join(s.diffmindRunsDir, ref.DiffMindRunID)
-		}
+		serviceRepoDirs[repo.Name] = filepath.Join(s.diffmindRunsDir, ref.DiffMindRunID)
 	}
 	if len(serviceRepoDirs) == 0 {
 		return nil, errors.New("no service repos with diffmind artifacts in this run")

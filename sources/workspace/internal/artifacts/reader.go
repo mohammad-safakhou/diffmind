@@ -17,9 +17,6 @@ import (
 func ReadDiffMindRun(repoPath string) (*model.ServiceArchitecture, error) {
 	runsDir := filepath.Join(repoPath, ".diffmind", "runs")
 	if _, err := os.Stat(runsDir); os.IsNotExist(err) {
-		if HasRepoArchfile(repoPath) {
-			return ReadDiffMindArchfile(RepoArchfilePath(repoPath))
-		}
 		return nil, fmt.Errorf("no DiffMind runs found at %s", runsDir)
 	}
 	return readLatestRun(repoPath, runsDir)
@@ -27,9 +24,6 @@ func ReadDiffMindRun(repoPath string) (*model.ServiceArchitecture, error) {
 
 // ReadDiffMindArtifacts reads DiffMind artifacts from a specific directory.
 func ReadDiffMindArtifacts(artifactsDir string) (*model.ServiceArchitecture, error) {
-	if isYAMLFile(artifactsDir) {
-		return ReadDiffMindArchfile(artifactsDir)
-	}
 	// Check if this is a runs directory or a specific run.
 	if _, err := os.Stat(filepath.Join(artifactsDir, "run_manifest.json")); err == nil {
 		if hasDiffMind protocol(artifactsDir) {

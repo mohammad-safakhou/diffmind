@@ -152,7 +152,6 @@ function NewRun({ pid, onClose, onCreated }) {
 }
 
 function sourceLabel(run) {
-  if (run.source === 'archfile' || run.run_id === 'repo:diffmind.yaml') return 'diffmind.yaml'
   return run.run_id
 }
 

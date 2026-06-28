@@ -46,10 +46,7 @@ func (m *Manager) architectureStats(pid string, manifest store.RunManifest) arch
 		if err != nil || repo.Kind == "infra_repo" || ref.DiffMindRunID == "" {
 			continue
 		}
-		runPath := artifacts.RepoArchfilePath(repo.Path)
-		if ref.DiffMindRunID != artifacts.RepoArchfileRunID {
-			runPath = filepath.Join(m.diffmindRunsDir, ref.DiffMindRunID)
-		}
+		runPath := filepath.Join(m.diffmindRunsDir, ref.DiffMindRunID)
 		if strings.EqualFold(repo.DiffMindFreshness, "stale") {
 			stats.quality.StaleRepos++
 		}
@@ -103,11 +100,7 @@ func (m *Manager) architectureServiceRepoDirs(pid string, manifest store.RunMani
 		if err != nil || repo.Kind == "infra_repo" || ref.DiffMindRunID == "" {
 			continue
 		}
-		if ref.DiffMindRunID == artifacts.RepoArchfileRunID {
-			serviceRepoDirs[repo.Name] = artifacts.RepoArchfilePath(repo.Path)
-		} else {
-			serviceRepoDirs[repo.Name] = filepath.Join(m.diffmindRunsDir, ref.DiffMindRunID)
-		}
+		serviceRepoDirs[repo.Name] = filepath.Join(m.diffmindRunsDir, ref.DiffMindRunID)
 	}
 	return serviceRepoDirs
 }
