@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -20,14 +19,13 @@ import (
 //	diffmind eval --mode cheap   --fixtures testdata/eval [--min-f1 0.9] [--json out.json]
 //	diffmind eval --mode score-run --run <run-id|dir> --fixture <fixture-dir> [--json out.json]
 //	diffmind eval --mode variance --runs <id1,id2,...> [--min-core-union 0.95] [--json out.json]
-//	diffmind eval --mode floor-coverage --run <id|dir> [--repo path] [--json out.json]
 //
-// Cheap mode runs the deterministic floor (no LLM, hermetic) over every fixture
-// under --fixtures and reports per-objective + overall precision/recall/F1.
+// Cheap mode runs the deterministic floor over every fixture under --fixtures
+// and reports per-objective + overall precision/recall/F1.
 // score-run grades an already-finished run directory against one fixture label.
 // variance compares K finished runs of the SAME repo and reports per-objective
 // run-to-run stability (count mean/stdev, core/union ratio, pairwise Jaccard),
-// using the same identity the scorer/dedup use. It needs no OpenCode.
+// using the same identity the scorer/dedup use.
 func evalCmd(args []string) {
 	fs := flag.NewFlagSet("eval", flag.ExitOnError)
 	mode := fs.String("mode", "cheap", "cheap | score-run | variance")
@@ -35,7 +33,6 @@ func evalCmd(args []string) {
 	fixture := fs.String("fixture", "", "single fixture dir (score-run mode)")
 	runArg := fs.String("run", "", "run id or run directory to score (score-run mode)")
 	runsArg := fs.String("runs", "", "comma-separated run ids/dirs of the SAME repo (variance mode)")
-	repoArg := fs.String("repo", "", "repo path to build the deterministic floor from (floor-coverage mode; defaults to the run manifest's repo_path)")
 	outDir := fs.String("out", "", "artifact base directory used to resolve --run/--runs (default ~/.diffmind/runs)")
 	jsonOut := fs.String("json", "", "optional path to write the machine-readable report")
 	minF1 := fs.Float64("min-f1", 0, "exit non-zero if any fixture's overall F1 is below this")
@@ -53,10 +50,6 @@ func evalCmd(args []string) {
 
 	if *mode == "variance" {
 		runVarianceMode(*runsArg, *outDir, *jsonOut, *minCoreUnion)
-		return
-	}
-	if *mode == "floor-coverage" {
-		runFloorCoverageMode(*runArg, *repoArg, *outDir, *jsonOut, cfg)
 		return
 	}
 
@@ -173,63 +166,6 @@ func runVarianceMode(runsArg, outDir, jsonOut string, minCoreUnion float64) {
 	if failed {
 		os.Exit(1)
 	}
-}
-
-// runFloorCoverageMode builds the deterministic floor for a repo and reports how
-// much of a finished LLM run's output it overlaps, per objective. When --repo is
-// omitted it falls back to the run manifest's repo_path.
-func runFloorCoverageMode(runArg, repoArg, outDir, jsonOut string, cfg config.Config) {
-	if runArg == "" {
-		fmt.Fprintln(os.Stderr, "eval --mode floor-coverage requires --run")
-		os.Exit(2)
-	}
-	runDir := resolveRunDir(runArg, outDir)
-	repo := repoArg
-	if repo == "" {
-		repo = manifestRepoPath(runDir)
-		if repo == "" {
-			fmt.Fprintf(os.Stderr, "eval: no --repo given and no repo_path in %s/run_manifest.json\n", runDir)
-			os.Exit(2)
-		}
-	}
-	if ext, _ := eval.LoadRunArtifacts(runDir); len(ext.Exposures)+len(ext.Dependencies)+len(ext.Connections) == 0 {
-		fmt.Fprintf(os.Stderr, "eval: run %s has no artifacts (incomplete/failed run?)\n", filepath.Base(runDir))
-		os.Exit(2)
-	}
-	rep, err := eval.RunFloorCoverage(context.Background(), repo, runDir, cfg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "eval:", err)
-		os.Exit(1)
-	}
-	rep.RunID = filepath.Base(runDir)
-	eval.RenderFloorCoverage(os.Stdout, rep)
-	if jsonOut != "" {
-		f, err := os.Create(jsonOut)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "eval: write json:", err)
-		} else {
-			defer f.Close()
-			if err := eval.WriteFloorCoverageJSON(f, rep); err != nil {
-				fmt.Fprintln(os.Stderr, "eval: encode json:", err)
-			}
-		}
-	}
-	util.Info("cli.eval", "floor-coverage finished", map[string]any{"repo": repo, "run": rep.RunID})
-}
-
-// manifestRepoPath reads repo_path from a run's run_manifest.json (best effort).
-func manifestRepoPath(runDir string) string {
-	b, err := os.ReadFile(filepath.Join(runDir, "run_manifest.json"))
-	if err != nil {
-		return ""
-	}
-	var m struct {
-		RepoPath string `json:"repo_path"`
-	}
-	if json.Unmarshal(b, &m) != nil {
-		return ""
-	}
-	return m.RepoPath
 }
 
 // splitCSV splits a comma-separated list, trimming spaces and dropping empties.

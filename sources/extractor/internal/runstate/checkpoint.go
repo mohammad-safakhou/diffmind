@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/mohammad-safakhou/diffmind/internal/extraction"
-	"github.com/mohammad-safakhou/diffmind/internal/model"
 )
 
 // CheckpointStore persists and loads per-stage checkpoints under a run's
@@ -29,10 +28,6 @@ type CheckpointStore struct {
 const StateDir = "state"
 
 // ---- discovery per-objective checkpoint ----
-//
-// Without this, a single objective failing mid-stage causes all
-// already-completed objectives to be re-run on retry, wasting LLM
-// calls that succeeded.
 
 const discoverEntitiesJSONL = "discover_entities.jsonl"
 
@@ -111,8 +106,7 @@ func (s *CheckpointStore) LoadDiscoveryCheckpoint(dir string) map[string]Discove
 	return out
 }
 
-// AppendDiscoveryShard records one completed shard of a sharded objective so a
-// retry resumes only the shards that did not finish.
+// AppendDiscoveryShard records one completed shard of a sharded objective.
 func (s *CheckpointStore) AppendDiscoveryShard(objID string, shardIndex int, items []extraction.Candidate) {
 	s.AppendDiscoveryObjective(DiscoveryCheckpointEntry{
 		ObjectiveID: objID,
@@ -144,119 +138,6 @@ func (s *CheckpointStore) LoadDiscoveryShardCheckpoint(dir, objID string) map[in
 		if entry.Sharded && entry.ObjectiveID == objID {
 			out[entry.ShardIndex] = entry.Items
 		}
-	}
-	return out
-}
-
-// ---- reexamination per-item checkpoint ----
-//
-// Reexamination originally had no per-item checkpoint — it only wrote
-// reexamination.json when the whole stage succeeded. A single prompt
-// failure halted the stage and on retry ALL suspects were re-run, even
-// the ones that had already been confirmed/rejected.
-//
-// The fix: write one JSONL line per completed suspect immediately after
-// runReexamineOne returns (success OR explicit rejection). Only hard
-// errors (stuck, timeout, 5xx) skip the write so those items are
-// retried. On resume, LoadReexaminationCheckpoint tells the stage which
-// suspects it can skip.
-
-const reexamEntitiesJSONL = "reexam_entities.jsonl"
-
-// ReexamCheckpointEntry is one row of state/reexam_entities.jsonl.
-type ReexamCheckpointEntry struct {
-	// Key is objective_id::safe_seed_name.
-	Key string `json:"key"`
-	// Outcome is "confirmed", "rejected", or "clean" (was never suspect).
-	// We only write "confirmed" and "rejected"; "clean" seeds never enter
-	// the suspect list and are always passed through.
-	Outcome string `json:"outcome"`
-	// Seed is the (possibly corrected) seed after re-examination.
-	// Populated only for outcome=="confirmed".
-	Seed *extraction.Candidate `json:"seed,omitempty"`
-	// Unresolved is populated only for outcome=="rejected".
-	Unresolved *model.UnresolvedItem `json:"unresolved,omitempty"`
-	WrittenAt  time.Time             `json:"written_at"`
-}
-
-func ReexamKey(objectiveID, seedName string) string {
-	return objectiveID + "::" + safeJobID(seedName)
-}
-
-// AppendReexamEntity appends one completed reexamination result to the
-// per-item checkpoint. Best-effort; errors are logged and swallowed.
-func (s *CheckpointStore) AppendReexamEntity(entry ReexamCheckpointEntry) {
-	if strings.TrimSpace(s.RunDir) == "" {
-		return
-	}
-	dir := filepath.Join(s.RunDir, StateDir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return
-	}
-	entry.WrittenAt = time.Now().UTC()
-	b, err := json.Marshal(entry)
-	if err != nil {
-		return
-	}
-	path := filepath.Join(dir, reexamEntitiesJSONL)
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	_, _ = f.Write(append(b, '\n'))
-}
-
-// LoadReexaminationCheckpoint reads the per-item checkpoint written by
-// previous runs. Returns a map keyed by ReexamKey. Missing file returns
-// an empty map (caller treats it as "nothing done yet").
-func (s *CheckpointStore) LoadReexaminationCheckpoint(dir string) map[string]ReexamCheckpointEntry {
-	out := map[string]ReexamCheckpointEntry{}
-	if strings.TrimSpace(dir) == "" {
-		return out
-	}
-	path := filepath.Join(dir, reexamEntitiesJSONL)
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return out
-	}
-	for _, line := range strings.Split(string(b), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		var entry ReexamCheckpointEntry
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			continue
-		}
-		if entry.Key == "" {
-			continue
-		}
-		out[entry.Key] = entry
-	}
-	return out
-}
-
-func safeJobID(name string) string {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return "_"
-	}
-	var b strings.Builder
-	b.Grow(len(name))
-	for _, r := range name {
-		switch {
-		case r >= 'a' && r <= 'z',
-			r >= 'A' && r <= 'Z',
-			r >= '0' && r <= '9',
-			r == '-' || r == '_' || r == '.' || r == '/' || r == ':':
-			b.WriteRune(r)
-		default:
-			b.WriteRune('-')
-		}
-	}
-	out := b.String()
-	if len(out) > 96 {
-		out = out[:96]
 	}
 	return out
 }
