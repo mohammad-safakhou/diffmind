@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/mohammad-safakhou/diffmind/internal/detectors"
+	"github.com/mohammad-safakhou/diffmind/internal/serviceconfig"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -185,7 +187,10 @@ func Build(ctx context.Context, repoRoot, primaryLanguage string, workers int, p
 	}
 
 	// Step 8: detect framework bindings
-	idx.Frameworks, idx.RejectedFrameworks = detectFrameworks(idx)
+	idx.Frameworks, idx.RejectedFrameworks, err = detectFrameworks(idx)
+	if err != nil {
+		return nil, err
+	}
 
 	util.Info("ast.index", "project index built", map[string]any{
 		"files":               len(idx.Files),
@@ -439,12 +444,21 @@ func RegisterFrameworkDetector(d FrameworkDetector) {
 	registeredDetectors = append(registeredDetectors, d)
 }
 
-// detectFrameworks runs all framework detectors and returns the bindings.
-func detectFrameworks(idx *ProjectIndex) ([]FrameworkBinding, []FrameworkBinding) {
+// detectFrameworks runs all framework detectors and applies
+// diffmind-configuration.yaml detector enable/disable rules.
+func detectFrameworks(idx *ProjectIndex) ([]FrameworkBinding, []FrameworkBinding, error) {
 	var accepted []FrameworkBinding
 	var rejected []FrameworkBinding
+	cfg, err := serviceconfig.Load(idx.RepoRoot)
+	if err != nil {
+		return nil, nil, err
+	}
 	for _, detector := range registeredDetectors {
 		for _, binding := range detector.Detect(idx) {
+			binding.DetectorIDs = detectors.IDsForFrameworkBinding(binding.Framework, binding.Kind, binding.Trigger, binding.ConfidenceReason)
+			if !detectors.AllowFrameworkBinding(binding.DetectorIDs, cfg.Detectors.Enabled, cfg.Detectors.Disabled) {
+				binding.RejectionReason = "disabled by diffmind-configuration.yaml detector settings"
+			}
 			if binding.RejectionReason != "" {
 				rejected = append(rejected, binding)
 				continue
@@ -454,7 +468,7 @@ func detectFrameworks(idx *ProjectIndex) ([]FrameworkBinding, []FrameworkBinding
 	}
 	sortFrameworkBindings(accepted)
 	sortFrameworkBindings(rejected)
-	return accepted, rejected
+	return accepted, rejected, nil
 }
 
 func sortFrameworkBindings(bindings []FrameworkBinding) {
