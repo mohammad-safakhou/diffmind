@@ -153,7 +153,7 @@ function DetailBody({ sel }) {
   if (sel.kind === 'edge') return <EdgeDetail e={d} />
   if (sel.kind === 'group' || sel.kind === 'fact') return <GroupedFactDetail d={d} />
   if (sel.kind === 'queue') return <ResourceDetail d={d} rows={[['Name', d.name], ['Kind', d.kind], ['FIFO', d.fifo ? 'yes' : 'no']]} />
-  if (sel.kind === 'db') return <ResourceDetail d={d} rows={[['Name', d.name], ['Kind', d.kind], ['Host', d.host || '—']]} />
+  if (sel.kind === 'db') return <ResourceDetail d={d} rows={[['Name', d.name], ['Kind', d.kind], ['Host', d.host || '—'], ['Tables', d.tables?.length || 0], ['Operations', d.operation_count || 0]]} />
   if (sel.kind === 'scheduler') return <KV rows={[['Job', d.name], ['Service', d.service], ['Schedule', d.schedule || '—'], ['Profile', d.profile || '—']]} />
   return <KV rows={[['Name', d.name], ['Kind', d.kind || 'external']]} />
 }
@@ -222,6 +222,19 @@ function ResourceDetail({ d, rows }) {
               <li key={i}><code>{f.service}</code><div class="name">{f.dep?.name || '—'}</div>{f.dep?.summary && <div class="muted small">{f.dep.summary}</div>}</li>
             ))}
           </ul>
+        </div>
+      )}
+      {d.tables && d.tables.length > 0 && (
+        <div class="detail-sec">
+          <h4>Tables and operations <span class="muted">({d.tables.length})</span></h4>
+          {d.tables.map((table) => (
+            <div class="object-card" key={table.name}>
+              <KV rows={[['Table', table.name], ['Kind', table.kind || '—'], ['Operations', (table.operations || []).length]]} compact />
+              {(table.operations || []).slice(0, 80).map((op, i) => (
+                <div class="object-summary" key={i}>{op.name || op.summary || 'operation'}</div>
+              ))}
+            </div>
+          ))}
         </div>
       )}
     </div>

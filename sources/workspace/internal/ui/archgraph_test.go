@@ -138,6 +138,72 @@ func TestBuildArchitectureGraphUsesDiffMind protocolTargetsAndResourceKinds(t *t
 	}
 }
 
+func TestArchitectureGraphGroupsRelationalTablesUnderDatasource(t *testing.T) {
+	root := t.TempDir()
+	runDir := filepath.Join(root, "game-service")
+	writeDiffMind protocolRun(t, runDir, `{
+  "schema": "diffmind.service.v1",
+  "service": {"id": "game-service", "name": "game-service"},
+  "objects": {
+    "db_queries": [
+      {
+        "id": "dbq.read_payments",
+        "kind": "db_query",
+        "name": "Read payments",
+        "engine": "postgresql",
+        "operation": "read",
+        "access": "read",
+        "target": {"tables": ["payments"]},
+        "status": "confirmed",
+        "confidence": "high",
+        "origin": "deterministic"
+      },
+      {
+        "id": "dbq.write_kycs",
+        "kind": "db_query",
+        "name": "Write kycs",
+        "engine": "postgresql",
+        "operation": "write",
+        "access": "write",
+        "target": {"tables": ["kycs"]},
+        "status": "confirmed",
+        "confidence": "high",
+        "origin": "deterministic"
+      }
+    ]
+  },
+  "flows": [],
+  "observations": [],
+  "evidence": []
+}`)
+
+	graph := buildArchitectureGraph("run-1", map[string]string{"game-service": runDir})
+	if len(graph.DatabaseNodes) != 1 {
+		t.Fatalf("expected one datasource node, got %+v", graph.DatabaseNodes)
+	}
+	db := graph.DatabaseNodes[0]
+	if db.Name != "game-service-db" || db.Kind != "postgresql" {
+		t.Fatalf("expected service datasource node, got %+v", db)
+	}
+	if db.OperationCount != 2 || len(db.Tables) != 2 {
+		t.Fatalf("expected two table operations inside datasource, got %+v", db)
+	}
+	for _, table := range db.Tables {
+		if table.Name == "game-service-db" {
+			t.Fatalf("table identity collapsed to datasource name: %+v", db.Tables)
+		}
+	}
+	var dbEdges []*GraphEdge
+	for _, edge := range graph.Edges {
+		if edge.Type == "database" {
+			dbEdges = append(dbEdges, edge)
+		}
+	}
+	if len(dbEdges) != 1 || len(dbEdges[0].Details) != 2 {
+		t.Fatalf("expected one aggregated database edge with both operations, got %+v", dbEdges)
+	}
+}
+
 func TestBuildArchitectureGraphUsesConfiguredServiceAliases(t *testing.T) {
 	root := t.TempDir()
 	atsRepo := filepath.Join(root, "routing-service-repo")

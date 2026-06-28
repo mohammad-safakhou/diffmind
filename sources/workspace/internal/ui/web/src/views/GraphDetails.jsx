@@ -10,7 +10,7 @@ export function GraphDetailBody({ sel }) {
   if (sel?.kind === 'edge') return <EdgeDetail e={d} />
   if (sel?.kind === 'group' || sel?.kind === 'fact') return <GroupedFactDetail d={d} />
   if (sel?.kind === 'queue') return <ResourceDetail d={d} rows={[['Name', d.name], ['Kind', d.kind], ['FIFO', d.fifo ? 'yes' : 'no']]} />
-  if (sel?.kind === 'db') return <ResourceDetail d={d} rows={[['Name', d.name], ['Kind', d.kind], ['Host', d.host || '-']]} />
+  if (sel?.kind === 'db') return <ResourceDetail d={d} rows={[['Name', d.name], ['Kind', d.kind], ['Host', d.host || '-'], ['Tables', d.tables?.length || 0], ['Operations', d.operation_count || 0]]} />
   if (sel?.kind === 'scheduler') return <KV rows={[['Job', d.name], ['Service', d.service], ['Schedule', d.schedule || '-'], ['Profile', d.profile || '-']]} />
   return <KV rows={[['Name', d.name], ['Kind', d.kind || 'external']]} />
 }
@@ -100,6 +100,26 @@ function ResourceDetail({ d, rows }) {
           {d.facts.slice(0, 40).map((f, i) => (
             <ObjectCard key={i} item={{ ...(f.dep || {}), service: f.service }} />
           ))}
+        </div>
+      )}
+      {d.tables?.length > 0 && (
+        <div class="detail-sec">
+          <h4>Tables and operations <span class="muted">({d.tables.length})</span></h4>
+          {d.tables.map((table) => <TableCard key={table.name} table={table} />)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TableCard({ table }) {
+  const ops = table.operations || []
+  return (
+    <div class="object-card">
+      <KV rows={[['Table', table.name], ['Kind', table.kind || '-'], ['Operations', ops.length]]} compact />
+      {ops.length > 0 && (
+        <div class="detail-sec tight">
+          {ops.map((item, i) => <ObjectCard key={i} item={item} />)}
         </div>
       )}
     </div>

@@ -7,6 +7,7 @@ package archgraph
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -93,10 +94,18 @@ type QueueNode struct {
 }
 
 type DatabaseNode struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Kind string `json:"kind"` // "postgresql", "dynamodb", "athena", "redis", "elasticsearch"
-	Host string `json:"host,omitempty"`
+	ID             string          `json:"id"`
+	Name           string          `json:"name"`
+	Kind           string          `json:"kind"` // "postgresql", "dynamodb", "athena", "redis", "elasticsearch"
+	Host           string          `json:"host,omitempty"`
+	Tables         []DatabaseTable `json:"tables,omitempty"`
+	OperationCount int             `json:"operation_count,omitempty"`
+}
+
+type DatabaseTable struct {
+	Name       string          `json:"name"`
+	Kind       string          `json:"kind,omitempty"`
+	Operations []EntitySummary `json:"operations,omitempty"`
 }
 
 type GraphEdge struct {
@@ -191,14 +200,12 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 				"database",
 			))
 			dbKind := normalizeDBKind(dbType)
-			// Postgres/MySQL-style dependencies are shown at datasource/database
-			// level, while DynamoDB is table-shaped and should use table identity.
-			dbName := graphDBName(dbKind, item, d, target, metadataDetails)
+			dbName, tableName := graphDBResource(dbKind, name, item, d, target, metadataDetails)
 			host := firstNonEmpty(d["host_production"], d["host"])
 			// Extract operations list for edge labels
 			op := extractOperations(item)
-			allDBs[name] = append(allDBs[name], dbRef{name: dbName, kind: dbKind, operation: op, host: host, summary: toSummary(item)})
-			svc.Databases = append(svc.Databases, dbName)
+			allDBs[name] = append(allDBs[name], dbRef{name: dbName, table: tableName, kind: dbKind, operation: op, host: host, summary: toSummary(item)})
+			svc.Databases = append(svc.Databases, firstNonEmpty(tableName, dbName))
 		}
 		for _, item := range dependencies["cache_operation"] {
 			d := getDetails(item)
@@ -264,21 +271,20 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 	externalSvcs := map[string]*ExternalNode{}
 	queueMap := map[string]*QueueNode{}
 	dbMap := map[string]*DatabaseNode{}
+	resourceEdges := map[string]*GraphEdge{}
+	httpEdges := map[string]*GraphEdge{}
 
 	// Databases
 	for _, svcName := range sortedStringKeys(allDBs) {
 		dbs := allDBs[svcName]
 		sortDBRefs(dbs)
 		for _, db := range dbs {
-			dbID := normalizeID(db.kind + "_" + db.name)
+			dbID, dbName, tableName := graphDBNodeIdentity(svcName, db)
 			if _, ok := dbMap[dbID]; !ok {
-				dbMap[dbID] = &DatabaseNode{ID: dbID, Name: db.name, Kind: db.kind, Host: db.host}
+				dbMap[dbID] = &DatabaseNode{ID: dbID, Name: dbName, Kind: db.kind, Host: db.host}
 			}
-			g.Edges = append(g.Edges, &GraphEdge{
-				From: svcName, To: "db:" + dbID, Type: "database",
-				Label:   db.operation,
-				Details: []EntitySummary{db.summary},
-			})
+			addDatabaseOperation(dbMap[dbID], tableName, db.summary)
+			addResourceEdge(resourceEdges, svcName, "db:"+dbID, "database", db.operation, db.summary)
 		}
 	}
 
@@ -291,12 +297,15 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 			if _, ok := dbMap[dbID]; !ok {
 				dbMap[dbID] = &DatabaseNode{ID: dbID, Name: op.name, Kind: op.kind}
 			}
-			g.Edges = append(g.Edges, &GraphEdge{
-				From: svcName, To: "db:" + dbID, Type: "cache",
-				Label:   op.operation,
-				Details: []EntitySummary{op.summary},
-			})
+			addDatabaseOperation(dbMap[dbID], op.name, op.summary)
+			addResourceEdge(resourceEdges, svcName, "db:"+dbID, "cache", op.operation, op.summary)
 		}
+	}
+
+	for _, key := range sortedStringKeys(resourceEdges) {
+		edge := resourceEdges[key]
+		edge.Label = resourceEdgeLabel(edge)
+		g.Edges = append(g.Edges, edge)
 	}
 
 	// Queues - publish
@@ -351,11 +360,11 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 					externalSvcs[targetName] = &ExternalNode{Name: targetName, Kind: kind}
 				}
 			}
-			g.Edges = append(g.Edges, &GraphEdge{
-				From: svcName, To: targetName, Type: "http",
-				Label: "HTTP", Details: []EntitySummary{t.endpoints}, Confidence: 1.0,
-			})
+			addTargetEdge(httpEdges, svcName, targetName, "http", "HTTP", t.endpoints)
 		}
+	}
+	for _, key := range sortedStringKeys(httpEdges) {
+		g.Edges = append(g.Edges, httpEdges[key])
 	}
 
 	// Phase 3: Assemble final lists
@@ -440,6 +449,7 @@ type queueRef struct {
 
 type dbRef struct {
 	name      string
+	table     string
 	kind      string
 	operation string
 	host      string
@@ -573,6 +583,54 @@ func graphCacheName(item map[string]any) string {
 	)
 }
 
+func graphDBResource(kind, serviceName string, item map[string]any, d map[string]string, target, metadataDetails map[string]any) (resourceName, tableName string) {
+	tableName = graphDBTableName(item, d, target, metadataDetails)
+	if isDatasourceDBKind(kind) {
+		resourceName = firstKnown(
+			d["database_name"],
+			getString(target, "database"),
+			getString(metadataDetails, "database_name"),
+			d["datasource"],
+			d["data_source"],
+			d["db_name"],
+			d["host_production"],
+			d["host"],
+		)
+		if resourceName == "" {
+			resourceName = serviceName + "-db"
+		}
+		return resourceName, tableName
+	}
+	if kind == "dynamodb" {
+		table := firstKnown(tableName, d["resource_name"], getString(item, "instance"), d["database_name"], getString(target, "database"), getString(item, "name"))
+		return table, table
+	}
+	resourceName = firstKnown(
+		d["database_name"],
+		getString(target, "database"),
+		getString(metadataDetails, "database_name"),
+		d["resource_name"],
+		tableName,
+		getString(item, "instance"),
+		getString(item, "name"),
+	)
+	return resourceName, tableName
+}
+
+func graphDBTableName(item map[string]any, d map[string]string, target, metadataDetails map[string]any) string {
+	return firstKnown(
+		d["table"],
+		d["table_or_entity"],
+		d["entity"],
+		getString(metadataDetails, "table"),
+		getString(metadataDetails, "table_or_entity"),
+		firstStringFromAnyList(target["tables"]),
+		d["resource_name"],
+		getString(item, "instance"),
+		getString(item, "name"),
+	)
+}
+
 func graphDBName(kind string, item map[string]any, d map[string]string, target, metadataDetails map[string]any) string {
 	if kind == "dynamodb" {
 		return firstKnown(
@@ -599,6 +657,116 @@ func graphDBName(kind string, item map[string]any, d map[string]string, target, 
 		d["entity"],
 		getString(item, "name"),
 	)
+}
+
+func graphDBNodeIdentity(serviceName string, db dbRef) (id, name, table string) {
+	name = firstNonEmpty(db.name, serviceName+"-db")
+	table = firstNonEmpty(db.table, db.name)
+	if isDatasourceDBKind(db.kind) {
+		id = normalizeID(db.kind + "_" + name)
+		return id, name, table
+	}
+	id = normalizeID(db.kind + "_" + name)
+	return id, name, table
+}
+
+func isDatasourceDBKind(kind string) bool {
+	switch strings.ToLower(kind) {
+	case "postgresql", "postgres", "mysql", "mariadb", "athena", "redshift", "bigquery", "snowflake", "oracle", "mssql", "sqlserver", "database":
+		return true
+	default:
+		return false
+	}
+}
+
+func addDatabaseOperation(node *DatabaseNode, tableName string, summary EntitySummary) {
+	if node == nil {
+		return
+	}
+	tableName = firstNonEmpty(tableName, node.Name)
+	for i := range node.Tables {
+		if node.Tables[i].Name == tableName {
+			node.Tables[i].Operations = append(node.Tables[i].Operations, summary)
+			node.OperationCount++
+			return
+		}
+	}
+	node.Tables = append(node.Tables, DatabaseTable{
+		Name:       tableName,
+		Kind:       node.Kind,
+		Operations: []EntitySummary{summary},
+	})
+	node.OperationCount++
+	sort.Slice(node.Tables, func(i, j int) bool { return node.Tables[i].Name < node.Tables[j].Name })
+}
+
+func addResourceEdge(edges map[string]*GraphEdge, from, to, edgeType, op string, summary EntitySummary) {
+	key := from + "|" + to + "|" + edgeType
+	if _, ok := edges[key]; !ok {
+		edges[key] = &GraphEdge{From: from, To: to, Type: edgeType}
+	}
+	edge := edges[key]
+	edge.Details = append(edge.Details, summary)
+	if edge.Label == "" {
+		edge.Label = op
+	} else if op != "" && !strings.Contains(","+edge.Label+",", ","+op+",") {
+		edge.Label += "," + op
+	}
+}
+
+func addTargetEdge(edges map[string]*GraphEdge, from, to, edgeType, label string, summary EntitySummary) {
+	key := from + "|" + to + "|" + edgeType
+	if _, ok := edges[key]; !ok {
+		edges[key] = &GraphEdge{From: from, To: to, Type: edgeType, Label: label, Confidence: 1.0}
+	}
+	edges[key].Details = append(edges[key].Details, summary)
+}
+
+func resourceEdgeLabel(edge *GraphEdge) string {
+	if edge == nil {
+		return ""
+	}
+	count := len(edge.Details)
+	if count == 0 {
+		return edge.Label
+	}
+	directions := map[string]int{}
+	for _, detail := range edge.Details {
+		op := ""
+		if detail.Details != nil {
+			if v, ok := detail.Details["operation"].(string); ok {
+				op = v
+			}
+			if op == "" {
+				if vals, ok := detail.Details["operations"].([]any); ok {
+					parts := make([]string, 0, len(vals))
+					for _, val := range vals {
+						if s, ok := val.(string); ok {
+							parts = append(parts, s)
+						}
+					}
+					op = strings.Join(parts, ",")
+				}
+			}
+		}
+		dir := layoutOperationDirection(firstNonEmpty(op, edge.Label))
+		if dir == "" {
+			dir = "op"
+		}
+		directions[dir]++
+	}
+	if len(directions) == 1 {
+		for dir := range directions {
+			if count == 1 {
+				return firstNonEmpty(edge.Label, dir)
+			}
+			if dir == "op" {
+				return fmt.Sprintf("%d ops", count)
+			}
+			return fmt.Sprintf("%d %s ops", count, dir)
+		}
+	}
+	return fmt.Sprintf("%d ops", count)
 }
 
 func firstStringFromAnyList(v any) string {

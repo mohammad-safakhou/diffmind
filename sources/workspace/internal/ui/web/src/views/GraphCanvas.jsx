@@ -229,7 +229,7 @@ function buildServiceModel(service, graphEdges) {
   const left = [
     {
       key: 'http_inbound',
-      title: 'http_inbound',
+      title: 'Inbound HTTP',
       subtitle: 'routes grouped by endpoint',
       items: groupItems(service.http_routes, (it, d) => first(d.route, d.path, d.endpoint, it.name), (b) => {
         const d = detailsOf(b.items[0])
@@ -238,26 +238,26 @@ function buildServiceModel(service, graphEdges) {
     },
     {
       key: 'event_inbound',
-      title: 'event_inbound',
+      title: 'Event consumers',
       subtitle: 'consumers grouped by queue/topic',
       items: groupItems(service.queue_consumers, (it, d) => first(d.queue, d.queue_name, d.destination, d.stream_arn, d.source, it.name), (b) => ({ badge: itemBadge(b.items[0], 'QUEUE'), label: shortLabel(b.label, 28), sublabel: shortLabel(first(detailsOf(b.items[0]).kind, detailsOf(b.items[0]).type, b.items[0]?.summary), 22) })),
     },
     {
       key: 'scheduled_jobs',
-      title: 'scheduled_jobs',
+      title: 'Scheduled jobs',
       subtitle: 'time-based entry points',
       items: groupItems(service.scheduled_jobs, (it, d) => first(d.k8s_cronjob_name, d.schedule, d.cron, it.name), (b) => ({ badge: 'CRON', label: shortLabel(b.label, 28), sublabel: shortLabel(first(detailsOf(b.items[0]).schedule, detailsOf(b.items[0]).cron, b.items[0]?.summary), 22) })),
     },
     {
       key: 'webhooks',
-      title: 'webhooks',
+      title: 'Webhooks',
       subtitle: 'external callbacks',
       items: groupItems(service.webhooks, (it, d) => first(d.provider, d.source, d.path, it.name), (b) => ({ badge: 'HOOK', label: shortLabel(b.label, 28), sublabel: shortLabel(b.items[0]?.summary, 22) })),
     },
     {
       key: 'cli_commands',
-      title: 'cli_commands',
-      subtitle: 'manual/runtime commands',
+      title: 'Commands',
+      subtitle: 'manual and automation commands',
       items: groupItems(service.cli_commands, (it, d) => first(d.command, it.name), (b) => ({ badge: 'CLI', label: shortLabel(b.label, 28), sublabel: shortLabel(b.items[0]?.summary, 22) })),
     },
   ].filter((g) => g.items.length)
@@ -265,51 +265,37 @@ function buildServiceModel(service, graphEdges) {
   const right = [
     {
       key: 'http_outbound',
-      title: 'http_outbound',
+      title: 'Outbound HTTP',
       subtitle: 'targets grouped by host/service',
       items: groupItems(depByClass.http_outbound, (it, d) => first(d.target_service, hostFromURL(d.target_url), hostFromURL(d.url), d.host, it.name), (b) => ({ badge: sourceBadge(first(detailsOf(b.items[0]).method, 'HTTP')), label: shortLabel(b.label, 28), sublabel: shortLabel(first(detailsOf(b.items[0]).endpoint, b.items[0]?.summary), 22) })),
     },
     {
       key: 'db_operations',
-      title: 'db_operations',
-      subtitle: 'instances grouped by resource + op',
-      items: groupItems(depByClass.db_operations, (it, d) => `${first(d.database_name, d.resource_name, d.table_or_entity, d.table, d.entity, it.name)} ${operationLabel(it)}`, (b) => ({ badge: itemBadge(b.items[0], 'DB'), label: shortLabel(b.label, 28), sublabel: shortLabel(operationLabel(b.items[0]), 22) })),
+      title: 'Database operations',
+      subtitle: 'tables/resources with query operations',
+      items: groupItems(depByClass.db_operations, (it, d) => first(d.table_or_entity, d.table, d.entity, d.resource_name, d.database_name, it.name), (b) => ({ badge: itemBadge(b.items[0], 'DB'), label: shortLabel(b.label, 28), sublabel: b.items.length > 1 ? `${b.items.length} operations` : shortLabel(operationLabel(b.items[0]), 22) })),
     },
     {
       key: 'cache_operations',
-      title: 'cache_operations',
+      title: 'Cache operations',
       subtitle: 'cache instances and key spaces',
       items: groupItems(depByClass.cache_operations, (it, d) => first(d.cache_name, d.resource_name, d.key_pattern, it.name), (b) => ({ badge: itemBadge(b.items[0], 'CACHE'), label: shortLabel(b.label, 28), sublabel: shortLabel(operationLabel(b.items[0]), 22) })),
     },
     {
       key: 'event_outbound',
-      title: 'event_outbound',
+      title: 'Event publishers',
       subtitle: 'publish targets grouped by queue/topic',
       items: groupItems(depByClass.event_outbound, (it, d) => first(d.queue, d.queue_name, d.destination, d.topic, it.name), (b) => ({ badge: itemBadge(b.items[0], 'QUEUE'), label: shortLabel(b.label, 28), sublabel: shortLabel(first(detailsOf(b.items[0]).kind, detailsOf(b.items[0]).type, b.items[0]?.summary), 22) })),
     },
     {
       key: 'other_dependencies',
-      title: 'dependencies',
+      title: 'Other dependencies',
       subtitle: 'uncategorized downstream facts',
       items: groupItems(depByClass.other_dependencies, (it) => it.name, (b) => ({ badge: 'DEP', label: shortLabel(b.label, 28), sublabel: shortLabel(b.items[0]?.summary, 22) })),
     },
   ].filter((g) => g.items.length)
 
-  const connections = service.connections || []
-  const objectives = [
-    {
-      key: 'runtime',
-      title: 'runtime',
-      subtitle: service.known ? 'known service' : 'external/unknown',
-      items: [{ key: 'service', badge: 'SVC', label: service.known ? 'known' : 'unknown', sublabel: 'identity', items: [service], matchKeys: [normalizeKey(service.name)] }],
-    },
-    connections.length ? {
-      key: 'flows',
-      title: 'flows',
-      subtitle: `${connections.length} internal paths`,
-      items: groupItems(connections, (it) => first(it.from_name, it.to_name, it.summary), (b) => ({ badge: 'FLOW', label: shortLabel(b.label, 28), sublabel: shortLabel(b.items[0]?.summary, 22) })),
-    } : null,
-  ].filter(Boolean)
+  const objectives = []
 
   return layoutServiceModel({
     service,
@@ -750,8 +736,12 @@ function applyPersistedLayout(top, positions) {
 
 function addTopNode(top, nodeInfo, id, type, data, label) {
   const shared = data && data.shared
-  const w = shared ? Math.max(230, Math.min(360, label.length * 8 + 116)) : Math.max(170, Math.min(290, label.length * 8 + 72))
-  const h = shared ? 112 : type === 'scheduler' ? 64 : 86
+  const tableCount = Array.isArray(data?.tables) ? data.tables.length : 0
+  const opCount = Number(data?.operation_count || 0)
+  const resourceDetail = tableCount ? `${tableCount} tables ${opCount || ''}` : ''
+  const widthBasis = Math.max(label.length, resourceDetail.length)
+  const w = shared ? Math.max(230, Math.min(380, widthBasis * 8 + 132)) : Math.max(180, Math.min(330, widthBasis * 8 + 82))
+  const h = shared ? 112 : type === 'db' && tableCount ? 98 : type === 'scheduler' ? 64 : 86
   top.setNode(id, { width: w, height: h, type, data, label })
   nodeInfo.set(id, { type, data, label })
 }
@@ -820,7 +810,12 @@ function impactEdgeSet(sel, edges) {
     const fromService = edge.from === service
     const toService = edge.to === service
     if (kind === 'http_inbound' || kind === 'event_inbound' || kind === 'scheduled_jobs' || kind === 'cli_commands' || kind === 'webhooks') {
-      if (fromService || toService) out.add(edgeKey(edge))
+      const traced = traceImpactEdgeSet(data, edges, service)
+      if (traced.size) {
+        traced.forEach((key) => out.add(key))
+      } else if (fromService || toService) {
+        out.add(edgeKey(edge))
+      }
       return
     }
     if (!fromService && !toService) return
@@ -835,6 +830,35 @@ function impactEdgeSet(sel, edges) {
     if (kind === 'db_operations' && edge.type === 'database' && fromService) out.add(edgeKey(edge))
     if (kind === 'cache_operations' && edge.type === 'cache' && fromService) out.add(edgeKey(edge))
     if (kind === 'event_outbound' && edge.type === 'queue_publish' && fromService) out.add(edgeKey(edge))
+  })
+  return out
+}
+
+function traceImpactEdgeSet(data, edges, service) {
+  const out = new Set()
+  const selectedKeys = new Set([normalizeKey(data.name)])
+  ;(data.items || []).forEach((item) => {
+    if (Array.isArray(item.items)) item.items.forEach((raw) => addImpactKeys(selectedKeys, raw))
+    else addImpactKeys(selectedKeys, item)
+  })
+  const targetKeys = new Set()
+  ;(data.connections || []).forEach((conn) => {
+    const from = normalizeKey(conn.from_name || conn.from || conn.summary)
+    const hit = Array.from(selectedKeys).some((key) => key && (from.includes(key) || key.includes(from)))
+    if (!hit) return
+    targetKeys.add(normalizeKey(conn.to_name || conn.to))
+    targetKeys.add(normalizeKey(conn.summary))
+  })
+  if (!targetKeys.size) return out
+  edges.forEach((edge) => {
+    if (edge.from !== service && edge.to !== service) return
+    const hay = edgeHaystack(edge)
+    for (const key of targetKeys) {
+      if (key && hay.includes(key)) {
+        out.add(edgeKey(edge))
+        return
+      }
+    }
   })
   return out
 }
@@ -919,7 +943,7 @@ function serviceCompactCounts(service) {
   const routes = (service.http_routes || []).length
   const deps = (service.dependencies || []).length
   const traces = (service.connections || []).length
-  return `${routes} routes · ${deps} deps · ${traces} traces`
+  return `${routes} routes · ${deps} downstream · ${traces} traces`
 }
 
 function compactServiceBadges(service) {
@@ -939,15 +963,18 @@ function drawServiceNode(parent, model, cx, cy, onSelect, selectThing) {
     })
 
   drawServiceBoundary(g, model, cx, cy)
-  model.objectives.forEach((group) => drawGroup(g, group, cx + group.x, cy + group.y, 'objective', ports, selectThing, model.service.name))
-  model.left.forEach((group) => drawGroup(g, group, cx + group.x, cy + group.y, 'exposure', ports, selectThing, model.service.name))
-  model.right.forEach((group) => drawGroup(g, group, cx + group.x, cy + group.y, 'dependency', ports, selectThing, model.service.name))
+  const connections = model.service.connections || []
+  model.objectives.forEach((group) => drawGroup(g, group, cx + group.x, cy + group.y, 'objective', ports, selectThing, model.service.name, connections))
+  model.left.forEach((group) => drawGroup(g, group, cx + group.x, cy + group.y, 'exposure', ports, selectThing, model.service.name, connections))
+  model.right.forEach((group) => drawGroup(g, group, cx + group.x, cy + group.y, 'dependency', ports, selectThing, model.service.name, connections))
 
   drawHull(g, model, cx + model.hull.x, cy + model.hull.y)
 
   g.append('circle').attr('class', 'service-port exposure-port').attr('cx', ports.hullIn.x).attr('cy', ports.hullIn.y).attr('r', 13)
   g.append('circle').attr('class', 'service-port dependency-port').attr('cx', ports.hullOut.x).attr('cy', ports.hullOut.y).attr('r', 13)
-  g.append('circle').attr('class', 'service-port objective-port').attr('cx', ports.hullTop.x).attr('cy', ports.hullTop.y).attr('r', 13)
+  if (model.objectives.length) {
+    g.append('circle').attr('class', 'service-port objective-port').attr('cx', ports.hullTop.x).attr('cy', ports.hullTop.y).attr('r', 13)
+  }
 
   return g
 }
@@ -965,8 +992,8 @@ function drawServiceBoundary(g, model, cx, cy) {
     .attr('height', h)
     .attr('rx', 18)
     .append('title').text(`${model.service.name} service boundary`)
-  drawText(g, 'EXPOSURES', x + 28, y + 30, 'service-lane-label', 'start')
-  drawText(g, 'DEPENDENCIES', x + w - 28, y + 30, 'service-lane-label', 'end')
+  drawText(g, 'ENTRYPOINTS', x + 28, y + 30, 'service-lane-label', 'start')
+  drawText(g, 'DOWNSTREAM', x + w - 28, y + 30, 'service-lane-label', 'end')
 }
 
 function drawHull(g, model, cx, cy) {
@@ -988,11 +1015,11 @@ function drawHull(g, model, cx, cy) {
   g.append('path').attr('class', 'service-hull-line').attr('d', `M ${left + 6} ${top + 28} C ${left + 52} ${top + 2}, ${cx - 56} ${top + 18}, ${cx - 16} ${top + 22}`)
   g.append('path').attr('class', 'service-hull-line').attr('d', `M ${left + 6} ${bottom - 28} C ${left + 52} ${bottom - 2}, ${cx - 56} ${bottom - 18}, ${cx - 16} ${bottom - 22}`)
   drawText(g, shortLabel(service.name, 28), cx, cy - 10, 'service-name')
-  drawText(g, 'facts grouped by extracted instances', cx, cy + 23, 'service-caption')
+  drawText(g, 'extracted service context', cx, cy + 23, 'service-caption')
   const counts = [
     (service.http_routes || []).length && `${(service.http_routes || []).length} routes`,
-    (service.dependencies || []).length && `${(service.dependencies || []).length} deps`,
-    (service.connections || []).length && `${(service.connections || []).length} flows`,
+    (service.dependencies || []).length && `${(service.dependencies || []).length} downstream`,
+    (service.connections || []).length && `${(service.connections || []).length} traces`,
   ].filter(Boolean).join(' · ')
   if (counts) drawText(g, counts, cx, cy + 52, 'service-counts')
   drawServiceBadges(g, service, cx, cy + 78)
@@ -1046,14 +1073,14 @@ function drawTeamFrames(parent, services, topPositions) {
   })
 }
 
-function drawGroup(g, group, cx, cy, kind, ports, selectThing, serviceName) {
+function drawGroup(g, group, cx, cy, kind, ports, selectThing, serviceName, connections) {
   const colors = GROUP_COLORS[kind]
   const gg = g.append('g')
     .attr('class', `objective-group ${kind}-group`)
     .attr('data-select-id', `${serviceName}:${group.key}:${group.title}`)
     .on('click', (ev) => {
       ev.stopPropagation()
-      selectThing({ kind: 'group', id: `${serviceName}:${group.key}:${group.title}`, data: { name: group.title, kind: group.key, service: serviceName, count: group.items.length, items: group.items } })
+      selectThing({ kind: 'group', id: `${serviceName}:${group.key}:${group.title}`, data: { name: group.title, kind: group.key, service: serviceName, count: group.items.length, items: group.items, connections } })
     })
   const x = cx - group.width / 2
   const y = cy - group.height / 2
@@ -1066,19 +1093,19 @@ function drawGroup(g, group, cx, cy, kind, ports, selectThing, serviceName) {
   drawText(gg, group.subtitle, x + 18, y + 49, 'group-subtitle', 'start')
 
   const chipW = (group.width - 48) / 2
-  group.items.forEach((item, i) => drawFactChip(gg, group, item, x + 18 + (i % 2) * (chipW + 12), y + 66 + Math.floor(i / 2) * (CHIP_H + CHIP_ROW_GAP), chipW, colors, selectThing, serviceName))
+  group.items.forEach((item, i) => drawFactChip(gg, group, item, x + 18 + (i % 2) * (chipW + 12), y + 66 + Math.floor(i / 2) * (CHIP_H + CHIP_ROW_GAP), chipW, colors, selectThing, serviceName, connections))
 
   const port = ports.groups[group.key]
   if (port) gg.append('circle').attr('class', `${kind}-port group-port`).attr('cx', port.x).attr('cy', port.y).attr('r', 11)
 }
 
-function drawFactChip(g, group, item, x, y, width, colors, selectThing, serviceName) {
+function drawFactChip(g, group, item, x, y, width, colors, selectThing, serviceName, connections) {
   const chip = g.append('g')
     .attr('class', 'instance-fact fact-chip')
     .attr('data-select-id', `${serviceName}:${group.key}:${item.key}`)
     .on('click', (ev) => {
       ev.stopPropagation()
-      selectThing({ kind: 'fact', id: `${serviceName}:${group.key}:${item.key}`, data: { name: item.label, kind: group.key, service: serviceName, count: item.items.length, items: item.items } })
+      selectThing({ kind: 'fact', id: `${serviceName}:${group.key}:${item.key}`, data: { name: item.label, kind: group.key, service: serviceName, count: item.items.length, items: item.items, connections } })
     })
   chip.append('rect').attr('x', x).attr('y', y).attr('width', width).attr('height', 23).attr('rx', 6)
     .attr('fill', '#111827').attr('stroke', colors.inner)
@@ -1113,13 +1140,27 @@ function drawResourceNode(parent, id, n, onSelect, selectThing) {
   drawText(g, badge, n.x, n.y - 23, 'resource-kind-text')
   drawText(g, shortLabel(n.label || n.data?.name || id, shared ? 28 : 24), n.x, n.y + 2, 'resource-title')
   drawText(g, shared ? `shared by ${shared.serviceCount} services` : resourceSubtitle(n), n.x, n.y + 25, 'resource-subtitle')
+  const footer = resourceFooter(n)
+  if (footer) drawText(g, footer, n.x, n.y + 43, 'resource-footer')
 }
 
 function resourceSubtitle(n) {
-  if (n.type === 'db') return cleanLabel(n.data?.kind || 'database')
+  if (n.type === 'db') {
+    const tableCount = Array.isArray(n.data?.tables) ? n.data.tables.length : 0
+    const opCount = Number(n.data?.operation_count || 0)
+    if (tableCount && opCount) return `${cleanLabel(n.data?.kind || 'database')} · ${tableCount} tables`
+    return cleanLabel(n.data?.kind || 'database')
+  }
   if (n.type === 'queue') return cleanLabel(n.data?.kind || 'queue')
   if (n.type === 'scheduler') return cleanLabel(n.data?.schedule || 'scheduler')
   return cleanLabel(n.data?.kind || 'external')
+}
+
+function resourceFooter(n) {
+  if (n.type !== 'db') return ''
+  const opCount = Number(n.data?.operation_count || 0)
+  if (!opCount) return ''
+  return `${opCount} operation${opCount === 1 ? '' : 's'}`
 }
 
 function resourceBadge(n) {

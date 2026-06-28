@@ -599,6 +599,11 @@ textarea { resize: vertical; }
   font-size: 11px;
   font-weight: 560;
 }
+.resource-footer {
+  fill: #cbd5e1;
+  font-size: 10px;
+  font-weight: 760;
+}
 .service-system.selected .service-hull,
 .service-system.selected .service-boundary,
 .resource-node.selected ellipse,
