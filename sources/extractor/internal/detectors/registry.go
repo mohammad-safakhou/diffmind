@@ -20,6 +20,8 @@ var descriptors = []Descriptor{
 	{ID: "java.db.jdbc", Language: LanguageJava, Category: CategoryDB, Tool: "jdbc", ObjectTypes: []string{"db_query", "db_resource"}, Description: "JdbcTemplate and raw SQL operations"},
 	{ID: "java.queue.kafka", Language: LanguageJava, Category: CategoryQueue, Tool: "kafka", ObjectTypes: []string{"queue_consumer", "queue_publisher"}, Description: "Kafka listeners and publishers"},
 	{ID: "java.queue.sqs", Language: LanguageJava, Category: CategoryQueue, Tool: "sqs", ObjectTypes: []string{"queue_consumer", "queue_publisher"}, Description: "AWS SQS listeners and publishers"},
+	{ID: "java.activation.spring", Language: LanguageJava, Category: CategoryActivation, Tool: "spring", ObjectTypes: []string{"activation"}, Description: "Spring scheduled jobs and event listeners"},
+	{ID: "java.cache.spring", Language: LanguageJava, Category: CategoryCache, Tool: "spring", ObjectTypes: []string{"cache_operation"}, Description: "Spring cache operations"},
 
 	{ID: "python.http.flask", Language: LanguagePython, Category: CategoryHTTP, Tool: "flask", ObjectTypes: []string{"http_endpoint"}, Description: "Flask and Blueprint route decorators"},
 	{ID: "python.aws.sam", Language: LanguagePython, Category: CategoryAWS, Tool: "sam", ObjectTypes: []string{"activation", "queue_consumer"}, Description: "AWS SAM function and event-source definitions"},

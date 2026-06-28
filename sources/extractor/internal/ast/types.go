@@ -175,6 +175,7 @@ type FrameworkBinding struct {
 	TriggerSource    string
 	File             string
 	Range            Range
+	DetectorIDs      []string
 	ConfidenceReason string
 	RejectionReason  string
 }

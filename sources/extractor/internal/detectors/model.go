@@ -15,6 +15,7 @@ const (
 type Category string
 
 const (
+	CategoryActivation Category = "activation"
 	CategoryAWS        Category = "aws"
 	CategoryCache      Category = "cache"
 	CategoryCLI        Category = "cli"
