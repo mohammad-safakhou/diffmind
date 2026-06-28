@@ -106,7 +106,14 @@ func TestValidateCanonicalRequiresGeneratedShape(t *testing.T) {
 		t.Fatal("expected canonical validation error")
 	}
 
-	doc.Flows = []Flow{}
+	doc.Flows = []Flow{{
+		ID:         "flow.create",
+		Kind:       "request_flow",
+		Entrypoint: "http.create",
+		Nodes:      []FlowNode{{ID: "n1", Ref: "http.create", Role: "entrypoint"}},
+		Status:     StatusConfirmed, Confidence: ConfidenceHigh, Origin: OriginDeterministic,
+		EvidenceRefs: []string{"ev.http.create.1"},
+	}}
 	doc.Observations = []Observation{{ID: "obs.http.create.1", ObjectRef: "http.create", Perspective: "route_registration"}}
 	doc.Evidence = []Evidence{{ID: "ev.http.create.1", Type: "source_location", Source: "code"}}
 	doc.Objects.HTTPCalls = []HTTPCall{}
@@ -140,10 +147,77 @@ func TestValidateCanonicalRequiresGeneratedShape(t *testing.T) {
 	if err := ValidateCanonical(doc); err == nil {
 		t.Fatal("expected canonical validation to reject flow origin llm")
 	}
-	doc.Flows = []Flow{}
+	doc.Flows = []Flow{{
+		ID:         "flow.create",
+		Kind:       "request_flow",
+		Entrypoint: "http.create",
+		Nodes:      []FlowNode{{ID: "n1", Ref: "http.create", Role: "entrypoint"}},
+		Status:     StatusConfirmed, Confidence: ConfidenceHigh, Origin: OriginDeterministic,
+		EvidenceRefs: []string{"ev.http.create.1"},
+	}}
 
 	doc.Evidence[0].Source = "llm"
 	if err := ValidateCanonical(doc); err == nil {
 		t.Fatal("expected canonical validation to reject llm evidence source")
+	}
+}
+
+func TestValidateCanonicalRequiresEntrypointFlows(t *testing.T) {
+	doc := canonicalDoc()
+	doc.Flows = []Flow{}
+	if err := ValidateCanonical(doc); err == nil {
+		t.Fatal("expected canonical validation to reject entrypoint without flow")
+	}
+}
+
+func TestValidateRejectsUnknownDataDependencyRefs(t *testing.T) {
+	doc := canonicalDoc()
+	doc.Flows[0].DataDependencies = []DataDependency{{
+		ID:   "data.bad",
+		From: DataEndpoint{ObjectRef: "http.create", Expression: "request.body.id"},
+		To:   DataEndpoint{ObjectRef: "dbq.missing", Expression: "campaigns.id"},
+		Kind: "value_flow", Confidence: ConfidenceHigh,
+	}}
+	if err := Validate(doc); err == nil {
+		t.Fatal("expected validation to reject unknown data dependency object ref")
+	}
+}
+
+func canonicalDoc() *Document {
+	return &Document{
+		Schema:  SchemaServiceV1,
+		Service: Service{ID: "svc", Name: "svc"},
+		Objects: Objects{
+			HTTPEndpoints: []HTTPEndpoint{{
+				ObjectiveBase: ObjectiveBase{
+					ID: "http.create", Kind: "http_endpoint", Name: "create",
+					Status: StatusConfirmed, Confidence: ConfidenceHigh, Origin: OriginDeterministic,
+					Observations: []string{"obs.http.create.1"}, EvidenceRefs: []string{"ev.http.create.1"},
+				},
+				Method: "POST", Path: "/create",
+			}},
+			HTTPCalls:       []HTTPCall{},
+			DBResources:     []DBResource{},
+			DBQueries:       []DBQuery{},
+			QueueConsumers:  []QueueConsumer{},
+			QueuePublishers: []QueuePublisher{},
+			RPCEndpoints:    []RPCObjective{},
+			RPCCalls:        []RPCObjective{},
+			CLICommands:     []CLICommand{},
+			Activations:     []Activation{},
+			CacheOperations: []CacheOperation{},
+			ConfigReads:     []ConfigRead{},
+			FeatureFlags:    []FeatureFlag{},
+		},
+		Observations: []Observation{{ID: "obs.http.create.1", ObjectRef: "http.create", Perspective: "route_registration"}},
+		Evidence:     []Evidence{{ID: "ev.http.create.1", Type: "source_location", Source: "code", Confidence: ConfidenceHigh}},
+		Flows: []Flow{{
+			ID:         "flow.create",
+			Kind:       "request_flow",
+			Entrypoint: "http.create",
+			Nodes:      []FlowNode{{ID: "n1", Ref: "http.create", Role: "entrypoint"}},
+			Status:     StatusConfirmed, Confidence: ConfidenceHigh, Origin: OriginDeterministic,
+			EvidenceRefs: []string{"ev.http.create.1"},
+		}},
 	}
 }

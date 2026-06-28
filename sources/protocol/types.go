@@ -160,12 +160,13 @@ type RetrySpec struct {
 
 type HTTPCall struct {
 	ObjectiveBase `json:",inline" yaml:",inline"`
-	Method        string      `json:"method,omitempty" yaml:"method,omitempty"`
-	URLTemplate   string      `json:"url_template,omitempty" yaml:"url_template,omitempty"`
-	Target        *TargetRef  `json:"target,omitempty" yaml:"target,omitempty"`
-	Inputs        *HTTPInputs `json:"inputs,omitempty" yaml:"inputs,omitempty"`
-	TimeoutMS     int         `json:"timeout_ms,omitempty" yaml:"timeout_ms,omitempty"`
-	Retry         *RetrySpec  `json:"retry,omitempty" yaml:"retry,omitempty"`
+	Method        string         `json:"method,omitempty" yaml:"method,omitempty"`
+	URLTemplate   string         `json:"url_template,omitempty" yaml:"url_template,omitempty"`
+	Target        *TargetRef     `json:"target,omitempty" yaml:"target,omitempty"`
+	Inputs        *HTTPInputs    `json:"inputs,omitempty" yaml:"inputs,omitempty"`
+	Responses     []HTTPResponse `json:"responses,omitempty" yaml:"responses,omitempty"`
+	TimeoutMS     int            `json:"timeout_ms,omitempty" yaml:"timeout_ms,omitempty"`
+	Retry         *RetrySpec     `json:"retry,omitempty" yaml:"retry,omitempty"`
 }
 
 type DBResource struct {
@@ -336,6 +337,26 @@ type FlowEdge struct {
 	To           string       `json:"to" yaml:"to"`
 	Reachability Reachability `json:"reachability,omitempty" yaml:"reachability,omitempty"`
 	Condition    *Condition   `json:"condition,omitempty" yaml:"condition,omitempty"`
+	Kind         string       `json:"kind,omitempty" yaml:"kind,omitempty"`
+	Branch       string       `json:"branch,omitempty" yaml:"branch,omitempty"`
+	Loop         *LoopSpec    `json:"loop,omitempty" yaml:"loop,omitempty"`
+	Fanout       bool         `json:"fanout,omitempty" yaml:"fanout,omitempty"`
+	Repeat       *RepeatSpec  `json:"repeat,omitempty" yaml:"repeat,omitempty"`
+}
+
+type LoopSpec struct {
+	Kind        string     `json:"kind,omitempty" yaml:"kind,omitempty"`
+	Expression  string     `json:"expression,omitempty" yaml:"expression,omitempty"`
+	MaxInferred int        `json:"max_inferred,omitempty" yaml:"max_inferred,omitempty"`
+	Location    *Location  `json:"location,omitempty" yaml:"location,omitempty"`
+	Confidence  Confidence `json:"confidence,omitempty" yaml:"confidence,omitempty"`
+}
+
+type RepeatSpec struct {
+	Min        int        `json:"min,omitempty" yaml:"min,omitempty"`
+	Max        int        `json:"max,omitempty" yaml:"max,omitempty"`
+	Expression string     `json:"expression,omitempty" yaml:"expression,omitempty"`
+	Confidence Confidence `json:"confidence,omitempty" yaml:"confidence,omitempty"`
 }
 
 type Condition struct {

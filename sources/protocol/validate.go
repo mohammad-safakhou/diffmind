@@ -198,7 +198,7 @@ func ValidateCanonical(doc *Document) error {
 			return fmt.Errorf("flow %q origin %q is not allowed in canonical deterministic output", flow.ID, flow.Origin)
 		}
 	}
-	return forEachBase(doc, func(base ObjectiveBase) error {
+	if err := forEachBase(doc, func(base ObjectiveBase) error {
 		if base.Status == "" {
 			return fmt.Errorf("object %q status is required", base.ID)
 		}
@@ -224,7 +224,10 @@ func ValidateCanonical(doc *Document) error {
 			return fmt.Errorf("object %q must reference at least one evidence item", base.ID)
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	return validateCanonicalEntrypointFlows(doc)
 }
 
 func validateCanonicalObjectArrays(doc *Document) error {
@@ -386,6 +389,97 @@ func validateFlow(flow Flow, objects map[string]struct{}, evidence map[string]Ev
 		}
 		if err := validateReachability(e.Reachability, "flow "+flow.ID+" edge"); err != nil {
 			return err
+		}
+		if e.Condition != nil {
+			if err := validateConfidence(e.Condition.Confidence, "flow "+flow.ID+" edge condition"); err != nil {
+				return err
+			}
+		}
+		if e.Loop != nil {
+			if err := validateConfidence(e.Loop.Confidence, "flow "+flow.ID+" edge loop"); err != nil {
+				return err
+			}
+		}
+		if e.Repeat != nil {
+			if err := validateConfidence(e.Repeat.Confidence, "flow "+flow.ID+" edge repeat"); err != nil {
+				return err
+			}
+		}
+	}
+	for _, dep := range flow.DataDependencies {
+		if dep.From.ObjectRef != "" {
+			if _, ok := objects[dep.From.ObjectRef]; !ok {
+				return fmt.Errorf("flow %q data dependency %q from references unknown object %q", flow.ID, dep.ID, dep.From.ObjectRef)
+			}
+		}
+		if dep.To.ObjectRef != "" {
+			if _, ok := objects[dep.To.ObjectRef]; !ok {
+				return fmt.Errorf("flow %q data dependency %q to references unknown object %q", flow.ID, dep.ID, dep.To.ObjectRef)
+			}
+		}
+		if err := validateConfidence(dep.Confidence, "flow "+flow.ID+" data dependency"); err != nil {
+			return err
+		}
+	}
+	for _, effect := range flow.SideEffects {
+		if effect.ObjectRef != "" {
+			if _, ok := objects[effect.ObjectRef]; !ok {
+				return fmt.Errorf("flow %q side effect references unknown object %q", flow.ID, effect.ObjectRef)
+			}
+		}
+		if effect.ResourceRef != "" {
+			if _, ok := objects[effect.ResourceRef]; !ok {
+				return fmt.Errorf("flow %q side effect references unknown resource object %q", flow.ID, effect.ResourceRef)
+			}
+		}
+		if effect.TargetRef != "" {
+			if _, ok := objects[effect.TargetRef]; !ok {
+				return fmt.Errorf("flow %q side effect references unknown target object %q", flow.ID, effect.TargetRef)
+			}
+		}
+	}
+	return nil
+}
+
+func validateCanonicalEntrypointFlows(doc *Document) error {
+	entrypoints := map[string]struct{}{}
+	add := func(base ObjectiveBase) {
+		if strings.TrimSpace(base.ID) != "" {
+			entrypoints[base.ID] = struct{}{}
+		}
+	}
+	for _, v := range doc.Objects.HTTPEndpoints {
+		add(v.ObjectiveBase)
+	}
+	for _, v := range doc.Objects.QueueConsumers {
+		add(v.ObjectiveBase)
+	}
+	for _, v := range doc.Objects.RPCEndpoints {
+		add(v.ObjectiveBase)
+	}
+	for _, v := range doc.Objects.CLICommands {
+		add(v.ObjectiveBase)
+	}
+	for _, v := range doc.Objects.Activations {
+		add(v.ObjectiveBase)
+	}
+	covered := map[string]struct{}{}
+	for _, flow := range doc.Flows {
+		if flow.Entrypoint != "" {
+			covered[flow.Entrypoint] = struct{}{}
+		}
+		if flow.From != "" {
+			covered[flow.From] = struct{}{}
+		}
+		for _, node := range flow.Nodes {
+			if node.Role == "entrypoint" && node.Ref != "" {
+				covered[node.Ref] = struct{}{}
+			}
+		}
+	}
+	for id := range entrypoints {
+		if _, ok := covered[id]; !ok {
+			return fmt.Errorf("entrypoint object %q must have at least one flow", id)
 		}
 	}
 	return nil
