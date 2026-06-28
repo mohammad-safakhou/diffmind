@@ -203,7 +203,7 @@ func TestWriteEmitsDiffMind protocolServiceContext(t *testing.T) {
 	}}
 	dep := model.Dependency{BaseEntity: model.BaseEntity{
 		ID: "legacy-dep", Type: "db_operation", Name: "write orders", Service: repo, Platform: "postgres",
-		Summary: "insert order", Confidence: 1, Tags: []string{"deterministic"}, PluginSource: "opencode",
+		Summary: "insert order", Confidence: 1, Tags: []string{"deterministic"},
 		Details:   map[string]any{"table": "orders", "operation": "write"},
 		Locations: []model.Location{{File: "repo.go", StartLine: 30, EndLine: 40}},
 		Evidence:  []model.Evidence{{Location: model.Location{File: "repo.go", StartLine: 30, EndLine: 40}, Source: "deterministic_ast", Snippet: "insert orders"}},
@@ -276,8 +276,8 @@ func TestWriteEmitsDiffMind protocolServiceContext(t *testing.T) {
 	if len(doc.Objects.DBResources[0].Observations) == 0 || len(doc.Objects.DBResources[0].EvidenceRefs) == 0 {
 		t.Fatalf("db resource common refs must inherit evidence: %+v", doc.Objects.DBResources[0].ObjectiveBase)
 	}
-	if got := doc.Objects.DBQueries[0].Metadata["plugin_source"]; got == "opencode" || got == "diffmind.opencode" {
-		t.Fatalf("deterministic plugin_source leaked opencode: %v", got)
+	if got := doc.Objects.DBQueries[0].Metadata["plugin_source"]; got == "" {
+		t.Fatalf("deterministic plugin_source must be detector-specific")
 	}
 	depBytes, err := os.ReadFile(filepath.Join(baseDir, "run-protocol", "dependencies", "db_operation.json"))
 	if err != nil {
@@ -290,8 +290,8 @@ func TestWriteEmitsDiffMind protocolServiceContext(t *testing.T) {
 	if len(legacyDeps) != 1 {
 		t.Fatalf("expected one legacy db dependency, got %+v", legacyDeps)
 	}
-	if legacyDeps[0].PluginSource == "opencode" {
-		t.Fatalf("legacy deterministic plugin_source leaked opencode: %+v", legacyDeps[0])
+	if legacyDeps[0].PluginSource == "" {
+		t.Fatalf("legacy deterministic plugin_source must be detector-specific: %+v", legacyDeps[0])
 	}
 	b, err := os.ReadFile(filepath.Join(baseDir, "run-protocol", "run_manifest.json"))
 	if err != nil {

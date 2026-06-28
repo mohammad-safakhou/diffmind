@@ -181,6 +181,7 @@ func (b *protocolBuilder) addDependency(dep model.Dependency) {
 			URLTemplate:   rawURL,
 			Target:        targetRefWithType(targetName, stringDetail(base.Details, "target_type")),
 			Inputs:        inputsFromBase(base),
+			Responses:     responsesFromDetails(base.Details),
 		})
 	case "queue_publish":
 		platform, dest := platformDest(base)
@@ -284,8 +285,6 @@ func (b *protocolBuilder) originForBase(base model.BaseEntity) protocol.Origin {
 		source == "ast" || strings.HasPrefix(source, "ast_") ||
 		strings.HasPrefix(source, "deterministic_") ||
 		strings.HasPrefix(source, "framework"):
-		return protocol.OriginDeterministic
-	case source == "opencode":
 		return protocol.OriginDeterministic
 	case source == "manual" || hasTag(base.Tags, "manual"):
 		return protocol.OriginManual
@@ -1116,7 +1115,7 @@ func perspectiveFor(t string, idx int) string {
 }
 
 func detectorName(base model.BaseEntity, fallback string) string {
-	if base.PluginSource != "" && !strings.EqualFold(base.PluginSource, "opencode") {
+	if base.PluginSource != "" {
 		return "diffmind." + base.PluginSource
 	}
 	for _, tag := range base.Tags {
@@ -1136,8 +1135,6 @@ func sourceForEvidence(source string) string {
 		return "infra"
 	case strings.Contains(source, "human"):
 		return "human"
-	case strings.Contains(source, "opencode"):
-		return "code"
 	default:
 		return "code"
 	}

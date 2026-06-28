@@ -7,8 +7,8 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 )
 
-// NormalizeDeterministic replaces placeholder LLM provenance left by the
-// shared candidate converter with deterministic detector provenance.
+// NormalizeDeterministic replaces empty provenance from deterministic
+// candidates with detector-specific provenance.
 func NormalizeDeterministic(exposures []model.Exposure, dependencies []model.Dependency, connections []model.Connection) {
 	for i := range exposures {
 		normalizeBase(&exposures[i].BaseEntity)
@@ -115,5 +115,5 @@ func detailString(details map[string]any, key string) string {
 
 func isPlaceholderSource(source string) bool {
 	source = strings.ToLower(strings.TrimSpace(source))
-	return source == "" || source == "opencode" || source == "diffmind.opencode"
+	return source == ""
 }
