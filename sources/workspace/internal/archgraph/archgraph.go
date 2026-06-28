@@ -74,11 +74,18 @@ type ServiceNode struct {
 }
 
 type ConnectionSummary struct {
-	FromName string `json:"from_name"`
-	FromType string `json:"from_type"`
-	ToName   string `json:"to_name"`
-	ToType   string `json:"to_type"`
-	Summary  string `json:"summary"`
+	FromName         string         `json:"from_name"`
+	FromType         string         `json:"from_type"`
+	ToName           string         `json:"to_name"`
+	ToType           string         `json:"to_type"`
+	Summary          string         `json:"summary"`
+	Kind             string         `json:"kind,omitempty"`
+	Reachability     string         `json:"reachability,omitempty"`
+	Condition        map[string]any `json:"condition,omitempty"`
+	DataDependencies any            `json:"data_dependencies,omitempty"`
+	SideEffects      any            `json:"side_effects,omitempty"`
+	Nodes            any            `json:"nodes,omitempty"`
+	Edges            any            `json:"edges,omitempty"`
 }
 
 type ExternalNode struct {
@@ -246,6 +253,7 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 			for _, c := range connItems {
 				fromID := getString(c, "from_exposure_id")
 				toID := getString(c, "to_dependency_id")
+				details := getMap(c, "details")
 				fromName := expByID[fromID]
 				toName := depByID[toID]
 				if fromName == "" {
@@ -260,6 +268,16 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 					ToName:   toName,
 					ToType:   getString(c, "to_type"),
 					Summary:  getString(c, "summary"),
+					Kind:     firstNonEmpty(getString(details, "kind"), getString(c, "summary")),
+					Reachability: firstNonEmpty(
+						getString(details, "reachability"),
+						getString(getMap(c, "condition"), "kind"),
+					),
+					Condition:        getMap(details, "condition"),
+					DataDependencies: details["data_dependencies"],
+					SideEffects:      details["side_effects"],
+					Nodes:            details["nodes"],
+					Edges:            details["edges"],
 				})
 			}
 		}

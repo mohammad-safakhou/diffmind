@@ -91,6 +91,7 @@ type Connection struct {
 	FromType       string           `json:"from_type"`
 	ToType         string           `json:"to_type"`
 	Paths          []ConnectionPath `json:"paths,omitempty"`
+	Details        map[string]any   `json:"details,omitempty"`
 }
 
 type ConnectionPath struct {

@@ -264,6 +264,78 @@ aliases:
 	t.Fatalf("expected alias target to join known service, edges=%+v external=%+v", graph.Edges, graph.ExternalNodes)
 }
 
+func TestArchitectureGraphCarriesDiffMind protocolFlowDetails(t *testing.T) {
+	root := t.TempDir()
+	runDir := filepath.Join(root, "orders")
+	writeDiffMind protocolRun(t, runDir, `{
+  "schema": "diffmind.service.v1",
+  "service": {"id": "orders-api", "name": "orders-api"},
+  "objects": {
+    "http_endpoints": [{
+      "id": "http.create_order",
+      "kind": "http_endpoint",
+      "name": "POST /orders",
+      "method": "POST",
+      "path": "/orders",
+      "status": "confirmed",
+      "confidence": "high",
+      "origin": "deterministic"
+    }],
+    "db_queries": [{
+      "id": "dbq.insert_order",
+      "kind": "db_query",
+      "name": "Insert order",
+      "engine": "postgresql",
+      "operation": "create",
+      "access": "write",
+      "target": {"database": "orders", "tables": ["orders"]},
+      "status": "confirmed",
+      "confidence": "high",
+      "origin": "deterministic"
+    }]
+  },
+  "flows": [{
+    "id": "flow.create_order",
+    "kind": "request_flow",
+    "entrypoint": "http.create_order",
+    "nodes": [
+      {"id": "n1", "ref": "http.create_order", "role": "entrypoint"},
+      {"id": "n2", "ref": "dbq.insert_order", "role": "action"}
+    ],
+    "edges": [{
+      "from": "n1",
+      "to": "n2",
+      "reachability": "conditional",
+      "condition": {"summary": "validation succeeds", "confidence": "high"}
+    }],
+    "data_dependencies": [{
+      "id": "data.order_id",
+      "from": {"object_ref": "http.create_order", "expression": "request.body.id"},
+      "to": {"object_ref": "dbq.insert_order", "expression": "orders.id"},
+      "kind": "value_flow",
+      "confidence": "high"
+    }],
+    "status": "confirmed",
+    "confidence": "high",
+    "origin": "deterministic"
+  }],
+  "observations": [],
+  "evidence": []
+}`)
+
+	graph := buildArchitectureGraph("run-1", map[string]string{"orders-api": runDir})
+	if len(graph.Services) != 1 {
+		t.Fatalf("expected one service, got %+v", graph.Services)
+	}
+	conns := graph.Services[0].Connections
+	if len(conns) != 1 {
+		t.Fatalf("expected one connection, got %+v", conns)
+	}
+	if conns[0].Kind != "request_flow" || conns[0].DataDependencies == nil || conns[0].Edges == nil {
+		t.Fatalf("expected DiffMind protocol flow details in connection summary, got %+v", conns[0])
+	}
+}
+
 func TestArchitectureGraphLayoutIsStableAndRanksSharedResourceFlow(t *testing.T) {
 	root := t.TempDir()
 	boostRun := filepath.Join(root, "boost")

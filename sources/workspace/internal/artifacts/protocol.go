@@ -198,6 +198,17 @@ func connectionFromDiffMind protocolFlow(flow protocol.Flow, arch *model.Service
 		Confidence:     confidenceFloat(flow.Confidence),
 		FromType:       typeForExposureID(arch, from),
 		ToType:         typeForDependencyID(arch, to),
+		Details: map[string]any{
+			"kind":              flow.Kind,
+			"entrypoint":        flow.Entrypoint,
+			"reachability":      flow.Reachability,
+			"condition":         flow.Condition,
+			"nodes":             flow.Nodes,
+			"edges":             flow.Edges,
+			"data_dependencies": flow.DataDependencies,
+			"side_effects":      flow.SideEffects,
+			"evidence_refs":     flow.EvidenceRefs,
+		},
 	}, true
 }
 

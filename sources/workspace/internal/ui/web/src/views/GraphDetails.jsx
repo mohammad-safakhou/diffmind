@@ -64,6 +64,9 @@ function TraceCard({ trace }) {
       {trace.summary && <p class="object-summary">{trace.summary}</p>}
       <DetailJSON title="Condition" value={trace.condition} />
       <DetailJSON title="Data dependencies" value={trace.data_dependencies} />
+      <DetailJSON title="Side effects" value={trace.side_effects} />
+      <DetailJSON title="Flow nodes" value={trace.nodes} />
+      <DetailJSON title="Flow edges" value={trace.edges} />
     </div>
   )
 }

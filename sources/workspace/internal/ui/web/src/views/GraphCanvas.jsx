@@ -618,7 +618,7 @@ export function GraphCanvas({ graph, onSelect }) {
       const selectedID = sel.id || (sel.data && (sel.data.name || sel.data.id)) || sel.kind
       rootG.selectAll(`[data-select-id="${cssEscape(selectedID)}"]`).classed('selected', true)
       if (sel.kind !== 'edge' && selectedID) {
-        const impact = sel.kind === 'group' || sel.kind === 'fact' ? impactEdgeSet(sel, displayEdges) : null
+        const impact = sel.kind === 'group' || sel.kind === 'fact' ? impactEdgeSet(sel, displayEdges, serviceNames) : null
         rootG.selectAll('.edge').each(function () {
           const el = d3.select(this)
           const key = `${el.attr('data-from')}|${el.attr('data-to')}|${el.attr('data-type') || ''}`
@@ -792,7 +792,7 @@ function serviceAnchor(serviceName, edge, role, servicePorts) {
   return role === 'source' ? ports.hullOut : ports.hullIn
 }
 
-function impactEdgeSet(sel, edges) {
+function impactEdgeSet(sel, edges, serviceNames = new Set()) {
   const out = new Set()
   const data = sel.data || {}
   const service = data.service || ''
@@ -813,8 +813,10 @@ function impactEdgeSet(sel, edges) {
       const traced = traceImpactEdgeSet(data, edges, service)
       if (traced.size) {
         traced.forEach((key) => out.add(key))
+        expandKnownServiceImpact(out, edges, serviceNames)
       } else if (fromService || toService) {
         out.add(edgeKey(edge))
+        expandKnownServiceImpact(out, edges, serviceNames)
       }
       return
     }
@@ -832,6 +834,31 @@ function impactEdgeSet(sel, edges) {
     if (kind === 'event_outbound' && edge.type === 'queue_publish' && fromService) out.add(edgeKey(edge))
   })
   return out
+}
+
+function expandKnownServiceImpact(selected, edges, serviceNames) {
+  if (!selected.size || !serviceNames.size) return
+  const outgoing = new Map()
+  edges.forEach((edge) => {
+    if (!outgoing.has(edge.from)) outgoing.set(edge.from, [])
+    outgoing.get(edge.from).push(edge)
+  })
+  const queue = []
+  selected.forEach((key) => {
+    const edge = edges.find((candidate) => edgeKey(candidate) === key)
+    if (edge && serviceNames.has(edge.to)) queue.push(edge.to)
+  })
+  const seenServices = new Set(queue)
+  while (queue.length) {
+    const svc = queue.shift()
+    ;(outgoing.get(svc) || []).forEach((edge) => {
+      selected.add(edgeKey(edge))
+      if (serviceNames.has(edge.to) && !seenServices.has(edge.to)) {
+        seenServices.add(edge.to)
+        queue.push(edge.to)
+      }
+    })
+  }
 }
 
 function traceImpactEdgeSet(data, edges, service) {
