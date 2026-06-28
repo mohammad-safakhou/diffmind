@@ -1,9 +1,8 @@
 package extraction
 
 // identity.go holds the shared identity / detail-derivation helpers used across
-// pipeline stages (discovery, reexamination, sharding). They are PURE free
-// functions — no orchestrator receiver, no orchestrator state — so they live in
-// core and can be shared once the stages become separate packages.
+// deterministic pipeline stages. They are pure free functions with no
+// orchestrator state.
 
 import (
 	"fmt"
@@ -14,41 +13,6 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 )
-
-// ShouldReexamine decides whether a seed needs Stage 2 re-examination.
-// Rules (all LLM-only, no filesystem checks):
-//   - confidence below minConfidence
-//   - missing name or type
-//   - no source_locations entries
-//   - type-specific required detail fields missing (e.g. http_route
-//     without method/path) AND those fields cannot be derived from the
-//     entity's name. We back-fill derived fields into the entity in
-//     place so the rest of the pipeline sees structured details.
-//
-// IMPORTANT: this function MUTATES e.Details when it can derive missing
-// fields from the name (e.g. parsing "GET /accounts/{id}" into
-// {method, path}). The mutation is the cheap fix for the previous
-// reexamination flood: most LLM responses already encode the required
-// fields in the name, just not in the details object.
-func ShouldReexamine(obj objectives.Objective, e *Candidate, minConfidence float64) (string, string, bool) {
-	if strings.TrimSpace(e.Name) == "" || strings.TrimSpace(e.Type) == "" {
-		return "missing_name_or_type", "Candidate is missing name or type fields.", true
-	}
-	if _, ok := CanonicalObjectiveType(obj, e.Type); !ok {
-		return "wrong_objective_type", "Candidate type does not match the objective type.", true
-	}
-	if len(e.Locations) == 0 {
-		return "no_source_location", "Candidate has no source_locations entry; confirm the file and line range.", true
-	}
-	if e.Confidence < minConfidence {
-		return "low_confidence", "Candidate confidence is below the run threshold. Re-verify or reject.", true
-	}
-	DeriveDetailsFromName(obj.Type, e)
-	if missing := MissingRequiredDetails(obj.Type, e.Details); missing != "" {
-		return "missing_required_details", "Candidate is missing required detail fields: " + missing, true
-	}
-	return "", "", false
-}
 
 // MissingRequiredDetails returns a comma separated list of missing field keys
 // for the given objective type. Empty result means all required fields are
@@ -90,10 +54,7 @@ var HTTPMethods = map[string]struct{}{
 }
 
 // DeriveDetailsFromName fills in entity.Details from name/summary when
-// the detail field is implicit. This is purely a pre-processing step:
-// the LLM frequently emits "GET /users/{id}" as the name and leaves
-// details empty, so without derivation we'd send 100% of items into
-// reexamination unnecessarily.
+// the detail field is implicit.
 //
 // Mutations are conservative: we only fill fields that are clearly
 // implied by the name's syntax for that objective type.
