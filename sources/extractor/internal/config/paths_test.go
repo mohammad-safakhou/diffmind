@@ -52,16 +52,13 @@ func TestLoadCentralFallsBackToDefaults(t *testing.T) {
 func TestLoadCentralReadsHomeConfig(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("DIFFMIND_HOME", tmp)
-	body := `{"opencode":{"base_url":"http://central:4096","provider_id":"openai","model_id":"gpt"},"runtime":{"workers":9}}`
+	body := `{"runtime":{"workers":9}}`
 	if err := os.WriteFile(FilePath(), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadCentral("")
 	if err != nil {
 		t.Fatalf("LoadCentral: %v", err)
-	}
-	if cfg.OpenCode.BaseURL != "http://central:4096" {
-		t.Fatalf("base_url = %q", cfg.OpenCode.BaseURL)
 	}
 	if cfg.Runtime.Workers != 9 {
 		t.Fatalf("workers = %d, want 9", cfg.Runtime.Workers)
@@ -78,14 +75,14 @@ func TestLoadCentralExplicitPathWins(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("DIFFMIND_HOME", tmp)
 	explicit := filepath.Join(tmp, "explicit.json")
-	if err := os.WriteFile(explicit, []byte(`{"opencode":{"base_url":"http://explicit"}}`), 0o644); err != nil {
+	if err := os.WriteFile(explicit, []byte(`{"runtime":{"workers":11}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadCentral(explicit)
 	if err != nil {
 		t.Fatalf("LoadCentral: %v", err)
 	}
-	if cfg.OpenCode.BaseURL != "http://explicit" {
-		t.Fatalf("base_url = %q", cfg.OpenCode.BaseURL)
+	if cfg.Runtime.Workers != 11 {
+		t.Fatalf("workers = %d, want 11", cfg.Runtime.Workers)
 	}
 }

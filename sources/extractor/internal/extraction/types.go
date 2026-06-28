@@ -30,7 +30,8 @@ type Input struct {
 	Description string `json:"description"`
 }
 
-// Candidate is the stage-level entity shape exchanged with the LLM.
+// Candidate is the stage-level entity shape emitted by deterministic detectors
+// before conversion to the canonical model/DiffMind protocol objects.
 type Candidate struct {
 	Type       string         `json:"type"`
 	Name       string         `json:"name"`
@@ -98,7 +99,6 @@ type Result struct {
 	Failure      *Failure
 	SnapshotPath string
 	Intermediate IntermediateState
-	Tokens       map[string]model.TokenBucket
 }
 
 type Failure struct {
@@ -109,9 +109,6 @@ type Failure struct {
 	Error        string         `json:"error"`
 	ErrorClass   string         `json:"error_class"`
 	HTTPStatus   int            `json:"http_status,omitempty"`
-	SessionID    string         `json:"session_id,omitempty"`
-	PromptPath   string         `json:"prompt_path,omitempty"`
-	ResponsePath string         `json:"response_path,omitempty"`
 	SnapshotPath string         `json:"snapshot_path,omitempty"`
 	OccurredAt   time.Time      `json:"occurred_at"`
 	Extra        map[string]any `json:"extra,omitempty"`
@@ -121,7 +118,6 @@ type Failure struct {
 type IntermediateState struct {
 	RepoFacts      *RepoFacts               `json:"repo_facts,omitempty"`
 	DiscoverySeeds []DetailJob              `json:"discovery_seeds,omitempty"`
-	ReexamSeeds    []DetailJob              `json:"reexam_seeds,omitempty"`
 	Exposures      []model.Exposure         `json:"entities_exposures,omitempty"`
 	Dependencies   []model.Dependency       `json:"entities_dependencies,omitempty"`
 	Connections    []model.Connection       `json:"connections,omitempty"`

@@ -10,7 +10,7 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
-// toBase converts an llmEntity into a model.BaseEntity, returning either the
+// ToBase converts a deterministic discovery candidate into a model.BaseEntity, returning either the
 // populated entity or an UnresolvedItem describing why the candidate was
 // dropped. It is the single gate where confidence + source-location rules are
 // enforced on converted results.
@@ -57,7 +57,7 @@ func ToBase(repoPath string, obj objectives.Objective, e Candidate, minConfidenc
 	}
 	evidence := ToEvidence(e.Evidence)
 	if len(evidence) == 0 {
-		evidence = append(evidence, model.Evidence{Location: locations[0], Snippet: e.Summary, Source: "opencode"})
+		evidence = append(evidence, model.Evidence{Location: locations[0], Snippet: e.Summary, Source: "deterministic"})
 	}
 	inputs := make([]model.InputSpec, 0, len(e.Inputs))
 	for _, in := range e.Inputs {
@@ -77,14 +77,14 @@ func ToBase(repoPath string, obj objectives.Objective, e Candidate, minConfidenc
 		Name:         name,
 		Service:      repoPath,
 		Inputs:       inputs,
-		Summary:      DefaultStr(e.Summary, "Extracted by OpenCode"),
+		Summary:      DefaultStr(e.Summary, "Extracted deterministically"),
 		KeyActions:   e.Actions,
 		Locations:    locations,
 		Evidence:     evidence,
 		Confidence:   e.Confidence,
 		Tags:         e.Tags,
 		Details:      e.Details,
-		PluginSource: "opencode",
+		PluginSource: "deterministic",
 	}
 	EnrichEntityGrouping(&base)
 	return base, nil
@@ -117,7 +117,7 @@ func ToEvidence(in []Evidence) []model.Evidence {
 		}
 		source := v.Source
 		if strings.TrimSpace(source) == "" {
-			source = "opencode"
+			source = "deterministic"
 		}
 		out = append(out, model.Evidence{
 			Location: model.Location{File: v.File, StartLine: v.StartLine, EndLine: end},

@@ -1,15 +1,11 @@
 import { stages, runMeta } from '../lib/store.js'
 
-// Sequential pipeline stages in event-emission order.
-const ORDER = ['repo_facts', 'ast_index', 'deterministic_discovery', 'discovery', 'reexamination', 'connections', 'connection_repair', 'reconcile']
+// Deterministic pipeline stages in event-emission order.
+const ORDER = ['ast_index', 'deterministic_discovery', 'connections', 'reconcile']
 const PRETTY = {
-  repo_facts: 'Repo Facts',
   ast_index: 'AST Index',
   deterministic_discovery: 'Deterministic',
-  discovery: 'Discovery',
-  reexamination: 'Re-examination',
   connections: 'Connections',
-  connection_repair: 'Repair',
   reconcile: 'Reconcile',
 }
 
@@ -31,9 +27,7 @@ export function PipelineStrip() {
             </div>
             <div class="progress"><span style={'width: ' + pct + '%'} /></div>
             <div class="stage-tip">{s.tip}</div>
-            <div class="stage-tokens" title={s.tokens ? tokensTooltip(s.tokens) : 'token stats appear when the stage completes'}>
-              {s.tokens ? compactTokens(s.tokens) : ''}
-            </div>
+            <div class="stage-tokens" />
           </div>
         )
       })}
@@ -41,44 +35,10 @@ export function PipelineStrip() {
         <div class="name">Elapsed</div>
         <div class="count">{elapsed}</div>
         <div class="stage-tip">{meta?.status || 'waiting'}</div>
-        <div class="stage-tokens" title={meta?.tokens ? tokensTooltip(meta.tokens.total || meta.tokens) : ''}>
-          {meta?.tokensTotal ? compactTokens({ total: meta.tokensTotal, cost: meta.tokensCost }) : ''}
-        </div>
+        <div class="stage-tokens" />
       </div>
     </div>
   )
-}
-
-// compactTokens renders a 2-line cost summary for a stage. The
-// first line is the total token count abbreviated to k/M; the
-// second is the dollar cost when the provider reports it.
-function compactTokens(t) {
-  if (!t) return ''
-  const total = t.total ?? 0
-  const cost = t.cost ?? 0
-  const parts = []
-  if (total) parts.push(humanTokens(total))
-  if (cost) parts.push('$' + cost.toFixed(4))
-  return parts.join(' · ')
-}
-
-function humanTokens(n) {
-  if (!Number.isFinite(n) || n <= 0) return '0'
-  if (n < 1000) return String(n)
-  if (n < 1_000_000) return (n / 1000).toFixed(n < 10_000 ? 1 : 0) + 'k'
-  return (n / 1_000_000).toFixed(2) + 'M'
-}
-
-function tokensTooltip(t) {
-  if (!t) return ''
-  return [
-    'input ' + (t.input ?? 0),
-    'output ' + (t.output ?? 0),
-    'reasoning ' + (t.reasoning ?? 0),
-    'cache_read ' + (t.cache_read ?? 0),
-    'cache_write ' + (t.cache_write ?? 0),
-    'cost $' + (t.cost ?? 0).toFixed(6),
-  ].join('  ')
 }
 
 function humanDuration(ms) {

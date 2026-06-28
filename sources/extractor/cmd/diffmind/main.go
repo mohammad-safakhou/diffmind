@@ -19,14 +19,12 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: diffmind <run|retry|validate|list-runs|eval|ui|catalog> ...")
+		fmt.Fprintln(os.Stderr, "usage: diffmind <run|validate|list-runs|eval|ui> ...")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
 	case "run":
 		run(os.Args[2:])
-	case "retry":
-		retry(os.Args[2:])
 	case "validate":
 		validate(os.Args[2:])
 	case "list-runs":
@@ -35,8 +33,6 @@ func main() {
 		evalCmd(os.Args[2:])
 	case "ui":
 		serveUI(os.Args[2:])
-	case "catalog":
-		catalogCmd(os.Args[2:])
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command:", os.Args[1])
 		os.Exit(2)
@@ -47,40 +43,16 @@ func run(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	repo := fs.String("repo", "", "absolute path to target codebase")
 	cfgPath := fs.String("config", "", "path to diffmind json config")
-	pipelineName := fs.String("pipeline", "", "pipeline to run: llm or deterministic (empty = config/default llm)")
-	opencodeURL := fs.String("opencode-url", "", "OpenCode server base URL")
-	opencodeUsername := fs.String("opencode-username", "", "OpenCode basic auth username (default: opencode)")
-	opencodePassword := fs.String("opencode-password", "", "OpenCode basic auth password")
-	opencodeTimeoutSeconds := fs.Int("opencode-timeout-seconds", 0, "OpenCode HTTP transport timeout in seconds (0 = use config default 4h fail-safe; primary control is --idle-timeout-seconds)")
-	providerID := fs.String("provider-id", "", "OpenCode provider ID")
-	modelID := fs.String("model-id", "", "OpenCode model ID")
-	modelVariant := fs.String("model-variant", "", "OpenCode model variant (for example: low, medium, high, max)")
 	outDir := fs.String("out", "", "artifact base directory (default ~/.diffmind/runs)")
 	workers := fs.Int("workers", 0, "parallel worker count")
-	maxCatalogItems := fs.Int("max-catalog-items", 0, "maximum dependency catalog items sent per connection-mapping prompt batch")
-	cleanupOpenCodeSessions := fs.Bool("cleanup-opencode-sessions", false, "delete OpenCode sessions after prompts (can trigger server-side FK races)")
-	opencodeDeleteDelaySeconds := fs.Int("opencode-delete-delay-seconds", 0, "delay before deleting OpenCode sessions when cleanup is enabled")
-	reuseOpenCodeSession := fs.Bool("reuse-opencode-session", false, "reuse a single OpenCode session across prompts in a run")
-	skipReexamination := fs.Bool("skip-reexamination", false, "skip stage 2 (LLM re-ask for low-signal seeds) for faster, lower-accuracy runs")
-	importLegacyArchfile := fs.Bool("import-legacy-archfile", false, "import legacy diffmind.yaml into deterministic runs as imported compatibility facts")
-	discoveryVerify := fs.Bool("discovery-verify", false, "enable the stage-1.5 discovery verification pass (gated to high-variance objectives; fail-soft, keep-biased)")
-	discoveryVerifyMode := fs.String("discovery-verify-mode", "", "verification strategy when --discovery-verify is on: reask (re-open + find-missed) or ksample (run K times and union) (empty = use config default reask)")
-	discoveryVerifySamples := fs.Int("discovery-verify-samples", 0, "K for ksample verify mode, floored to [1,5] (0 = use config default 2)")
-	discoveryFrameworkScope := fs.Bool("discovery-framework-scope", false, "drop discovery-prompt bullets for frameworks the repo shows no trace of (riskier prompt trim; default off)")
 	minConfidence := fs.Float64("min-confidence", -1, "confidence threshold in [0,1]")
-	idleTimeoutSeconds := fs.Int("idle-timeout-seconds", 0, "abort a prompt after this many seconds without observable progress on the OpenCode session (0 = use config default 120s)")
-	promptRetryCount := fs.Int("prompt-retry-count", -1, "retry a prompt this many times after the liveness watchdog declares it stuck (-1 = use config default 3; 0 = disable)")
-	maxCallSeconds := fs.Int("max-call-seconds", 0, "hard ceiling on a single LLM call's duration in seconds (0 = use config default 1800s)")
-	livenessPollSeconds := fs.Int("liveness-poll-seconds", 0, "how often the liveness watchdog polls OpenCode for progress (0 = use config default 5s)")
 	verbose := fs.Bool("verbose", false, "enable debug logs")
 	trace := fs.Bool("trace", false, "enable trace logs (very noisy)")
 	logFile := fs.String("log-file", "", "optional log file path")
 	fs.Parse(args)
 	configureLogging(*verbose, *trace, *logFile)
 	util.Info("cli.run", "run command started", map[string]any{
-		"repo": *repo, "config": *cfgPath, "opencode_url": *opencodeURL, "workers": *workers,
-		"max_catalog_items": *maxCatalogItems, "opencode_timeout_seconds": *opencodeTimeoutSeconds, "model_variant": *modelVariant,
-		"pipeline": *pipelineName, "cleanup_opencode_sessions": *cleanupOpenCodeSessions, "opencode_delete_delay_seconds": *opencodeDeleteDelaySeconds, "reuse_opencode_session": *reuseOpenCodeSession,
+		"repo": *repo, "config": *cfgPath, "workers": *workers,
 	})
 
 	if *repo == "" {
@@ -92,85 +64,14 @@ func run(args []string) {
 		fmt.Fprintln(os.Stderr, "config load failed:", err)
 		os.Exit(1)
 	}
-	if *opencodeURL != "" {
-		cfg.OpenCode.BaseURL = *opencodeURL
-	}
-	if *opencodeUsername != "" {
-		cfg.OpenCode.Username = *opencodeUsername
-	}
-	if *opencodePassword != "" {
-		cfg.OpenCode.Password = *opencodePassword
-	}
-	if *opencodeTimeoutSeconds > 0 {
-		cfg.OpenCode.TimeoutSec = *opencodeTimeoutSeconds
-	}
-	if *providerID != "" {
-		cfg.OpenCode.ProviderID = *providerID
-	}
-	if *modelID != "" {
-		cfg.OpenCode.ModelID = *modelID
-	}
-	if *modelVariant != "" {
-		cfg.OpenCode.ModelVariant = *modelVariant
-	}
 	if *outDir != "" {
 		cfg.Artifacts.BaseDir = *outDir
-	}
-	if *pipelineName != "" {
-		cfg.Runtime.Pipeline = config.NormalizePipeline(*pipelineName)
 	}
 	if *workers > 0 {
 		cfg.Runtime.Workers = *workers
 	}
-	if *maxCatalogItems > 0 {
-		cfg.Runtime.MaxCatalogItems = *maxCatalogItems
-	}
-	cfg.Runtime.CleanupOpenCodeSessions = *cleanupOpenCodeSessions
-	cfg.Runtime.ReuseOpenCodeSession = *reuseOpenCodeSession
-	cfg.Runtime.SkipReexamination = *skipReexamination
-	flagSet := map[string]bool{}
-	fs.Visit(func(f *flag.Flag) { flagSet[f.Name] = true })
-	if *discoveryVerifyMode != "" {
-		cfg.Runtime.DiscoveryVerifyMode = *discoveryVerifyMode
-	}
-	if *discoveryVerifySamples > 0 {
-		cfg.Runtime.DiscoveryVerifySamples = *discoveryVerifySamples
-	}
-	// The verify/framework-scope toggles override the config file only when the
-	// flag was explicitly passed, so the flag's false default can't silently
-	// clobber a config-file value (Sanitize later floors samples / coerces mode).
-	if flagSet["discovery-verify"] {
-		cfg.Runtime.DiscoveryVerify = *discoveryVerify
-	}
-	if flagSet["discovery-framework-scope"] {
-		cfg.Runtime.DiscoveryFrameworkScope = *discoveryFrameworkScope
-	}
-	if flagSet["import-legacy-archfile"] {
-		cfg.Runtime.ImportLegacyArchfile = *importLegacyArchfile
-	}
-	if *opencodeDeleteDelaySeconds > 0 {
-		cfg.Runtime.OpenCodeDeleteDelaySec = *opencodeDeleteDelaySeconds
-	}
-	if *idleTimeoutSeconds > 0 {
-		cfg.Runtime.IdleTimeoutSec = *idleTimeoutSeconds
-	}
-	if *promptRetryCount >= 0 {
-		cfg.Runtime.PromptRetryCount = *promptRetryCount
-	}
-	if *maxCallSeconds > 0 {
-		cfg.Runtime.MaxCallSeconds = *maxCallSeconds
-	}
-	if *livenessPollSeconds > 0 {
-		cfg.Runtime.LivenessPollSec = *livenessPollSeconds
-	}
 	if *minConfidence >= 0 {
 		cfg.Quality.MinConfidence = *minConfidence
-	}
-	if cfg.OpenCode.Password == "" {
-		cfg.OpenCode.Password = os.Getenv("OPENCODE_SERVER_PASSWORD")
-	}
-	if cfg.OpenCode.Username == "" {
-		cfg.OpenCode.Username = os.Getenv("OPENCODE_SERVER_USERNAME")
 	}
 
 	out, err := app.Run(context.Background(), app.RunInput{RepoPath: *repo, Config: cfg})
@@ -179,88 +80,10 @@ func run(args []string) {
 		fmt.Fprintln(os.Stderr, "run failed:", err)
 		if out.Failure != nil && out.RunDir != "" {
 			fmt.Fprintf(os.Stderr, "failure report: %s\n", filepath.Join(out.RunDir, "run_failure.md"))
-			fmt.Fprintf(os.Stderr, "after fixing the cause, retry with: diffmind retry --run %s\n", out.RunID)
 		}
 		os.Exit(1)
 	}
 	util.Info("cli.run", "run command finished", map[string]any{"run_id": out.RunID, "run_dir": out.RunDir})
-	fmt.Print(app.PrintSummary(out))
-}
-
-func retry(args []string) {
-	fs := flag.NewFlagSet("retry", flag.ExitOnError)
-	cfgPath := fs.String("config", "", "path to diffmind json config")
-	opencodeURL := fs.String("opencode-url", "", "OpenCode server base URL (overrides config)")
-	opencodeUsername := fs.String("opencode-username", "", "OpenCode basic auth username")
-	opencodePassword := fs.String("opencode-password", "", "OpenCode basic auth password")
-	opencodeTimeoutSeconds := fs.Int("opencode-timeout-seconds", 0, "OpenCode HTTP transport timeout in seconds (0 = use config default 4h fail-safe; primary control is --idle-timeout-seconds)")
-	providerID := fs.String("provider-id", "", "OpenCode provider ID (overrides config)")
-	modelID := fs.String("model-id", "", "OpenCode model ID (overrides config)")
-	modelVariant := fs.String("model-variant", "", "OpenCode model variant")
-	promptRetryCount := fs.Int("prompt-retry-count", -1, "retry a prompt this many times after the liveness watchdog declares it stuck (-1 = use config default 3; 0 = disable)")
-	outDir := fs.String("out", "", "artifact base directory (default ~/.diffmind/runs)")
-	runID := fs.String("run", "", "run id to resume")
-	verbose := fs.Bool("verbose", false, "enable debug logs")
-	trace := fs.Bool("trace", false, "enable trace logs (very noisy)")
-	logFile := fs.String("log-file", "", "optional log file path")
-	fs.Parse(args)
-	configureLogging(*verbose, *trace, *logFile)
-
-	if *runID == "" {
-		fmt.Fprintln(os.Stderr, "--run is required")
-		os.Exit(2)
-	}
-	cfg, err := config.LoadCentral(*cfgPath)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "config load failed:", err)
-		os.Exit(1)
-	}
-	if *opencodeURL != "" {
-		cfg.OpenCode.BaseURL = *opencodeURL
-	}
-	if *opencodeUsername != "" {
-		cfg.OpenCode.Username = *opencodeUsername
-	}
-	if *opencodePassword != "" {
-		cfg.OpenCode.Password = *opencodePassword
-	}
-	if *opencodeTimeoutSeconds > 0 {
-		cfg.OpenCode.TimeoutSec = *opencodeTimeoutSeconds
-	}
-	if *providerID != "" {
-		cfg.OpenCode.ProviderID = *providerID
-	}
-	if *modelID != "" {
-		cfg.OpenCode.ModelID = *modelID
-	}
-	if *modelVariant != "" {
-		cfg.OpenCode.ModelVariant = *modelVariant
-	}
-	if *outDir != "" {
-		cfg.Artifacts.BaseDir = *outDir
-	}
-	if *promptRetryCount >= 0 {
-		cfg.Runtime.PromptRetryCount = *promptRetryCount
-	}
-	if cfg.OpenCode.Password == "" {
-		cfg.OpenCode.Password = os.Getenv("OPENCODE_SERVER_PASSWORD")
-	}
-	if cfg.OpenCode.Username == "" {
-		cfg.OpenCode.Username = os.Getenv("OPENCODE_SERVER_USERNAME")
-	}
-
-	out, err := app.RetryRun(context.Background(), app.RetryInput{
-		BaseDir: cfg.Artifacts.BaseDir, RunID: *runID, Config: cfg,
-	})
-	if err != nil {
-		util.Error("cli.retry", "retry command failed", map[string]any{"error": err})
-		fmt.Fprintln(os.Stderr, "retry failed:", err)
-		if out.Failure != nil && out.RunDir != "" {
-			fmt.Fprintf(os.Stderr, "failure report: %s\n", filepath.Join(out.RunDir, "run_failure.md"))
-		}
-		os.Exit(1)
-	}
-	util.Info("cli.retry", "retry command finished", map[string]any{"run_id": out.RunID, "run_dir": out.RunDir})
 	fmt.Print(app.PrintSummary(out))
 }
 

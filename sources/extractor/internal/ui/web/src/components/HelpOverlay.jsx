@@ -17,20 +17,17 @@ export function HelpOverlay({ onClose }) {
           <button class="btn secondary" onClick={onClose}>Close</button>
         </div>
         <p style="color: var(--text-muted); margin-top: 8px;">
-          Live, evidence-backed extraction of exposures, dependencies, and
-          conditional connections from any repository, powered by an OpenCode
-          server.
+          Live, deterministic extraction of exposures, dependencies, resources,
+          and conditional connections from a repository.
         </p>
 
         <h3 style="margin-top: 18px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted);">
           Pipeline
         </h3>
         <ol style="line-height: 1.7; margin-top: 4px;">
-          <li><b>Repo facts</b> &mdash; one LLM call to fingerprint the tech stack.</li>
-          <li><b>Discovery</b> &mdash; one parallel LLM call per objective (HTTP routes, queue consumers, DB ops, etc.).</li>
-          <li><b>Re-examination</b> &mdash; targeted re-asks for low-signal candidates.</li>
-          <li><b>Detail</b> &mdash; per-entity enrichment with method/path/queue/etc.</li>
-          <li><b>Connections</b> &mdash; per-exposure traversal mapping ordered call paths to dependencies.</li>
+          <li><b>AST index</b> &mdash; parse source and configuration files into language-agnostic symbols and call edges.</li>
+          <li><b>Deterministic discovery</b> &mdash; run framework and resource detectors for HTTP, queues, database, cache, CLI, and activations.</li>
+          <li><b>Connections</b> &mdash; map ordered exposure-to-dependency call paths.</li>
           <li><b>Reconcile</b> &mdash; local dedup, orphan-drop, deterministic ordering.</li>
         </ol>
 
@@ -48,10 +45,9 @@ export function HelpOverlay({ onClose }) {
           Tips
         </h3>
         <ul style="line-height: 1.7;">
-          <li>Click any node in the graph or any row in the activity log to inspect prompts, responses, and event history in the right drawer.</li>
+          <li>Click any node in the graph or any row in the activity log to inspect payloads and event history in the right drawer.</li>
           <li>The legend at the bottom-left of the graph maps node colors to job status.</li>
           <li>Pick a run from the recent-runs panel on the left to replay its full event timeline (it streams from <code>events.jsonl</code>).</li>
-          <li>Watchdog and session events are visible in the activity log: when an OpenCode session asks for permission or clarification, DiffMind auto-replies so the run never deadlocks.</li>
         </ul>
       </div>
     </div>

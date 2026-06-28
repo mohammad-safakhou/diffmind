@@ -9,12 +9,12 @@ import (
 	"testing"
 )
 
-// TestConfigEndpointPrefill verifies /api/config surfaces the central config's
-// non-secret fields for the New Run form and never leaks the password.
+// TestConfigEndpointPrefill verifies /api/config surfaces the deterministic run
+// defaults used by the New Run form.
 func TestConfigEndpointPrefill(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("DIFFMIND_HOME", home)
-	cfgJSON := `{"opencode":{"base_url":"http://pref:4096","provider_id":"openai","model_id":"gpt","password":"secret"},"runtime":{"pipeline":"deterministic","workers":7}}`
+	cfgJSON := `{"runtime":{"pipeline":"deterministic","workers":7},"quality":{"min_confidence":0.82}}`
 	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(cfgJSON), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -37,12 +37,8 @@ func TestConfigEndpointPrefill(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	oc, _ := body["opencode"].(map[string]any)
-	if oc["base_url"] != "http://pref:4096" {
-		t.Fatalf("base_url = %v", oc["base_url"])
-	}
-	if _, leaked := oc["password"]; leaked {
-		t.Fatalf("password must not be exposed via /api/config")
+	if _, ok := body["opencode"]; ok {
+		t.Fatalf("opencode config must not be exposed via /api/config")
 	}
 	rt, _ := body["runtime"].(map[string]any)
 	if rt["workers"].(float64) != 7 {
@@ -50,6 +46,10 @@ func TestConfigEndpointPrefill(t *testing.T) {
 	}
 	if rt["pipeline"] != "deterministic" {
 		t.Fatalf("pipeline = %v", rt["pipeline"])
+	}
+	quality, _ := body["quality"].(map[string]any)
+	if quality["min_confidence"].(float64) != 0.82 {
+		t.Fatalf("min_confidence = %v", quality["min_confidence"])
 	}
 }
 

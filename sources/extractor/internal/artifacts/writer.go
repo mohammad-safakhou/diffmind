@@ -45,13 +45,13 @@ func gitOutput(path string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func gitDirty(path string, deterministic bool, importLegacyArchfile bool) bool {
+func gitDirty(path string, deterministic bool) bool {
 	out := gitOutput(path, "status", "--porcelain")
 	for _, line := range strings.Split(out, "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		if deterministic && ignoredDeterministicDirtyPath(line, importLegacyArchfile) {
+		if deterministic && ignoredDeterministicDirtyPath(line) {
 			continue
 		}
 		return true
@@ -59,7 +59,7 @@ func gitDirty(path string, deterministic bool, importLegacyArchfile bool) bool {
 	return false
 }
 
-func ignoredDeterministicDirtyPath(statusLine string, importLegacyArchfile bool) bool {
+func ignoredDeterministicDirtyPath(statusLine string) bool {
 	path := strings.TrimSpace(statusLine)
 	if len(path) > 3 {
 		path = strings.TrimSpace(path[3:])
@@ -79,7 +79,7 @@ func ignoredDeterministicDirtyPath(statusLine string, importLegacyArchfile bool)
 		return true
 	case base == ".classpath" || base == ".factorypath" || base == ".project" || base == ".settings":
 		return true
-	case !importLegacyArchfile && (path == "diffmind.yaml" || path == "diffmind.curated.yaml"):
+	case path == "diffmind.yaml" || path == "diffmind.curated.yaml":
 		return true
 	default:
 		return false
@@ -87,26 +87,19 @@ func ignoredDeterministicDirtyPath(statusLine string, importLegacyArchfile bool)
 }
 
 type WriteInput struct {
-	RunID                string
-	BaseDir              string
-	RepoPath             string
-	OpenCodeURL          string
-	MinConfidence        float64
-	Exposures            []model.Exposure
-	Dependencies         []model.Dependency
-	Connections          []model.Connection
-	Unresolved           []model.UnresolvedItem
-	Warnings             []string
-	Pipeline             string
-	ImportLegacyArchfile bool
-	StartedAt            time.Time
-	FinishedAt           time.Time
-	// TokenTotals — when present — get persisted under the
-	// manifest's `token_totals` field so the `validate` command and
-	// the dashboard's runs sidebar can show per-stage cost summaries
-	// without re-reading the events log.
-	TokenTotals map[string]model.TokenBucket
-	RepoFacts   *extraction.RepoFacts
+	RunID         string
+	BaseDir       string
+	RepoPath      string
+	MinConfidence float64
+	Exposures     []model.Exposure
+	Dependencies  []model.Dependency
+	Connections   []model.Connection
+	Unresolved    []model.UnresolvedItem
+	Warnings      []string
+	Pipeline      string
+	StartedAt     time.Time
+	FinishedAt    time.Time
+	RepoFacts     *extraction.RepoFacts
 }
 
 func Write(in WriteInput) (string, error) {
@@ -146,11 +139,10 @@ func Write(in WriteInput) (string, error) {
 		RepoGitSHA:        gitHeadSHA(in.RepoPath),
 		RepoGitBranch:     gitOutput(in.RepoPath, "rev-parse", "--abbrev-ref", "HEAD"),
 		RepoGitRemoteURL:  gitOutput(in.RepoPath, "remote", "get-url", "origin"),
-		RepoGitDirty:      gitDirty(in.RepoPath, deterministic, in.ImportLegacyArchfile),
+		RepoGitDirty:      gitDirty(in.RepoPath, deterministic),
 		DiffMindVersion:   DiffMindVersion,
 		SchemaVersion:     schemaVersion,
 		Pipeline:          pipeline,
-		OpenCodeURL:       in.OpenCodeURL,
 		ConfidenceMinimum: in.MinConfidence,
 		Counts: map[string]int{
 			"exposures":    len(in.Exposures),
@@ -161,7 +153,6 @@ func Write(in WriteInput) (string, error) {
 		RepoMetrics:   CollectRepoMetrics(in.RepoPath, in.RepoFacts),
 		Warnings:      in.Warnings,
 		StageFailures: stageFailures(in.Unresolved),
-		TokenTotals:   in.TokenTotals,
 	}
 	if err := writeJSON(filepath.Join(runDir, "run_manifest.json"), manifest); err != nil {
 		return "", err
@@ -180,13 +171,10 @@ func Write(in WriteInput) (string, error) {
 }
 
 func pipelineName(in WriteInput) string {
-	if p := strings.TrimSpace(in.Pipeline); p != "" {
-		return p
-	}
-	if strings.TrimSpace(in.OpenCodeURL) == "" {
+	if strings.TrimSpace(in.Pipeline) == "" {
 		return "deterministic"
 	}
-	return "llm"
+	return "deterministic"
 }
 
 func writeDiffMind protocolArtifacts(runDir string, in WriteInput, manifest model.RunManifest) error {

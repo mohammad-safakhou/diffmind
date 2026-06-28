@@ -88,7 +88,7 @@ describe('runMeta status preservation on replay', () => {
     runMeta.value = { id: 'r6', status: 'failed', error: 'original' }
     replay([
       { kind: 'run_started', run_id: 'r6', ts: 't1', payload: {} },
-      { kind: 'stage_started', stage: 'discovery', run_id: 'r6', ts: 't2', payload: { total: 14 } },
+      { kind: 'stage_started', stage: 'deterministic_discovery', run_id: 'r6', ts: 't2', payload: { total: 14 } },
       // run_failed with a fresher message; reducer should update
       // the error to the fresher one.
       {
@@ -109,8 +109,8 @@ describe('runMeta status preservation on replay', () => {
   it('handles a clean live run flow', () => {
     replay([
       { kind: 'run_started', run_id: 'r7', ts: 't1', payload: {} },
-      { kind: 'stage_started', stage: 'repo_facts', run_id: 'r7', ts: 't2', payload: { total: 1 } },
-      { kind: 'stage_completed', stage: 'repo_facts', run_id: 'r7', ts: 't3', status: 'success' },
+      { kind: 'stage_started', stage: 'ast_index', run_id: 'r7', ts: 't2', payload: { total: 1 } },
+      { kind: 'stage_completed', stage: 'ast_index', run_id: 'r7', ts: 't3', status: 'success' },
       { kind: 'run_completed', run_id: 'r7', ts: 't4', payload: { exposures: 3, dependencies: 2 } },
     ])
     expect(runMeta.value.status).toBe('completed')

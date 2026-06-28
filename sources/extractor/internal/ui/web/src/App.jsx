@@ -3,7 +3,6 @@ import { onAuthFailure, getToken, setToken } from './lib/api.js'
 import { navigate, useRoute } from './lib/router.js'
 import { Detail } from './views/Detail.jsx'
 import { RepositoriesOverview } from './views/RepositoriesOverview.jsx'
-import { RepositoryDetail } from './views/RepositoryDetail.jsx'
 import { ToastHost } from './components/ui/index.js'
 
 // App is the router shell. Repository-centric surfaces get only a slim brand
@@ -31,7 +30,6 @@ export function App() {
           <div class="repo-shell">
             <TopBrand />
             {route.name === 'repos' && <RepositoriesOverview />}
-            {route.name === 'repo' && <RepositoryDetail repoID={route.repoID} key={route.repoID} />}
           </div>
         )}
       <ToastHost />
@@ -46,7 +44,7 @@ function TopBrand() {
         <span class="topbrand-dot" />
         DiffMind
       </button>
-      <span class="topbrand-sub">Repository architecture files</span>
+      <span class="topbrand-sub">Deterministic service-context extraction</span>
     </header>
   )
 }

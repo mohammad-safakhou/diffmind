@@ -818,3 +818,17 @@ func mergeDeterministicDuplicate(llm, det llmEntity) llmEntity {
 	}
 	return out
 }
+
+func UnionLocations(a, b []llmLocation) []llmLocation {
+	seen := map[string]struct{}{}
+	out := make([]llmLocation, 0, len(a)+len(b))
+	for _, loc := range append(append([]llmLocation(nil), a...), b...) {
+		key := fmt.Sprintf("%s:%d:%d", loc.File, loc.StartLine, loc.EndLine)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, loc)
+	}
+	return out
+}

@@ -108,15 +108,13 @@ type ConnectionClient struct {
 	InstanceRef  *InstanceRef `json:"instance_ref,omitempty"`  // filled by deterministic propagation
 	Locations    []Location   `json:"source_locations,omitempty"`
 	Evidence     []Evidence   `json:"evidence,omitempty"`
-	Source       string       `json:"source,omitempty"` // "ast" | "llm" | "ast+llm"
+	Source       string       `json:"source,omitempty"` // "ast" | "config" | "deterministic"
 }
 
-// Connection provenance values. Output, eval, and label tooling distinguish
-// deterministically-walked connections from LLM-repaired ones (A1-schema).
+// Connection provenance values.
 const (
-	ConnectionSourceAST       = "ast"
-	ConnectionSourceShallow   = "shallow"
-	ConnectionSourceLLMRepair = "llm_repair"
+	ConnectionSourceAST     = "ast"
+	ConnectionSourceShallow = "shallow"
 )
 
 type Connection struct {
@@ -183,7 +181,6 @@ type RunManifest struct {
 	DiffMindVersion   string            `json:"diffmind_version,omitempty"`
 	SchemaVersion     string            `json:"schema_version"`
 	Pipeline          string            `json:"pipeline,omitempty"`
-	OpenCodeURL       string            `json:"opencode_url,omitempty"`
 	ConfidenceMinimum float64           `json:"confidence_minimum"`
 	Counts            map[string]int    `json:"counts"`
 	RepoMetrics       *RepoMetrics      `json:"repo_metrics,omitempty"`
@@ -197,12 +194,6 @@ type RunManifest struct {
 	// pipeline ("discovery", "reexamination", "connections")
 	// and values are the count of items that failed in that stage.
 	StageFailures map[string]int `json:"stage_failures,omitempty"`
-
-	// TokenTotals holds the per-stage token / cost totals reported
-	// by OpenCode. Keys are stage names; the special key "total" is
-	// the run-wide aggregate. Nil when the provider doesn't return
-	// token counters or when token reads were disabled.
-	TokenTotals map[string]TokenBucket `json:"token_totals,omitempty"`
 }
 
 type RepoMetrics struct {
@@ -218,19 +209,4 @@ type LanguageMetric struct {
 	Language string `json:"language"`
 	Files    int    `json:"files"`
 	LOC      int    `json:"loc"`
-}
-
-// TokenBucket mirrors agents.tokenBucket in the model package so
-// callers outside agents (artifacts writer, validate command, SPA
-// JSON API) don't need to import the agents package just to read
-// numbers off a manifest.
-type TokenBucket struct {
-	Calls      int     `json:"calls"`
-	Input      int     `json:"input"`
-	Output     int     `json:"output"`
-	Reasoning  int     `json:"reasoning"`
-	CacheRead  int     `json:"cache_read"`
-	CacheWrite int     `json:"cache_write"`
-	Total      int     `json:"total"`
-	Cost       float64 `json:"cost"`
 }

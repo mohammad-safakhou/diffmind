@@ -3,9 +3,8 @@
 // index.html and the hash is re-read on boot, so deep links survive a refresh.
 //
 // Routes:
-//   #/                 → repositories overview (landing)
-//   #/repos/<id>       → repository detail (overview + graph)
-//   #/runs/<run_id>    → per-run detail view
+//   #/                 -> repositories/run launcher
+//   #/runs/<run_id>    -> per-run detail view
 import { useEffect, useState } from 'preact/hooks'
 
 // currentPath returns the normalised hash path, always starting with '/'.
@@ -34,11 +33,9 @@ export function useRoute() {
   return parseRoute(path)
 }
 
-// parseRoute maps a path to { name, runID?, repoID? }.
+// parseRoute maps a path to { name, runID? }.
 export function parseRoute(path) {
   const run = path.match(/^\/runs\/([^/]+)$/)
   if (run) return { name: 'detail', runID: decodeURIComponent(run[1]) }
-  const repo = path.match(/^\/repos\/([^/]+)$/)
-  if (repo) return { name: 'repo', repoID: decodeURIComponent(repo[1]) }
   return { name: 'repos' }
 }

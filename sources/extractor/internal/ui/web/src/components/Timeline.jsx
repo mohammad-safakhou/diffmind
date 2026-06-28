@@ -3,13 +3,9 @@ import { timeline, selection } from '../lib/store.js'
 
 const STAGE_FILTERS = [
   'all',
-  'repo_facts',
   'ast_index',
   'deterministic_discovery',
-  'discovery',
-  'reexamination',
   'connections',
-  'connection_repair',
   'reconcile',
 ]
 
@@ -157,7 +153,6 @@ function rowIcon(e) {
   if (e.kind === 'job_started' || e.kind === 'stage_started' || e.kind === 'run_started') return '\u25B6'
   if (e.kind === 'watchdog_action') return '\u26A0'
   if (e.kind === 'session_aborted') return '\u26D4'
-  if (e.kind === 'llm_call_started' || e.kind === 'llm_call_completed') return '\u25C9'
   return '\u00B7'
 }
 

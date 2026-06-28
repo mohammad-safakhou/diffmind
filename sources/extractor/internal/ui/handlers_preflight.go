@@ -2,7 +2,6 @@ package ui
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"sync"
 	"time"
@@ -23,11 +22,6 @@ type preflightState struct {
 	mu       sync.RWMutex
 	report   preflight.Report
 	hasValue bool
-	// formOpts is the most recent OpenCode form values pushed by
-	// the SPA via POST /api/preflight/options. We keep them
-	// separate from the server's loaded config because the form
-	// can override the URL / credentials interactively.
-	formOpts preflight.Options
 }
 
 // snapshot returns a copy of the cached Report.
@@ -47,19 +41,6 @@ func (p *preflightState) setReport(r preflight.Report) {
 
 // setOptions records the latest form-derived Options. The ticker
 // reads these when constructing the check set.
-func (p *preflightState) setOptions(o preflight.Options) {
-	p.mu.Lock()
-	p.formOpts = o
-	p.mu.Unlock()
-}
-
-// options returns a copy of the cached form Options.
-func (p *preflightState) options() preflight.Options {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.formOpts
-}
-
 // startPreflight kicks off the background refresh loop and returns
 // immediately. The loop runs an immediate check, then refreshes
 // every PreflightInterval (default 30 s). It stops when ctx is
@@ -98,8 +79,7 @@ func (s *Server) preflightInterval() time.Duration {
 // result. Always returns; errors during a check become part of the
 // Report itself.
 func (s *Server) refreshPreflight(ctx context.Context) {
-	opts := s.preflight.options()
-	checks := preflight.DefaultChecks(opts)
+	checks := preflight.DefaultChecks(preflight.Options{})
 	runner := preflight.NewRunner(checks)
 	report := runner.Run(ctx)
 	s.preflight.setReport(report)
@@ -125,53 +105,5 @@ func (s *Server) handlePreflight(w http.ResponseWriter, r *http.Request) {
 		s.refreshPreflight(r.Context())
 		rep, _ = s.preflight.snapshot()
 	}
-	writeJSON(w, rep)
-}
-
-// handlePreflightOptions accepts POST /api/preflight/options with
-// the live form values the SPA wants the checks evaluated against.
-// We use this so the dashboard's System Status panel reflects the
-// URL / credentials the user typed BEFORE pressing Run, not just
-// the boot-time defaults.
-//
-// Body shape mirrors the relevant subset of startRunRequest:
-//
-//	{
-//	  "opencode": { "base_url", "username", "password",
-//	                "provider_id", "model_id" }
-//	}
-//
-// A successful POST returns 200 with the latest cached Report (we
-// refresh synchronously so the SPA sees the new values immediately).
-func (s *Server) handlePreflightOptions(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if s.preflight == nil {
-		s.preflight = &preflightState{}
-	}
-	var body struct {
-		OpenCode struct {
-			BaseURL    string `json:"base_url"`
-			Username   string `json:"username"`
-			Password   string `json:"password"`
-			ProviderID string `json:"provider_id"`
-			ModelID    string `json:"model_id"`
-		} `json:"opencode"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	s.preflight.setOptions(preflight.Options{
-		OpenCodeURL:  body.OpenCode.BaseURL,
-		OpenCodeUser: body.OpenCode.Username,
-		OpenCodePass: body.OpenCode.Password,
-		ProviderID:   body.OpenCode.ProviderID,
-		ModelID:      body.OpenCode.ModelID,
-	})
-	s.refreshPreflight(r.Context())
-	rep, _ := s.preflight.snapshot()
 	writeJSON(w, rep)
 }

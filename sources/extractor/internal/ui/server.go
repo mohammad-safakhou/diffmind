@@ -212,29 +212,15 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// Live run lifecycle.
 	mux.HandleFunc("/api/runs", s.handleRunsCollection)   // GET (list) | POST (create)
 	mux.HandleFunc("/api/runs/active", s.handleActiveRun) // GET active run ids
-	mux.HandleFunc("/api/runs/", s.handleRunsItem)        // /{id}/(events|state|cancel|retry|job/...)
+	mux.HandleFunc("/api/runs/", s.handleRunsItem)        // /{id}/(events|state|cancel|job/...)
 
 	// First-class repositories (union of registered + run-derived).
 	mux.HandleFunc("/api/repos", s.handleRepos)      // GET (list) | POST (register/update)
 	mux.HandleFunc("/api/repos/", s.handleReposItem) // DELETE /{id}
 
-	// Canonical editable architecture. Runs are imported into this document;
-	// they are not the source of truth themselves.
+	// Canonical run-derived architecture.
 	mux.HandleFunc("/api/architecture", s.handleArchitecture)
 	mux.HandleFunc("/api/architecture/import-run", s.handleArchitectureImport)
-	// In-repo discovery file (diffmind.yaml): read it as a manual source, propose
-	// automation facts into a transient file, and merge that into the main file.
-	mux.HandleFunc("/api/architecture/import-file", s.handleArchitectureImportFile)
-	mux.HandleFunc("/api/architecture/export-file", s.handleArchitectureExportFile)
-	mux.HandleFunc("/api/architecture/merge-file", s.handleArchitectureMergeFile)
-	mux.HandleFunc("/api/architecture/propose-preview", s.handleArchitectureProposePreview)
-	mux.HandleFunc("/api/architecture/merge-preview", s.handleArchitectureMergePreview)
-	mux.HandleFunc("/api/architecture/file", s.handleArchitectureFileContent) // GET ?path= | PUT
-	mux.HandleFunc("/api/architecture/file-graph", s.handleArchitectureFileGraph)
-	mux.HandleFunc("/api/architecture/file-draft", s.handleArchitectureFileDraft)
-	mux.HandleFunc("/api/architecture/file-apply", s.handleArchitectureFileApply)
-	mux.HandleFunc("/api/architecture/file-review", s.handleArchitectureFileReview)
-	mux.HandleFunc("/api/architecture/run-proposal", s.handleArchitectureRunProposal)
 	mux.HandleFunc("/api/fs/list", s.handleFsList)
 
 	// Aggregate lifecycle SSE for the homepage dashboard.
@@ -243,12 +229,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// Form defaults for the New Run modal (prefill from ~/.diffmind/config.json).
 	mux.HandleFunc("/api/config", s.handleConfig)
 
-	// Preflight / System Status. GET returns the cached Report
-	// (refreshed every 30s by the background ticker); POST options
-	// pushes form-derived OpenCode URL / credentials so the cached
-	// Report reflects what the SPA is about to submit.
+	// Preflight / System Status. GET returns the cached deterministic host
+	// readiness report.
 	mux.HandleFunc("/api/preflight", s.handlePreflight)
-	mux.HandleFunc("/api/preflight/options", s.handlePreflightOptions)
 
 	// Legacy artifact browser.
 	mux.HandleFunc("/api/run/", s.handleRun)
@@ -486,16 +469,6 @@ func (s *Server) handleRunsItem(w http.ResponseWriter, r *http.Request) {
 			jobID = parts[2]
 		}
 		s.handleRunJob(w, r, runID, jobID)
-	case "retry":
-		// POST /api/runs/{id}/retry — resume a previously failed run
-		// from the failed stage onwards. Reads the failure report and
-		// state files from disk, re-attaches to the retained
-		// snapshot. Returns 409 if a run is already in progress.
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		s.handleRunRetry(w, r, runID)
 	default:
 		http.NotFound(w, r)
 	}

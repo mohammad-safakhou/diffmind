@@ -103,8 +103,8 @@ export function LiveGraph() {
   )
 }
 
-// Main pipeline row, in left-to-right execution order.
-const STAGES = ['repo_facts', 'ast_index', 'deterministic_discovery', 'discovery', 'reexamination', 'connections', 'connection_repair', 'reconcile']
+// Deterministic pipeline row, in left-to-right execution order.
+const STAGES = ['ast_index', 'deterministic_discovery', 'connections', 'reconcile']
 
 const MAIN_Y = 130
 const JOBS_Y_START = 270 // top of the job-node block under stages
@@ -542,10 +542,7 @@ const STYLE = [
     selector: 'node[kind = "job"].status-skipped',
     style: { 'border-color': '#5b6a8c', 'background-color': '#1a2238', 'opacity': 0.6 },
   },
-  // BATCH nodes — visually distinct from per-entity job nodes so the
-  // user can see at a glance "this is one LLM call covering N
-  // entities" vs "this is one entity". Bigger, bolder border,
-  // slightly different background.
+  // BATCH nodes are visually distinct from per-entity job nodes.
   {
     selector: 'node[kind = "job"].batch',
     style: {

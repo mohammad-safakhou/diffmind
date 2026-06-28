@@ -10,18 +10,12 @@ import (
 )
 
 type fakeApplication struct {
-	runCalled   bool
-	retryCalled bool
-	err         error
+	runCalled bool
+	err       error
 }
 
 func (f *fakeApplication) Run(context.Context, app.RunInput) (app.RunOutput, error) {
 	f.runCalled = true
-	return app.RunOutput{}, f.err
-}
-
-func (f *fakeApplication) Retry(context.Context, app.RetryInput) (app.RunOutput, error) {
-	f.retryCalled = true
 	return app.RunOutput{}, f.err
 }
 

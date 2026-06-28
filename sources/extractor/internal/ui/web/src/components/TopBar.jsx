@@ -8,9 +8,8 @@ export function TopBar({ onHelp, onGraph, showGraph }) {
   const onCancel = async () => {
     if (!meta?.id) return
     // Optimistically flip the status pill to "cancelling" so the user gets
-    // immediate feedback. The real terminal status (cancelled/failed)
-    // arrives via SSE when the orchestrator finishes unwinding, which can
-    // take several seconds while in-flight LLM calls drain.
+    // immediate feedback. The real terminal status (cancelled/failed) arrives
+    // via SSE when the deterministic orchestrator finishes unwinding.
     runMeta.value = { ...meta, status: 'cancelling' }
     try {
       await cancelRun(meta.id)
