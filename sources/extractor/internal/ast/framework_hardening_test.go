@@ -217,6 +217,72 @@ func (Controller) Pay(any) error { return nil }
 	assertNoBinding(t, idx.Frameworks, "gin", "http_handler", "POST /pay")
 }
 
+func TestFiberDetectorFindsDirectAndSharedRouterRoutes(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "server.go", `package server
+
+import "github.com/gofiber/fiber/v2"
+
+func NewHTTPServer() *fiber.App {
+	app := fiber.New()
+	app.Get("/health", health)
+	app.Get("/swagger/*", swagger)
+	return app
+}
+
+func health(c *fiber.Ctx) error { return nil }
+func swagger(c *fiber.Ctx) error { return nil }
+`)
+	writeFile(t, dir, "http_dependencies.go", `package domain
+
+import "github.com/gofiber/fiber/v2"
+
+type HTTPDependencies struct {
+	Router fiber.Router
+	Auth fiber.Handler
+}
+`)
+	writeFile(t, dir, "metadata_controller.go", `package metadata
+
+import "example/shared/domain"
+
+type Controller struct{}
+
+func Init(dep domain.HTTPDependencies, c Controller) {
+	r := dep.Router.Use(dep.Auth)
+	r.Post("/metadata", c.get)
+	r.Post("/indicator/bulk", c.bulk)
+}
+
+func (Controller) get(any) error { return nil }
+func (Controller) bulk(any) error { return nil }
+`)
+	idx := buildIndex(t, dir)
+	assertBinding(t, idx.Frameworks, "fiber", "http_handler", "GET /health", "health")
+	assertBinding(t, idx.Frameworks, "fiber", "http_handler", "GET /swagger/*", "swagger")
+	assertBinding(t, idx.Frameworks, "fiber", "http_handler", "POST /metadata", "get")
+	assertBinding(t, idx.Frameworks, "fiber", "http_handler", "POST /indicator/bulk", "bulk")
+}
+
+func TestGoGRPCServerRegistrationBecomesRPCEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "server.go", `package server
+
+import (
+	"example/proto/collector"
+	"google.golang.org/grpc"
+)
+
+type Server struct{}
+
+func Init(server *grpc.Server, s Server) {
+	collector.RegisterMetadataServiceServer(server, s)
+	}
+`)
+	idx := buildIndex(t, dir)
+	assertBinding(t, idx.Frameworks, "go-grpc", "rpc_endpoint", "grpc MetadataService *", "s")
+}
+
 func TestExpressDetectorRequiresKnownReceiverLiteralPathAndHandler(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "routes.js", `function handler(req, res) {}

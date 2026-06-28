@@ -344,7 +344,7 @@ func supportedDeterministicObjectives(objs []objectives.Objective) map[string]ob
 		switch obj.Kind {
 		case model.KindExposure:
 			switch obj.Type {
-			case "http_route", "queue_consumer", "scheduled_job", "cli_command":
+			case "http_route", "rpc_endpoint", "queue_consumer", "scheduled_job", "cli_command":
 				out[obj.Type] = obj
 			}
 		case model.KindDependency:
@@ -373,6 +373,9 @@ func objectiveForBinding(objs map[string]objectives.Objective, b astpkg.Framewor
 		return obj, ok
 	case "scheduler":
 		obj, ok := objs["scheduled_job"]
+		return obj, ok
+	case "rpc_endpoint":
+		obj, ok := objs["rpc_endpoint"]
 		return obj, ok
 	default:
 		return objectives.Objective{}, false
@@ -445,6 +448,16 @@ func EntityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objecti
 				e.Details["config_source"] = target.configKey
 			}
 		}
+	case "rpc_endpoint":
+		protocol, service, method := parseRPCTrigger(trigger)
+		if protocol == "" || service == "" {
+			return llmEntity{}, false
+		}
+		e.Name = service + "/" + method
+		e.Summary = fmt.Sprintf("%s RPC endpoint detected from framework binding", displayFramework(b.Framework))
+		e.Details["protocol"] = protocol
+		e.Details["service"] = service
+		e.Details["method"] = method
 	case "queue_consumer":
 		platform, queue := parseQueueTrigger(trigger)
 		// Resolve ${...} property placeholders to the real queue name using the
@@ -558,6 +571,30 @@ func parseQueueTrigger(trigger string) (platform, queue string) {
 		platform = "queue"
 	}
 	return platform, queue
+}
+
+func parseRPCTrigger(trigger string) (protocol, service, method string) {
+	parts := strings.Fields(strings.TrimSpace(trigger))
+	if len(parts) == 0 {
+		return "", "", ""
+	}
+	protocol = strings.ToLower(strings.Trim(parts[0], `"'`))
+	if protocol == "" {
+		protocol = "rpc"
+	}
+	if len(parts) > 1 {
+		service = parts[1]
+	}
+	service = strings.Trim(service, `"'`)
+	method = "*"
+	if len(parts) > 2 {
+		method = strings.Join(parts[2:], " ")
+	}
+	method = strings.Trim(method, `"'`)
+	if method == "" {
+		method = "*"
+	}
+	return protocol, service, method
 }
 
 func parseScheduleTrigger(trigger string) string {

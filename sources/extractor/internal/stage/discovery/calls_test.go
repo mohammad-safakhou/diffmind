@@ -474,6 +474,38 @@ func (p PaymentGateway) Pay(ctx any) {
 	}
 }
 
+func TestDeterministicNetHTTPOutboundFromProviderAdapter(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"internal/collector/adapter/outbound/provider/coingecko/metadata/coin_data.go": `package metadata
+
+import (
+	"fmt"
+	"net/http"
+)
+
+type Provider struct {
+	BaseUrl string
+}
+
+func (p Provider) Get(ctx any, coinID string) {
+	url := fmt.Sprintf("%s/coins/%s?localization=false", p.BaseUrl, coinID)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	_ = req
+}
+`,
+	})
+	got := DeterministicOutboundHTTP(idx)
+	if len(got) != 1 {
+		t.Fatalf("expected one net/http outbound call, got %+v", got)
+	}
+	if got[0].Details["target_service"] != "coingecko" ||
+		got[0].Details["method"] != "GET" ||
+		got[0].Details["path"] != "/coins/{value}?localization=false" ||
+		got[0].Details["discovered_by"] != "ast_go_nethttp_request" {
+		t.Fatalf("unexpected net/http details: %+v", got[0].Details)
+	}
+}
+
 func TestDeterministicGoGRPCServiceClient(t *testing.T) {
 	idx := buildAgentsIndex(t, map[string]string{
 		"internal/report/adapter/outbound/metadata_grpc/get_metadata.go": `package metadata_grpc

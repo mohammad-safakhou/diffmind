@@ -427,7 +427,7 @@ func IsCompleteDeterministicSeed(obj objectives.Objective, e *Candidate) bool {
 		return false
 	}
 	switch obj.Type {
-	case "http_route", "queue_consumer", "scheduled_job":
+	case "http_route", "rpc_endpoint", "queue_consumer", "scheduled_job":
 	default:
 		return false
 	}

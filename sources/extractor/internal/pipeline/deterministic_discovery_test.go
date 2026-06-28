@@ -103,6 +103,31 @@ func TestEntityFromFrameworkBindingHTTPRoute(t *testing.T) {
 	}
 }
 
+func TestEntityFromFrameworkBindingRPCEndpoint(t *testing.T) {
+	obj := objectiveByType(t, "rpc_endpoint")
+	got, ok := entityFromFrameworkBinding(nil, obj, astpkg.FrameworkBinding{
+		Framework:     "go-grpc",
+		Kind:          "rpc_endpoint",
+		Symbol:        "Server.Get",
+		Trigger:       "grpc MetadataService Get",
+		TriggerSource: "Server.Get",
+		File:          "internal/collector/adapter/inbound/metadata/grpc/server.go",
+		Range:         astpkg.Range{StartLine: 20, EndLine: 20},
+	})
+	if !ok {
+		t.Fatal("expected binding to produce entity")
+	}
+	if got.Type != "rpc_endpoint" || got.Name != "MetadataService/Get" {
+		t.Fatalf("unexpected rpc endpoint entity: %#v", got)
+	}
+	if got.Details["protocol"] != "grpc" || got.Details["service"] != "MetadataService" || got.Details["method"] != "Get" {
+		t.Fatalf("missing rpc endpoint details: %#v", got.Details)
+	}
+	if !isCompleteDeterministicSeed(obj, &got) {
+		t.Fatal("expected rpc endpoint seed to be complete")
+	}
+}
+
 func TestEntityFromFrameworkBindingRetrofitHTTPCallResolvesConfigTarget(t *testing.T) {
 	obj := objectiveByType(t, "outbound_http")
 	idx := &astpkg.ProjectIndex{Configs: map[string]*astpkg.ConfigFile{

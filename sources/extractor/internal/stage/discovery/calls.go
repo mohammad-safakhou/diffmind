@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
@@ -153,10 +154,10 @@ func DeterministicOutboundRPC(idx *astpkg.ProjectIndex) []llmEntity {
 	return out
 }
 
-// DeterministicOutboundHTTP finds high-precision Resty HTTP client operations.
-// It accepts Resty's explicit verbs and Execute(method, url/path), and only
-// emits calls from source paths/import contexts that look like outbound HTTP
-// adapters.
+// DeterministicOutboundHTTP finds high-precision Go HTTP client operations. It
+// accepts Resty's explicit verbs and stdlib net/http request construction, and
+// only emits calls from source paths/import contexts that look like outbound
+// HTTP adapters.
 func DeterministicOutboundHTTP(idx *astpkg.ProjectIndex) []llmEntity {
 	if idx == nil {
 		return nil
@@ -165,10 +166,23 @@ func DeterministicOutboundHTTP(idx *astpkg.ProjectIndex) []llmEntity {
 	var out []llmEntity
 	forEachCall(idx, func(cs astpkg.CallSite) {
 		fa := idx.Files[cs.File]
-		if fa == nil || fa.Language != "go" || !looksLikeRestyOperationContext(fa, cs.File) {
+		if fa == nil || fa.Language != "go" {
 			return
 		}
-		method, path := restyHTTPCall(cs, callWindowSource(idx, cs, 5))
+		var method, path, discoveredBy, tag, summary string
+		window := callWindowSource(idx, cs, 10)
+		if looksLikeRestyOperationContext(fa, cs.File) {
+			method, path = restyHTTPCall(cs, window)
+			discoveredBy = "ast_go_resty_call"
+			tag = "resty"
+			summary = "AST-derived Resty outbound HTTP call"
+		}
+		if method == "" && looksLikeNetHTTPOperationContext(fa, cs.File) {
+			method, path = netHTTPRequestCall(cs, window)
+			discoveredBy = "ast_go_nethttp_request"
+			tag = "nethttp"
+			summary = "AST-derived net/http outbound HTTP call"
+		}
 		if method == "" || path == "" {
 			return
 		}
@@ -182,7 +196,7 @@ func DeterministicOutboundHTTP(idx *astpkg.ProjectIndex) []llmEntity {
 			"path":           path,
 			"url_template":   path,
 			"target_service": targetName,
-			"discovered_by":  "ast_go_resty_call",
+			"discovered_by":  discoveredBy,
 		}
 		target := configuredHTTPTargetForOperation(idx, cs.Caller, path)
 		if target.serviceRef == "" && targetName != "" {
@@ -206,9 +220,9 @@ func DeterministicOutboundHTTP(idx *astpkg.ProjectIndex) []llmEntity {
 		out = append(out, llmEntity{
 			Type:       "outbound_http",
 			Name:       name,
-			Summary:    "AST-derived Resty outbound HTTP call",
+			Summary:    summary,
 			Confidence: 1.0,
-			Tags:       []string{"deterministic", "resty", "go"},
+			Tags:       []string{"deterministic", tag, "go"},
 			Details:    details,
 			Locations:  []llmLocation{loc},
 			Evidence:   []llmEvidence{callEvidence(cs)},
@@ -316,6 +330,24 @@ func looksLikeRestyOperationContext(fa *astpkg.FileAST, path string) bool {
 	return strings.Contains(p, "/adapter/outbound/") && (strings.Contains(p, "_http/") || strings.Contains(p, "/http/"))
 }
 
+func looksLikeNetHTTPOperationContext(fa *astpkg.FileAST, path string) bool {
+	if fa == nil {
+		return false
+	}
+	importsNetHTTP := false
+	for _, imp := range fa.Imports {
+		if strings.Trim(imp.Path, `"`) == "net/http" {
+			importsNetHTTP = true
+			break
+		}
+	}
+	if !importsNetHTTP {
+		return false
+	}
+	p := strings.ToLower(strings.ReplaceAll(path, "\\", "/"))
+	return strings.Contains(p, "/adapter/outbound/") || strings.Contains(p, "/outbound/")
+}
+
 func restyHTTPCall(cs astpkg.CallSite, src string) (method, path string) {
 	_, callee := splitCall(cs)
 	switch strings.ToLower(callee) {
@@ -371,11 +403,122 @@ func restyJoinedPath(src string) string {
 	return ""
 }
 
+func netHTTPRequestCall(cs astpkg.CallSite, src string) (method, path string) {
+	raw := strings.TrimSpace(cs.CalleeRaw)
+	_, callee := splitCall(cs)
+	if raw != "http.NewRequestWithContext" && raw != "http.NewRequest" && callee != "NewRequestWithContext" && callee != "NewRequest" {
+		return "", ""
+	}
+	methodPos, urlPos := 0, 1
+	if strings.HasSuffix(raw, "NewRequestWithContext") || callee == "NewRequestWithContext" {
+		methodPos, urlPos = 1, 2
+	}
+	if len(cs.Arguments) <= urlPos {
+		return "", ""
+	}
+	method = httpMethodFromExpr(cs.Arguments[methodPos].Source)
+	path = httpURLTemplateFromExpr(cs.Arguments[urlPos].Source, src)
+	if method == "" || path == "" {
+		return "", ""
+	}
+	if !strings.HasPrefix(path, "/") && !strings.HasPrefix(strings.ToLower(path), "http://") && !strings.HasPrefix(strings.ToLower(path), "https://") {
+		return "", ""
+	}
+	return method, path
+}
+
+func httpMethodFromExpr(src string) string {
+	src = strings.Trim(strings.TrimSpace(src), `"'`+"`")
+	switch strings.ToLower(src) {
+	case "get", "http.methodget":
+		return "GET"
+	case "post", "http.methodpost":
+		return "POST"
+	case "put", "http.methodput":
+		return "PUT"
+	case "patch", "http.methodpatch":
+		return "PATCH"
+	case "delete", "http.methoddelete":
+		return "DELETE"
+	case "head", "http.methodhead":
+		return "HEAD"
+	case "options", "http.methodoptions":
+		return "OPTIONS"
+	default:
+		return ""
+	}
+}
+
+func httpURLTemplateFromExpr(expr, src string) string {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return ""
+	}
+	if strings.HasPrefix(expr, `"`) || strings.HasPrefix(expr, "'") || strings.HasPrefix(expr, "`") {
+		return unquoteGoString(expr)
+	}
+	if strings.HasPrefix(expr, "fmt.Sprintf") {
+		return templateFromFmtSprintf(expr)
+	}
+	if isPlainIdent(expr) {
+		return templateFromAssignedFmtSprintf(expr, src)
+	}
+	return ""
+}
+
+func templateFromAssignedFmtSprintf(name, src string) string {
+	if name == "" || src == "" {
+		return ""
+	}
+	re := regexp.MustCompile(`(?s)\b` + regexp.QuoteMeta(name) + `\s*(?::=|=)\s*fmt\.Sprintf\s*\(\s*(` + goStringLiteralPattern + `)`)
+	if m := re.FindStringSubmatch(src); len(m) > 1 {
+		return templateFromFormatLiteral(m[1])
+	}
+	return ""
+}
+
+func templateFromFmtSprintf(expr string) string {
+	re := regexp.MustCompile(`(?s)fmt\.Sprintf\s*\(\s*(` + goStringLiteralPattern + `)`)
+	if m := re.FindStringSubmatch(expr); len(m) > 1 {
+		return templateFromFormatLiteral(m[1])
+	}
+	return ""
+}
+
+const goStringLiteralPattern = `"([^"\\]|\\.)*"|'([^'\\]|\\.)*'|` + "`" + `([^` + "`" + `])*` + "`"
+
+var fmtVerbRE = regexp.MustCompile(`%[+#0 \-]*(?:\d+|\*)?(?:\.(?:\d+|\*))?[bcdeEfFgGosqtxXUvpT]`)
+
+func templateFromFormatLiteral(lit string) string {
+	tpl := unquoteGoString(lit)
+	if tpl == "" {
+		return ""
+	}
+	tpl = fmtVerbRE.ReplaceAllString(tpl, "{value}")
+	tpl = strings.TrimPrefix(tpl, "{value}")
+	return tpl
+}
+
+func unquoteGoString(lit string) string {
+	lit = strings.TrimSpace(lit)
+	if lit == "" {
+		return ""
+	}
+	if v, err := strconv.Unquote(lit); err == nil {
+		return v
+	}
+	return strings.Trim(lit, `"'`+"`")
+}
+
 func serviceNameFromOutboundHTTPPath(path string) string {
 	path = strings.ToLower(strings.ReplaceAll(path, "\\", "/"))
-	for _, part := range strings.Split(path, "/") {
+	parts := strings.Split(path, "/")
+	for i, part := range parts {
 		if strings.HasSuffix(part, "_http") {
 			return strings.TrimSuffix(part, "_http")
+		}
+		if part == "provider" && i+1 < len(parts) {
+			return strings.TrimSpace(parts[i+1])
 		}
 	}
 	return ""
