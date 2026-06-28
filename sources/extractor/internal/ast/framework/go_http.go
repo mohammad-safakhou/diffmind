@@ -12,6 +12,8 @@ import (
 func init() {
 	register(&netHTTPDetector{})
 	register(&echoDetector{})
+	register(&fiberDetector{})
+	register(&goGRPCServerDetector{})
 }
 
 // net/http (Go standard library)
@@ -241,4 +243,291 @@ func stringLiteralsAsPath(expr string) string {
 		return ""
 	}
 	return joinPath(parts...)
+}
+
+// Fiber (Go)
+//
+// Fiber registers direct and grouped routes through title-case verbs:
+//
+//	app.Get("/health", handler)
+//	r := dep.Router.Use(auth)
+//	r.Post("/metadata", c.get)
+//
+// Controllers often receive a fiber.Router through a shared dependency type, so
+// individual route files do not always import Fiber directly. The detector is
+// therefore project-gated on any Fiber import, then keeps the call match itself
+// literal-path only.
+type fiberDetector struct{}
+
+func (d *fiberDetector) Name() string { return "fiber" }
+
+func (d *fiberDetector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
+	var out []ast.FrameworkBinding
+	if !projectImportsFiber(idx) {
+		return out
+	}
+	for _, fa := range idx.Files {
+		if fa.Language != "go" {
+			continue
+		}
+		prefixes := fiberGroupPrefixes(idx, fa)
+		for _, call := range fa.Calls {
+			if b := fiberCallToBinding(call, prefixes); b != nil {
+				out = append(out, *b)
+			}
+		}
+	}
+	return out
+}
+
+func projectImportsFiber(idx *ast.ProjectIndex) bool {
+	if idx == nil {
+		return false
+	}
+	for _, fa := range idx.Files {
+		if fileImportsFiber(fa) {
+			return true
+		}
+	}
+	return false
+}
+
+func fileImportsFiber(fa *ast.FileAST) bool {
+	if fa == nil {
+		return false
+	}
+	for _, imp := range fa.Imports {
+		p := strings.Trim(imp.Path, `"`)
+		if p == "github.com/gofiber/fiber/v2" || strings.HasPrefix(p, "github.com/gofiber/fiber/") {
+			return true
+		}
+	}
+	return false
+}
+
+func fiberCallToBinding(call ast.CallSite, prefixes map[string]string) *ast.FrameworkBinding {
+	raw := call.CalleeRaw
+	receiver, verb := call.ReceiverRaw, raw
+	if dot := strings.LastIndex(raw, "."); dot >= 0 {
+		if receiver == "" {
+			receiver = raw[:dot]
+		}
+		verb = raw[dot+1:]
+	}
+	methods := map[string]string{
+		"Get": "GET", "Post": "POST", "Put": "PUT", "Patch": "PATCH",
+		"Delete": "DELETE", "Head": "HEAD", "Options": "OPTIONS", "All": "ANY",
+	}
+	pathPos, handlerPos := 0, 1
+	method, ok := methods[verb]
+	if !ok && verb == "Add" {
+		if len(call.Arguments) < 3 {
+			return nil
+		}
+		method = goHTTPMethodFromExpr(call.Arguments[0].Source)
+		pathPos, handlerPos = 1, 2
+		ok = method != ""
+	}
+	if !ok || len(call.Arguments) <= handlerPos || !isLiteralPathArg(call.Arguments, pathPos) {
+		return nil
+	}
+	receiver = strings.TrimSpace(receiver)
+	if receiver == "" || strings.Contains(receiver, "client") {
+		return nil
+	}
+	path := joinPath(prefixes[receiver], literalPathArg(call.Arguments, pathPos))
+	symbol := call.Caller
+	if h := handlerIdentifierArg(call.Arguments, handlerPos); h != "" {
+		symbol = h
+	}
+	return &ast.FrameworkBinding{
+		Framework:        "fiber",
+		Kind:             "http_handler",
+		Direction:        "inbound",
+		Symbol:           symbol,
+		Trigger:          method + " " + path,
+		TriggerSource:    raw + "(" + call.Arguments[pathPos].Source + ", ...)",
+		File:             call.File,
+		Range:            call.Range,
+		ConfidenceReason: "go_fiber_literal_route",
+	}
+}
+
+var fiberGroupAssignRE = regexp.MustCompile(`(?m)\b([A-Za-z_][A-Za-z0-9_]*)\s*:=\s*[^;\n]*\.Group\s*\(([^)\n]*)\)`)
+
+func fiberGroupPrefixes(idx *ast.ProjectIndex, fa *ast.FileAST) map[string]string {
+	out := map[string]string{}
+	if idx == nil || fa == nil || idx.RepoRoot == "" {
+		return out
+	}
+	b, err := os.ReadFile(filepath.Join(idx.RepoRoot, fa.Path))
+	if err != nil {
+		return out
+	}
+	for _, match := range fiberGroupAssignRE.FindAllStringSubmatch(string(b), -1) {
+		if len(match) != 3 {
+			continue
+		}
+		name := strings.TrimSpace(match[1])
+		if name == "" {
+			continue
+		}
+		out[name] = stringLiteralsAsPath(match[2])
+	}
+	return out
+}
+
+func goHTTPMethodFromExpr(src string) string {
+	src = strings.Trim(strings.TrimSpace(src), `"'`+"`")
+	if src == "" {
+		return ""
+	}
+	switch strings.ToLower(src) {
+	case "get", "http.methodget", "fiber.methodget":
+		return "GET"
+	case "post", "http.methodpost", "fiber.methodpost":
+		return "POST"
+	case "put", "http.methodput", "fiber.methodput":
+		return "PUT"
+	case "patch", "http.methodpatch", "fiber.methodpatch":
+		return "PATCH"
+	case "delete", "http.methoddelete", "fiber.methoddelete":
+		return "DELETE"
+	case "head", "http.methodhead", "fiber.methodhead":
+		return "HEAD"
+	case "options", "http.methodoptions", "fiber.methodoptions":
+		return "OPTIONS"
+	default:
+		return ""
+	}
+}
+
+// Go gRPC server registration
+//
+// Generated protobuf packages expose Register<Service>Server functions. A call
+// such as collector.RegisterMetadataServiceServer(server, impl) is the concrete
+// server-side activation point for that RPC service.
+type goGRPCServerDetector struct{}
+
+func (d *goGRPCServerDetector) Name() string { return "go-grpc" }
+
+func (d *goGRPCServerDetector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
+	var out []ast.FrameworkBinding
+	for _, fa := range idx.Files {
+		if fa.Language != "go" {
+			continue
+		}
+		for _, sym := range fa.Symbols {
+			if b := goGRPCServerMethodToBinding(fa, sym); b != nil {
+				out = append(out, *b)
+			}
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	for _, fa := range idx.Files {
+		if fa.Language != "go" || !fileImportsGoGRPC(fa) {
+			continue
+		}
+		for _, call := range fa.Calls {
+			if b := goGRPCRegisterCallToBinding(call); b != nil {
+				out = append(out, *b)
+			}
+		}
+	}
+	return out
+}
+
+func fileImportsGoGRPC(fa *ast.FileAST) bool {
+	if fa == nil {
+		return false
+	}
+	for _, imp := range fa.Imports {
+		if strings.Trim(imp.Path, `"`) == "google.golang.org/grpc" {
+			return true
+		}
+	}
+	return false
+}
+
+func goGRPCServerMethodToBinding(fa *ast.FileAST, sym ast.SymbolDef) *ast.FrameworkBinding {
+	if fa == nil || sym.Receiver == "" || sym.Name == "" {
+		return nil
+	}
+	if strings.TrimSpace(sym.Receiver) != "Server" || sym.Name == "Init" || sym.Name == "New" {
+		return nil
+	}
+	service := goGRPCServiceNameFromPath(fa.Path)
+	if service == "" {
+		return nil
+	}
+	p := strings.ToLower(strings.ReplaceAll(fa.Path, "\\", "/"))
+	if !strings.Contains(p, "/adapter/inbound/") || !strings.Contains(p, "/grpc/") {
+		return nil
+	}
+	return &ast.FrameworkBinding{
+		Framework:        "go-grpc",
+		Kind:             "rpc_endpoint",
+		Direction:        "inbound",
+		Symbol:           sym.Qualified,
+		Trigger:          "grpc " + service + " " + sym.Name,
+		TriggerSource:    sym.Qualified,
+		File:             sym.File,
+		Range:            sym.Range,
+		ConfidenceReason: "go_grpc_inbound_server_method",
+	}
+}
+
+func goGRPCRegisterCallToBinding(call ast.CallSite) *ast.FrameworkBinding {
+	raw := strings.TrimSpace(call.CalleeRaw)
+	verb := raw
+	if dot := strings.LastIndex(verb, "."); dot >= 0 {
+		verb = verb[dot+1:]
+	}
+	if !strings.HasPrefix(verb, "Register") || !strings.HasSuffix(verb, "Server") || len(call.Arguments) < 2 {
+		return nil
+	}
+	service := strings.TrimSuffix(strings.TrimPrefix(verb, "Register"), "Server")
+	if service == "" {
+		return nil
+	}
+	symbol := call.Caller
+	if h := handlerIdentifierArg(call.Arguments, 1); h != "" {
+		symbol = h
+	}
+	return &ast.FrameworkBinding{
+		Framework:        "go-grpc",
+		Kind:             "rpc_endpoint",
+		Direction:        "inbound",
+		Symbol:           symbol,
+		Trigger:          "grpc " + service + " *",
+		TriggerSource:    raw + "(..., " + strings.TrimSpace(call.Arguments[1].Source) + ")",
+		File:             call.File,
+		Range:            call.Range,
+		ConfidenceReason: "go_grpc_register_service_server",
+	}
+}
+
+func goGRPCServiceNameFromPath(path string) string {
+	path = strings.ToLower(strings.ReplaceAll(path, "\\", "/"))
+	for _, part := range strings.Split(path, "/") {
+		if strings.HasSuffix(part, "grpc") && len(part) > len("grpc") {
+			return exportedCamel(strings.TrimSuffix(part, "grpc")) + "Service"
+		}
+	}
+	return ""
+}
+
+func exportedCamel(s string) string {
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return r == '_' || r == '-' || r == '.' || r == ' '
+	})
+	for i, p := range parts {
+		if p == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(p[:1]) + p[1:]
+	}
+	return strings.Join(parts, "")
 }
