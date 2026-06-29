@@ -112,16 +112,6 @@ a:hover { text-decoration: underline; }
 .pipeline-stage:last-child { border-right: none; }
 .pipeline-stage .name { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); }
 .pipeline-stage .count { font-size: 18px; font-weight: 700; }
-.pipeline-stage .progress {
-  height: 4px; background: var(--bg-3); border-radius: 2px; overflow: hidden;
-}
-.pipeline-stage .progress > span {
-  display: block; height: 100%; background: var(--running); transition: width 200ms ease;
-}
-.pipeline-stage.success .progress > span { background: var(--success); }
-.pipeline-stage.failed .progress > span { background: var(--error); }
-.pipeline-stage.cancelled .progress > span { background: var(--warn); }
-.pipeline-stage.pending .progress > span { background: var(--pending); width: 0% !important; }
 .pipeline-stage .stage-tip {
   font-size: 11px; color: var(--text-dim);
   height: 14px; overflow: hidden;

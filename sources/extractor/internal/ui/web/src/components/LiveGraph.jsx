@@ -134,9 +134,6 @@ function syncGraph(cy, stagesMap, jobsMap) {
       if (node && node.length) {
         node.removeClass('status-pending status-running status-success status-failed status-cancelled status-rescued status-skipped')
         node.addClass('status-' + (st.status || 'pending'))
-        node.data('progress', st.percent || 0)
-        node.data('total', st.total || 0)
-        node.data('done', st.done || 0)
         node.data('label', stageLabel(id, st))
       }
     }

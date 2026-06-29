@@ -11,9 +11,9 @@ import (
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
 )
 
-// orm_calls.go derives db_operation facts from ORM call sites — the third leg
-// of the deterministic db floor (F6): the repository deriver covers Spring
-// Data conventions, sql_calls.go covers hand-written SQL, this covers ORM
+// orm_calls.go derives db_operation facts from ORM call sites: the repository
+// deriver covers Spring Data conventions, sql_calls.go covers hand-written SQL,
+// this covers ORM
 // model calls where the MODEL NAME is statically resolvable from the call
 // itself (GORM composite literals, Django Model.objects, Sequelize/Prisma
 // model receivers, ActiveRecord constants).
@@ -248,7 +248,7 @@ var gormOps = map[string]string{
 // matchGORM accepts db/tx/gorm receivers whose model is statically known:
 // either a struct composite literal (&Order{} / []Order{}) or a local variable
 // whose declared type the index already resolved (LocalTypes). Anything else
-// is left to the LLM.
+// is rejected rather than guessed.
 func matchGORM(idx *astpkg.ProjectIndex, cs astpkg.CallSite) *ormCallFact {
 	r, callee := splitCall(cs)
 	opKind, ok := gormOps[callee]

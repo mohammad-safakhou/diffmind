@@ -34,7 +34,7 @@ export function DetailDrawer() {
         <div class="muted">{st.tip || ''}</div>
         <dl class="kv">
           <dt>status</dt><dd>{st.status}</dd>
-          <dt>progress</dt><dd>{st.done || 0} / {st.total || 0} ({Math.round(st.percent || 0)}%)</dd>
+          <dt>summary</dt><dd><pre>{JSON.stringify(st.summary || {}, null, 2)}</pre></dd>
           <dt>started</dt><dd>{st.startedAt || '\u2013'}</dd>
           <dt>finished</dt><dd>{st.finishedAt || '\u2013'}</dd>
         </dl>

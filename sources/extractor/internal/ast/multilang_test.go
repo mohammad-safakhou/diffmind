@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/mohammad-safakhou/diffmind/internal/ast"
-	_ "github.com/mohammad-safakhou/diffmind/internal/ast/framework"
+	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/framework"
 )
 
 // TestBuildMultiLanguageIndex proves the index is genuinely multi-language:
@@ -37,7 +37,7 @@ class OrderController {
 	return None
 `)
 
-	idx, err := ast.Build(context.Background(), dir, "", 4, nil)
+	idx, err := ast.Build(context.Background(), dir, "", 4)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

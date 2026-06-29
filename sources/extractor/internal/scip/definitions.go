@@ -115,15 +115,14 @@ func (i *Index) SymbolAt(file string, line, col int32) string {
 }
 
 // DocumentText returns the source text of the file at `relativePath`.
-// If the indexer didn't embed Document.text, returns "" — callers that
-// need source for snippet extraction should fall back to reading the
-// file from the snapshot directly.
+// If the indexer didn't embed Document.text, returns "" — callers that need
+// source for snippet extraction should fall back to reading the file from the
+// source root directly.
 //
 // We don't transparently read the file here because the index may
-// have been merged from multiple sources whose project_root differs
-// from the running snapshot. Snippet/source-text resolution is a
-// concern for the higher-level resolver (resolver.go), which knows
-// the snapshot path.
+// have been merged from multiple sources whose project_root differs from the
+// source root. Snippet/source-text resolution is a concern for the higher-level
+// resolver (resolver.go), which knows the source root.
 func (i *Index) DocumentText(relativePath string) string {
 	if i == nil {
 		return ""
@@ -165,9 +164,9 @@ func (i *Index) PrefixMatchSymbols(prefix string) []string {
 // When two candidates are equidistant, method symbols ("().") beat type symbols.
 //
 // This is used by the resolver as a fallback when SymbolAt fails to hit the
-// exact (line, col) the LLM recorded, which happens when scip-java places the
-// identifier range at a different column than the method signature start line
-// the LLM chose.
+// exact (line, col) recorded by detectors, which happens when scip-java places
+// the identifier range at a different column than the method signature start
+// line.
 func (i *Index) FirstDefinitionInRange(file string, startLine, endLine int32) string {
 	return i.closestDefinition(file, startLine, endLine, startLine)
 }

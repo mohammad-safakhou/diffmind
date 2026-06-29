@@ -272,8 +272,8 @@ func cronTokenLike(t string) bool {
 }
 
 // HasDetailKey performs a tolerant existence check. We accept several common
-// spellings so prompts that return e.g. "queue_name" instead of "queue" are
-// not punished.
+// spellings so detector/config-derived facts that use e.g. "queue_name" instead
+// of "queue" are not punished.
 func HasDetailKey(details map[string]any, key string) bool {
 	if details == nil {
 		return false
@@ -347,9 +347,9 @@ func DiscoverySemanticKey(obj objectives.Objective, e Candidate) string {
 	case "db_operation", "cache_operation":
 		// High-level identity: a dependency is "<operation> on <resource>"
 		// (e.g. read from orders), NOT one row per repository method. Keying
-		// on (resource, operation) collapses the LLM's per-method jitter into
-		// the architectural fact the extractor is after, which is also what
-		// stabilises the run-to-run count.
+		// on (resource, operation) collapses per-method variation into the
+		// architectural fact the extractor is after, which also stabilises the
+		// run-to-run count.
 		resource := first("table", "entity", "cache", "key", "collection", "index")
 		op := entitykey.NormalizeDBOperation(first("operation", "operation_kind", "operation_type"))
 		if resource != "" || op != "" {
@@ -372,13 +372,13 @@ func DiscoverySemanticKey(obj objectives.Objective, e Candidate) string {
 
 // NormalizePathForKey defers to reconcile.CanonicalizeRoutePath so the
 // discovery-merge key canonicalizes paths (incl. parameter syntax
-// {id}/:id/<int:id>/*) identically to reconcile dedup and the eval matcher (C1).
+// {id}/:id/<int:id>/*) identically to reconcile dedup.
 func NormalizePathForKey(path string) string {
 	return entitykey.CanonicalRoutePath(path)
 }
 
 // IsCompleteDeterministicSeed reports whether a deterministic exposure seed is
-// complete enough to bypass re-examination (high-confidence, located, with all
+// complete enough to be accepted as-is (high-confidence, located, with all
 // required detail fields present or derivable from its name).
 func IsCompleteDeterministicSeed(obj objectives.Objective, e *Candidate) bool {
 	if e == nil {
@@ -428,11 +428,9 @@ func HasDeterministicEvidence(e Candidate) bool {
 }
 
 // IsNoResultSentinel reports structured-output filler that describes the
-// absence of findings instead of an architectural entity. Some models satisfy
-// the non-empty item schema with names such as "placeholder", "__none__", or
-// "noop" plus a summary saying nothing was found. Those rows have real-looking
-// source locations and therefore survive reexamination's keep-biased policy
-// unless discovery rejects them explicitly.
+// absence of findings instead of an architectural entity. Some imported/config
+// rows can use names such as "placeholder", "__none__", or "noop" plus a
+// summary saying nothing was found. Discovery rejects those rows explicitly.
 func IsNoResultSentinel(obj objectives.Objective, e Candidate) bool {
 	name := strings.ToLower(strings.TrimSpace(e.Name))
 	compact := strings.NewReplacer(" ", "", "-", "", "_", "", ".", "", "/", "").Replace(name)

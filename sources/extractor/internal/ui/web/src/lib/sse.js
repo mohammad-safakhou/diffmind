@@ -69,8 +69,7 @@ function appendQuery(url, key, value) {
 
 const KNOWN_KINDS = [
   'run_started', 'run_completed', 'run_failed', 'run_cancelled',
-  'stage_started', 'stage_progress', 'stage_completed',
+  'stage_started', 'stage_completed',
   'job_pending', 'job_started', 'job_completed', 'job_failed',
-  'session_created', 'session_aborted',
-  'watchdog_action', 'log', 'subscriber_dropped',
+  'log', 'subscriber_dropped',
 ]

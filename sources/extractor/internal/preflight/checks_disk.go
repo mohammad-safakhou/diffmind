@@ -9,8 +9,8 @@ import (
 )
 
 // DiskSpaceCheck verifies that the host has enough free space on
-// the partition that hosts ~/.diffmind (snapshots, base+composite
-// indexer images' build contexts, run artifacts).
+// the partition that hosts ~/.diffmind (base+composite indexer images' build
+// contexts, run artifacts).
 //
 // Two thresholds:
 //   - MinFreeBytes_Warn  → SeverityWarn when free < this
@@ -86,7 +86,7 @@ func (c *DiskSpaceCheck) Run(_ context.Context) Result {
 			Message:  fmt.Sprintf("Only %s free", humanBytes(free)),
 			Detail:   fmt.Sprintf("Path: %s; minimum required: %s", path, humanBytes(c.MinFreeBytesFail)),
 			Remediation: "Free up disk space. Running `docker image prune` removes unused images; " +
-				"`rm -rf ~/.diffmind/snapshots/<old-run-id>` clears retained snapshots from old failed runs.",
+				"removing old run directories clears retained DiffMind artifacts.",
 		}
 	}
 	if free < c.MinFreeBytesWarn {

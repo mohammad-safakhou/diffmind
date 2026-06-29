@@ -3,7 +3,7 @@
 //
 // The reducer applies one event at a time and updates four signals:
 //   - runMeta:   id, repo, status, started/finished
-//   - stages:    map of stage name -> { status, total, done, percent, ... }
+//   - stages:    map of stage name -> { status, total, summary, ... }
 //   - jobs:      map of job id -> { stage, parent, status, payload[], duration }
 //   - timeline:  append-only list of events (latest last)
 //
@@ -19,7 +19,6 @@ export const runMeta = signal(null)
 export const stages = signal(initialStages())
 export const jobs = signal(new Map())
 export const timeline = signal([]) // newest events appended at the end
-export const watchdogActions = signal([])
 export const selection = signal(null) // { type: 'job'|'stage', id }
 export const counts = computed(() => deriveCounts(jobs.value))
 
@@ -31,7 +30,7 @@ export const preflight = signal(null)
 function initialStages() {
   const m = new Map()
   for (const s of STAGES) {
-    m.set(s, { name: s, status: 'pending', total: 0, done: 0, percent: 0, tip: '', startedAt: null, finishedAt: null })
+    m.set(s, { name: s, status: 'pending', total: 0, tip: '', summary: {}, startedAt: null, finishedAt: null })
   }
   return m
 }
@@ -41,7 +40,6 @@ export function resetStore() {
   stages.value = initialStages()
   jobs.value = new Map()
   timeline.value = []
-  watchdogActions.value = []
   selection.value = null
 }
 
@@ -80,7 +78,7 @@ export function applyEvent(e) {
         // running (the live-run case).
         status: isTerminal ? prior.status : 'running',
         repo: e.payload?.repo || prior?.repo,
-        snapshot: e.payload?.snapshot || prior?.snapshot,
+        sourceRoot: e.payload?.source_root || prior?.sourceRoot,
         config: e.payload || prior?.config || {},
         // Preserve any terminal-only fields the sidebar set.
         finishedAt: prior?.finishedAt,
@@ -89,7 +87,6 @@ export function applyEvent(e) {
       }
       stages.value = initialStages()
       jobs.value = new Map()
-      watchdogActions.value = []
       break
     }
 
@@ -120,7 +117,7 @@ export function applyEvent(e) {
       mutateStages((m) => {
         for (const [k, st] of m) {
           if (st.status === 'running') {
-            m.set(k, { ...st, status: e.kind === 'run_completed' ? 'success' : (e.kind === 'run_cancelled' ? 'cancelled' : 'failed'), finishedAt: e.ts, percent: 100 })
+            m.set(k, { ...st, status: e.kind === 'run_completed' ? 'success' : (e.kind === 'run_cancelled' ? 'cancelled' : 'failed'), finishedAt: e.ts })
           }
         }
       })
@@ -136,22 +133,6 @@ export function applyEvent(e) {
           total: e.payload?.total || 0,
           tip: e.payload?.tip || '',
           startedAt: e.ts,
-          done: 0,
-          percent: 0,
-        })
-      })
-      break
-
-    case 'stage_progress':
-      mutateStages((m) => {
-        const prev = m.get(e.stage) || {}
-        m.set(e.stage, {
-          ...prev,
-          name: e.stage,
-          done: e.payload?.done ?? prev.done ?? 0,
-          total: e.payload?.total ?? prev.total ?? 0,
-          percent: e.payload?.percent ?? prev.percent ?? 0,
-          tip: e.message || prev.tip,
         })
       })
       break
@@ -164,7 +145,7 @@ export function applyEvent(e) {
           name: e.stage,
           status: e.status || 'success',
           finishedAt: e.ts,
-          percent: 100,
+          summary: e.payload || prev.summary || {},
         })
       })
       break
@@ -198,12 +179,8 @@ export function applyEvent(e) {
       })
       break
 
-    case 'watchdog_action':
-      watchdogActions.value = [...watchdogActions.value, e]
-      break
-
     default:
-      // log, session_created, session_aborted, subscriber_dropped - informational only.
+      // log and subscriber_dropped are informational only.
       break
   }
 }

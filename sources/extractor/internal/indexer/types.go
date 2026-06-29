@@ -1,6 +1,6 @@
 // Package indexer is the diffmind-side driver for the
 // `diffmind-indexer` container image. It detects the image, runs it
-// against a snapshot (via Docker), and deserializes the resulting
+// against a source tree (via Docker), and deserializes the resulting
 // status report.
 //
 // The package is deliberately thin: most of the orchestration lives in
@@ -27,7 +27,7 @@ const ReportSchemaVersion = 1
 // RunRequest is the diffmind-side description of an indexing run.
 // It maps 1:1 to wrapper CLI flags.
 type RunRequest struct {
-	// SourcePath is an absolute host path to the snapshot directory.
+	// SourcePath is an absolute host path to the source directory.
 	// The runner mounts this read-only at /sources inside the container.
 	SourcePath string
 

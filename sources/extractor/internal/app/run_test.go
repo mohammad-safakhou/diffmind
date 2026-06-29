@@ -9,7 +9,7 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/config"
 )
 
-func TestRunDeterministicPipelineDoesNotRequireOpenCode(t *testing.T) {
+func TestRunDeterministicPipelineDoesNotRequireExternalProvider(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.WriteFile(filepath.Join(repo, "app.py"), []byte(`
 from flask import Flask

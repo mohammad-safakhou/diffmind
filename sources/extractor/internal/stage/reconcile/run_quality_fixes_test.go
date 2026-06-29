@@ -68,7 +68,7 @@ func TestJobEntrypointCollapse(t *testing.T) {
 	}
 }
 
-// Item 7: a db_operation on a sequence (junk) is dropped, even from LLM output.
+// Item 7: a db_operation on a sequence (junk) is dropped, even from imported output.
 func TestJunkDataResourceDropped(t *testing.T) {
 	out := DedupeDependencies([]model.Dependency{
 		{BaseEntity: model.BaseEntity{ID: "1", Type: "db_operation", Name: "read orders", Details: map[string]any{"table": "orders", "operation": "read"}}},

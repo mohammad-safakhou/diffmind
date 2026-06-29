@@ -36,7 +36,7 @@ func (d *springDetector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
 	// @Cacheable/@CachePut/@CacheEvict only count as external cache_operations
 	// when the repo configures an external cache backing (Redis/Hazelcast/…).
 	// Without that signal the annotation may be an in-memory cache, so we drop
-	// the cache bindings and leave them to the LLM (precision over recall).
+	// the cache bindings until a detector can ground them (precision over recall).
 	if !springHasExternalCache(idx) {
 		out = dropBindingsOfKind(out, "cache_operation")
 	}

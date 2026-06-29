@@ -12,7 +12,7 @@ import (
 	"github.com/mohammad-safakhou/protocol"
 )
 
-func TestWriteSanitizesUnresolvedFileNames(t *testing.T) {
+func TestWriteDoesNotEmitLegacyArtifactDirectories(t *testing.T) {
 	baseDir := t.TempDir()
 	_, err := Write(WriteInput{
 		RunID:         "run1",
@@ -29,22 +29,13 @@ func TestWriteSanitizesUnresolvedFileNames(t *testing.T) {
 		t.Fatalf("write failed: %v", err)
 	}
 
-	unresolvedDir := filepath.Join(baseDir, "run1", "unresolved")
-	entries, err := os.ReadDir(unresolvedDir)
-	if err != nil {
-		t.Fatalf("read unresolved dir failed: %v", err)
+	for _, legacyDir := range []string{"exposures", "dependencies", "connections", "unresolved"} {
+		if _, err := os.Stat(filepath.Join(baseDir, "run1", legacyDir)); !os.IsNotExist(err) {
+			t.Fatalf("legacy artifact dir %s should not be emitted; stat err=%v", legacyDir, err)
+		}
 	}
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 unresolved artifact file, got %d", len(entries))
-	}
-	if entries[0].IsDir() {
-		t.Fatalf("expected file artifact, got directory")
-	}
-	if filepath.Ext(entries[0].Name()) != ".json" {
-		t.Fatalf("expected .json unresolved artifact file, got %s", entries[0].Name())
-	}
-	if entries[0].Name() == "exposure_authentication/authorization_gap.json" {
-		t.Fatalf("expected sanitized filename, got unsafe path segment")
+	if _, err := os.Stat(filepath.Join(baseDir, "run1", DiffMind protocolServiceJSON)); err != nil {
+		t.Fatalf("canonical DiffMind protocol json missing: %v", err)
 	}
 }
 
@@ -65,8 +56,6 @@ func TestWriteManifestStageFailureSummary(t *testing.T) {
 			{Kind: model.KindExposure, Type: "http_route", Name: "obj-a", ReasonCode: "discovery_failure", Reason: "boom"},
 			{Kind: model.KindExposure, Type: "http_route", Name: "obj-b", ReasonCode: "discovery_failure", Reason: "boom"},
 			{Kind: model.KindDependency, Type: "connection", Name: "exp-1", ReasonCode: "connections_failure", Reason: "boom"},
-			{Kind: model.KindExposure, Type: "http_route", Name: "obj-d", ReasonCode: "reexamine_failure", Reason: "kept original seed"},
-			{Kind: model.KindExposure, Type: "http_route", Name: "obj-e", ReasonCode: "rejected_on_reexamination", Reason: "not real"},
 			{Kind: model.KindExposure, Type: "http_route", Name: "obj-f", ReasonCode: "missing_required_details", Reason: "no path"},
 		},
 	})
@@ -82,10 +71,9 @@ func TestWriteManifestStageFailureSummary(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	want := map[string]int{
-		"discovery":     2,
-		"connections":   1,
-		"reexamination": 2,
-		"validation":    1,
+		"discovery":   2,
+		"connections": 1,
+		"validation":  1,
 	}
 	if len(got.StageFailures) != len(want) {
 		t.Fatalf("stage_failures keys mismatch: got %v want %v", got.StageFailures, want)
@@ -279,19 +267,10 @@ func TestWriteEmitsDiffMind protocolServiceContext(t *testing.T) {
 	if got := doc.Objects.DBQueries[0].Metadata["plugin_source"]; got == "" {
 		t.Fatalf("deterministic plugin_source must be detector-specific")
 	}
-	depBytes, err := os.ReadFile(filepath.Join(baseDir, "run-protocol", "dependencies", "db_operation.json"))
-	if err != nil {
-		t.Fatalf("read legacy dependency file: %v", err)
-	}
-	var legacyDeps []model.Dependency
-	if err := json.Unmarshal(depBytes, &legacyDeps); err != nil {
-		t.Fatalf("decode legacy dependency file: %v", err)
-	}
-	if len(legacyDeps) != 1 {
-		t.Fatalf("expected one legacy db dependency, got %+v", legacyDeps)
-	}
-	if legacyDeps[0].PluginSource == "" {
-		t.Fatalf("legacy deterministic plugin_source must be detector-specific: %+v", legacyDeps[0])
+	for _, legacyDir := range []string{"exposures", "dependencies", "connections", "unresolved"} {
+		if _, err := os.Stat(filepath.Join(baseDir, "run-protocol", legacyDir)); !os.IsNotExist(err) {
+			t.Fatalf("legacy artifact dir %s should not be emitted; stat err=%v", legacyDir, err)
+		}
 	}
 	b, err := os.ReadFile(filepath.Join(baseDir, "run-protocol", "run_manifest.json"))
 	if err != nil {

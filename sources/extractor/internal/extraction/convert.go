@@ -128,11 +128,8 @@ func ToEvidence(in []Evidence) []model.Evidence {
 	return out
 }
 
-// toConnectionPaths was the LLM→model.ConnectionPath converter used by
-// the old connections stage. The SCIP-driven stage builds
-// model.ConnectionPath directly from scip.Path, so this helper is
-// obsolete and has been removed. See internal/stage/connections/path.go's
-// convertASTPath function for the replacement.
+// Connection paths are built directly by the deterministic connection stage.
+// See internal/stage/connections/path.go's convertASTPath function.
 
 func FillCondition(c model.Condition, fallbackExplanation string) model.Condition {
 	if strings.TrimSpace(c.Kind) == "" {
@@ -258,9 +255,8 @@ func ParseSingleEntity(v any) *Candidate {
 	return &e
 }
 
-// parseConnections was the JSON → []llmConnection decoder used by the
-// old LLM-based connections stage. With the deterministic SCIP path
-// no LLM connection JSON is ever produced, so this helper is removed.
+// Connection JSON decoding is no longer part of extraction; connections are
+// produced by the deterministic connection stage.
 
 func ParseRepoFacts(v map[string]any) *RepoFacts {
 	if v == nil {

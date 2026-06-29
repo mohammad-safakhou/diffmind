@@ -21,7 +21,6 @@ type executionInput struct {
 	RunDir         string
 	BaseDir        string
 	RepoPath       string
-	SnapshotPath   string
 	ResumeFromDir  string
 	StartedAt      time.Time
 	Component      string
@@ -48,11 +47,11 @@ func execute(ctx context.Context, in executionInput) (RunOutput, error) {
 	})
 	if err != nil {
 		util.Error(in.Component, in.FailureLogText, map[string]any{
-			"error":         err,
-			"run_id":        in.RunID,
-			"run_dir":       in.RunDir,
-			"failure_md":    filepath.Join(in.RunDir, "run_failure.md"),
-			"snapshot_path": result.SnapshotPath,
+			"error":       err,
+			"run_id":      in.RunID,
+			"run_dir":     in.RunDir,
+			"failure_md":  filepath.Join(in.RunDir, "run_failure.md"),
+			"source_root": result.SourceRoot,
 		})
 		return RunOutput{
 			RunID: in.RunID, RunDir: in.RunDir,

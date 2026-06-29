@@ -9,7 +9,7 @@ import (
 
 	"github.com/mohammad-safakhou/diffmind/internal/ast"
 	// Import framework package to trigger detector registration.
-	_ "github.com/mohammad-safakhou/diffmind/internal/ast/framework"
+	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/framework"
 )
 
 // ── Per-language parse smoke tests ────────────────────────────────────────────
@@ -279,7 +279,7 @@ func (s *ItemService) GetItem(id string) {
 func (r *ItemRepo) FindByID(id string) {}
 `)
 
-	idx, err := ast.Build(context.Background(), dir, "go", 4, nil)
+	idx, err := ast.Build(context.Background(), dir, "go", 4)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -474,7 +474,7 @@ public class EventPublisher {
     void send(Object event) {}
 }
 `)
-	idx, err := ast.Build(context.Background(), dir, "java", 4, nil)
+	idx, err := ast.Build(context.Background(), dir, "java", 4)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

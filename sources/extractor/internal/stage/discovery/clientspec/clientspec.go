@@ -1,15 +1,14 @@
 // Package clientspec is the declarative registry of connection-client patterns:
 // how to recognize a client DEFINITION in source and where its instance comes
 // from. It is intentionally pure data — adding a framework/client is a table row,
-// not new code — and is interpreted by the AST client floor in the discovery
+// not new code — and is interpreted by the AST client detector in the discovery
 // stage (discovery.DetectClients).
 //
 // Honest scope: this table expresses the common, reliably-matchable definitions
 // (an annotation, an implemented interface, or a type-name suffix, plus a config
 // key or annotation attribute for the instance). Construction-only clients (a raw
 // SDK builder with no annotation/interface — e.g. SqsClient.builder()...build())
-// are deliberately out of scope here and remain covered by the LLM
-// connection_client objective; a future typed extractor hook can extend this.
+// are deliberately out of scope here until a typed extractor hook supports them.
 package clientspec
 
 // Pattern declaratively recognizes a client definition. A symbol matches when ANY
@@ -31,7 +30,7 @@ type Pattern struct {
 }
 
 // defaultPatterns is the registry. Order is not significant (detection dedups by
-// kind+symbol). Add a row to teach the floor a new client; no code changes.
+// kind+symbol). Add a row to teach the detector a new client; no code changes.
 var defaultPatterns = []Pattern{
 	// Spring Data: a repository interface (by @Repository or a *Repository name or
 	// extending a Spring Data base) shares the default DataSource.

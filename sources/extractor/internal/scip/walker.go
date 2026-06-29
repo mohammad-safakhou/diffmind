@@ -7,7 +7,7 @@ import (
 
 // Path is one resolved call chain from an entry symbol (e.g. a
 // controller handler) to a target dependency symbol. It is the
-// deterministic equivalent of the LLM's `paths[]` output.
+// deterministic call-path output.
 //
 // Steps is ordered from entry → target. The first step's CallerSymbol
 // is the entry symbol; the last step's CalleeSymbol is the target.

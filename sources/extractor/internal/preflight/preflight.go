@@ -5,8 +5,7 @@
 //     System Status panel reflects the current health of the host.
 //  2. internal/app/run.go, synchronously, at the start of every run
 //     (both fresh and retry). A single Severity == "fail" anywhere
-//     in the Report aborts the run BEFORE we touch the snapshot or
-//     allocate any resources.
+//     in the Report aborts the run BEFORE we allocate run resources.
 //
 // Every check is a self-contained Check implementation. New checks
 // are added by appending to DefaultChecks().
@@ -17,7 +16,7 @@
 //     dashboard.
 //   - Severity is a tri-state. "warn" is informational and lets the
 //     run proceed; only "fail" gates it. The user explicitly asked
-//     for hard-rejection on Docker/OpenCode/credentials failures.
+//     for hard-rejection on missing runtime prerequisites.
 //   - Each Result carries a Remediation string so the UI can show
 //     the user exactly what to do without forcing them to read code.
 package preflight
@@ -50,7 +49,7 @@ const (
 // render directly in the System Status panel without further
 // transformation.
 type Result struct {
-	// Name is a short identifier ("docker", "opencode", ...).
+	// Name is a short identifier ("docker", "network", ...).
 	Name string `json:"name"`
 	// Title is the human-readable label rendered in the UI.
 	Title string `json:"title"`
@@ -103,7 +102,7 @@ func (r Report) Failures() []Result {
 // Check is the interface each individual probe implements. Run is
 // passed a context with the per-check timeout already applied.
 type Check interface {
-	// Name returns the stable identifier ("docker", "opencode"). It
+	// Name returns the stable identifier ("docker", "network"). It
 	// MUST match the Result.Name produced by Run.
 	Name() string
 	// Title returns the human-readable label.

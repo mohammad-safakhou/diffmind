@@ -86,7 +86,6 @@ type Request struct {
 	RunDir        string
 	RunID         string
 	ResumeFromDir string
-	SnapshotPath  string
 }
 
 type Result struct {
@@ -97,22 +96,22 @@ type Result struct {
 	Unresolved   []model.UnresolvedItem
 	Warnings     []string
 	Failure      *Failure
-	SnapshotPath string
+	SourceRoot   string
 	Intermediate IntermediateState
 }
 
 type Failure struct {
-	Stage        string         `json:"stage"`
-	JobID        string         `json:"job_id"`
-	ObjectiveID  string         `json:"objective_id"`
-	EntityName   string         `json:"entity_name"`
-	Error        string         `json:"error"`
-	ErrorClass   string         `json:"error_class"`
-	HTTPStatus   int            `json:"http_status,omitempty"`
-	SnapshotPath string         `json:"snapshot_path,omitempty"`
-	OccurredAt   time.Time      `json:"occurred_at"`
-	Extra        map[string]any `json:"extra,omitempty"`
-	Cancelled    bool           `json:"cancelled,omitempty"`
+	Stage       string         `json:"stage"`
+	JobID       string         `json:"job_id"`
+	ObjectiveID string         `json:"objective_id"`
+	EntityName  string         `json:"entity_name"`
+	Error       string         `json:"error"`
+	ErrorClass  string         `json:"error_class"`
+	HTTPStatus  int            `json:"http_status,omitempty"`
+	SourceRoot  string         `json:"source_root,omitempty"`
+	OccurredAt  time.Time      `json:"occurred_at"`
+	Extra       map[string]any `json:"extra,omitempty"`
+	Cancelled   bool           `json:"cancelled,omitempty"`
 }
 
 type IntermediateState struct {

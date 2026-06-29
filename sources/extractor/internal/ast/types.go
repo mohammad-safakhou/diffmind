@@ -62,7 +62,7 @@ type ProjectIndex struct {
 
 	// RejectedFrameworks holds near-miss framework candidates with explicit
 	// rejection reasons. These are for observability only and must not be used
-	// as deterministic facts or prompt hints.
+	// as deterministic facts.
 	RejectedFrameworks []FrameworkBinding
 
 	// Configs holds the parsed configuration files (YAML, JSON, TOML, .env,
@@ -72,7 +72,7 @@ type ProjectIndex struct {
 	// Languages are the distinct source languages actually present in the
 	// repository, derived from the files parsed (parsing is extension-driven,
 	// so a polyglot repo lists every language it contains). There is no single
-	// "primary" language: the index, framework detectors, and prompt scoping all
+	// "primary" language: the index and framework detectors
 	// operate across all detected languages.
 	Languages []string
 }
@@ -106,7 +106,7 @@ type SymbolDef struct {
 	// Parameters are the declared formal parameters of a function/method
 	// (empty for classes/interfaces and for languages whose extractor does not
 	// yet populate them). Used to recover an exposure's IO contract
-	// deterministically without an LLM pass.
+	// deterministically.
 	Parameters []Param
 }
 

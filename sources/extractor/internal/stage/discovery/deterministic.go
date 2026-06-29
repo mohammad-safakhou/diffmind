@@ -24,7 +24,6 @@ type DeterministicRunner struct{}
 type DeterministicInput struct {
 	Index      *astpkg.ProjectIndex
 	Objectives []objectives.Objective
-	PathMapper *extraction.PathMapper
 }
 
 type DeterministicOutput struct {
@@ -126,9 +125,6 @@ func (DeterministicRunner) Run(input DeterministicInput) DeterministicOutput {
 		if len(items) == 0 {
 			continue
 		}
-		if input.PathMapper != nil {
-			input.PathMapper.ApplyToEntities(items)
-		}
 		extraction.SortCandidates(items)
 		total += len(items)
 		results = append(results, extraction.DiscoveryResult{Objective: obj, Items: items})
@@ -137,17 +133,16 @@ func (DeterministicRunner) Run(input DeterministicInput) DeterministicOutput {
 }
 
 // DeterministicDBOperations derives database operations directly from the AST
-// call graph, independent of the LLM. It reuses the SAME repository-call
-// predicates the connections stage already trusts (isRepositoryOperationSymbol,
-// tableEntityFromRepository, inferDBOperationKind) so precision matches the
-// connection resolver's interpretation of repository calls.
+// call graph. It reuses the SAME repository-call predicates the connections
+// stage already trusts (isRepositoryOperationSymbol, tableEntityFromRepository,
+// inferDBOperationKind) so precision matches the connection resolver's
+// interpretation of repository calls.
 //
 // Granularity is HIGH-LEVEL: one entity per (table, operation-kind) — e.g.
 // "read orders", "write orders" — not one per repository method. That matches
 // the extractor's purpose and the (resource, operation) dedup key, and it is
-// what lets the deterministic floor stabilise db_operation, the worst LLM
-// offender. Each entity carries deterministic evidence/tags so the rest of the
-// pipeline treats it as a confirmed seed.
+// what stabilises db_operation output. Each entity carries deterministic
+// evidence/tags so the rest of the pipeline treats it as a confirmed seed.
 //
 // SCOPE / KNOWN LIMITATIONS (intentional, documented — see docs/PLATFORM.md):
 //   - This repository-call leg is strongest on Spring Data / JPA / MyBatis.
@@ -201,10 +196,9 @@ func dbPlatformFromConfigValue(v string) string {
 
 // StampInferredDBPlatform fills a concrete platform onto db_operation deps that
 // only have a generic/empty one, using the repo's single configured datasource
-// platform. This lets deterministic db ops (which know the table but not the
-// engine) share identity with the LLM's platform-qualified ones — fixing the
-// floor↔LLM coverage artifact and keeping the eval/dedup identity consistent
-// (P7). Never overwrites an already-specific platform.
+// platform. This lets db ops that know the table but not the engine share a
+// stable identity with platform-qualified facts. Never overwrites an
+// already-specific platform.
 func StampInferredDBPlatform(idx *astpkg.ProjectIndex, deps []model.Dependency) {
 	plat := InferConfigDBPlatform(idx)
 	if plat == "" {
@@ -259,7 +253,8 @@ func DeterministicDBOperations(idx *astpkg.ProjectIndex) []candidate {
 		}
 		// Precision guard: never emit a generic-handle / sequence table as a
 		// deterministic db_operation (see isJunkTableName). A wrong fact poisons
-		// downstream; the LLM recovers the real table from argument types.
+		// downstream; a typed detector can recover the real table later when it
+		// has enough evidence.
 		if repositorycall.IsJunkTable(table) {
 			return
 		}

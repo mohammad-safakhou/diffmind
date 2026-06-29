@@ -54,7 +54,7 @@ type Index struct {
 
 	// metadata holds the index's overall metadata: project root,
 	// encoding, tool info. Useful for sanity checks (project_root
-	// should equal the snapshot directory; tool_info tells us which
+	// should equal the source directory; tool_info tells us which
 	// indexer produced this index).
 	metadata *pb.Metadata
 
@@ -217,7 +217,7 @@ func (i *Index) buildQueryTables() {
 func (i *Index) Path() string { return i.path }
 
 // ProjectRoot returns the indexer's reported project root URI. This
-// should equal the snapshot directory the indexer ran against.
+// should equal the source directory the indexer ran against.
 func (i *Index) ProjectRoot() string {
 	if i == nil || i.metadata == nil {
 		return ""

@@ -33,7 +33,7 @@ func TestBusSubscribeReplaysHistoryThenStreamsLive(t *testing.T) {
 	b := NewBus(100)
 	sink, _ := b.StartRun("r1", "")
 	sink.Emit(Event{Kind: KindStageStarted})
-	sink.Emit(Event{Kind: KindStageProgress})
+	sink.Emit(Event{Kind: KindLog})
 
 	ch, cancel, err := b.Subscribe("r1", 0, 16)
 	if err != nil {

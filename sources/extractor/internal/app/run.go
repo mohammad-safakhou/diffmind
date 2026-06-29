@@ -37,7 +37,6 @@ type RunOutput struct {
 
 func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 	started := time.Now().UTC()
-	logProgress("bootstrap", 0, "Initializing run context and validating configuration.")
 	util.Info("app.run", "starting run", map[string]any{
 		"repo_input":     in.RepoPath,
 		"pipeline":       in.Config.Pipeline(),
@@ -50,7 +49,6 @@ func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 		return RunOutput{}, err
 	}
 	util.Debug("app.run", "resolved repo path", map[string]any{"repo": repo})
-	logProgress("bootstrap", 5, "Repository path resolved.")
 
 	runID := strings.TrimSpace(in.RunID)
 	if runID == "" {
@@ -70,13 +68,11 @@ func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 				"connections":  len(result.Connections),
 				"unresolved":   len(result.Unresolved),
 			})
-			logProgress("pipeline", 90, "Extraction pipeline completed. Preparing artifacts.")
 		},
 	})
 	if err != nil {
 		return out, err
 	}
-	logProgress("artifacts", 100, "Artifacts written successfully.")
 	util.Info("app.run", "run completed", map[string]any{
 		"run_id":      runID,
 		"run_dir":     out.RunDir,
@@ -84,30 +80,6 @@ func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 		"warnings":    len(out.Warning),
 	})
 	return out, nil
-}
-
-func logProgress(phase string, percent int, tip string) {
-	if percent < 0 {
-		percent = 0
-	}
-	if percent > 100 {
-		percent = 100
-	}
-	width := 20
-	filled := int(float64(width) * (float64(percent) / 100.0))
-	if filled < 0 {
-		filled = 0
-	}
-	if filled > width {
-		filled = width
-	}
-	bar := "[" + strings.Repeat("#", filled) + strings.Repeat("-", width-filled) + "] " + fmt.Sprintf("%d%%", percent)
-	util.Info("progress", "run status", map[string]any{
-		"phase":   phase,
-		"percent": percent,
-		"bar":     bar,
-		"tip":     tip,
-	})
 }
 
 func PrintSummary(out RunOutput) string {

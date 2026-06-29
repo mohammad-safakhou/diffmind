@@ -26,7 +26,7 @@ export function Timeline() {
   const filtered = useMemo(() => {
     let out = events
     if (stageFilter !== 'all') out = out.filter((e) => e.stage === stageFilter)
-    if (errorsOnly) out = out.filter((e) => e.kind === 'job_failed' || e.kind === 'run_failed' || e.status === 'failed' || e.kind === 'watchdog_action')
+    if (errorsOnly) out = out.filter((e) => e.kind === 'job_failed' || e.kind === 'run_failed' || e.status === 'failed')
     if (search.trim()) {
       const q = search.toLowerCase()
       out = out.filter((e) => JSON.stringify(e).toLowerCase().includes(q))
@@ -151,14 +151,12 @@ function rowIcon(e) {
   if (e.kind === 'job_failed' || e.kind === 'run_failed') return '\u2716'
   if (e.kind === 'job_completed' || e.kind === 'stage_completed' || e.kind === 'run_completed') return '\u2713'
   if (e.kind === 'job_started' || e.kind === 'stage_started' || e.kind === 'run_started') return '\u25B6'
-  if (e.kind === 'watchdog_action') return '\u26A0'
-  if (e.kind === 'session_aborted') return '\u26D4'
   return '\u00B7'
 }
 
 function rowClass(e) {
   if (e.kind === 'job_failed' || e.kind === 'run_failed' || e.status === 'failed') return 'failed'
-  if (e.kind === 'watchdog_action' || e.kind === 'subscriber_dropped') return 'warn'
+  if (e.kind === 'subscriber_dropped') return 'warn'
   if (e.kind === 'run_cancelled' || e.status === 'cancelled') return 'cancelled'
   return ''
 }

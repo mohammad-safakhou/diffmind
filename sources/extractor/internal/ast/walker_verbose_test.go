@@ -22,7 +22,7 @@ func Layer2(r Repo) { r.FindByID(1) }
 func Layer1(r Repo) { Layer2(r) }
 func Entry(r Repo)  { Layer1(r) }
 `)
-	idx, err := ast.Build(context.Background(), dir, "go", 4, nil)
+	idx, err := ast.Build(context.Background(), dir, "go", 4)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

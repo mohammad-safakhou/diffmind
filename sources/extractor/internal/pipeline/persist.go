@@ -97,13 +97,13 @@ func (o *orchestrator) writeFailureReport(f *Failure) {
 		util.Warn("agents.failure", "could not marshal failure report", map[string]any{"error": err})
 	}
 	mdPath := filepath.Join(o.runDir, "run_failure.md")
-	_ = os.WriteFile(mdPath, []byte(renderFailureMarkdown(f, o.runDir, o.snap.Path)), 0o644)
+	_ = os.WriteFile(mdPath, []byte(renderFailureMarkdown(f, o.runDir)), 0o644)
 }
 
 // renderFailureMarkdown produces the operator-facing summary. We keep
 // it terse on purpose: every section is something the operator needs
 // to act on, so adding fluff would just bury the signal.
-func renderFailureMarkdown(f *Failure, runDir, snapshotPath string) string {
+func renderFailureMarkdown(f *Failure, runDir string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Run failure\n\n")
 	fmt.Fprintf(&b, "- **Stage**: `%s`\n", f.Stage)
@@ -134,8 +134,8 @@ func renderFailureMarkdown(f *Failure, runDir, snapshotPath string) string {
 			fmt.Fprintf(&b, "- Events log: `%s`\n", events)
 		}
 	}
-	if snapshotPath != "" && fileExists(snapshotPath) {
-		fmt.Fprintf(&b, "- Snapshot: `%s`\n", snapshotPath)
+	if f.SourceRoot != "" && fileExists(f.SourceRoot) {
+		fmt.Fprintf(&b, "- Source root: `%s`\n", f.SourceRoot)
 	}
 
 	fmt.Fprintf(&b, "\n## Next step\n\n")

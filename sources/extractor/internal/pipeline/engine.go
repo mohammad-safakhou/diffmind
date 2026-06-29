@@ -29,6 +29,5 @@ func (e *Engine) Run(ctx context.Context, request extraction.Request) (extractio
 		RunDir:        request.RunDir,
 		RunID:         request.RunID,
 		ResumeFromDir: request.ResumeFromDir,
-		SnapshotPath:  request.SnapshotPath,
 	})
 }

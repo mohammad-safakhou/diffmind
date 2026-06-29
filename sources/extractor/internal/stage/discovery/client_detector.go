@@ -10,16 +10,11 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
-// client_floor.go — deterministic AST detection of connection-client DEFINITIONS.
-//
-// The LLM connection_client objective points at backbones, but it can miss or
-// mis-point them. This floor walks the AST against the declarative clientspec
-// registry and emits the same model.ConnectionClient deterministically, so the
-// downstream instance resolution + op→client linking has a floor that does not
-// depend on the model. Instances come from a config anchor (resolved later) or,
-// when the pattern reads an annotation attribute, from a literal endpoint right
-// here (a hardcoded URL is a fact, not a guess — invariant #6). Additive: it only
-// adds clients; MergeClients dedups them against the LLM set.
+// client_detector.go provides deterministic AST detection of connection-client
+// definitions. It walks the AST against the declarative clientspec registry and
+// emits model.ConnectionClient records for downstream instance resolution and
+// operation-to-client linking. Instances come from a config anchor or, when a
+// pattern reads an annotation attribute, from a literal endpoint.
 
 // DetectClients runs the clientspec registry over the AST index and returns the
 // connection clients it can ground.
@@ -36,7 +31,7 @@ func DetectClients(idx *astpkg.ProjectIndex) []model.ConnectionClient {
 				if !patternMatches(idx, p, s) {
 					continue
 				}
-				c := buildFloorClient(p, s)
+				c := buildDetectedClient(p, s)
 				key := c.Kind + "|" + strings.ToLower(c.Symbol)
 				if c.Symbol == "" {
 					key = c.Kind + "|" + strings.ToLower(c.LogicalName)
@@ -101,7 +96,7 @@ func symbolImplementsAny(idx *astpkg.ProjectIndex, s astpkg.SymbolDef, ifaces []
 	return false
 }
 
-func buildFloorClient(p clientspec.Pattern, s astpkg.SymbolDef) model.ConnectionClient {
+func buildDetectedClient(p clientspec.Pattern, s astpkg.SymbolDef) model.ConnectionClient {
 	c := model.ConnectionClient{
 		LogicalName: s.Name,
 		Kind:        p.Kind,
@@ -168,9 +163,8 @@ func applyAttrInstance(c *model.ConnectionClient, raw string) {
 
 // MergeClients returns primary plus the secondary clients that don't duplicate a
 // primary one. Identity is (kind + config anchor) first, then (kind + symbol-tail)
-// and (kind + logical name) — so the AST floor and the LLM set converge on one
-// client per real backbone instead of competing. Primary is authoritative (the
-// LLM clients, which read config for the anchor); the floor fills the gaps.
+// and (kind + logical name), so client detectors converge on one client per real
+// backbone instead of competing. Primary is authoritative; secondary fills gaps.
 func MergeClients(primary, secondary []model.ConnectionClient) []model.ConnectionClient {
 	index := map[string]bool{}
 	for _, c := range primary {

@@ -71,8 +71,7 @@ func isLowSignalTargetSymbol(sym string) bool {
 // EntityManager.persist(order) IS a real write, but the owner ("EntityManager")
 // carries no table information, so the deriver would mint the junk table
 // "entity_manager". Per invariant #6 ("prefer emit nothing over a guess") we
-// drop these on the deterministic path and let the LLM — which reads the
-// argument types — recover the real table. WHY a denylist: we keep accepting
+// drop these on the deterministic path. WHY a denylist: we keep accepting
 // arbitrary *Repository/*Dao names; only the handful of framework handles that
 // masquerade as repositories are rejected.
 func isLowSignalRepositoryOwner(owner string) bool {
@@ -88,8 +87,7 @@ func isLowSignalRepositoryOwner(owner string) bool {
 // artifact rather than a real table: the generic "entity_manager" handle, and
 // sequences (*_seq, *_id_seq, *_sequence). These are low-signal precision nits
 // (see docs/PLATFORM.md roadmap #3); emitting one as a db_operation poisons the
-// output, so the deterministic deriver drops them. LLM-originated rows are NOT
-// touched here — the LLM is the authority on what exists.
+// output, so the deterministic deriver drops them.
 func isJunkTableName(table string) bool {
 	t := strings.ToLower(strings.TrimSpace(table))
 	if t == "" || t == "entity_manager" {

@@ -27,7 +27,7 @@ import (
 //     later; the interface is already abstract enough.
 //   - The host paths in RunRequest must be local-filesystem paths
 //     reachable by the Docker daemon. Remote Docker daemons (DOCKER_HOST)
-//     would need the snapshot copied to the daemon's host first; we
+//     would need the source tree copied to the daemon's host first; we
 //     reject that with a clear error.
 type DockerIndexer struct {
 	// DockerPath is the binary name or absolute path. Defaults to "docker".
