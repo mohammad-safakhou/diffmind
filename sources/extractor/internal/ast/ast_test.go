@@ -9,7 +9,7 @@ import (
 
 	"github.com/mohammad-safakhou/diffmind/internal/ast"
 	// Import framework package to trigger detector registration.
-	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/framework"
+	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/register"
 )
 
 // ── Per-language parse smoke tests ────────────────────────────────────────────

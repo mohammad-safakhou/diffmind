@@ -1,30 +1,30 @@
-package framework
+package nestjs
 
 import (
-	"strings"
-
 	"github.com/mohammad-safakhou/diffmind/internal/ast"
+	"github.com/mohammad-safakhou/diffmind/internal/detectors/languages/internal/frameworkutil"
+	"strings"
 )
 
-func init() { register(&nestjsDetector{}) }
+func init() { ast.RegisterFrameworkDetector(&detector{}) }
 
-// nestjsDetector detects NestJS (TypeScript/JavaScript) implicit invocations.
-type nestjsDetector struct{}
+// detector detects NestJS (TypeScript/JavaScript) implicit invocations.
+type detector struct{}
 
-func (d *nestjsDetector) Name() string { return "nestjs" }
+func (d *detector) Name() string { return "nestjs" }
 
-func (d *nestjsDetector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
+func (d *detector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
 	var out []ast.FrameworkBinding
 	for _, fa := range idx.Files {
 		if fa.Language != "typescript" && fa.Language != "javascript" && fa.Language != "tsx" {
 			continue
 		}
-		classes := classesByName(fa)
+		classes := frameworkutil.ClassesByName(fa)
 		for _, sym := range fa.Symbols {
 			if sym.Kind != ast.SymbolKindMethod && sym.Kind != ast.SymbolKindFunction {
 				continue
 			}
-			cls := enclosingClassForSymbol(fa, sym, classes)
+			cls := frameworkutil.EnclosingClassForSymbol(fa, sym, classes)
 			for _, ann := range sym.Annotations {
 				b := nestAnnotationToBinding(sym, cls, ann)
 				if b != nil {
@@ -51,10 +51,10 @@ func nestAnnotationToBinding(sym ast.SymbolDef, cls *ast.SymbolDef, ann ast.Anno
 		prefix := ""
 		controller := false
 		if cls != nil {
-			controller = hasAnyAnnotation(*cls, "Controller")
+			controller = frameworkutil.HasAnyAnnotation(*cls, "Controller")
 			prefix = nestControllerPrefix(*cls)
 		}
-		path := joinPath(prefix, extractFirstStringArg(strings.TrimSpace(args)))
+		path := frameworkutil.JoinPath(prefix, frameworkutil.ExtractFirstStringArg(strings.TrimSpace(args)))
 		rejection := ""
 		if !controller {
 			rejection = "nestjs_http_decorator_without_controller_context"
@@ -79,7 +79,7 @@ func nestAnnotationToBinding(sym ast.SymbolDef, cls *ast.SymbolDef, ann ast.Anno
 			Kind:          "scheduler",
 			Direction:     "inbound",
 			Symbol:        sym.Qualified,
-			Trigger:       "cron: " + extractFirstStringArg(args),
+			Trigger:       "cron: " + frameworkutil.ExtractFirstStringArg(args),
 			TriggerSource: "@Cron(" + args + ")",
 			File:          sym.File,
 			Range:         sym.Range,
@@ -92,7 +92,7 @@ func nestAnnotationToBinding(sym ast.SymbolDef, cls *ast.SymbolDef, ann ast.Anno
 			Kind:          "queue_consumer",
 			Direction:     "inbound",
 			Symbol:        sym.Qualified,
-			Trigger:       "message: " + extractFirstStringArg(args),
+			Trigger:       "message: " + frameworkutil.ExtractFirstStringArg(args),
 			TriggerSource: "@" + name + "(" + args + ")",
 			File:          sym.File,
 			Range:         sym.Range,
@@ -105,7 +105,7 @@ func nestAnnotationToBinding(sym ast.SymbolDef, cls *ast.SymbolDef, ann ast.Anno
 func nestControllerPrefix(cls ast.SymbolDef) string {
 	for _, ann := range cls.Annotations {
 		if ann.Name == "Controller" {
-			return extractFirstStringArg(ann.Arguments)
+			return frameworkutil.ExtractFirstStringArg(ann.Arguments)
 		}
 	}
 	return ""

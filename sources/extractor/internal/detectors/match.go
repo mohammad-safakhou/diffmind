@@ -35,6 +35,37 @@ func IDsForFrameworkBinding(framework, kind, trigger, reason string) []string {
 		if kind == "http_handler" {
 			return []string{"python.http.flask"}
 		}
+	case "fastapi":
+		if kind == "http_handler" {
+			return []string{"python.http.fastapi"}
+		}
+	case "django", "celery":
+		switch kind {
+		case "http_handler":
+			return []string{"python.http.django"}
+		case "event_listener", "scheduler":
+			return []string{"python.http.django"}
+		}
+	case "express":
+		if kind == "http_handler" {
+			return []string{"javascript.http.express"}
+		}
+	case "nestjs":
+		if kind == "http_handler" {
+			return []string{"typescript.http.nestjs"}
+		}
+	case "rails":
+		if kind == "http_handler" {
+			return []string{"ruby.http.rails"}
+		}
+	case "laravel":
+		if kind == "http_handler" {
+			return []string{"php.http.laravel"}
+		}
+	case "aspnet":
+		if kind == "http_handler" {
+			return []string{"dotnet.http.aspnet"}
+		}
 	case "sam", "aws-sam":
 		if kind == "activation" || kind == "queue_consumer" {
 			return []string{"python.aws.sam"}

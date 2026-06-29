@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/mohammad-safakhou/diffmind/internal/ast"
-	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/framework"
+	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/register"
 )
 
 type Runner struct{}
