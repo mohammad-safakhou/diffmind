@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/mohammad-safakhou/diffmind/internal/ast"
-	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/framework"
+	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/register"
 )
 
 func TestSpringDetectorRequiresControllerAndSeparatesFeign(t *testing.T) {

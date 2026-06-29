@@ -1,30 +1,31 @@
-package framework
+package spring
 
 import (
-	"strings"
-
 	"github.com/mohammad-safakhou/diffmind/internal/ast"
+	"github.com/mohammad-safakhou/diffmind/internal/detectors/languages/internal/frameworkutil"
+	"strings"
 )
 
-func init() { register(&springDetector{}) }
+func init() { ast.RegisterFrameworkDetector(&detector{}) }
 
-// springDetector implements ast.FrameworkDetector for Spring Framework (Java/Kotlin).
-type springDetector struct{}
+// detector implements ast.FrameworkDetector for Spring Framework HTTP and
+// Spring-owned activation/cache/listener annotations.
+type detector struct{}
 
-func (d *springDetector) Name() string { return "spring" }
+func (d *detector) Name() string { return "spring" }
 
-func (d *springDetector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
+func (d *detector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
 	var out []ast.FrameworkBinding
 	for _, fa := range idx.Files {
 		if fa.Language != "java" && fa.Language != "kotlin" {
 			continue
 		}
-		classes := classesByName(fa)
+		classes := frameworkutil.ClassesByName(fa)
 		for _, sym := range fa.Symbols {
 			if sym.Kind != ast.SymbolKindMethod && sym.Kind != ast.SymbolKindFunction {
 				continue
 			}
-			cls := enclosingClassForSymbol(fa, sym, classes)
+			cls := frameworkutil.EnclosingClassForSymbol(fa, sym, classes)
 			for _, ann := range sym.Annotations {
 				bindings := springAnnotationToBindings(fa, sym, cls, ann)
 				if len(bindings) > 0 {
@@ -57,7 +58,7 @@ func dropBindingsOfKind(in []ast.FrameworkBinding, kind string) []ast.FrameworkB
 // firstCacheName returns the first cache name from a @Cacheable/@CachePut/
 // @CacheEvict annotation (cacheNames= / value= / positional / array).
 func firstCacheName(args string) string {
-	if v := namedOrPositionalValues(args, "cacheNames", "value"); len(v) > 0 {
+	if v := frameworkutil.NamedOrPositionalValues(args, "cacheNames", "value"); len(v) > 0 {
 		return v[0]
 	}
 	return ""
@@ -89,10 +90,6 @@ func springHasExternalCache(idx *ast.ProjectIndex) bool {
 func springAnnotationToBindings(fa *ast.FileAST, sym ast.SymbolDef, cls *ast.SymbolDef, ann ast.Annotation) []ast.FrameworkBinding {
 	name := ann.Name
 	args := ann.Arguments
-
-	if method, ok := retrofitHTTPMethod(name); ok && fileImportsRetrofitHTTP(fa) && cls != nil && cls.Kind == ast.SymbolKindInterface {
-		return retrofitHTTPBindings(sym, ann, method)
-	}
 
 	// HTTP route mappings.
 	httpMethods := map[string]string{
@@ -153,7 +150,7 @@ func springAnnotationToBindings(fa *ast.FileAST, sym ast.SymbolDef, cls *ast.Sym
 		"JmsListener":    {"jms", []string{"destination"}},
 	}
 	if ql, ok := queueListeners[name]; ok {
-		dests := namedOrPositionalValues(args, ql.attrs...)
+		dests := frameworkutil.NamedOrPositionalValues(args, ql.attrs...)
 		return queueConsumerBindings(sym, ql.platform, dests, "@"+name+"("+args+")")
 	}
 
@@ -191,48 +188,6 @@ func springAnnotationToBindings(fa *ast.FileAST, sym ast.SymbolDef, cls *ast.Sym
 	return nil
 }
 
-func retrofitHTTPMethod(name string) (string, bool) {
-	switch name {
-	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS":
-		return name, true
-	default:
-		return "", false
-	}
-}
-
-func fileImportsRetrofitHTTP(fa *ast.FileAST) bool {
-	if fa == nil {
-		return false
-	}
-	for _, imp := range fa.Imports {
-		if strings.HasPrefix(imp.Path, "retrofit2.http") {
-			return true
-		}
-	}
-	return false
-}
-
-func retrofitHTTPBindings(sym ast.SymbolDef, ann ast.Annotation, method string) []ast.FrameworkBinding {
-	path := extractFirstStringArg(ann.Arguments)
-	if strings.TrimSpace(path) == "" {
-		path = "/"
-	}
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-	return []ast.FrameworkBinding{{
-		Framework:        "retrofit",
-		Kind:             "http_client",
-		Direction:        "outbound",
-		Symbol:           sym.Qualified,
-		Trigger:          method + " " + path,
-		TriggerSource:    "@" + ann.Name + "(" + ann.Arguments + ")",
-		File:             sym.File,
-		Range:            sym.Range,
-		ConfidenceReason: "retrofit_client_mapping_literal",
-	}}
-}
-
 func springHTTPBindings(sym ast.SymbolDef, cls *ast.SymbolDef, ann ast.Annotation, defaultMethod string) []ast.FrameworkBinding {
 	method := defaultMethod
 	if ann.Name == "RequestMapping" {
@@ -246,27 +201,26 @@ func springHTTPBindings(sym ast.SymbolDef, cls *ast.SymbolDef, ann ast.Annotatio
 	controller := false
 	feign := false
 	if cls != nil {
-		controller = hasAnyAnnotation(*cls, "RestController", "Controller")
-		feign = hasAnyAnnotation(*cls, "FeignClient")
+		controller = frameworkutil.HasAnyAnnotation(*cls, "RestController", "Controller")
+		feign = frameworkutil.HasAnyAnnotation(*cls, "FeignClient")
 		if p := classRequestMappingPrefixes(*cls); len(p) > 0 {
 			classPrefixes = p
 		}
+	}
+	if feign {
+		return nil
 	}
 	kind := "http_handler"
 	direction := "inbound"
 	reason := "controller_mapping_literal"
 	rejection := ""
-	if feign {
-		kind = "http_client"
-		direction = "outbound"
-		reason = "feign_client_mapping_literal"
-	} else if !controller {
+	if !controller {
 		rejection = "spring_mapping_without_controller_context"
 	}
 	out := make([]ast.FrameworkBinding, 0, len(classPrefixes)*len(paths))
 	for _, prefix := range classPrefixes {
 		for _, path := range paths {
-			routePath := joinPath(prefix, path)
+			routePath := frameworkutil.JoinPath(prefix, path)
 			out = append(out, ast.FrameworkBinding{
 				Framework:        "spring",
 				Kind:             kind,
@@ -282,17 +236,6 @@ func springHTTPBindings(sym ast.SymbolDef, cls *ast.SymbolDef, ann ast.Annotatio
 		}
 	}
 	return out
-}
-
-// extractFirstStringArg extracts the first string literal from an annotation
-// argument text (e.g. `"/users/{id}"` → `/users/{id}`).
-func extractFirstStringArg(args string) string {
-	values := extractStringArgs(args)
-	if len(values) > 0 {
-		return values[0]
-	}
-	// Return as-is if no quotes.
-	return strings.TrimSpace(strings.Trim(args, "{}"))
 }
 
 // queueConsumerBindings emits one queue_consumer binding per destination name.
@@ -324,173 +267,17 @@ func queueConsumerBindings(sym ast.SymbolDef, platform string, names []string, s
 // (produces/consumes/headers/params/name) so they are never mistaken for routes
 // (E1). Handles both single (`"/x"`) and array (`{"/a","/b"}`) forms.
 func extractRoutePaths(args string) []string {
-	named, positional, hasPositional := parseAnnotationArgs(args)
+	named, positional, hasPositional := frameworkutil.ParseAnnotationArgs(args)
 	if v, ok := named["value"]; ok {
-		return extractStringArgs(v)
+		return frameworkutil.ExtractStringArgs(v)
 	}
 	if v, ok := named["path"]; ok {
-		return extractStringArgs(v)
+		return frameworkutil.ExtractStringArgs(v)
 	}
 	if hasPositional {
-		return extractStringArgs(positional)
+		return frameworkutil.ExtractStringArgs(positional)
 	}
 	return nil
-}
-
-// namedOrPositionalValues returns the string literal(s) of the first matching
-// named annotation attribute (keys tried in order, so version aliases like
-// SQS's queueNames/value both work), falling back to the leading positional
-// argument. Handles array (`{"a","b"}`) forms so multi-value attributes aren't
-// truncated (E2). Matching by attribute name avoids grabbing an unrelated
-// string like groupId.
-func namedOrPositionalValues(args string, keys ...string) []string {
-	named, positional, hasPositional := parseAnnotationArgs(args)
-	for _, key := range keys {
-		if v, ok := named[strings.ToLower(key)]; ok {
-			return extractStringArgs(v)
-		}
-	}
-	if hasPositional {
-		return extractStringArgs(positional)
-	}
-	return nil
-}
-
-// parseAnnotationArgs splits annotation argument text into named attributes
-// (lower-cased key → raw value text) and the leading positional value. Splitting
-// is brace- and quote-aware so commas inside arrays or string literals do not
-// break a value apart.
-func parseAnnotationArgs(args string) (named map[string]string, positional string, hasPositional bool) {
-	named = map[string]string{}
-	for _, part := range splitTopLevelArgs(args) {
-		if strings.TrimSpace(part) == "" {
-			continue
-		}
-		if k, v, ok := splitNamedArg(part); ok {
-			named[strings.ToLower(k)] = v
-		} else if !hasPositional {
-			positional = strings.TrimSpace(part)
-			hasPositional = true
-		}
-	}
-	return named, positional, hasPositional
-}
-
-// splitTopLevelArgs splits annotation argument text on top-level commas only —
-// commas inside quotes or brace/paren/bracket groups are preserved.
-func splitTopLevelArgs(s string) []string {
-	var parts []string
-	depth := 0
-	var quote byte
-	start := 0
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if quote != 0 {
-			if c == '\\' && i+1 < len(s) {
-				i++
-				continue
-			}
-			if c == quote {
-				quote = 0
-			}
-			continue
-		}
-		switch c {
-		case '"', '\'':
-			quote = c
-		case '{', '(', '[':
-			depth++
-		case '}', ')', ']':
-			if depth > 0 {
-				depth--
-			}
-		case ',':
-			if depth == 0 {
-				parts = append(parts, s[start:i])
-				start = i + 1
-			}
-		}
-	}
-	parts = append(parts, s[start:])
-	return parts
-}
-
-// splitNamedArg splits a single argument segment into key/value when it is a
-// `key = value` named attribute (key being a bare identifier and the `=` at top
-// level). Otherwise it is positional.
-func splitNamedArg(part string) (key, value string, named bool) {
-	depth := 0
-	var quote byte
-	for i := 0; i < len(part); i++ {
-		c := part[i]
-		if quote != 0 {
-			if c == '\\' && i+1 < len(part) {
-				i++
-				continue
-			}
-			if c == quote {
-				quote = 0
-			}
-			continue
-		}
-		switch c {
-		case '"', '\'':
-			quote = c
-		case '{', '(', '[':
-			depth++
-		case '}', ')', ']':
-			if depth > 0 {
-				depth--
-			}
-		case '=':
-			if depth == 0 {
-				k := strings.TrimSpace(part[:i])
-				if isAnnotationIdent(k) {
-					return k, strings.TrimSpace(part[i+1:]), true
-				}
-				return "", strings.TrimSpace(part), false
-			}
-		}
-	}
-	return "", strings.TrimSpace(part), false
-}
-
-// isAnnotationIdent reports whether s is a bare attribute identifier (so a
-// quoted positional value containing characters is never read as a key).
-func isAnnotationIdent(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if !(r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
-			return false
-		}
-	}
-	return true
-}
-
-func extractStringArgs(args string) []string {
-	var out []string
-	for i := 0; i < len(args); i++ {
-		if args[i] != '"' && args[i] != '\'' {
-			continue
-		}
-		quote := args[i]
-		start := i + 1
-		i++
-		for i < len(args) {
-			if args[i] == '\\' && i+1 < len(args) {
-				i += 2
-				continue
-			}
-			if args[i] == quote {
-				out = append(out, args[start:i])
-				break
-			}
-			i++
-		}
-	}
-	return out
 }
 
 func springRequestMethod(args string) string {

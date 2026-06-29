@@ -23,10 +23,17 @@ var descriptors = []Descriptor{
 	{ID: "java.activation.spring", Language: LanguageJava, Category: CategoryActivation, Tool: "spring", ObjectTypes: []string{"activation"}, Description: "Spring scheduled jobs and event listeners"},
 	{ID: "java.cache.spring", Language: LanguageJava, Category: CategoryCache, Tool: "spring", ObjectTypes: []string{"cache_operation"}, Description: "Spring cache operations"},
 
+	{ID: "javascript.http.express", Language: LanguageJavaScript, Category: CategoryHTTP, Tool: "express", ObjectTypes: []string{"http_endpoint"}, Description: "Express route registrations"},
+	{ID: "typescript.http.nestjs", Language: LanguageTypeScript, Category: CategoryHTTP, Tool: "nestjs", ObjectTypes: []string{"http_endpoint"}, Description: "NestJS controller decorators"},
 	{ID: "python.http.flask", Language: LanguagePython, Category: CategoryHTTP, Tool: "flask", ObjectTypes: []string{"http_endpoint"}, Description: "Flask and Blueprint route decorators"},
+	{ID: "python.http.fastapi", Language: LanguagePython, Category: CategoryHTTP, Tool: "fastapi", ObjectTypes: []string{"http_endpoint"}, Description: "FastAPI route decorators"},
+	{ID: "python.http.django", Language: LanguagePython, Category: CategoryHTTP, Tool: "django", ObjectTypes: []string{"http_endpoint"}, Description: "Django URLconf routes"},
 	{ID: "python.aws.sam", Language: LanguagePython, Category: CategoryAWS, Tool: "sam", ObjectTypes: []string{"activation", "queue_consumer"}, Description: "AWS SAM function and event-source definitions"},
 	{ID: "python.cache.redis", Language: LanguagePython, Category: CategoryCache, Tool: "redis", ObjectTypes: []string{"cache_operation"}, Description: "redis-py operations"},
 	{ID: "python.cli.argparse", Language: LanguagePython, Category: CategoryCLI, Tool: "argparse", ObjectTypes: []string{"cli_command"}, Description: "argparse command entrypoints"},
+	{ID: "ruby.http.rails", Language: LanguageRuby, Category: CategoryHTTP, Tool: "rails", ObjectTypes: []string{"http_endpoint"}, Description: "Rails route declarations"},
+	{ID: "php.http.laravel", Language: LanguagePHP, Category: CategoryHTTP, Tool: "laravel", ObjectTypes: []string{"http_endpoint"}, Description: "Laravel route declarations"},
+	{ID: "dotnet.http.aspnet", Language: LanguageDotnet, Category: CategoryHTTP, Tool: "aspnet", ObjectTypes: []string{"http_endpoint"}, Description: "ASP.NET controller attributes"},
 }
 
 func All() []Descriptor {

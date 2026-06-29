@@ -6,9 +6,14 @@ package detectors
 type Language string
 
 const (
-	LanguageGo     Language = "golang"
-	LanguageJava   Language = "java"
-	LanguagePython Language = "python"
+	LanguageDotnet     Language = "dotnet"
+	LanguageGo         Language = "golang"
+	LanguageJava       Language = "java"
+	LanguageJavaScript Language = "javascript"
+	LanguagePHP        Language = "php"
+	LanguagePython     Language = "python"
+	LanguageRuby       Language = "ruby"
+	LanguageTypeScript Language = "typescript"
 )
 
 type Category string

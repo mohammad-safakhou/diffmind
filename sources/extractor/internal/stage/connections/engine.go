@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
-	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/framework"
+	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/register"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 )
 

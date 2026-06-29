@@ -1,4 +1,4 @@
-package framework
+package spring
 
 import (
 	"testing"
@@ -36,7 +36,7 @@ func cacheIdx(serviceJava string, cfg map[string]string) *ast.ProjectIndex {
 
 func cacheBindings(idx *ast.ProjectIndex) []ast.FrameworkBinding {
 	var out []ast.FrameworkBinding
-	for _, b := range (&springDetector{}).Detect(idx) {
+	for _, b := range (&detector{}).Detect(idx) {
 		if b.Kind == "cache_operation" {
 			out = append(out, b)
 		}
