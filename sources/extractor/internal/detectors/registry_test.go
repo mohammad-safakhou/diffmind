@@ -6,6 +6,7 @@ func TestRegistryHasStableKnownDetectors(t *testing.T) {
 	for _, id := range []string{
 		"golang.http.echo",
 		"golang.http.fiber",
+		"golang.db.bun",
 		"java.http.spring",
 		"java.httpclient.feign",
 		"java.httpclient.retrofit",

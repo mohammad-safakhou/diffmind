@@ -9,6 +9,7 @@ var descriptors = []Descriptor{
 	{ID: "golang.http.nethttp", Language: LanguageGo, Category: CategoryHTTP, Tool: "nethttp", ObjectTypes: []string{"http_endpoint"}, Description: "Go net/http route registrations"},
 	{ID: "golang.httpclient.nethttp", Language: LanguageGo, Category: CategoryHTTPClient, Tool: "nethttp", ObjectTypes: []string{"http_call"}, Description: "Go net/http outbound calls"},
 	{ID: "golang.httpclient.resty", Language: LanguageGo, Category: CategoryHTTPClient, Tool: "resty", ObjectTypes: []string{"http_call"}, Description: "Go Resty outbound calls"},
+	{ID: "golang.db.bun", Language: LanguageGo, Category: CategoryDB, Tool: "bun", ObjectTypes: []string{"db_query", "db_resource"}, Description: "Go Bun ORM operations"},
 	{ID: "golang.rpc.grpc", Language: LanguageGo, Category: CategoryRPC, Tool: "grpc", ObjectTypes: []string{"rpc_endpoint", "rpc_call"}, Description: "Go gRPC servers and clients"},
 	{ID: "golang.cache.redis", Language: LanguageGo, Category: CategoryCache, Tool: "redis", ObjectTypes: []string{"cache_operation"}, Description: "Go Redis client operations"},
 	{ID: "golang.cli.cobra", Language: LanguageGo, Category: CategoryCLI, Tool: "cobra", ObjectTypes: []string{"cli_command"}, Description: "Go Cobra command registrations"},
