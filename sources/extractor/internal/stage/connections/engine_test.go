@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
-	_ "github.com/mohammad-safakhou/diffmind/internal/ast/framework"
+	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/framework"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 )
 
@@ -163,7 +163,7 @@ public class Repo {
 		t.Fatal(err)
 	}
 
-	idx, err := astpkg.Build(context.Background(), dir, "java", 4, nil)
+	idx, err := astpkg.Build(context.Background(), dir, "java", 4)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -181,7 +181,7 @@ public class Repo {
 		Locations: []model.Location{{File: "Repo.java", StartLine: 4, EndLine: 4}},
 	}}
 
-	conns, _ := runASTConnections(context.Background(), idx, []model.Exposure{exp}, []model.Dependency{depA, depB}, 0.7, 4, nil)
+	conns, _ := runASTConnections(context.Background(), idx, []model.Exposure{exp}, []model.Dependency{depA, depB}, 0.7, 4)
 	if len(conns) != 2 {
 		t.Fatalf("expected 2 connections (saveA and saveB), got %d", len(conns))
 	}
@@ -221,7 +221,7 @@ public interface CampaignPlacementRepository {
 			t.Fatal(err)
 		}
 	}
-	idx, err := astpkg.Build(context.Background(), dir, "java", 4, nil)
+	idx, err := astpkg.Build(context.Background(), dir, "java", 4)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -229,7 +229,7 @@ public interface CampaignPlacementRepository {
 	findByCampaignID := model.Dependency{BaseEntity: model.BaseEntity{ID: "dep-find", Type: "db_operation", Name: "CampaignPlacementRepository.findByCampaignId", Locations: []model.Location{{File: "CampaignPlacementRepository.java", StartLine: 3, EndLine: 3}}}}
 	findAllByID := model.Dependency{BaseEntity: model.BaseEntity{ID: "dep-find-all", Type: "db_operation", Name: "CampaignPlacementRepository.findAllById", Locations: []model.Location{{File: "CampaignPlacementRepository.java", StartLine: 2, EndLine: 3}}}}
 
-	conns, _ := runASTConnections(context.Background(), idx, []model.Exposure{exp}, []model.Dependency{findByCampaignID, findAllByID}, 0.7, 4, nil)
+	conns, _ := runASTConnections(context.Background(), idx, []model.Exposure{exp}, []model.Dependency{findByCampaignID, findAllByID}, 0.7, 4)
 	if len(conns) != 1 {
 		t.Logf("field types: %#v", idx.FieldTypes)
 		t.Logf("call graph: %#v", idx.CallGraph)
@@ -266,7 +266,7 @@ public interface AccountRepository {
 			t.Fatal(err)
 		}
 	}
-	idx, err := astpkg.Build(context.Background(), dir, "java", 4, nil)
+	idx, err := astpkg.Build(context.Background(), dir, "java", 4)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -274,7 +274,7 @@ public interface AccountRepository {
 	userDep := model.Dependency{BaseEntity: model.BaseEntity{ID: "user", Type: "db_operation", Name: "UserRepository.findById", Locations: []model.Location{{File: "UserRepository.java", StartLine: 3, EndLine: 3}}}}
 	accountDep := model.Dependency{BaseEntity: model.BaseEntity{ID: "account", Type: "db_operation", Name: "AccountRepository.findById", Locations: []model.Location{{File: "AccountRepository.java", StartLine: 3, EndLine: 3}}}}
 
-	conns, _ := runASTConnections(context.Background(), idx, []model.Exposure{exp}, []model.Dependency{userDep, accountDep}, 0.7, 4, nil)
+	conns, _ := runASTConnections(context.Background(), idx, []model.Exposure{exp}, []model.Dependency{userDep, accountDep}, 0.7, 4)
 	if len(conns) != 1 {
 		t.Fatalf("expected only the receiver-typed repository connection, got %d", len(conns))
 	}
@@ -311,7 +311,7 @@ public interface CampaignRepository extends JpaRepository<Campaign, String> {
 			t.Fatal(err)
 		}
 	}
-	idx, err := astpkg.Build(context.Background(), dir, "java", 4, nil)
+	idx, err := astpkg.Build(context.Background(), dir, "java", 4)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -333,7 +333,7 @@ public interface CampaignRepository extends JpaRepository<Campaign, String> {
 		Locations: []model.Location{{File: "CampaignService.java", StartLine: 4, EndLine: 6}},
 	}}
 
-	conns, _ := runASTConnections(context.Background(), idx, []model.Exposure{exp}, []model.Dependency{dep}, 0.7, 4, nil)
+	conns, _ := runASTConnections(context.Background(), idx, []model.Exposure{exp}, []model.Dependency{dep}, 0.7, 4)
 	if len(conns) != 1 {
 		t.Fatalf("expected inherited repository connection from primary handler, got %d", len(conns))
 	}
@@ -379,7 +379,7 @@ public class Event {}
 			t.Fatal(err)
 		}
 	}
-	idx, err := astpkg.Build(context.Background(), dir, "java", 4, nil)
+	idx, err := astpkg.Build(context.Background(), dir, "java", 4)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -396,7 +396,7 @@ public class Event {}
 		Locations: []model.Location{{File: "CampaignRepository.java", StartLine: 3, EndLine: 3}},
 	}}
 
-	conns, _ := runASTConnections(context.Background(), idx, []model.Exposure{exp}, []model.Dependency{dep}, 0.7, 4, nil)
+	conns, _ := runASTConnections(context.Background(), idx, []model.Exposure{exp}, []model.Dependency{dep}, 0.7, 4)
 	if len(conns) != 1 {
 		t.Fatalf("expected interface implementation path to repository, got %d", len(conns))
 	}
@@ -432,7 +432,7 @@ public interface TrafficConfigurationSubTargetHistoryRepository {
 			t.Fatal(err)
 		}
 	}
-	idx, err := astpkg.Build(context.Background(), dir, "java", 4, nil)
+	idx, err := astpkg.Build(context.Background(), dir, "java", 4)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -442,7 +442,7 @@ public interface TrafficConfigurationSubTargetHistoryRepository {
 	exp := model.Exposure{BaseEntity: model.BaseEntity{ID: "exp", Type: "http_route", Name: "GET /sub-target-history", Locations: []model.Location{{File: "SubTargetHistoryController.java", StartLine: 4, EndLine: 6}}}}
 	dep := model.Dependency{BaseEntity: model.BaseEntity{ID: "dep", Type: "db_operation", Name: "TrafficConfigurationSubTargetHistoryRepository.findTargetHistoryByCampaignAndCampaignItem", Locations: []model.Location{{File: "TrafficConfigurationSubTargetHistoryRepository.java", StartLine: 3, EndLine: 3}}}}
 
-	conns, _ := runASTConnections(context.Background(), idx, []model.Exposure{exp}, []model.Dependency{dep}, 0.7, 4, nil)
+	conns, _ := runASTConnections(context.Background(), idx, []model.Exposure{exp}, []model.Dependency{dep}, 0.7, 4)
 	if len(conns) != 1 {
 		t.Fatalf("expected multiline repository field connection, got %d", len(conns))
 	}
@@ -477,7 +477,7 @@ public interface TrafficConfigurationHistoryRepository {
 			t.Fatal(err)
 		}
 	}
-	idx, err := astpkg.Build(context.Background(), dir, "java", 4, nil)
+	idx, err := astpkg.Build(context.Background(), dir, "java", 4)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -502,7 +502,7 @@ public interface TrafficConfigurationHistoryRepository {
 	if dep.Details["table"] != "traffic_configuration_history" || dep.Details["entity"] != "TrafficConfigurationHistory" {
 		t.Fatalf("dependency table/entity = %#v/%#v", dep.Details["table"], dep.Details["entity"])
 	}
-	conns, _ := runASTConnections(context.Background(), idx, []model.Exposure{exp}, deps, 0.7, 4, nil)
+	conns, _ := runASTConnections(context.Background(), idx, []model.Exposure{exp}, deps, 0.7, 4)
 	if len(conns) != 1 {
 		t.Fatalf("expected connection to AST-derived dependency, got %d", len(conns))
 	}
@@ -541,7 +541,7 @@ public class Repo {
 			t.Fatal(err)
 		}
 	}
-	idx, err := astpkg.Build(context.Background(), dir, "java", 4, nil)
+	idx, err := astpkg.Build(context.Background(), dir, "java", 4)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -599,7 +599,7 @@ public class UserController {
 	if err := os.WriteFile(filepath.Join(dir, "UserController.java"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	idx, err := astpkg.Build(context.Background(), dir, "java", 2, nil)
+	idx, err := astpkg.Build(context.Background(), dir, "java", 2)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -636,7 +636,7 @@ public class Scheduler {
 	if err := os.WriteFile(filepath.Join(dir, "Scheduler.java"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	idx, err := astpkg.Build(context.Background(), dir, "java", 2, nil)
+	idx, err := astpkg.Build(context.Background(), dir, "java", 2)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -679,7 +679,7 @@ public class DeliveryJob {
     }
 }
 `
-	// Second file: service called by the job (also a location provided by LLM)
+	// Second file: service called by the job (also a downstream source location)
 	svcSrc := `package com.example;
 public class DeliveryService {
     public void deliver() {
@@ -693,7 +693,7 @@ public class DeliveryService {
 	if err := os.WriteFile(filepath.Join(dir, "DeliveryService.java"), []byte(svcSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	idx, err := astpkg.Build(context.Background(), dir, "java", 2, nil)
+	idx, err := astpkg.Build(context.Background(), dir, "java", 2)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -754,7 +754,7 @@ public class EventService {
 	if err := os.WriteFile(filepath.Join(dir, "EventService.java"), []byte(svcSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	idx, err := astpkg.Build(context.Background(), dir, "java", 2, nil)
+	idx, err := astpkg.Build(context.Background(), dir, "java", 2)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -785,7 +785,7 @@ public class EventService {
 		context.Background(), idx,
 		[]model.Exposure{exposure},
 		[]model.Dependency{selfDep, externalDep},
-		0.5, 4, nil,
+		0.5, 4,
 	)
 
 	// Should have connection to EventService, not to EventListener itself.

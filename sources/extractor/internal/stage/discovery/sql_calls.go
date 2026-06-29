@@ -10,9 +10,9 @@ import (
 
 // sql_calls.go derives db_operation facts from raw SQL string literals passed
 // to known query APIs — Go database/sql/sqlx/pgx, Python DB-API/SQLAlchemy
-// text, node-postgres, Spring JdbcTemplate. This is the language-agnostic leg
-// of the deterministic db floor (F6): the JVM repository deriver covers Spring
-// Data, this covers everyone who writes SQL by hand.
+// text, node-postgres, Spring JdbcTemplate. This is the language-agnostic SQL
+// leg: the JVM repository deriver covers Spring Data, this covers everyone who
+// writes SQL by hand.
 //
 // Precision gate (invariant #6), both conditions required:
 //   - the callee is a curated query/exec method name, AND
@@ -108,7 +108,7 @@ func leadingStringLiteral(args []astpkg.ArgumentExpr) string {
 
 // sqlIdentifier matches a (possibly schema-qualified) table token after quote
 // stripping. Anything fancier — subqueries, expressions, placeholders — fails
-// the match, yields "", and is left to the LLM.
+// the match, yields "", and is rejected rather than guessed.
 var sqlIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_$.]*$`)
 
 // parseSQLStatement classifies a SQL string and extracts its primary table.

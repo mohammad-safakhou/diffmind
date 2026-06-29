@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/mohammad-safakhou/diffmind/internal/ast"
-	_ "github.com/mohammad-safakhou/diffmind/internal/ast/framework"
+	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/framework"
 )
 
 func TestSpringDetectorRequiresControllerAndSeparatesFeign(t *testing.T) {
@@ -475,7 +475,7 @@ func TestConfigFilesUnderTestResourcesExcluded(t *testing.T) {
 
 func buildIndex(t *testing.T, dir string) *ast.ProjectIndex {
 	t.Helper()
-	idx, err := ast.Build(context.Background(), dir, "", 1, nil)
+	idx, err := ast.Build(context.Background(), dir, "", 1)
 	if err != nil {
 		t.Fatal(err)
 	}

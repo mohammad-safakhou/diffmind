@@ -12,7 +12,7 @@ func TestRunnerBuildsSummary(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, err := (Runner{}).Run(context.Background(), Input{SnapshotPath: root, PrimaryLanguage: "go", Workers: 1})
+	out, err := (Runner{}).Run(context.Background(), Input{SourceRoot: root, PrimaryLanguage: "go", Workers: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -7,8 +7,8 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 )
 
-// enrichment.go provides deterministic, LLM-free recovery of high-value
-// per-entity context directly from the AST.
+// enrichment.go provides deterministic recovery of high-value per-entity
+// context directly from the AST.
 //
 // Two invariants govern it:
 //   - Additive (#4): only fills a detail that is empty; never overwrites a value

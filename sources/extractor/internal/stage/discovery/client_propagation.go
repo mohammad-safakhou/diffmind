@@ -10,8 +10,8 @@ import (
 
 // client_propagation.go — deterministic backbone-client → instance propagation.
 //
-// Instead of resolving an instance per operation (the old per-op LLM guessing),
-// discovery surfaces the shared CLIENTS once (see clients.go / the
+// Instead of resolving an instance independently per operation, discovery
+// surfaces the shared CLIENTS once (see clients.go / the
 // connection_client objective) and this pass:
 //  1. resolves each client to a concrete model.InstanceRef from its config
 //     anchor (generalizing the repo-wide singleDatastoreRef to one-per-anchor —
@@ -470,8 +470,8 @@ func receiverTypeAtLocation(idx *astpkg.ProjectIndex, d *model.BaseEntity) strin
 }
 
 func lineWithin(line, start, end int) bool {
-	// Locations from the LLM are 1-based; AST ranges are 0-based. Compare with a
-	// one-line tolerance so the off-by-one between the two never drops a match.
+	// Candidate locations are 1-based; AST ranges are 0-based. Compare with a
+	// one-line tolerance so the off-by-one never drops a match.
 	return line+1 >= start-1 && line-1 <= end+1
 }
 

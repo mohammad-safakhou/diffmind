@@ -1,17 +1,13 @@
 // Package langdetect inspects a source tree and identifies the
 // languages + versions present, by reading well-known marker files
-// (pom.xml, package.json, go.mod, etc.). It is the DETERMINISTIC
-// fallback for Stage 0's LLM-driven language inventory.
+// (pom.xml, package.json, go.mod, etc.). It feeds deterministic
+// indexing and base-image selection.
 //
-// Why not rely on the LLM alone? Three reasons:
+// Marker files matter for three reasons:
 //
-//  1. The LLM occasionally returns "Java" with no version, which is
-//     useless for picking the right base image.
-//  2. We need the answer BEFORE we send any user-cost prompts to the
-//     model — the orchestrator kicks off the indexer image build
-//     in parallel with Stages 1-3.
-//  3. Marker files are authoritative. If `go.mod` says `go 1.22`,
-//     that IS the version that compiles; no LLM can change it.
+//  1. "Java" without a version is useless for picking the right base image.
+//  2. Indexing needs language facts before framework detectors run.
+//  3. If `go.mod` says `go 1.22`, that is the version that compiles.
 //
 // The package is intentionally small: one Fact type, one Inspect
 // entrypoint, and one parser per supported language.
@@ -280,15 +276,15 @@ func readBounded(path string) ([]byte, error) {
 // ---- per-language parsers ----
 
 var (
-	mvnSourceRe   = regexp.MustCompile(`(?i)<(?:maven\.compiler\.(?:source|release|target)|java\.version)>\s*([0-9.]+)\s*</`)
-	gradleJavaRe  = regexp.MustCompile(`(?i)(?:sourceCompatibility|targetCompatibility|jvmTarget)\s*[=:]?\s*['"]?(JavaVersion\.VERSION_)?([0-9_.]+)['"]?`)
+	mvnSourceRe    = regexp.MustCompile(`(?i)<(?:maven\.compiler\.(?:source|release|target)|java\.version)>\s*([0-9.]+)\s*</`)
+	gradleJavaRe   = regexp.MustCompile(`(?i)(?:sourceCompatibility|targetCompatibility|jvmTarget)\s*[=:]?\s*['"]?(JavaVersion\.VERSION_)?([0-9_.]+)['"]?`)
 	gradleKotlinRe = regexp.MustCompile(`(?i)kotlin\s*\(\s*['"]jvm['"]\s*\)\s*version\s+['"]([0-9.]+)['"]`)
-	gradleVerRe   = regexp.MustCompile(`(?i)distributionUrl=.*gradle-([0-9.]+)-`)
-	goModRe       = regexp.MustCompile(`(?m)^go\s+([0-9]+\.[0-9]+(?:\.[0-9]+)?)`)
-	pythonReq     = regexp.MustCompile(`(?i)requires-python\s*=\s*['"]([^'"]+)['"]`)
-	pythonSetup   = regexp.MustCompile(`(?i)python_requires\s*=\s*['"]([^'"]+)['"]`)
-	tfmRe         = regexp.MustCompile(`(?i)<TargetFramework[s]?>\s*([^<]+)\s*</TargetFramework`)
-	gemRubyRe     = regexp.MustCompile(`(?m)^ruby\s+['"]([^'"]+)['"]`)
+	gradleVerRe    = regexp.MustCompile(`(?i)distributionUrl=.*gradle-([0-9.]+)-`)
+	goModRe        = regexp.MustCompile(`(?m)^go\s+([0-9]+\.[0-9]+(?:\.[0-9]+)?)`)
+	pythonReq      = regexp.MustCompile(`(?i)requires-python\s*=\s*['"]([^'"]+)['"]`)
+	pythonSetup    = regexp.MustCompile(`(?i)python_requires\s*=\s*['"]([^'"]+)['"]`)
+	tfmRe          = regexp.MustCompile(`(?i)<TargetFramework[s]?>\s*([^<]+)\s*</TargetFramework`)
+	gemRubyRe      = regexp.MustCompile(`(?m)^ruby\s+['"]([^'"]+)['"]`)
 )
 
 func detectMaven(path string, content []byte) *Fact {

@@ -89,8 +89,8 @@ func TestSummarizeRun_CompletedRun(t *testing.T) {
 	}
 }
 
-// A directory with neither manifest nor failure report (pre-watchdog
-// runs, half-cleaned runs, etc.) reports status=unknown so the UI
+// A directory with neither manifest nor failure report (crashed or half-cleaned
+// runs, etc.) reports status=unknown so the UI
 // can dim it appropriately without falsely claiming success.
 func TestSummarizeRun_NoArtifactsAtAll(t *testing.T) {
 	srv, baseDir := newTestServer(t)

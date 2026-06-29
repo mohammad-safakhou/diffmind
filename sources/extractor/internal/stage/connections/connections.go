@@ -23,7 +23,6 @@ type Input struct {
 	Dependencies  []model.Dependency
 	MinConfidence float64
 	Workers       int
-	Progress      func()
 }
 
 type Output struct {
@@ -38,7 +37,7 @@ func (r Runner) Run(ctx context.Context, input Input) Output {
 	if input.Index != nil && (len(input.Index.Symbols) > 0 || len(input.Index.Frameworks) > 0) {
 		connections, unresolved := runASTConnections(
 			ctx, input.Index, input.Exposures, input.Dependencies,
-			input.MinConfidence, input.Workers, input.Progress,
+			input.MinConfidence, input.Workers,
 		)
 		withoutPaths := exposuresWithoutConnections(input.Exposures, connections)
 		if len(connections) > 0 || len(unresolved) > 0 {
@@ -52,11 +51,6 @@ func (r Runner) Run(ctx context.Context, input Input) Output {
 	util.Warn("agents.connections", "no ast index available; using shallow name matcher", nil)
 	connections, unresolved := buildShallowConnections(input.Exposures, input.Dependencies, input.MinConfidence)
 	r.report(len(input.Exposures), len(connections), 0, "no_index")
-	if input.Progress != nil {
-		for range input.Exposures {
-			input.Progress()
-		}
-	}
 	return Output{Connections: connections, Unresolved: unresolved}
 }
 

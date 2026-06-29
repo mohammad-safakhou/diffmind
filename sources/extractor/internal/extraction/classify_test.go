@@ -10,7 +10,7 @@ import (
 
 // Structured detail values must never be rendered into grouping fields: a real
 // run emitted instance "map[connection_source:... url_template:jdbc:...]" when
-// the LLM returned connection details as an object, splitting one database into
+// imported connection details arrived as an object, splitting one database into
 // several downstream identities. The table is the RESOURCE (identity key), not
 // the instance, so it must NOT become the instance either — the instance is the
 // physical datastore, left generic here and resolved deterministically later.

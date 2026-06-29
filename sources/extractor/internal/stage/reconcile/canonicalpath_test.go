@@ -31,7 +31,7 @@ func TestCanonicalizeRoutePath(t *testing.T) {
 }
 
 // The same route in different framework param syntaxes must produce one
-// SemanticKey, so the deterministic floor ({id}) and an LLM/Express (:id)
+// SemanticKey, so deterministic ({id}) and Express-style (:id)
 // spelling collapse instead of duplicating.
 func TestRouteParamSyntaxesShareSemanticKey(t *testing.T) {
 	a := model.BaseEntity{Type: "http_route", Name: "GET /users/{id}"}

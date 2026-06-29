@@ -126,7 +126,7 @@ func TestResolveQueueLogicalNameHygiene(t *testing.T) {
 			want: "catalogue-target-response-sqs",
 		},
 		{
-			name: "config detail overrides clean LLM label",
+			name: "config detail overrides ungrounded display label",
 			entity: model.BaseEntity{
 				Instance: "target-calculation-events-sqs-consumer",
 				Details: map[string]any{
@@ -179,10 +179,10 @@ func TestStampQueueInstanceConvergesIdentity(t *testing.T) {
 
 	StampInstanceRefs(atsIndex(), exposures, nil)
 	if got := exposures[1].Instance; got != "catalogue-target-response-sqs" {
-		t.Fatalf("LLM variant instance = %q, want physical queue name", got)
+		t.Fatalf("config-derived variant instance = %q, want physical queue name", got)
 	}
 	if got := exposures[1].Details["queue"]; got != "catalogue-target-response-sqs" {
-		t.Fatalf("LLM variant queue detail = %v, want physical queue name", got)
+		t.Fatalf("config-derived variant queue detail = %v, want physical queue name", got)
 	}
 	if got := exposures[1].Details["queue_raw"]; got == nil {
 		t.Fatal("original queue detail must be preserved")

@@ -8,6 +8,5 @@ func DefaultChecks(_ Options) []Check {
 		NewDiskSpaceCheck(),
 		NewIndexerReadinessCheck(),
 		NewNetworkCheck(),
-		NewSnapshotWritableCheck(),
 	}
 }

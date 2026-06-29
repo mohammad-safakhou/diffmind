@@ -27,7 +27,7 @@ func TestQueueInstanceStampingEnablesFinalVariantCollapse(t *testing.T) {
 			Details:   map[string]any{"queue": "catalogue-target-response-sqs"},
 		}},
 		{BaseEntity: model.BaseEntity{
-			ID: "llm", Type: "queue_consumer", Name: "target-calculation-events-sqs-consumer",
+			ID: "config-derived", Type: "queue_consumer", Name: "target-calculation-events-sqs-consumer",
 			Platform: "sqs", Instance: "target-calculation-events-sqs-consumer",
 			Operation: "consume target-calculation-events-sqs-consumer",
 			Details: map[string]any{

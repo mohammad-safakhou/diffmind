@@ -218,9 +218,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/repos", s.handleRepos)      // GET (list) | POST (register/update)
 	mux.HandleFunc("/api/repos/", s.handleReposItem) // DELETE /{id}
 
-	// Canonical run-derived architecture.
 	mux.HandleFunc("/api/architecture", s.handleArchitecture)
-	mux.HandleFunc("/api/architecture/import-run", s.handleArchitectureImport)
 	mux.HandleFunc("/api/fs/list", s.handleFsList)
 
 	// Aggregate lifecycle SSE for the homepage dashboard.

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
@@ -16,7 +15,6 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 	"github.com/mohammad-safakhou/diffmind/internal/provenance"
 	"github.com/mohammad-safakhou/diffmind/internal/runstate"
-	"github.com/mohammad-safakhou/diffmind/internal/snapshot"
 	connectionstage "github.com/mohammad-safakhou/diffmind/internal/stage/connections"
 	discoverystage "github.com/mohammad-safakhou/diffmind/internal/stage/discovery"
 	reconcile "github.com/mohammad-safakhou/diffmind/internal/stage/reconcile"
@@ -26,17 +24,15 @@ import (
 // orchestrator wires the deterministic extraction stages together. It owns no
 // model/client state: DiffMind is now AST/config driven end to end.
 type orchestrator struct {
-	cfg              config.Config
-	repoPath         string
-	sourceSessionDir string
-	sessionDir       string
-	subDir           string
-	snap             *snapshot.Snapshot
-	sink             events.Sink
-	runDir           string
-	store            *runstate.CheckpointStore
-	astIndex         *astpkg.ProjectIndex
-	clients          []model.ConnectionClient
+	cfg        config.Config
+	repoPath   string
+	sourceRoot string
+	subDir     string
+	sink       events.Sink
+	runDir     string
+	store      *runstate.CheckpointStore
+	astIndex   *astpkg.ProjectIndex
+	clients    []model.ConnectionClient
 }
 
 func (o *orchestrator) emit(e events.Event) {
@@ -65,7 +61,6 @@ type RunOptions struct {
 	RunDir        string
 	RunID         string
 	ResumeFromDir string
-	SnapshotPath  string
 }
 
 // Run is the public deterministic entrypoint used by internal/app.
@@ -90,45 +85,20 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, opts RunOp
 		sink = events.NoopSink{}
 	}
 
-	sourceSessionDir, subDir := detectMonorepo(repoPath)
-	var snap *snapshot.Snapshot
-	if strings.TrimSpace(opts.SnapshotPath) != "" {
-		s, err := snapshot.Reattach(sourceSessionDir, opts.SnapshotPath)
-		if err != nil {
-			return Result{}, fmt.Errorf("reattach snapshot %q: %w", opts.SnapshotPath, err)
-		}
-		snap = s
-	} else {
-		s, err := snapshot.Create(sourceSessionDir, snapshot.DefaultParent(), opts.RunID)
-		if err != nil {
-			return Result{}, fmt.Errorf("snapshot: %w", err)
-		}
-		snap = s
-	}
+	sourceRoot, subDir := detectMonorepo(repoPath)
 
 	pipelineCtx, pipelineCancel := context.WithCancel(ctx)
 	defer pipelineCancel()
 
 	o := &orchestrator{
-		cfg:              cfg,
-		repoPath:         repoPath,
-		sourceSessionDir: sourceSessionDir,
-		sessionDir:       snap.Path,
-		subDir:           subDir,
-		snap:             snap,
-		sink:             sink,
-		runDir:           opts.RunDir,
-		store:            &runstate.CheckpointStore{RunDir: opts.RunDir},
+		cfg:        cfg,
+		repoPath:   repoPath,
+		sourceRoot: sourceRoot,
+		subDir:     subDir,
+		sink:       sink,
+		runDir:     opts.RunDir,
+		store:      &runstate.CheckpointStore{RunDir: opts.RunDir},
 	}
-	defer func() {
-		if err := snap.Close(); err != nil {
-			util.Warn("agents.orchestrator", "snapshot close failed", map[string]any{"error": err})
-		}
-	}()
-
-	progress := NewProgressReporter()
-	progress.SetSink(sink)
-	defer progress.Close()
 
 	o.emitRunStarted()
 
@@ -140,12 +110,11 @@ func RunWith(ctx context.Context, cfg config.Config, repoPath string, opts RunOp
 	haltFailure := func(stage, jobID, objectiveID, entityName string, err error, extra map[string]any) (Result, error) {
 		return o.buildFailure(pipelineCtx, start, state, unresolved, warnings, stage, jobID, objectiveID, entityName, err, extra)
 	}
-	return o.runDeterministicOnly(pipelineCtx, progress, start, state, unresolved, warnings, haltFailure)
+	return o.runDeterministicOnly(pipelineCtx, start, state, unresolved, warnings, haltFailure)
 }
 
 func (o *orchestrator) runDeterministicOnly(
 	ctx context.Context,
-	progress *ProgressReporter,
 	start time.Time,
 	state IntermediateState,
 	unresolved []model.UnresolvedItem,
@@ -207,10 +176,8 @@ func (o *orchestrator) runDeterministicOnly(
 		o.persistStageState("entities_dependencies.json", state.Dependencies)
 	}
 
-	progress.StartPhase("connections", len(exposures), 65, 82, "Mapping deterministic exposure-to-dependency paths per exposure.")
 	o.emit(events.Event{Kind: events.KindStageStarted, Stage: "connections", Status: events.StatusRunning, Payload: map[string]any{"total": len(exposures), "tip": "Mapping deterministic exposure-to-dependency paths per exposure."}})
-	conns, connUnresolved, connErr, connFailedExposure := o.runConnectionsBatch(ctx, exposures, dependencies, exposureObjectives, nil, progress.Advance)
-	progress.CompletePhase()
+	conns, connUnresolved, connErr, connFailedExposure := o.runConnectionsBatch(ctx, exposures, dependencies, exposureObjectives, nil)
 	if connErr != nil {
 		o.emit(events.Event{Kind: events.KindStageCompleted, Stage: "connections", Status: events.StatusFailed})
 		return haltFailure("connections", "connections."+connFailedExposure, "", connFailedExposure, connErr, nil)
@@ -221,7 +188,6 @@ func (o *orchestrator) runDeterministicOnly(
 	state.Connections = append([]model.Connection(nil), conns...)
 	o.persistStageState("connections.json", state.Connections)
 
-	progress.StartPhase("reconcile", 1, 90, 98, "Reconciling deterministic entities and dropping orphan connections.")
 	o.emit(events.Event{Kind: events.KindStageStarted, Stage: "reconcile", Status: events.StatusRunning, Payload: map[string]any{"total": 1, "tip": "Reconciling deterministic entities and dropping orphan connections."}})
 	reconciled := (reconcile.Runner{}).Run(reconcile.Input{
 		Exposures: exposures, Dependencies: dependencies, Connections: conns, Unresolved: unresolved,
@@ -231,8 +197,6 @@ func (o *orchestrator) runDeterministicOnly(
 	conns = reconciled.Connections
 	unresolved = reconciled.Unresolved
 	provenance.NormalizeDeterministic(exposures, dependencies, conns)
-	progress.Advance()
-	progress.CompletePhase()
 	o.emitStageCompleted("reconcile", events.StatusSuccess, nil)
 
 	result := o.assembleResult(ctx, start, exposures, dependencies, conns, unresolved, warnings)
@@ -303,7 +267,7 @@ func (o *orchestrator) seedsToEntities(jobs []detailJob, unresolved *[]model.Unr
 func (o *orchestrator) emitRunStarted() {
 	cfg := o.cfg
 	util.Info("agents.orchestrator", "deterministic pipeline starting", map[string]any{
-		"repo": o.repoPath, "source_session_dir": o.sourceSessionDir, "snapshot": o.snap.Path, "sub_dir": o.subDir,
+		"repo": o.repoPath, "source_root": o.sourceRoot, "sub_dir": o.subDir,
 		"pipeline": cfg.Pipeline(), "workers": cfg.Runtime.Workers, "min_confidence": cfg.Quality.MinConfidence,
 	})
 	o.emit(events.Event{
@@ -311,7 +275,7 @@ func (o *orchestrator) emitRunStarted() {
 		Message: "deterministic extraction pipeline started",
 		Payload: map[string]any{
 			"repo":           o.repoPath,
-			"snapshot":       o.snap.Path,
+			"source_root":    o.sourceRoot,
 			"sub_dir":        o.subDir,
 			"pipeline":       cfg.Pipeline(),
 			"workers":        cfg.Runtime.Workers,
@@ -323,16 +287,16 @@ func (o *orchestrator) emitRunStarted() {
 func (o *orchestrator) buildFailure(ctx context.Context, start time.Time, state IntermediateState, unresolved []model.UnresolvedItem, warnings []string, stage, jobID, objectiveID, entityName string, err error, extra map[string]any) (Result, error) {
 	cancelled := ctx.Err() != nil
 	f := &Failure{
-		Stage:        stage,
-		JobID:        jobID,
-		ObjectiveID:  objectiveID,
-		EntityName:   entityName,
-		Error:        err.Error(),
-		ErrorClass:   "deterministic",
-		OccurredAt:   time.Now().UTC(),
-		Extra:        extra,
-		SnapshotPath: o.snap.Path,
-		Cancelled:    cancelled,
+		Stage:       stage,
+		JobID:       jobID,
+		ObjectiveID: objectiveID,
+		EntityName:  entityName,
+		Error:       err.Error(),
+		ErrorClass:  "deterministic",
+		OccurredAt:  time.Now().UTC(),
+		Extra:       extra,
+		SourceRoot:  o.sourceRoot,
+		Cancelled:   cancelled,
 	}
 	terminalKind := events.KindRunFailed
 	terminalStatus := events.StatusFailed
@@ -353,23 +317,15 @@ func (o *orchestrator) buildFailure(ctx context.Context, start time.Time, state 
 			"cancelled":    cancelled,
 		},
 	})
-	o.snap.Retain()
 	o.writeFailureReport(f)
 	o.persistStageState("failure_state.json", state)
 	return Result{
 		Unresolved:   reconcile.DedupeUnresolved(unresolved),
 		Warnings:     reconcile.DedupeWarnings(warnings),
 		Failure:      f,
-		SnapshotPath: o.snap.Path,
+		SourceRoot:   o.sourceRoot,
 		Intermediate: state,
 	}, fmt.Errorf("%s stage failed at %s: %w", stage, jobID, err)
-}
-
-func (o *orchestrator) PathMapper() *PathMapper {
-	if o.snap == nil {
-		return nil
-	}
-	return extraction.NewPathMapper(o.snap.Path, o.snap.SourcePath)
 }
 
 func detectMonorepo(repoPath string) (string, string) {

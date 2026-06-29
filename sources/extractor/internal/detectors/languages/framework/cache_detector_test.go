@@ -16,9 +16,9 @@ func cacheIdx(serviceJava string, cfg map[string]string) *ast.ProjectIndex {
 	idx.Files["CacheService.java"] = &ast.FileAST{
 		Language: "java",
 		Symbols: []ast.SymbolDef{{
-			Name:     "lookup",
+			Name:      "lookup",
 			Qualified: "com.example.CacheService.lookup",
-			Kind:     ast.SymbolKindMethod,
+			Kind:      ast.SymbolKindMethod,
 			Annotations: []ast.Annotation{
 				{Name: "Cacheable", Arguments: `cacheNames = "users"`},
 			},

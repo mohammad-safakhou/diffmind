@@ -25,12 +25,12 @@ const astIndexStateFile = "ast_index_done"
 //
 // The stage:
 //  1. Checks for an existing index (fast-path on retry).
-//  2. Walks the snapshot, parses every source and config file.
+//  2. Walks the source tree, parses every source and config file.
 //  3. Resolves cross-file symbols and detects framework bindings.
 //  4. Writes a completion marker to state/ so retries skip this stage.
 func (o *orchestrator) runASTIndexStage(ctx context.Context) error {
 	// Fast-path: if a prior run already built the index, load the marker
-	// and trust the in-memory index that was built from the same snapshot.
+	// and trust the in-memory index that was built from the same source tree.
 	// (On a fresh start the astIndex field is nil.)
 	if o.astIndex != nil {
 		o.emit(events.Event{
@@ -44,7 +44,7 @@ func (o *orchestrator) runASTIndexStage(ctx context.Context) error {
 	if o.runDir != "" {
 		markerPath := filepath.Join(o.runDir, stateDir, astIndexStateFile)
 		if _, err := os.Stat(markerPath); err == nil {
-			util.Info("agents.ast_index", "index marker found; reusing snapshot state", nil)
+			util.Info("agents.ast_index", "index marker found; rebuilding in-memory source index", nil)
 			// We still need to build the in-memory index because we can't
 			// serialise the full ProjectIndex efficiently. Build it now;
 			// it's cheap (seconds) even for large repos.
@@ -55,19 +55,10 @@ func (o *orchestrator) runASTIndexStage(ctx context.Context) error {
 		Kind: events.KindStageStarted, Stage: "ast_index",
 		Status: events.StatusRunning,
 		Payload: map[string]any{
-			"snapshot": o.sessionDir,
-			"tip":      "Building language-agnostic AST index of the project source.",
+			"source_root": o.sourceRoot,
+			"tip":         "Building language-agnostic AST index of the project source.",
 		},
 	})
-
-	progressFn := func(done, total int) {
-		if done%50 == 0 || done == total {
-			o.emit(events.Event{
-				Kind: events.KindStageProgress, Stage: "ast_index",
-				Payload: map[string]any{"done": done, "total": total},
-			})
-		}
-	}
 
 	// AST parsing is extension-driven and inherently multi-language: every
 	// supported source file is parsed regardless of language, and the resulting
@@ -79,8 +70,8 @@ func (o *orchestrator) runASTIndexStage(ctx context.Context) error {
 		primaryLang = o.cfg.Indexer.Languages[0]
 	}
 	out, err := (astindex.Runner{}).Run(ctx, astindex.Input{
-		SnapshotPath: o.sessionDir, PrimaryLanguage: primaryLang,
-		Workers: o.cfg.Runtime.Workers, Progress: progressFn,
+		SourceRoot: o.sourceRoot, PrimaryLanguage: primaryLang,
+		Workers: o.cfg.Runtime.Workers,
 	})
 	if err != nil {
 		o.emit(events.Event{
@@ -130,10 +121,6 @@ func countCallEdges(idx *ast.ProjectIndex) int {
 	return astindex.CountCallEdges(idx)
 }
 
-func (o *orchestrator) hintsFor(objective objectives.Objective, fileScope []string) objectiveHints {
-	return discoverystage.BuildObjectiveHints(o.astIndex, objective, o.subDir, fileScope)
-}
-
 func (o *orchestrator) runDeterministicDiscovery(ctx context.Context, objectives []objectives.Objective) []discoveryResult {
 	started := time.Now()
 	o.emit(events.Event{
@@ -155,7 +142,7 @@ func (o *orchestrator) runDeterministicDiscovery(ctx context.Context, objectives
 	}
 
 	out := (discoverystage.DeterministicRunner{}).Run(discoverystage.DeterministicInput{
-		Index: o.astIndex, Objectives: objectives, PathMapper: o.PathMapper(),
+		Index: o.astIndex, Objectives: objectives,
 	})
 	o.persistStageState("deterministic_frameworks.json", out.Report)
 	for _, result := range out.Results {
@@ -183,14 +170,13 @@ func (o *orchestrator) runDeterministicDiscovery(ctx context.Context, objectives
 
 // runConnectionsBatch is the pipeline boundary for the deterministic
 // connections stage. The stage owns connection derivation and fallback policy;
-// the pipeline owns progress and externally visible events.
+// the pipeline owns externally visible events.
 func (o *orchestrator) runConnectionsBatch(
 	ctx context.Context,
 	exposures []model.Exposure,
 	dependencies []model.Dependency,
 	_ map[string]objectives.Objective,
 	_ *repoFacts,
-	onResult func(),
 ) ([]model.Connection, []model.UnresolvedItem, error, string) {
 	out := (connectionstage.Runner{Report: o.emitConnectionsAggregate}).Run(ctx, connectionstage.Input{
 		Index:         o.astIndex,
@@ -198,7 +184,6 @@ func (o *orchestrator) runConnectionsBatch(
 		Dependencies:  dependencies,
 		MinConfidence: o.cfg.Quality.MinConfidence,
 		Workers:       o.cfg.Runtime.Workers,
-		Progress:      onResult,
 	})
 	return out.Connections, out.Unresolved, nil, ""
 }

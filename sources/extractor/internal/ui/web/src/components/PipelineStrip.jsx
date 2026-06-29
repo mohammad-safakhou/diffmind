@@ -17,17 +17,14 @@ export function PipelineStrip() {
   return (
     <div class="pipeline-strip">
       {ORDER.map((id) => {
-        const s = map.get(id) || { name: id, status: 'pending', percent: 0 }
-        const pct = Math.max(0, Math.min(100, s.percent || 0))
+        const s = map.get(id) || { name: id, status: 'pending', summary: {} }
+        const summary = formatSummary(s.summary)
         return (
           <div class={'pipeline-stage ' + s.status} key={id}>
             <div class="name">{PRETTY[id]}</div>
-            <div class="count">
-              {s.done || 0}<span style="color: var(--text-dim)">/{s.total || 0}</span>
-            </div>
-            <div class="progress"><span style={'width: ' + pct + '%'} /></div>
+            <div class="count">{statusLabel(s.status)}</div>
             <div class="stage-tip">{s.tip}</div>
-            <div class="stage-tokens" />
+            <div class="stage-tokens">{summary}</div>
           </div>
         )
       })}
@@ -39,6 +36,23 @@ export function PipelineStrip() {
       </div>
     </div>
   )
+}
+
+function statusLabel(status) {
+  if (status === 'success') return 'done'
+  if (status === 'running') return 'running'
+  if (status === 'failed') return 'failed'
+  if (status === 'cancelled') return 'cancelled'
+  if (status === 'skipped') return 'skipped'
+  return 'pending'
+}
+
+function formatSummary(summary) {
+  if (!summary || typeof summary !== 'object') return ''
+  const pairs = Object.entries(summary)
+    .filter(([k, v]) => typeof v === 'number' && Number.isFinite(v) && !k.endsWith('_ms'))
+    .slice(0, 3)
+  return pairs.map(([k, v]) => `${k}: ${v}`).join(' · ')
 }
 
 function humanDuration(ms) {

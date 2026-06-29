@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-// writeFile writes content to <snap>/<rel> and returns the snap dir.
-func writeFile(t *testing.T, snap, rel, content string) {
+// writeFile writes content to <root>/<rel>.
+func writeFile(t *testing.T, root, rel, content string) {
 	t.Helper()
-	full := filepath.Join(snap, rel)
+	full := filepath.Join(root, rel)
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -19,9 +19,9 @@ func writeFile(t *testing.T, snap, rel, content string) {
 }
 
 // helper for one-shot extraction.
-func extractAt(t *testing.T, snap, file string, line int32, language string) []Condition {
+func extractAt(t *testing.T, root, file string, line int32, language string) []Condition {
 	t.Helper()
-	e := NewConditionExtractor(snap)
+	e := NewConditionExtractor(root)
 	return e.Extract(CallSite{
 		At: Location{File: file, StartLine: line},
 	}, language)

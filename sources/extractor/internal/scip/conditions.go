@@ -18,12 +18,12 @@ type ConditionKind string
 const (
 	ConditionIfGuard       ConditionKind = "if_guard"
 	ConditionTernary       ConditionKind = "ternary"
-	ConditionOptional      ConditionKind = "optional"      // Java Optional.filter / TS optional chaining
+	ConditionOptional      ConditionKind = "optional" // Java Optional.filter / TS optional chaining
 	ConditionNullCheck     ConditionKind = "null_check"
-	ConditionExceptionPath ConditionKind = "exception"     // wrapped in try/catch
-	ConditionLoop          ConditionKind = "loop"          // iterated over a collection
-	ConditionAuth          ConditionKind = "auth"          // @PreAuthorize / @Secured / FastAPI Depends(auth)
-	ConditionFeatureFlag   ConditionKind = "feature_flag"  // toggle/flag-style call
+	ConditionExceptionPath ConditionKind = "exception"    // wrapped in try/catch
+	ConditionLoop          ConditionKind = "loop"         // iterated over a collection
+	ConditionAuth          ConditionKind = "auth"         // @PreAuthorize / @Secured / FastAPI Depends(auth)
+	ConditionFeatureFlag   ConditionKind = "feature_flag" // toggle/flag-style call
 )
 
 // Condition is the deterministic equivalent of model.Condition. We
@@ -47,19 +47,16 @@ type Condition struct {
 // extensions (annotations, decorators) live in per-language tables
 // below and are matched only when the document language matches.
 //
-// LIMITATIONS
+// # LIMITATIONS
 //
 // We are doing line-oriented pattern matching, not parsing. We catch
 // the common cases (`if (...)`, `if cond:`, `Optional.filter`, etc.)
 // and ignore complex constructs (multi-line conditional expressions
-// split across many lines, lambda bodies, etc.). The LLM that
-// previously did this job was better at edge cases, but it was also
-// 8 minutes slower and unreliable.
+// split across many lines, lambda bodies, etc.).
 type ConditionExtractor struct {
-	// snapshotPath is the absolute path to the source tree root. We
-	// use it to resolve a SCIP relative_path to a real file we can
-	// read. Required.
-	snapshotPath string
+	// sourceRoot is the absolute path to the source tree root. We use it to
+	// resolve a SCIP relative_path to a real file we can read. Required.
+	sourceRoot string
 
 	// mu protects fileCache from concurrent goroutine access: the
 	// connections stage runs per-exposure workers in parallel, all
@@ -71,11 +68,11 @@ type ConditionExtractor struct {
 	fileCache map[string][]string
 }
 
-// NewConditionExtractor binds an extractor to a snapshot directory.
-func NewConditionExtractor(snapshotPath string) *ConditionExtractor {
+// NewConditionExtractor binds an extractor to a source tree root.
+func NewConditionExtractor(sourceRoot string) *ConditionExtractor {
 	return &ConditionExtractor{
-		snapshotPath: snapshotPath,
-		fileCache:    map[string][]string{},
+		sourceRoot: sourceRoot,
+		fileCache:  map[string][]string{},
 	}
 }
 
@@ -141,7 +138,7 @@ func (e *ConditionExtractor) fileLines(relativePath string) []string {
 		return lines
 	}
 
-	full := filepath.Join(e.snapshotPath, filepath.FromSlash(relativePath))
+	full := filepath.Join(e.sourceRoot, filepath.FromSlash(relativePath))
 	f, err := os.Open(full)
 	if err != nil {
 		e.mu.Lock()

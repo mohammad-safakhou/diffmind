@@ -13,9 +13,8 @@ import (
 //     /root/.gradle, etc. don't run into chown errors.
 //     The container is ephemeral; host files are only
 //     touched via the explicit volume mounts.
-//   - The snapshot mount is :ro to enforce read-only access from the
-//     container side, defense-in-depth on top of the
-//     snapshot directory itself being a copy.
+//   - The source mount is :ro to enforce read-only access from the
+//     container side.
 //
 // MOUNTS
 //   - SourcePath →   /sources:ro

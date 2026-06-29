@@ -96,7 +96,7 @@ func singleDatastoreRef(idx *astpkg.ProjectIndex) *model.InstanceRef {
 // stampDatastoreInstance attaches the repo's single datastore identity to a
 // db/cache dependency and converges generic Instance spellings (config keys,
 // "unknown", rendered maps, bare platform words) onto the database name.
-// Specific instances the LLM resolved itself are kept.
+// Specific instances that were already resolved are kept.
 func stampDatastoreInstance(idx *astpkg.ProjectIndex, ref *model.InstanceRef, d *model.BaseEntity) {
 	if ref == nil {
 		return
@@ -145,7 +145,7 @@ func instanceIsResourceFallback(d *model.BaseEntity) bool {
 
 // stampQueueInstance attaches broker identity to a queue/stream entity and
 // converges Instance and details.queue onto the config-backed logical queue
-// name, so LLM spelling variants of one physical queue share identity and the
+// name, so spelling variants of one physical queue share identity and the
 // reconcile variant collapse can merge them. Prose never enters LogicalName;
 // when nothing resolves to a clean token the entity keeps its fields and gets
 // no ref (invariant #6).
@@ -179,8 +179,8 @@ var queueDestinationDetailKeys = []string{
 }
 
 // resolveQueueLogicalName finds a clean queue name. Config-grounded candidates
-// win over free-text Instance so an LLM label such as
-// "target-calculation-events-sqs-consumer" converges onto the physical queue
+// win over free-text Instance so descriptive labels such as
+// "target-calculation-events-sqs-consumer" converge onto the physical queue
 // named by its exact config property. A clean Instance remains the fallback
 // when config carries no stronger evidence.
 func resolveQueueLogicalName(idx *astpkg.ProjectIndex, e *model.BaseEntity) string {

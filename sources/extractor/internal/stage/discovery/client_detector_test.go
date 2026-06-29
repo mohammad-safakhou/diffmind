@@ -15,7 +15,7 @@ func symIndex(syms ...astpkg.SymbolDef) *astpkg.ProjectIndex {
 	return idx
 }
 
-// The AST client floor detects clients deterministically from the registry: a
+// The AST client detector detects clients deterministically from the registry: a
 // repository interface (db, fixed datasource anchor), a Feign client whose url is
 // a ${placeholder} (anchor = the resolved key), and a Feign client whose url is a
 // literal endpoint (harvested straight into an InstanceRef).
@@ -58,8 +58,8 @@ func TestHarvestPhysicalTables(t *testing.T) {
 	}
 }
 
-// MergeClients drops an AST-floor client that duplicates an LLM one by config
-// anchor, keeping genuinely new ones.
+// MergeClients drops a detected client that duplicates an existing one by
+// config anchor, keeping genuinely new ones.
 func TestMergeClientsDedupsByAnchor(t *testing.T) {
 	base := []model.ConnectionClient{{LogicalName: "dataSource", Kind: "db", ConfigAnchor: "spring.datasource.url"}}
 	ast := []model.ConnectionClient{

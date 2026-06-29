@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
+	"github.com/mohammad-safakhou/diffmind/internal/objectives"
 )
 
 func configIndex(entries map[string]string) *astpkg.ProjectIndex {
@@ -14,6 +15,17 @@ func configIndex(entries map[string]string) *astpkg.ProjectIndex {
 	return &astpkg.ProjectIndex{Configs: map[string]*astpkg.ConfigFile{
 		"application.yml": {Path: "application.yml", Format: "yaml", Entries: ce},
 	}}
+}
+
+func objectiveByType(t *testing.T, typ string) objectives.Objective {
+	t.Helper()
+	for _, obj := range objectives.Default() {
+		if obj.Type == typ {
+			return obj
+		}
+	}
+	t.Fatalf("missing default objective %q", typ)
+	return objectives.Objective{}
 }
 
 func TestResolveResourceName(t *testing.T) {
@@ -57,7 +69,7 @@ func TestResolveResourceName(t *testing.T) {
 
 func TestEntityFromFrameworkBindingResolvesQueuePlaceholder(t *testing.T) {
 	idx := configIndex(nil)
-	obj := objByType(t, "queue_consumer")
+	obj := objectiveByType(t, "queue_consumer")
 	e, ok := EntityFromFrameworkBinding(idx, obj, astpkg.FrameworkBinding{
 		Framework: "spring", Kind: "queue_consumer",
 		Symbol:  "com.example.Listener.onMessage",

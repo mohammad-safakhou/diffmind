@@ -8,7 +8,7 @@ import (
 
 // V3a: the winner between base and profile configs must be a defined rule, not
 // map-iteration luck — a flipping value flips resource names and identity keys
-// run-to-run with the LLM held constant.
+// run-to-run.
 func TestConfigValueProfilePrecedence(t *testing.T) {
 	indexOf := func(files map[string][]string) *astpkg.ProjectIndex {
 		idx := &astpkg.ProjectIndex{Configs: map[string]*astpkg.ConfigFile{}}

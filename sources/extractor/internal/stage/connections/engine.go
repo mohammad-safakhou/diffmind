@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
-	_ "github.com/mohammad-safakhou/diffmind/internal/ast/framework"
+	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/framework"
 	"github.com/mohammad-safakhou/diffmind/internal/model"
 )
 
@@ -58,7 +58,7 @@ func lastIdent(sym string) string {
 //  2. Resolve every exposure's entry symbol the same way.
 //  3. BFS from each entry symbol to any dependency symbol, collecting paths.
 //  4. Each path's hops carry per-step condition + repetition derived from the
-//     tree-sitter enclosing context (populated at parse time, no LLM).
+//     tree-sitter enclosing context (populated at parse time).
 //
 // buildDependencySymbolIndex resolves every dependency to its AST symbol(s) and
 // returns the symbol→deps target map plus the deps that could not be resolved.
@@ -152,7 +152,6 @@ func runASTConnections(
 	dependencies []model.Dependency,
 	minConfidence float64,
 	workerCount int,
-	onResult func(),
 ) ([]model.Connection, []model.UnresolvedItem) {
 	if workerCount <= 0 {
 		workerCount = 6
@@ -234,9 +233,6 @@ func runASTConnections(
 	allUnresolved := append([]model.UnresolvedItem{}, unresolvedDeps...)
 
 	for r := range resCh {
-		if onResult != nil {
-			onResult()
-		}
 		allConns = append(allConns, r.conns...)
 		allUnresolved = append(allUnresolved, r.unresolved...)
 	}

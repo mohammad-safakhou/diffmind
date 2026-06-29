@@ -21,7 +21,7 @@ func buildAgentsIndex(t *testing.T, files map[string]string) *astpkg.ProjectInde
 			t.Fatal(err)
 		}
 	}
-	idx, err := astpkg.Build(context.Background(), dir, "", 2, nil)
+	idx, err := astpkg.Build(context.Background(), dir, "", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,7 +430,7 @@ func TestDeterministicBunOperations(t *testing.T) {
 		"internal/financial/adapter/outbound/repository/sql/payment_repo/pay.go": `package payment_repo
 
 func (r Repository) Pay(ctx any, payment Payment) error {
-    db, _ := r.db.GetTX(ctx, nil)
+    db, _ := r.db.GetTX(ctx)
     _, err := db.NewInsert().Model(&payment).Exec(ctx)
     return err
 }
@@ -489,7 +489,7 @@ type Provider struct {
 
 func (p Provider) Get(ctx any, coinID string) {
 	url := fmt.Sprintf("%s/coins/%s?localization=false", p.BaseUrl, coinID)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url)
 	_ = req
 }
 `,
@@ -511,7 +511,7 @@ func TestDeterministicGoGRPCServiceClient(t *testing.T) {
 		"internal/report/adapter/outbound/metadata_grpc/get_metadata.go": `package metadata_grpc
 
 func (cc MetadataClient) GetMetadata(ctx any) {
-    cc.metadataServiceClient.Get(ctx, nil)
+    cc.metadataServiceClient.Get(ctx)
 }
 `,
 	})

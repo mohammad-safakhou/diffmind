@@ -10,6 +10,7 @@ import (
 
 	"github.com/mohammad-safakhou/diffmind/internal/detectors"
 	"github.com/mohammad-safakhou/diffmind/internal/serviceconfig"
+	"github.com/mohammad-safakhou/diffmind/internal/sourcefilter"
 	"github.com/mohammad-safakhou/diffmind/internal/util"
 )
 
@@ -20,9 +21,8 @@ import (
 // projects are handled automatically by extension detection.
 //
 // The analysis runs with workers goroutines for parsing, then single-threaded
-// resolution passes. Progress is reported via progressFn (which receives the
-// count of files processed so far).
-func Build(ctx context.Context, repoRoot, primaryLanguage string, workers int, progressFn func(done, total int)) (*ProjectIndex, error) {
+// resolution passes.
+func Build(ctx context.Context, repoRoot, primaryLanguage string, workers int) (*ProjectIndex, error) {
 	if workers <= 0 {
 		workers = 8
 	}
@@ -40,9 +40,13 @@ func Build(ctx context.Context, repoRoot, primaryLanguage string, workers int, p
 		}
 		if d.IsDir() {
 			name := d.Name()
-			if isSkippedDir(name) {
+			if sourcefilter.SkipDirName(name) {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		info, infoErr := d.Info()
+		if infoErr != nil || sourcefilter.SkipFileInfo(info) {
 			return nil
 		}
 		rel, _ := filepath.Rel(repoRoot, path)
@@ -70,17 +74,7 @@ func Build(ctx context.Context, repoRoot, primaryLanguage string, workers int, p
 		return nil, err
 	}
 
-	total := len(sourceFiles) + len(configFiles)
 	var mu sync.Mutex
-	done := 0
-	reportProgress := func() {
-		mu.Lock()
-		done++
-		if progressFn != nil {
-			progressFn(done, total)
-		}
-		mu.Unlock()
-	}
 
 	// Step 2: parse source files in parallel
 	idx := &ProjectIndex{
@@ -113,7 +107,6 @@ func Build(ctx context.Context, repoRoot, primaryLanguage string, workers int, p
 			defer func() { <-sem }()
 			fa, err := ParseFile(ctx, repoRoot, rel)
 			resultCh <- parseResult{path: rel, fa: fa, err: err}
-			reportProgress()
 		}()
 	}
 	go func() {
@@ -144,7 +137,6 @@ func Build(ctx context.Context, repoRoot, primaryLanguage string, workers int, p
 		if cf != nil {
 			idx.Configs[rel] = cf
 		}
-		reportProgress()
 	}
 
 	// Step 4: build global symbol table
@@ -497,20 +489,6 @@ func sortFrameworkBindings(bindings []FrameworkBinding) {
 		}
 		return a.RejectionReason < b.RejectionReason
 	})
-}
-
-// isSkippedDir reports whether a directory should be skipped when walking.
-func isSkippedDir(name string) bool {
-	switch name {
-	case ".git", ".hg", ".svn", ".idea", ".vscode", ".gradle", ".mvn",
-		"node_modules", "bower_components", "vendor", ".bundle",
-		"__pycache__", ".venv", "venv", ".tox", ".pytest_cache",
-		"target", "build", "out", "bin", "dist", "tmp", ".cache",
-		".m2", ".ivy2", ".cargo/registry", "testdata", "fixtures",
-		".terraform", ".serverless":
-		return true
-	}
-	return false
 }
 
 // distinctFileLanguages returns the sorted set of languages across all parsed

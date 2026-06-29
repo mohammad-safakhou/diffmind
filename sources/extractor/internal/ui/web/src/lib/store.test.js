@@ -35,7 +35,7 @@ describe('runMeta status preservation on replay', () => {
       kind: 'run_started',
       run_id: 'r1',
       ts: '2026-06-01T12:00:00Z',
-      payload: { repo: '/repo', snapshot: '/snap' },
+      payload: { repo: '/repo', source_root: '/repo' },
     })
 
     // The pill must still say "failed". This is what was broken.
@@ -43,6 +43,7 @@ describe('runMeta status preservation on replay', () => {
     expect(runMeta.value.error).toBe('discovery step crashed')
     expect(runMeta.value.id).toBe('r1')
     expect(runMeta.value.repo).toBe('/repo')
+    expect(runMeta.value.sourceRoot).toBe('/repo')
   })
 
   it('preserves runMeta.status=cancelled on replay', () => {

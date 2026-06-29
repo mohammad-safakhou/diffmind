@@ -80,7 +80,7 @@ func DeterministicQueuePublish(idx *astpkg.ProjectIndex) []candidate {
 		}
 		dest := ResolveResourceName(idx, firstLiteralArg(cs.Arguments))
 		if dest == "" {
-			return // destination not statically resolvable; leave to the LLM
+			return // destination not statically resolvable; do not guess
 		}
 		loc := callLoc(cs)
 		if loc.File == "" {

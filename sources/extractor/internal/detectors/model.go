@@ -1,7 +1,6 @@
-// Package detectors defines the deterministic detector catalog. The current
-// extraction engine still has implementation code in ast/framework and
-// stage/discovery, but all user-facing detector IDs live here so configuration,
-// tests, and future detector implementations share one contract.
+// Package detectors defines the deterministic detector catalog. User-facing
+// detector IDs live here so configuration, tests, and detector implementations
+// share one contract.
 package detectors
 
 type Language string

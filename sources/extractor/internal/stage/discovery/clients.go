@@ -49,7 +49,7 @@ func ClientsFromCandidates(items []extraction.Candidate) []model.ConnectionClien
 	return out
 }
 
-// NormalizeClientKind folds the LLM's free-text client kind into the canonical
+// NormalizeClientKind folds free-text client kind values into the canonical
 // db|http|queue|cache|stream set the propagation pass keys on. Unrecognised
 // values pass through lower-cased so a new kind is never silently lost.
 func NormalizeClientKind(raw string) string {

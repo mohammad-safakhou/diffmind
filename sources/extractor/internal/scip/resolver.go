@@ -98,10 +98,10 @@ func (r *Resolver) Resolve(loc EntityLocation) Resolution {
 			}
 		}
 
-		// The LLM-recorded line may be off by several lines: it often
-		// records the annotation line (@GetMapping) rather than the
-		// actual method identifier line. Scan a progressively wider
-		// window of lines until we find a callable definition.
+		// The recorded line may be off by several lines: detectors often record
+		// the annotation line (@GetMapping) rather than the actual method
+		// identifier line. Scan a progressively wider window of lines until we
+		// find a callable definition.
 		for _, window := range []int32{3, 10, 30} {
 			if sym := r.idx.closestDefinition(loc.File, line-1, line+window, line); sym != "" {
 				confidence := 0.9

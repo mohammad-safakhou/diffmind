@@ -3,7 +3,7 @@ import { preflight } from '../lib/store.js'
 import { getPreflight } from '../lib/api.js'
 
 // SystemStatus is the always-visible header strip that surfaces
-// host-level readiness: Docker, disk, indexer, network, and snapshot access.
+// host-level readiness: Docker, disk, indexer, and network access.
 // It polls /api/preflight every 15 seconds. The expanded panel lists every
 // check with its remediation.
 //

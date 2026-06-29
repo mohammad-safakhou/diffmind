@@ -7,16 +7,15 @@ import (
 	"time"
 
 	"github.com/mohammad-safakhou/diffmind/internal/ast"
-	_ "github.com/mohammad-safakhou/diffmind/internal/ast/framework"
+	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/framework"
 )
 
 type Runner struct{}
 
 type Input struct {
-	SnapshotPath    string
+	SourceRoot      string
 	PrimaryLanguage string
 	Workers         int
-	Progress        func(done, total int)
 }
 
 type Summary struct {
@@ -40,7 +39,7 @@ func (Runner) Run(ctx context.Context, input Input) (Output, error) {
 		workers = 8
 	}
 	started := time.Now()
-	index, err := ast.Build(ctx, input.SnapshotPath, input.PrimaryLanguage, workers, input.Progress)
+	index, err := ast.Build(ctx, input.SourceRoot, input.PrimaryLanguage, workers)
 	if err != nil {
 		return Output{}, err
 	}

@@ -191,7 +191,7 @@ type RunManifest struct {
 	// the unresolved diagnostics. It lets the dashboard and the
 	// `validate` command surface partial-success runs without having
 	// to grep the warnings array. Keys are stage names as seen in the
-	// pipeline ("discovery", "reexamination", "connections")
+	// pipeline ("discovery", "connections", "validation", "reconcile")
 	// and values are the count of items that failed in that stage.
 	StageFailures map[string]int `json:"stage_failures,omitempty"`
 }

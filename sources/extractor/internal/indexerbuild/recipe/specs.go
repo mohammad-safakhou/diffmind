@@ -7,8 +7,7 @@ import "github.com/mohammad-safakhou/diffmind/internal/langdetect"
 //
 // Versions is the canonical set users see in base-image tags; e.g.
 // for Java we cache "8", "11", "17", "21". Default is what we
-// install when a fact arrives with no version (typical for the LLM
-// path before marker fallback ran).
+// install when detection produces no version marker.
 type languageSpec struct {
 	Versions []string
 	Default  string

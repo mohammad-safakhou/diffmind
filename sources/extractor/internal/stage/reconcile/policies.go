@@ -1,5 +1,5 @@
-// Package reconcile contains local (non-LLM) post-processing for the
-// multi-step extraction pipeline. Stage 5 of the pipeline runs the helpers in
+// Package reconcile contains deterministic post-processing for the
+// extraction pipeline. The pipeline runs the helpers in
 // this package to dedupe entities and connections, sort them deterministically
 // for stable artifact IDs, and drop connections whose endpoints didn't survive
 // earlier stages.
@@ -60,9 +60,8 @@ func DedupeDependencies(in []model.Dependency) []model.Dependency {
 
 // dropJunkDataDeps removes db/cache dependencies whose resource is an obvious
 // non-table artifact (sequences, the JPA entity_manager handle). The
-// deterministic path already filters these, but LLM-discovered db ops can leak
-// e.g. a *_id_seq sequence; applying the filter to ALL data deps closes that
-// gap (Item 7).
+// deterministic path already filters these, but applying the filter to all data
+// deps keeps sequence artifacts from leaking into DiffMind protocol.
 func dropJunkDataDeps(in []model.Dependency) []model.Dependency {
 	out := make([]model.Dependency, 0, len(in))
 	for _, d := range in {
@@ -166,7 +165,7 @@ func collapseJobEntrypoints(in []model.Exposure) []model.Exposure {
 }
 
 // collapseQueueExposureVariants collapses queue_consumer exposures whose
-// destination matches after suffix-normalization, so an LLM's "<queue>" and
+// destination matches after suffix-normalization, so labels like "<queue>" and
 // "<queue>-consumer" variants become one (Item 5). The higher-confidence entry
 // is kept. Other exposure types are untouched.
 func collapseQueueExposureVariants(in []model.Exposure) []model.Exposure {
@@ -261,7 +260,7 @@ func dedupeDependenciesSemantic(in []model.Dependency) []model.Dependency {
 // into the single specific platform when there is exactly one, and only stand
 // alone when no specific platform is known. This removes the earlier single-DB
 // assumption (which silently merged across distinct databases) without letting
-// the LLM's noisy platform/instance text re-fragment one logical store.
+// noisy platform/instance text re-fragment one logical store.
 // resolveSchemaQualifiedResources fixes the schema-qualified false-split (C4):
 // a bare resource ("orders") and a schema-qualified one ("public.orders") for
 // the same table key differently and would not dedup. Schema STAYS part of
@@ -584,8 +583,8 @@ var uncountableResources = map[string]bool{
 }
 
 // singularResource normalises a table/entity name to a singular form for keying
-// so plural/singular variants of the same table — the LLM's "orders" vs the
-// deterministic deriver's entity-derived "order" — collapse. Deliberately
+// so plural/singular variants of the same table — "orders" vs the deterministic
+// deriver's entity-derived "order" — collapse. Deliberately
 // CONSERVATIVE: it is a best-effort English heuristic that errs toward leaving
 // a word unchanged (failure direction = "don't merge", never a wrong merge).
 // It skips short words, known uncountables, and Latin-ish endings (-ss, -us,
@@ -595,7 +594,7 @@ func singularResource(s string) string {
 }
 
 // normalizeDBOp folds operation verbs into read/write classes so equivalent
-// operations from different sources (LLM "SELECT", AST "read") collapse. Verbs
+// operations from different sources ("SELECT", AST "read") collapse. Verbs
 // it does not recognise (e.g. a cache "evict") pass through unchanged.
 // NormalizeDBOp folds a raw data verb to the canonical operation_kind
 // (read/write), passing through unrecognized verbs (e.g. cache evict/expire,
