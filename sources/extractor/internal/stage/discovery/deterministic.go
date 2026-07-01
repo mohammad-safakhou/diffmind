@@ -432,6 +432,26 @@ func EntityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objecti
 		e.Summary = fmt.Sprintf("%s outbound HTTP client detected from framework binding", displayFramework(b.Framework))
 		e.Details["method"] = method
 		e.Details["path"] = path
+		if strings.EqualFold(b.Framework, "openai") || strings.EqualFold(b.Framework, "go-wire") {
+			e.Name = "openai " + e.Name
+			e.Summary = "OpenAI outbound API dependency detected from deterministic Go wiring/SDK usage"
+			e.Details["target_service"] = "openai"
+			e.Details["target_type"] = "external"
+			e.Details["url_template"] = "https://api.openai.com" + path
+			e.Details["base_url"] = "https://api.openai.com"
+			e.Details["host"] = "api.openai.com"
+			e.Details["provider"] = "openai"
+			e.Details["sdk"] = "github.com/sashabaranov/go-openai"
+			e.Details["operation"] = "chat_completion"
+			e.Details["operation_kind"] = "create"
+			if model := modelFromOpenAIReason(b.ConfidenceReason); model != "" {
+				e.Details["model"] = model
+			}
+			if strings.EqualFold(b.Framework, "go-wire") {
+				e.Details["wiring_provider"] = providerFromWireReason(b.ConfidenceReason)
+			}
+			return e, true
+		}
 		if target := configuredHTTPTargetForOperation(idx, handler, path); target.serviceRef != "" {
 			applyConfiguredHTTPTargetDetails(e.Details, target)
 		} else if strings.EqualFold(b.Framework, "retrofit") {
@@ -494,6 +514,24 @@ func EntityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objecti
 		return candidate{}, false
 	}
 	return e, true
+}
+
+func modelFromOpenAIReason(reason string) string {
+	for _, part := range strings.Fields(reason) {
+		if strings.HasPrefix(part, "model=") {
+			return strings.TrimSpace(strings.TrimPrefix(part, "model="))
+		}
+	}
+	return ""
+}
+
+func providerFromWireReason(reason string) string {
+	for _, part := range strings.Fields(reason) {
+		if strings.HasPrefix(part, "provider=") {
+			return strings.TrimSpace(strings.TrimPrefix(part, "provider="))
+		}
+	}
+	return ""
 }
 
 func applyConfiguredHTTPTargetDetails(details map[string]any, target configuredHTTPTarget) {

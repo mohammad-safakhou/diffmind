@@ -13,6 +13,8 @@ var descriptors = []Descriptor{
 	{ID: "golang.rpc.grpc", Language: LanguageGo, Category: CategoryRPC, Tool: "grpc", ObjectTypes: []string{"rpc_endpoint", "rpc_call"}, Description: "Go gRPC servers and clients"},
 	{ID: "golang.cache.redis", Language: LanguageGo, Category: CategoryCache, Tool: "redis", ObjectTypes: []string{"cache_operation"}, Description: "Go Redis client operations"},
 	{ID: "golang.cli.cobra", Language: LanguageGo, Category: CategoryCLI, Tool: "cobra", ObjectTypes: []string{"cli_command"}, Description: "Go Cobra command registrations"},
+	{ID: "golang.di.wire", Language: LanguageGo, Category: CategoryDI, Tool: "wire", ObjectTypes: []string{"http_call"}, Description: "Google Wire dependency-injection provider wiring"},
+	{ID: "golang.ai.openai", Language: LanguageGo, Category: CategoryAI, Tool: "openai", ObjectTypes: []string{"http_call"}, Description: "OpenAI Go SDK calls"},
 
 	{ID: "java.http.spring", Language: LanguageJava, Category: CategoryHTTP, Tool: "spring", ObjectTypes: []string{"http_endpoint"}, Description: "Spring MVC controllers and mappings"},
 	{ID: "java.httpclient.feign", Language: LanguageJava, Category: CategoryHTTPClient, Tool: "feign", ObjectTypes: []string{"http_call"}, Description: "Spring Cloud OpenFeign clients"},

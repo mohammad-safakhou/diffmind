@@ -39,13 +39,10 @@ func TestAllowFrameworkBinding(t *testing.T) {
 	if !AllowFrameworkBinding(nil, nil, nil) {
 		t.Fatal("empty config should allow unknown detector for compatibility")
 	}
-	if !AllowFrameworkBinding([]string{"java.http.spring"}, []string{"java.http.spring"}, nil) {
-		t.Fatal("enabled detector should be allowed")
-	}
-	if AllowFrameworkBinding([]string{"java.http.spring"}, []string{"python.http.flask"}, nil) {
-		t.Fatal("enabled list should act as an allow-list")
+	if !AllowFrameworkBinding([]string{"java.http.spring"}, []string{"python.http.flask"}, nil) {
+		t.Fatal("enabled list is deprecated and should not filter detectors")
 	}
 	if AllowFrameworkBinding([]string{"java.http.spring"}, []string{"java.http.spring"}, []string{"java.http.spring"}) {
-		t.Fatal("disabled detector should win over enabled detector")
+		t.Fatal("disabled detector should suppress detector output")
 	}
 }

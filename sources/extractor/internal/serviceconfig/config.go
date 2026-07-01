@@ -25,6 +25,7 @@ type Config struct {
 	HTTPTargets      []HTTPTargetConfig      `yaml:"http_targets" json:"http_targets"`
 	ResourcePatterns []ResourcePatternConfig `yaml:"resource_patterns" json:"resource_patterns"`
 	Config           ConfigPathConfig        `yaml:"config" json:"config"`
+	Conventions      ConventionConfig        `yaml:"conventions" json:"conventions"`
 	Detectors        DetectorConfig          `yaml:"detectors" json:"detectors"`
 	Patterns         []CustomPattern         `yaml:"patterns" json:"patterns"`
 }
@@ -77,8 +78,29 @@ type ConfigPathConfig struct {
 	Env      map[string]string `yaml:"env" json:"env"`
 }
 
+type ConventionConfig struct {
+	DependencyInjection []DependencyInjectionConvention `yaml:"dependency_injection" json:"dependency_injection"`
+}
+
+type DependencyInjectionConvention struct {
+	ID              string            `yaml:"id" json:"id"`
+	Kind            string            `yaml:"kind" json:"kind"`
+	Roots           []string          `yaml:"roots" json:"roots"`
+	Sets            map[string]string `yaml:"sets" json:"sets"`
+	Entrypoints     map[string]string `yaml:"entrypoints" json:"entrypoints"`
+	Classifications []Classification  `yaml:"classifications" json:"classifications"`
+}
+
+type Classification struct {
+	Match      map[string]string `yaml:"match" json:"match"`
+	TargetRef  string            `yaml:"target_ref" json:"target_ref"`
+	Kind       string            `yaml:"kind" json:"kind"`
+	ConfigKeys []string          `yaml:"config_keys" json:"config_keys"`
+	Metadata   map[string]string `yaml:"metadata" json:"metadata"`
+}
+
 type DetectorConfig struct {
-	Enabled  []string          `yaml:"enabled" json:"enabled"`
+	Enabled  []string          `yaml:"enabled" json:"enabled"` // deprecated: discovery runs all detectors by default.
 	Disabled []string          `yaml:"disabled" json:"disabled"`
 	Options  map[string]string `yaml:"options" json:"options"`
 }
@@ -119,9 +141,19 @@ func (c Config) Validate() error {
 	if schema := strings.TrimSpace(c.Schema); schema != "" && schema != Schema {
 		return fmt.Errorf("schema %q is unsupported; expected %s", c.Schema, Schema)
 	}
-	for _, id := range append(append([]string(nil), c.Detectors.Enabled...), c.Detectors.Disabled...) {
+	for _, id := range c.Detectors.Disabled {
 		if err := detectors.ValidateID(strings.TrimSpace(id)); err != nil {
 			return err
+		}
+	}
+	for i, convention := range c.Conventions.DependencyInjection {
+		if strings.TrimSpace(convention.Kind) == "" {
+			return fmt.Errorf("conventions.dependency_injection[%d].kind is required", i)
+		}
+		switch strings.TrimSpace(convention.Kind) {
+		case "go_wire", "wire":
+		default:
+			return fmt.Errorf("conventions.dependency_injection[%d].kind %q is unsupported", i, convention.Kind)
 		}
 	}
 	for i, p := range c.Patterns {

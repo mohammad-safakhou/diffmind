@@ -41,6 +41,14 @@ resource_patterns:
     platform: redis
     resource_ref: traffic-info-redis
     config_key: DE_REDIS_URL
+conventions:
+  dependency_injection:
+    - id: app-wire
+      kind: go_wire
+      roots: ["cmd/app/*_wire.go", "cmd/app/wire_set.go", "cmd/app/wire_gen.go"]
+      sets:
+        infra: infraSet
+        outbound: outboundSet
 detectors:
   disabled: ["java.http.spring"]
 patterns:
@@ -65,6 +73,9 @@ patterns:
 	if len(cfg.ResourcePatterns) != 1 || cfg.ResourcePatterns[0].Platform != "redis" {
 		t.Fatalf("unexpected config: %+v", cfg)
 	}
+	if len(cfg.Conventions.DependencyInjection) != 1 || cfg.Conventions.DependencyInjection[0].Kind != "go_wire" {
+		t.Fatalf("unexpected conventions: %+v", cfg.Conventions)
+	}
 }
 
 func TestLoadRejectsUnsupportedSchema(t *testing.T) {
@@ -78,7 +89,7 @@ func TestLoadRejectsUnsupportedSchema(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsUnknownDetector(t *testing.T) {
+func TestLoadIgnoresDeprecatedUnknownEnabledDetector(t *testing.T) {
 	dir := t.TempDir()
 	body := []byte(`
 schema: diffmind.config.v1
@@ -88,8 +99,23 @@ detectors:
 	if err := os.WriteFile(filepath.Join(dir, FileName), body, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := Load(dir); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+}
+
+func TestLoadRejectsUnknownDisabledDetector(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte(`
+schema: diffmind.config.v1
+detectors:
+  disabled: ["java.http.unknown"]
+`)
+	if err := os.WriteFile(filepath.Join(dir, FileName), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Load(dir); err == nil {
-		t.Fatal("expected unknown detector error")
+		t.Fatal("expected unknown disabled detector error")
 	}
 }
 

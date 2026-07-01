@@ -1,6 +1,8 @@
 package discovery
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
@@ -129,5 +131,74 @@ func TestEnrichExposuresFromAnnotationsNilIndexNoPanic(t *testing.T) {
 	EnrichExposuresFromAnnotations(nil, exposures) // must not panic
 	if len(exposures[0].Details) != 0 {
 		t.Fatalf("nil index should stamp nothing, got %v", exposures[0].Details)
+	}
+}
+
+func TestEnrichHTTPContractsFromGoSwaggerHandler(t *testing.T) {
+	root := t.TempDir()
+	handlerFile := "internal/admin/payout_http/admin_list.go"
+	if err := os.MkdirAll(filepath.Join(root, filepath.Dir(handlerFile)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := `package payout_http
+
+// AdminList godoc
+//
+//	@Param			opts	query	string	false	"opts"
+//	@Success		200	{object}	http.ResponseWithMeta{data=[]PayoutListItemResponse,meta=http.ListMeta}
+//	@Failure		401	{object}	http.ErrorResponse
+//	@Failure		500	{object}	http.ErrorResponse
+//	@Router			/admin/payouts [get]
+func (c *Controller) AdminList(ctx echo.Context) error {
+	return http.SuccessWithListMeta(ctx, nil, 0)
+}
+`
+	if err := os.WriteFile(filepath.Join(root, handlerFile), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx := &astpkg.ProjectIndex{
+		RepoRoot: root,
+		Files: map[string]*astpkg.FileAST{
+			handlerFile: {
+				Path:     handlerFile,
+				Language: "go",
+				Symbols: []astpkg.SymbolDef{{
+					Name:      "AdminList",
+					Qualified: "payout_http.Controller.AdminList",
+					Kind:      astpkg.SymbolKindMethod,
+					File:      handlerFile,
+					Range:     astpkg.Range{StartLine: 9, EndLine: 11},
+				}},
+			},
+		},
+	}
+	exposures := []model.Exposure{{BaseEntity: model.BaseEntity{
+		Type: "http_route",
+		Name: "GET /admin/payouts",
+		Details: map[string]any{
+			"handler": "c.AdminList",
+			"method":  "GET",
+			"path":    "/admin/payouts",
+		},
+		Locations: []model.Location{{File: "internal/admin/payout_http/controller.go", StartLine: 12, EndLine: 12}},
+	}}}
+
+	EnrichHTTPContractsFromHandlers(idx, exposures)
+
+	if len(exposures[0].Inputs) != 1 {
+		t.Fatalf("inputs = %+v, want opts query input", exposures[0].Inputs)
+	}
+	if in := exposures[0].Inputs[0]; in.Name != "opts" || in.Type != "string" || in.Required || in.Description != "query" {
+		t.Fatalf("input = %+v, want optional query opts string", in)
+	}
+	responses, ok := exposures[0].Details["responses"].([]map[string]any)
+	if !ok || len(responses) != 3 {
+		t.Fatalf("responses = %#v, want 3 swagger responses", exposures[0].Details["responses"])
+	}
+	if responses[0]["status"] != 200 {
+		t.Fatalf("first response = %#v, want status 200", responses[0])
+	}
+	if schema, _ := responses[0]["schema"].(map[string]any); schema["name"] != "http.ResponseWithMeta{data=[]PayoutListItemResponse,meta=http.ListMeta}" {
+		t.Fatalf("schema = %#v", responses[0]["schema"])
 	}
 }

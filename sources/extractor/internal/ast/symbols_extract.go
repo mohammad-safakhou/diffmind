@@ -1,6 +1,10 @@
 package ast
 
-import sitter "github.com/smacker/go-tree-sitter"
+import (
+	"strings"
+
+	sitter "github.com/smacker/go-tree-sitter"
+)
 
 // extractSymbols runs the functions/methods query and builds SymbolDef list.
 func extractSymbols(root *sitter.Node, src []byte, lang string, sitterLang *sitter.Language, relPath string) []SymbolDef {
@@ -184,4 +188,64 @@ func qualifyMethodsWithClass(symbols []SymbolDef) []SymbolDef {
 		}
 	}
 	return result
+}
+
+func scopeGoSymbolsByPackage(symbols []SymbolDef, lang, relPath string) {
+	if lang != "go" || len(symbols) == 0 {
+		return
+	}
+	scope := goPackageScope(relPath)
+	if scope == "" {
+		return
+	}
+	for i := range symbols {
+		q := strings.TrimSpace(symbols[i].Qualified)
+		if q == "" || strings.HasPrefix(q, scope+".") {
+			continue
+		}
+		symbols[i].Qualified = scope + "." + q
+	}
+}
+
+func goPackageScope(relPath string) string {
+	relPath = strings.TrimSpace(strings.ReplaceAll(relPath, "\\", "/"))
+	if relPath == "" {
+		return ""
+	}
+	if slash := strings.LastIndex(relPath, "/"); slash >= 0 {
+		relPath = relPath[:slash]
+	} else {
+		return ""
+	}
+	parts := strings.Split(relPath, "/")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = sanitizeSymbolSegment(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return strings.Join(out, ".")
+}
+
+func sanitizeSymbolSegment(s string) string {
+	var b strings.Builder
+	for i, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			if i == 0 {
+				b.WriteByte('_')
+			}
+			b.WriteRune(r)
+		case r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return strings.Trim(b.String(), "_")
 }

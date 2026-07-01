@@ -1,6 +1,9 @@
 package discovery
 
 import (
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
@@ -89,6 +92,242 @@ func EnrichExposuresFromParams(idx *astpkg.ProjectIndex, exposures []model.Expos
 			e.Inputs = inputs
 		}
 	}
+}
+
+// EnrichHTTPContractsFromHandlers recovers HTTP request/response details from
+// the concrete handler symbol. This catches Go frameworks like Echo where the
+// route registration and handler body live in different files, and where the
+// most precise contract is often in Swagger/OpenAPI comments above the handler.
+func EnrichHTTPContractsFromHandlers(idx *astpkg.ProjectIndex, exposures []model.Exposure) {
+	if idx == nil {
+		return
+	}
+	for i := range exposures {
+		e := &exposures[i].BaseEntity
+		if !routeInputTypes[e.Type] {
+			continue
+		}
+		sym, ok := handlerSymbolForExposure(idx, e)
+		if !ok || sym.File == "" {
+			continue
+		}
+		comments := leadingCommentBlock(idx, sym)
+		if len(e.Inputs) == 0 {
+			if inputs := swaggerInputs(comments); len(inputs) > 0 {
+				e.Inputs = inputs
+			}
+		}
+		if !hasResponseDetails(e.Details) {
+			if responses := swaggerResponses(comments); len(responses) > 0 {
+				if e.Details == nil {
+					e.Details = map[string]any{}
+				}
+				e.Details["responses"] = responses
+			}
+		}
+	}
+}
+
+func handlerSymbolForExposure(idx *astpkg.ProjectIndex, e *model.BaseEntity) (astpkg.SymbolDef, bool) {
+	if e == nil {
+		return astpkg.SymbolDef{}, false
+	}
+	if handler, _ := e.Details["handler"].(string); strings.TrimSpace(handler) != "" {
+		if sym, ok := resolveHandlerSymbol(idx, handler, e.Locations); ok {
+			return sym, true
+		}
+	}
+	return handlerSymbol(idx, e.Locations)
+}
+
+func resolveHandlerSymbol(idx *astpkg.ProjectIndex, handler string, locs []model.Location) (astpkg.SymbolDef, bool) {
+	method := lastSymbolSegment(handler)
+	if method == "" {
+		return astpkg.SymbolDef{}, false
+	}
+	preferredDir := ""
+	if len(locs) > 0 {
+		preferredDir = filepath.ToSlash(filepath.Dir(locs[0].File))
+	}
+	var fallback astpkg.SymbolDef
+	found := false
+	for _, fa := range idx.Files {
+		if fa == nil || fa.Language != "go" {
+			continue
+		}
+		for _, sym := range fa.Symbols {
+			if sym.Kind != astpkg.SymbolKindMethod && sym.Kind != astpkg.SymbolKindFunction {
+				continue
+			}
+			if sym.Name != method && !strings.HasSuffix(sym.Qualified, "."+method) {
+				continue
+			}
+			if preferredDir != "" && filepath.ToSlash(filepath.Dir(sym.File)) == preferredDir {
+				return sym, true
+			}
+			if !found {
+				fallback, found = sym, true
+			}
+		}
+	}
+	return fallback, found
+}
+
+func lastSymbolSegment(s string) string {
+	s = strings.TrimSpace(strings.TrimPrefix(s, "*"))
+	if s == "" {
+		return ""
+	}
+	for _, sep := range []string{".", "#", "/"} {
+		if i := strings.LastIndex(s, sep); i >= 0 {
+			s = s[i+1:]
+		}
+	}
+	return strings.TrimSpace(strings.Trim(s, "()"))
+}
+
+func leadingCommentBlock(idx *astpkg.ProjectIndex, sym astpkg.SymbolDef) []string {
+	if idx.RepoRoot == "" || sym.File == "" {
+		return nil
+	}
+	b, err := os.ReadFile(filepath.Join(idx.RepoRoot, sym.File))
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(string(b), "\n")
+	start := int(sym.Range.StartLine)
+	if start > len(lines) {
+		start = len(lines)
+	}
+	var out []string
+	for i := start - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			if len(out) == 0 {
+				continue
+			}
+			break
+		}
+		if !strings.HasPrefix(line, "//") {
+			break
+		}
+		text := strings.TrimSpace(strings.TrimPrefix(line, "//"))
+		out = append([]string{text}, out...)
+	}
+	return out
+}
+
+func swaggerInputs(comments []string) []model.InputSpec {
+	var out []model.InputSpec
+	for _, line := range comments {
+		fields := strings.Fields(line)
+		if len(fields) < 5 || fields[0] != "@Param" {
+			continue
+		}
+		in := strings.ToLower(fields[2])
+		switch in {
+		case "path", "query", "header", "body", "formdata", "form":
+		default:
+			continue
+		}
+		typ := fields[3]
+		required := strings.EqualFold(fields[4], "true") || strings.EqualFold(fields[4], "required")
+		out = append(out, model.InputSpec{
+			Name:        fields[1],
+			Type:        typ,
+			Required:    required,
+			Description: normalizeSwaggerInputLocation(in),
+		})
+	}
+	return out
+}
+
+func normalizeSwaggerInputLocation(in string) string {
+	switch strings.ToLower(strings.TrimSpace(in)) {
+	case "formdata":
+		return "form"
+	default:
+		return in
+	}
+}
+
+func swaggerResponses(comments []string) []map[string]any {
+	var out []map[string]any
+	seen := map[int]struct{}{}
+	for _, line := range comments {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		kind := fields[0]
+		if kind != "@Success" && kind != "@Failure" && kind != "@Response" {
+			continue
+		}
+		code, err := strconv.Atoi(fields[1])
+		if err != nil || code <= 0 {
+			continue
+		}
+		if _, dup := seen[code]; dup {
+			continue
+		}
+		seen[code] = struct{}{}
+		resp := map[string]any{"status": code, "content_type": "application/json"}
+		if kind == "@Failure" || code >= 400 {
+			resp["error"] = defaultHTTPErrorName(code)
+		}
+		if len(fields) >= 4 {
+			resp["schema"] = map[string]any{"type": swaggerSchemaKind(fields[2]), "name": fields[3]}
+		}
+		out = append(out, resp)
+	}
+	return out
+}
+
+func swaggerSchemaKind(token string) string {
+	token = strings.Trim(token, "{}")
+	switch strings.ToLower(token) {
+	case "array":
+		return "array"
+	case "object":
+		return "object"
+	case "string", "integer", "number", "boolean":
+		return strings.ToLower(token)
+	default:
+		return "object"
+	}
+}
+
+func defaultHTTPErrorName(code int) string {
+	switch code {
+	case 400:
+		return "bad_request"
+	case 401:
+		return "unauthorized"
+	case 403:
+		return "forbidden"
+	case 404:
+		return "not_found"
+	case 409:
+		return "conflict"
+	case 422:
+		return "validation_error"
+	case 500:
+		return "internal_error"
+	default:
+		return "error"
+	}
+}
+
+func hasResponseDetails(d map[string]any) bool {
+	if len(d) == 0 {
+		return false
+	}
+	for _, key := range []string{"responses", "response_status", "status"} {
+		if _, ok := d[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // handlerSymbol returns the function/method symbol enclosing the first of the

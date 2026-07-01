@@ -26,6 +26,8 @@ const (
 	CategoryDB         Category = "db"
 	CategoryHTTP       Category = "http"
 	CategoryHTTPClient Category = "httpclient"
+	CategoryAI         Category = "ai"
+	CategoryDI         Category = "dependency_injection"
 	CategoryQueue      Category = "queue"
 	CategoryRPC        Category = "rpc"
 )

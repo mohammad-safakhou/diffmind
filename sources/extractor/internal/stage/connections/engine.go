@@ -283,6 +283,9 @@ func AugmentDependencies(idx *astpkg.ProjectIndex, exposures []model.Exposure, d
 				if _, exists := known[dependencyNameKey(name)]; exists {
 					continue
 				}
+				if repositorySymbolHasConcretePersistenceCall(idx, p.TargetSymbol) {
+					continue
+				}
 				dep := buildASTDerivedDBDependency(idx, name, p, minConfidence, dbCtx)
 				known[dependencyNameKey(dep.Name)] = struct{}{}
 				out = append(out, dep)
@@ -292,12 +295,43 @@ func AugmentDependencies(idx *astpkg.ProjectIndex, exposures []model.Exposure, d
 	return out
 }
 
+func repositorySymbolHasConcretePersistenceCall(idx *astpkg.ProjectIndex, symbol string) bool {
+	if idx == nil || symbol == "" {
+		return false
+	}
+	for _, call := range idx.CallGraph[symbol] {
+		raw := strings.ToLower(call.CalleeRaw)
+		switch {
+		case strings.Contains(raw, "newselect"):
+			return true
+		case strings.Contains(raw, "newinsert"):
+			return true
+		case strings.Contains(raw, "newupdate"):
+			return true
+		case strings.Contains(raw, "newdelete"):
+			return true
+		case strings.Contains(raw, ".get(") || strings.HasSuffix(raw, ".get"):
+			if strings.Contains(strings.ToLower(symbol), "cache") || strings.Contains(strings.ToLower(symbol), "redis") {
+				return true
+			}
+		case strings.Contains(raw, ".set(") || strings.HasSuffix(raw, ".set"):
+			if strings.Contains(strings.ToLower(symbol), "cache") || strings.Contains(strings.ToLower(symbol), "redis") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func resolveExposureEntrySymbolsAST(idx *astpkg.ProjectIndex, exp model.Exposure) []string {
 	if idx == nil {
 		return nil
 	}
 	for _, key := range []string{"handler", "entry_method", "service_method"} {
 		if raw, ok := exp.Details[key].(string); ok && raw != "" {
+			if syms := resolveScopedHandlerSymbolAST(idx, raw, exp.Locations); len(syms) > 0 {
+				return syms
+			}
 			if syms := resolveExactEntitySymbolAST(idx, raw); len(syms) > 0 {
 				return syms
 			}
@@ -450,6 +484,48 @@ func nameBasedSymbolLookup(idx *astpkg.ProjectIndex, name string) []string {
 	return uniqueStrings(found)
 }
 
+func resolveScopedHandlerSymbolAST(idx *astpkg.ProjectIndex, name string, locs []model.Location) []string {
+	name = strings.TrimSpace(name)
+	if idx == nil || name == "" || looksMethodLikeName(name) {
+		return nil
+	}
+	dirs := map[string]struct{}{}
+	for _, loc := range locs {
+		file := filepathSlash(loc.File)
+		if file == "" {
+			continue
+		}
+		if slash := strings.LastIndex(file, "/"); slash > 0 {
+			dirs[file[:slash]] = struct{}{}
+		}
+	}
+	if len(dirs) == 0 {
+		return nil
+	}
+	var out []string
+	for qualified, defs := range idx.Symbols {
+		for _, def := range defs {
+			if def.Name != name {
+				continue
+			}
+			switch def.Kind {
+			case astpkg.SymbolKindMethod, astpkg.SymbolKindFunction:
+			default:
+				continue
+			}
+			file := filepathSlash(def.File)
+			if slash := strings.LastIndex(file, "/"); slash > 0 {
+				if _, ok := dirs[file[:slash]]; ok {
+					out = append(out, qualified)
+					break
+				}
+			}
+		}
+	}
+	sort.Strings(out)
+	return uniqueStrings(out)
+}
+
 func resolveExactEntitySymbolAST(idx *astpkg.ProjectIndex, name string) []string {
 	name = strings.TrimSpace(name)
 	if name == "" || idx == nil {
@@ -474,7 +550,11 @@ func resolveExactEntitySymbolAST(idx *astpkg.ProjectIndex, name string) []string
 		}
 	}
 	sort.Strings(out)
-	return uniqueStrings(out)
+	out = uniqueStrings(out)
+	if !looksMethodLikeName(name) && len(out) > 1 {
+		return nil
+	}
+	return out
 }
 
 func syntheticTypedMethodSymbol(idx *astpkg.ProjectIndex, name string) string {

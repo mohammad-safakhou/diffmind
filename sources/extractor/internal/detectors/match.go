@@ -31,6 +31,15 @@ func IDsForFrameworkBinding(framework, kind, trigger, reason string) []string {
 		if kind == "rpc_endpoint" || kind == "rpc_call" {
 			return []string{"golang.rpc.grpc"}
 		}
+	case "openai":
+		if kind == "http_client" || kind == "http_call" {
+			return []string{"golang.ai.openai"}
+		}
+	case "go-wire", "wire":
+		switch kind {
+		case "http_client", "dependency_wiring":
+			return []string{"golang.di.wire"}
+		}
 	case "flask":
 		if kind == "http_handler" {
 			return []string{"python.http.flask"}
@@ -109,17 +118,16 @@ func IDsForFrameworkBinding(framework, kind, trigger, reason string) []string {
 	return nil
 }
 
-// AllowFrameworkBinding applies detector enable/disable lists to a framework
-// binding. An empty enabled list means "all known and unknown detectors are
-// enabled unless explicitly disabled". A non-empty enabled list is an allowlist.
+// AllowFrameworkBinding applies detector disable rules to a framework binding.
+// The enabled argument is intentionally ignored for backward compatibility:
+// DiffMind discovers with all registered detectors by default, and
+// diffmind-configuration.yaml may only suppress noisy detectors explicitly.
 func AllowFrameworkBinding(ids, enabled, disabled []string) bool {
+	_ = enabled
 	if matchesAny(ids, disabled) {
 		return false
 	}
-	if len(enabled) == 0 {
-		return true
-	}
-	return matchesAny(ids, enabled)
+	return true
 }
 
 func matchesAny(ids, candidates []string) bool {
