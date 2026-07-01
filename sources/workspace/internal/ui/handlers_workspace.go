@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -67,21 +68,37 @@ func (s *Server) handleWorkspace(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreErr(w, err)
 		return
 	}
-	repos, err := s.workspaceRepos(pid)
+	runGroups, err := artifacts.DiscoverDiffMindRunsByRepo(s.diffmindRunsDir)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	repos, err := s.workspaceReposWithRuns(pid, runGroups)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	current := s.latestWorkspaceRun(pid)
 	s.enrichRunGraphCounts(pid, current)
-	latest, graph := s.latestWorkspaceGraph(pid, repos)
-	live := s.liveStatusForRepos(r.Context(), repos)
+	var latest *store.RunManifest
+	var graph *ArchGraph
+	if workspaceIncludesGraph(r) {
+		latest, graph = s.latestWorkspaceGraph(pid, repos)
+	} else {
+		latest = s.latestCompletedWorkspaceRun(pid)
+		s.enrichRunGraphCounts(pid, latest)
+	}
+	live := s.cachedLiveStatusForRepos(repos)
 	teams := workspaceTeams(repos, graph)
 	runs := map[string][]artifacts.DiffMindRunInfo{}
 	for _, wr := range repos {
-		if rr, err := s.diffmindRunsForRepo(wr.Path); err == nil {
-			runs[wr.ID] = rr
+		rr := runGroups[wr.Path]
+		if len(rr) == 0 && wr.LastDiffMindRunID != "" {
+			if info, ok := artifacts.DiffMindRunByID(s.diffmindRunsDir, wr.LastDiffMindRunID); ok {
+				rr = []artifacts.DiffMindRunInfo{info}
+			}
 		}
+		runs[wr.ID] = rr
 	}
 	writeJSON(w, http.StatusOK, workspaceResponse{
 		Project: project, Repos: repos, Teams: teams, CurrentRun: current, LatestRun: latest, Graph: graph,
@@ -89,18 +106,36 @@ func (s *Server) handleWorkspace(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func workspaceIncludesGraph(r *http.Request) bool {
+	raw := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("graph")))
+	return raw != "0" && raw != "false" && raw != "metadata"
+}
+
 func (s *Server) workspaceRepos(pid string) ([]workspaceRepo, error) {
+	groups, err := artifacts.DiscoverDiffMindRunsByRepo(s.diffmindRunsDir)
+	if err != nil {
+		return nil, err
+	}
+	return s.workspaceReposWithRuns(pid, groups)
+}
+
+func (s *Server) workspaceReposWithRuns(pid string, runGroups map[string][]artifacts.DiffMindRunInfo) ([]workspaceRepo, error) {
 	repos, err := s.store.ListRepos(pid)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]workspaceRepo, 0, len(repos))
 	for _, repo := range repos {
-		runs, _ := s.diffmindRunsForRepo(repo.Path)
+		runs := runGroups[repo.Path]
 		var latest *artifacts.DiffMindRunInfo
 		if len(runs) > 0 {
 			copy := runs[0]
 			latest = &copy
+		} else if repo.LastDiffMindRunID != "" {
+			if info, ok := artifacts.DiffMindRunByID(s.diffmindRunsDir, repo.LastDiffMindRunID); ok {
+				latest = &info
+				runs = []artifacts.DiffMindRunInfo{info}
+			}
 		}
 		team := firstNonEmpty(repo.Team, "default")
 		var metrics *model.RepoMetrics
@@ -145,7 +180,10 @@ func (s *Server) latestWorkspaceGraph(pid string, repos []workspaceRepo) (*store
 		if run.Status != store.RunCompleted {
 			continue
 		}
-		graph, err := s.archGraphForRun(pid, &run)
+		graph, err := s.persistedArchGraphForRun(pid, run.ID)
+		if err != nil {
+			graph, err = s.archGraphForRun(pid, &run)
+		}
 		if err != nil {
 			continue
 		}
@@ -162,6 +200,18 @@ func (s *Server) latestWorkspaceGraph(pid string, repos []workspaceRepo) (*store
 	return nil, nil
 }
 
+func (s *Server) persistedArchGraphForRun(pid, rid string) (*ArchGraph, error) {
+	data, err := os.ReadFile(filepath.Join(s.store.RunDir(pid, rid), "graph.json"))
+	if err != nil {
+		return nil, err
+	}
+	var graph ArchGraph
+	if err := json.Unmarshal(data, &graph); err != nil {
+		return nil, err
+	}
+	return &graph, nil
+}
+
 func (s *Server) latestWorkspaceRun(pid string) *store.RunManifest {
 	runs, err := s.store.ListRuns(pid)
 	if err != nil || len(runs) == 0 {
@@ -169,6 +219,20 @@ func (s *Server) latestWorkspaceRun(pid string) *store.RunManifest {
 	}
 	run := runs[0]
 	return &run
+}
+
+func (s *Server) latestCompletedWorkspaceRun(pid string) *store.RunManifest {
+	runs, err := s.store.ListRuns(pid)
+	if err != nil {
+		return nil
+	}
+	for _, run := range runs {
+		if run.Status == store.RunCompleted {
+			copy := run
+			return &copy
+		}
+	}
+	return nil
 }
 
 func (s *Server) archGraphForRun(pid string, mft *store.RunManifest) (*ArchGraph, error) {
@@ -353,9 +417,9 @@ func gitOutput(ctx context.Context, dir string, args ...string) string {
 }
 
 func gitCommand(ctx context.Context, dir, gitURL string, args ...string) error {
-	token := os.Getenv("GITHUB_TOKEN")
-	if token != "" && strings.Contains(strings.ToLower(gitURL), "github.com") {
-		args = append([]string{"-c", "http.https://github.com/.extraheader=AUTHORIZATION: bearer " + token}, args...)
+	token := githubToken(ctx, gitURL)
+	if host := githubAuthHost(gitURL); token != "" && host != "" {
+		args = append([]string{"-c", "http.https://" + host + "/.extraheader=AUTHORIZATION: bearer " + token}, args...)
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
 	if dir != "" {
@@ -368,6 +432,76 @@ func gitCommand(ctx context.Context, dir, gitURL string, args ...string) error {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(out.String()))
 	}
 	return nil
+}
+
+func githubAuthHost(gitURL string) string {
+	u, err := url.Parse(gitURL)
+	if err != nil || u.Scheme != "https" {
+		return ""
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Host))
+	if !strings.Contains(host, "github") {
+		return ""
+	}
+	return host
+}
+
+func githubToken(ctx context.Context, raw string) string {
+	if token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); token != "" {
+		return token
+	}
+	if token := strings.TrimSpace(os.Getenv("GH_TOKEN")); token != "" {
+		return token
+	}
+	host := githubTokenHost(raw)
+	if host == "" {
+		host = "github.com"
+	}
+	tokenCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	args := []string{"auth", "token"}
+	if host != "github.com" {
+		args = append(args, "--hostname", host)
+	}
+	out, err := exec.CommandContext(tokenCtx, "gh", args...).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func githubTokenHost(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	host := ""
+	if err == nil {
+		host = strings.ToLower(strings.TrimSpace(u.Host))
+	}
+	if host == "" {
+		host = strings.ToLower(strings.TrimSpace(raw))
+	}
+	if at := strings.LastIndex(host, "@"); at >= 0 && at+1 < len(host) {
+		host = host[at+1:]
+	}
+	if colon := strings.Index(host, ":"); colon > 0 && !strings.Contains(host[:colon], "/") {
+		host = host[:colon]
+	}
+	host = strings.TrimPrefix(host, "https://")
+	host = strings.TrimPrefix(host, "http://")
+	host = strings.Trim(host, "/")
+	if host == "api.github.com" {
+		return "github.com"
+	}
+	if strings.Contains(host, "/") {
+		host = strings.Split(host, "/")[0]
+	}
+	if !strings.Contains(host, "github") {
+		return ""
+	}
+	return host
 }
 
 func (s *Server) handleStartDiffMindRepoRun(w http.ResponseWriter, r *http.Request) {
@@ -512,6 +646,26 @@ func (s *Server) liveStatusForRepos(ctx context.Context, repos []workspaceRepo) 
 	out := map[string]repoLive{}
 	for _, repo := range repos {
 		out[repo.ID] = s.cachedLiveStatus(ctx, repo.Repo)
+	}
+	return out
+}
+
+func (s *Server) cachedLiveStatusForRepos(repos []workspaceRepo) map[string]repoLive {
+	out := map[string]repoLive{}
+	now := time.Now().UTC()
+	s.liveStatusMu.Lock()
+	defer s.liveStatusMu.Unlock()
+	for _, repo := range repos {
+		key := repo.ID + "|" + repo.GitURL + "|" + repo.Path
+		if cached, ok := s.liveStatusCache[key]; ok && now.Before(cached.expiresAt) {
+			out[repo.ID] = cached.value
+			continue
+		}
+		out[repo.ID] = repoLive{
+			Provider:  firstNonEmpty(repo.GitProvider, repo.SourceType, "local"),
+			Status:    "not_checked",
+			CheckedAt: now,
+		}
 	}
 	return out
 }

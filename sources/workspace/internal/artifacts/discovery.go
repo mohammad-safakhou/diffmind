@@ -87,6 +87,24 @@ func LatestDiffMindRunForRepo(runsDir, repoPath string) (DiffMindRunInfo, bool, 
 	return runs[0], true, nil
 }
 
+// DiffMindRunByID reads one central DiffMind run by id. This is used as a
+// stable fallback when a project repo stores last_diffmind_run_id but the run
+// manifest's repo_path no longer matches the current local checkout path.
+func DiffMindRunByID(runsDir, runID string) (DiffMindRunInfo, bool) {
+	runID = filepath.Base(runID)
+	if runID == "." || runID == string(filepath.Separator) {
+		return DiffMindRunInfo{}, false
+	}
+	dir := filepath.Join(runsDir, runID)
+	info, ok := readRunManifest(dir)
+	if !ok {
+		return DiffMindRunInfo{}, false
+	}
+	info.RunID = runID
+	info.Dir = dir
+	return info, true
+}
+
 // ReadRunDir reads a specific DiffMind run directory into a ServiceArchitecture.
 // Used by the run manager once a user has selected a run per repo.
 func ReadRunDir(runDir string) (*model.ServiceArchitecture, error) {

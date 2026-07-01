@@ -36,6 +36,7 @@ function ServiceDetail({ s }) {
         ['Freshness', s.diffmind_freshness || 'unknown'],
       ]} />
       {list('HTTP inbound', s.http_routes)}
+      {list('RPC inbound', s.rpc_endpoints)}
       {list('Queue consumers', s.queue_consumers)}
       {list('Scheduled jobs', s.scheduled_jobs)}
       {list('CLI commands', s.cli_commands)}
@@ -152,9 +153,10 @@ function GroupedFactDetail({ d }) {
 function ObjectCard({ item }) {
   const details = item?.details || {}
   const rows = compactRows([
+    ['ID', item?.id || details.id],
     ['Name', item?.name],
     ['Service', item?.service],
-    ['Kind', details.kind],
+    ['Kind', item?.kind || details.kind],
     ['Method', details.method],
     ['Path', details.path],
     ['URL template', details.url_template],
@@ -176,8 +178,8 @@ function ObjectCard({ item }) {
       <DetailJSON title="Responses" value={details.responses} />
       <DetailJSON title="Target" value={details.target} />
       <DetailJSON title="Query" value={details.query} />
-      <DetailJSON title="ORM" value={details.orm} />
       <DetailJSON title="Columns" value={details.columns} />
+      <DetailJSON title="ORM" value={details.orm} />
       <DetailRefs title="Observations" refs={details.observations} />
       <DetailRefs title="Evidence refs" refs={details.evidence_refs} />
     </div>

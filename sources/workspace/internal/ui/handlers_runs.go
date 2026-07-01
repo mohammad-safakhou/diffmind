@@ -92,6 +92,14 @@ func (s *Server) enrichRunGraphCounts(pid string, run *store.RunManifest) {
 	if run == nil || run.Status != store.RunCompleted {
 		return
 	}
+	if run.ServiceCount > 0 && run.EdgeCount > 0 && run.GraphQuality != nil {
+		return
+	}
+	if graph, err := s.persistedArchGraphForRun(pid, run.ID); err == nil && graph != nil {
+		run.ServiceCount = len(graph.Services)
+		run.EdgeCount = len(graph.Edges)
+		return
+	}
 	graph, err := s.archGraphForRun(pid, run)
 	if err != nil || graph == nil {
 		return
@@ -135,6 +143,16 @@ func (s *Server) handleRunGraph(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreErr(w, err)
 		return
 	}
+	data, err := os.ReadFile(filepath.Join(s.store.RunDir(pid, rid), "graph.json"))
+	if err == nil {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(data)
+		return
+	}
+	if !os.IsNotExist(err) {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	if graph, err := s.archGraphForRun(pid, run); err == nil {
 		runDir := s.store.RunDir(pid, rid)
 		if data, err := json.MarshalIndent(graph, "", "  "); err == nil {
@@ -144,17 +162,7 @@ func (s *Server) handleRunGraph(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	data, err := os.ReadFile(filepath.Join(s.store.RunDir(pid, rid), "graph.json"))
-	if err != nil {
-		if os.IsNotExist(err) {
-			writeErr(w, http.StatusNotFound, errors.New("graph not available yet"))
-			return
-		}
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write(data)
+	writeErr(w, http.StatusNotFound, errors.New("graph not available yet"))
 }
 
 // handleRunEvents streams run progress over SSE.

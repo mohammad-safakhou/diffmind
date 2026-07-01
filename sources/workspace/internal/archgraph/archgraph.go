@@ -64,6 +64,7 @@ type ServiceNode struct {
 	DiffMindFreshness string              `json:"diffmind_freshness,omitempty"`
 	RepoMetrics       *model.RepoMetrics  `json:"repo_metrics,omitempty"`
 	HTTPRoutes        []EntitySummary     `json:"http_routes"`
+	RPCEndpoints      []EntitySummary     `json:"rpc_endpoints"`
 	QueueConsumers    []EntitySummary     `json:"queue_consumers"`
 	ScheduledJobs     []EntitySummary     `json:"scheduled_jobs"`
 	Webhooks          []EntitySummary     `json:"webhooks"`
@@ -74,10 +75,14 @@ type ServiceNode struct {
 }
 
 type ConnectionSummary struct {
+	FromID           string         `json:"from_id,omitempty"`
 	FromName         string         `json:"from_name"`
 	FromType         string         `json:"from_type"`
+	ToID             string         `json:"to_id,omitempty"`
 	ToName           string         `json:"to_name"`
 	ToType           string         `json:"to_type"`
+	FlowID           string         `json:"flow_id,omitempty"`
+	EntrypointID     string         `json:"entrypoint_id,omitempty"`
 	Summary          string         `json:"summary"`
 	Kind             string         `json:"kind,omitempty"`
 	Reachability     string         `json:"reachability,omitempty"`
@@ -120,13 +125,15 @@ type GraphEdge struct {
 	FromPort   string          `json:"from_port"`
 	To         string          `json:"to"`
 	ToPort     string          `json:"to_port"`
-	Type       string          `json:"type"` // "http", "queue_publish", "queue_consume", "database", "cache", "scheduler"
+	Type       string          `json:"type"` // "http", "rpc", "queue_publish", "queue_consume", "database", "cache", "scheduler"
 	Label      string          `json:"label"`
 	Details    []EntitySummary `json:"details"`
 	Confidence float64         `json:"confidence"`
 }
 
 type EntitySummary struct {
+	ID      string         `json:"id,omitempty"`
+	Kind    string         `json:"kind,omitempty"`
 	Name    string         `json:"name"`
 	Summary string         `json:"summary"`
 	Details map[string]any `json:"details,omitempty"`
@@ -140,6 +147,7 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 
 	knownServices := serviceAliasMap(serviceRepoDirs)
 	allOutboundHTTP := map[string][]outboundRef{} // source svc -> targets
+	allOutboundRPC := map[string][]outboundRef{}  // source svc -> targets
 	allQueuePublish := map[string][]queueRef{}    // source svc -> queues
 	allQueueConsume := map[string][]queueRef{}    // source svc -> queues
 	allDBs := map[string][]dbRef{}                // source svc -> databases
@@ -154,10 +162,17 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 			Name:  name,
 			Known: true,
 		}
+		meta := serviceMetadataForRun(name, diffmindDir)
+		svc.RepoPath = meta.repoPath
+		svc.Team = meta.team
+		svc.RepoMetrics = meta.repoMetrics
 
 		// Extract exposures
 		for _, item := range exposures["http_route"] {
 			svc.HTTPRoutes = append(svc.HTTPRoutes, toSummary(item))
+		}
+		for _, item := range exposures["rpc_endpoint"] {
+			svc.RPCEndpoints = append(svc.RPCEndpoints, toSummary(item))
 		}
 		for _, item := range exposures["queue_consumer"] {
 			svc.QueueConsumers = append(svc.QueueConsumers, toSummary(item))
@@ -179,8 +194,15 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 
 		// Extract dependencies
 		for _, item := range dependencies["outbound_http"] {
-			target := graphHTTPTarget(item)
+			target := graphServiceTarget(item)
 			allOutboundHTTP[name] = append(allOutboundHTTP[name], outboundRef{
+				target:    target,
+				endpoints: toSummary(item),
+			})
+		}
+		for _, item := range dependencies["outbound_rpc"] {
+			target := graphServiceTarget(item)
+			allOutboundRPC[name] = append(allOutboundRPC[name], outboundRef{
 				target:    target,
 				endpoints: toSummary(item),
 			})
@@ -226,7 +248,7 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 		}
 
 		// Collect raw dependencies for sidebar display
-		for _, depType := range []string{"outbound_http", "queue_publish", "db_operation", "cache_operation"} {
+		for _, depType := range []string{"outbound_http", "outbound_rpc", "queue_publish", "db_operation", "cache_operation"} {
 			for _, item := range dependencies[depType] {
 				svc.Dependencies = append(svc.Dependencies, toSummary(item))
 			}
@@ -234,7 +256,7 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 
 		// Build connection summaries by matching IDs
 		expByID := map[string]string{}
-		for _, expType := range []string{"http_route", "queue_consumer", "scheduled_job", "webhook", "cli_command"} {
+		for _, expType := range []string{"http_route", "rpc_endpoint", "queue_consumer", "scheduled_job", "webhook", "cli_command"} {
 			for _, item := range exposures[expType] {
 				if id := getString(item, "id"); id != "" {
 					expByID[id] = getString(item, "name")
@@ -242,7 +264,7 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 			}
 		}
 		depByID := map[string]string{}
-		for _, depType := range []string{"outbound_http", "queue_publish", "db_operation", "cache_operation"} {
+		for _, depType := range []string{"outbound_http", "outbound_rpc", "queue_publish", "db_operation", "cache_operation"} {
 			for _, item := range dependencies[depType] {
 				if id := getString(item, "id"); id != "" {
 					depByID[id] = getString(item, "name")
@@ -263,12 +285,19 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 					toName = toID
 				}
 				svc.Connections = append(svc.Connections, ConnectionSummary{
+					FromID:   fromID,
 					FromName: fromName,
 					FromType: getString(c, "from_type"),
+					ToID:     toID,
 					ToName:   toName,
 					ToType:   getString(c, "to_type"),
-					Summary:  getString(c, "summary"),
-					Kind:     firstNonEmpty(getString(details, "kind"), getString(c, "summary")),
+					FlowID:   getString(c, "id"),
+					EntrypointID: firstNonEmpty(
+						getString(details, "entrypoint"),
+						fromID,
+					),
+					Summary: getString(c, "summary"),
+					Kind:    firstNonEmpty(getString(details, "kind"), getString(c, "summary")),
 					Reachability: firstNonEmpty(
 						getString(details, "reachability"),
 						getString(getMap(c, "condition"), "kind"),
@@ -291,6 +320,7 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 	dbMap := map[string]*DatabaseNode{}
 	resourceEdges := map[string]*GraphEdge{}
 	httpEdges := map[string]*GraphEdge{}
+	rpcEdges := map[string]*GraphEdge{}
 
 	// Databases
 	for _, svcName := range sortedStringKeys(allDBs) {
@@ -385,6 +415,30 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 		g.Edges = append(g.Edges, httpEdges[key])
 	}
 
+	// Outbound RPC/gRPC
+	for _, svcName := range sortedStringKeys(allOutboundRPC) {
+		targets := allOutboundRPC[svcName]
+		sortOutboundRefs(targets)
+		for _, t := range targets {
+			targetName := t.target
+			if canonical, ok := canonicalKnownService(knownServices, targetName); ok {
+				targetName = canonical
+			} else {
+				if _, ok := externalSvcs[targetName]; !ok {
+					externalSvcs[targetName] = &ExternalNode{Name: targetName, Kind: "rpc"}
+				}
+			}
+			label := strings.ToUpper(firstNonEmpty(getString(t.endpoints.Details, "protocol"), getString(t.endpoints.Details, "platform"), "rpc"))
+			if strings.EqualFold(label, "grpc") {
+				label = "gRPC"
+			}
+			addTargetEdge(rpcEdges, svcName, targetName, "rpc", label, t.endpoints)
+		}
+	}
+	for _, key := range sortedStringKeys(rpcEdges) {
+		g.Edges = append(g.Edges, rpcEdges[key])
+	}
+
 	// Phase 3: Assemble final lists
 	for _, n := range externalSvcs {
 		g.ExternalNodes = append(g.ExternalNodes, n)
@@ -474,12 +528,43 @@ type dbRef struct {
 	summary   EntitySummary
 }
 
+type serviceRunMetadata struct {
+	team        string
+	repoPath    string
+	repoMetrics *model.RepoMetrics
+}
+
 // ---- Data Loading ----
 
 // loadDiffMindData reads the exposures/dependencies/connections JSON directories
 // from a DiffMind run directory.
 func loadDiffMindData(diffmindDir string) (exposures, dependencies, connections map[string][]map[string]any) {
 	return artifacts.ReadDiffMindFileMaps(diffmindDir)
+}
+
+func serviceMetadataForRun(serviceName, runDir string) serviceRunMetadata {
+	meta := serviceRunMetadata{}
+	if doc, err := artifacts.ReadDiffMind protocol(runDir); err == nil && doc != nil {
+		meta.team = firstNonEmpty(doc.Service.Team, meta.team)
+		meta.repoPath = firstNonEmpty(doc.Repository.Path, meta.repoPath)
+	}
+	data, err := os.ReadFile(filepath.Join(runDir, "run_manifest.json"))
+	if err != nil {
+		meta.team = firstNonEmpty(meta.team, "default")
+		return meta
+	}
+	var manifest model.RunManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		meta.team = firstNonEmpty(meta.team, "default")
+		return meta
+	}
+	meta.team = firstNonEmpty(meta.team, manifest.Team, "default")
+	meta.repoPath = firstNonEmpty(meta.repoPath, manifest.RepoPath)
+	meta.repoMetrics = manifest.RepoMetrics
+	if meta.team == "" && strings.TrimSpace(serviceName) != "" {
+		meta.team = "default"
+	}
+	return meta
 }
 
 // ---- Helpers ----
@@ -517,10 +602,17 @@ func extractOperations(item map[string]any) string {
 }
 
 func toSummary(item map[string]any) EntitySummary {
+	details := getMap(item, "details")
+	kind := getString(item, "type")
+	if nestedKind := getString(details, "kind"); nestedKind != "" {
+		kind = nestedKind
+	}
 	return EntitySummary{
+		ID:      getString(item, "id"),
+		Kind:    kind,
 		Name:    getString(item, "name"),
 		Summary: getString(item, "summary"),
-		Details: getMap(item, "details"),
+		Details: details,
 	}
 }
 
@@ -553,7 +645,7 @@ func getDetails(item map[string]any) map[string]string {
 	return out
 }
 
-func graphHTTPTarget(item map[string]any) string {
+func graphServiceTarget(item map[string]any) string {
 	d := getDetails(item)
 	details := getMap(item, "details")
 	nestedTarget := getMap(details, "target")
@@ -567,17 +659,19 @@ func graphHTTPTarget(item map[string]any) string {
 		d["url_template"],
 		d["url"],
 		d["base_url"],
+		d["service"],
+		d["service_name"],
 	}
 	for _, raw := range candidates {
-		target := cleanHTTPServiceTarget(raw)
+		target := cleanServiceTarget(raw)
 		if target != "" {
 			return target
 		}
 	}
-	return "unresolved-http-target"
+	return "unresolved-service-target"
 }
 
-func cleanHTTPServiceTarget(raw string) string {
+func cleanServiceTarget(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || isHTTPOperationLabel(raw) || strings.HasPrefix(raw, "/") || LooksLikeHTTPMethodSlug(raw) {
 		return ""

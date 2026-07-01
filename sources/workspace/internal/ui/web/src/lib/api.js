@@ -42,7 +42,12 @@ export const importRepos = (pid, body) => api(`/api/projects/${pid}/repo-imports
 export const patchRepo = (pid, rid, r) => api(`/api/projects/${pid}/repos/${rid}`, { method: 'PATCH', body: j(r) })
 export const deleteRepo = (pid, rid) => api(`/api/projects/${pid}/repos/${rid}`, { method: 'DELETE' })
 export const repoSuggestions = (pid) => api(`/api/projects/${pid}/repo-suggestions`)
-export const getWorkspace = (pid) => api(`/api/projects/${pid}/workspace`)
+export const getWorkspace = (pid, opts = {}) => {
+  const params = new URLSearchParams()
+  if (opts.graph === false) params.set('graph', '0')
+  const qs = params.toString()
+  return api(`/api/projects/${pid}/workspace${qs ? `?${qs}` : ''}`)
+}
 export const syncRepo = (pid, rid) => api(`/api/projects/${pid}/repos/${rid}/sync`, { method: 'POST' })
 export const startRepoDiffMind = (pid, rid, options = {}) => api(`/api/projects/${pid}/repos/${rid}/diffmind-runs`, { method: 'POST', body: j({ options }) })
 export const startDiffMindBatch = (pid, body = {}) => api(`/api/projects/${pid}/diffmind-runs/batch`, { method: 'POST', body: j(body) })

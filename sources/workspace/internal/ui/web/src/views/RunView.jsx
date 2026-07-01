@@ -134,6 +134,7 @@ function Legend() {
       <div class="legend-row"><span class="legend-swatch" style="background:#1a1510;border:1.5px solid #f5943a;border-radius:999px"></span>Database/cache</div>
       <div class="legend-row"><span class="legend-swatch" style="background:#151118;border:1.5px solid #f0c040;border-radius:999px"></span>Scheduler</div>
       <div class="legend-row" style="margin-top:4px"><span class="legend-line" style="background:#3b9eff"></span>HTTP</div>
+      <div class="legend-row"><span class="legend-line" style="background:#9b7cf9"></span>RPC/gRPC</div>
       <div class="legend-row"><span class="legend-line" style="background:#22c997"></span>Queue</div>
       <div class="legend-row"><span class="legend-line" style="background:#f5943a"></span>Database</div>
       <div class="legend-row"><span class="legend-line" style="background:#ef5455"></span>Cache</div>
@@ -173,6 +174,7 @@ function ServiceDetail({ s }) {
     <div>
       <KV rows={[['Service', s.name]]} />
       {list('HTTP routes', s.http_routes)}
+      {list('RPC endpoints', s.rpc_endpoints)}
       {list('Queue consumers', s.queue_consumers)}
       {list('Scheduled jobs', s.scheduled_jobs)}
       {list('Webhooks', s.webhooks)}

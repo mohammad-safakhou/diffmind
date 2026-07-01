@@ -255,3 +255,44 @@ func TestDiffMindRunsDiscoveryAPI(t *testing.T) {
 	}
 
 }
+
+func TestWorkspaceReposUseStoredDiffMindRunIDFallback(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	beRuns := t.TempDir()
+	runDir := filepath.Join(beRuns, "20260101T000000Z")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "run_manifest.json"), []byte(`{"run_id":"20260101T000000Z","repo_path":"/old/checkout/path","team":"platform","started_at":"2026-01-01T00:00:00Z","repo_metrics":{"total_loc":42}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := st.CreateProject(store.Project{Name: "fallback"})
+	if _, err := st.CreateRepo(p.ID, store.Repo{
+		Name:              "svc",
+		Path:              "/current/checkout/path",
+		Kind:              "service_repo",
+		LastDiffMindRunID: "20260101T000000Z",
+		Team:              "default",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := runmgr.New(st, util.NewLogger(util.LevelInfo), beRuns)
+	srv := New(st, mgr, beRuns, "127.0.0.1", 0, util.NewLogger(util.LevelInfo))
+	repos, err := srv.workspaceRepos(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repos) != 1 {
+		t.Fatalf("repos = %d, want 1", len(repos))
+	}
+	if repos[0].LatestDiffMindRun == nil || repos[0].LatestDiffMindRun.RunID != "20260101T000000Z" {
+		t.Fatalf("latest fallback not populated: %+v", repos[0].LatestDiffMindRun)
+	}
+	if repos[0].EffectiveTeam != "platform" {
+		t.Fatalf("effective team = %q, want platform", repos[0].EffectiveTeam)
+	}
+	if repos[0].RepoMetrics == nil || repos[0].RepoMetrics.TotalLOC != 42 {
+		t.Fatalf("repo metrics not copied from fallback run: %+v", repos[0].RepoMetrics)
+	}
+}

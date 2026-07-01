@@ -264,6 +264,98 @@ aliases:
 	t.Fatalf("expected alias target to join known service, edges=%+v external=%+v", graph.Edges, graph.ExternalNodes)
 }
 
+func TestBuildArchitectureGraphRendersDiffMind protocolRPCCalls(t *testing.T) {
+	root := t.TempDir()
+	callerRun := filepath.Join(root, "game-service")
+	metadataRun := filepath.Join(root, "metadata")
+	writeDiffMind protocolRun(t, metadataRun, `{
+  "schema": "diffmind.service.v1",
+  "service": {"id": "metadata", "name": "metadata"},
+  "objects": {
+    "rpc_endpoints": [
+      {
+        "id": "rpc.indicator_calculate",
+        "kind": "rpc_endpoint",
+        "name": "IndicatorService/Calculate",
+        "protocol": "grpc",
+        "service": "IndicatorService",
+        "method": "Calculate",
+        "status": "confirmed",
+        "confidence": "high",
+        "origin": "deterministic"
+      }
+    ]
+  },
+  "flows": [],
+  "observations": [],
+  "evidence": []
+}`)
+	writeDiffMind protocolRun(t, callerRun, `{
+  "schema": "diffmind.service.v1",
+  "service": {"id": "game-service", "name": "game-service"},
+  "objects": {
+    "rpc_calls": [
+      {
+        "id": "rpccall.metadata_get",
+        "kind": "rpc_call",
+        "name": "metadata.Get",
+        "protocol": "grpc",
+        "service": "metadata",
+        "method": "Get",
+        "target": {"type": "service", "ref": "service.metadata", "unresolved": false},
+        "status": "confirmed",
+        "confidence": "high",
+        "origin": "deterministic"
+      }
+    ]
+  },
+  "flows": [],
+  "observations": [],
+  "evidence": []
+}`)
+
+	graph := buildArchitectureGraph("run-1", map[string]string{
+		"game-service": callerRun,
+		"metadata":         metadataRun,
+	})
+	foundEdge := false
+	foundDependency := false
+	foundEndpoint := false
+	for _, edge := range graph.Edges {
+		if edge.Type == "rpc" && edge.From == "game-service" && edge.To == "metadata" && edge.Label == "gRPC" {
+			foundEdge = true
+			if len(edge.Details) != 1 || edge.Details[0].Name != "metadata.Get" {
+				t.Fatalf("expected RPC edge details to carry rpc call, got %+v", edge)
+			}
+		}
+	}
+	for _, svc := range graph.Services {
+		switch svc.Name {
+		case "game-service":
+			for _, dep := range svc.Dependencies {
+				if dep.Name == "metadata.Get" {
+					foundDependency = true
+				}
+			}
+		case "metadata":
+			for _, endpoint := range svc.RPCEndpoints {
+				if endpoint.Name == "IndicatorService/Calculate" {
+					foundEndpoint = true
+				}
+			}
+		}
+	}
+	if !foundEdge {
+		t.Fatalf("expected gRPC edge to known service, edges=%+v external=%+v", graph.Edges, graph.ExternalNodes)
+	}
+	if !foundDependency {
+		t.Fatalf("expected RPC call in service dependency details, services=%+v", graph.Services)
+	}
+	if !foundEndpoint {
+		t.Fatalf("expected RPC endpoint in service entrypoint details, services=%+v", graph.Services)
+	}
+}
+
 func TestArchitectureGraphCarriesDiffMind protocolFlowDetails(t *testing.T) {
 	root := t.TempDir()
 	runDir := filepath.Join(root, "orders")
@@ -333,6 +425,12 @@ func TestArchitectureGraphCarriesDiffMind protocolFlowDetails(t *testing.T) {
 	}
 	if conns[0].Kind != "request_flow" || conns[0].DataDependencies == nil || conns[0].Edges == nil {
 		t.Fatalf("expected DiffMind protocol flow details in connection summary, got %+v", conns[0])
+	}
+	if conns[0].FromID != "http.create_order" || conns[0].ToID != "dbq.insert_order" || conns[0].FlowID != "flow.create_order" || conns[0].EntrypointID != "http.create_order" {
+		t.Fatalf("expected stable flow/object ids in connection summary, got %+v", conns[0])
+	}
+	if got := graph.Services[0].HTTPRoutes[0]; got.ID != "http.create_order" || got.Kind != "http_endpoint" {
+		t.Fatalf("expected entity summary to expose DiffMind protocol id/kind, got %+v", got)
 	}
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
 import { navigate } from '../lib/router.js'
-import { createRepo, createRun, deleteRepo, getDiffMindConfigurationYaml, getWorkspace, importRepos, putDiffMindConfigurationYaml, startDiffMindBatch, startRepoDiffMind, syncRepo } from '../lib/api.js'
+import { createRepo, createRun, deleteRepo, getDiffMindConfigurationYaml, getRunArchGraph, getWorkspace, importRepos, putDiffMindConfigurationYaml, startDiffMindBatch, startRepoDiffMind, syncRepo } from '../lib/api.js'
 import { Modal, ConfirmDialog } from '../components/Modal.jsx'
 import { GraphCanvas } from './GraphCanvas.jsx'
 import { GraphDetailBody } from './GraphDetails.jsx'
@@ -14,6 +14,10 @@ export function ProjectWorkspace({ pid }) {
   const [busy, setBusy] = useState('')
   const [pendingDiffMind, setPendingDiffMind] = useState({})
   const [pendingGraphRun, setPendingGraphRun] = useState(null)
+  const [graphData, setGraphData] = useState(null)
+  const [graphRunID, setGraphRunID] = useState('')
+  const [graphLoading, setGraphLoading] = useState(false)
+  const [graphError, setGraphError] = useState('')
   const [addOpen, setAddOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [batchOpen, setBatchOpen] = useState(false)
@@ -23,7 +27,7 @@ export function ProjectWorkspace({ pid }) {
 
   const refresh = async () => {
     try {
-      const next = await getWorkspace(pid)
+      const next = await getWorkspace(pid, { graph: false })
       setWorkspace(next)
       setSelected((cur) => {
         if (cur?.kind === 'repo') {
@@ -60,6 +64,31 @@ export function ProjectWorkspace({ pid }) {
     catch (e) { setError(e.message) }
   }
   useEffect(() => { refresh() }, [pid])
+  useEffect(() => {
+    const run = workspace?.latest_run
+    if (!run?.id || run.status !== 'completed') {
+      setGraphData(null)
+      setGraphRunID('')
+      return
+    }
+    if (graphRunID === run.id && graphData) return
+    let cancelled = false
+    setGraphLoading(true)
+    setGraphError('')
+    getRunArchGraph(pid, run.id)
+      .then((graph) => {
+        if (cancelled) return
+        setGraphData(graph)
+        setGraphRunID(run.id)
+      })
+      .catch((e) => {
+        if (!cancelled) setGraphError(e.message)
+      })
+      .finally(() => {
+        if (!cancelled) setGraphLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [pid, workspace?.latest_run?.id, workspace?.latest_run?.status])
   const repos = (workspace?.repos || []).map((repo) => {
     const pending = pendingDiffMind[repo.id]
     if (!pending) return repo
@@ -75,7 +104,7 @@ export function ProjectWorkspace({ pid }) {
     return () => clearInterval(t)
   }, [pid, hasRunningDiffMind, graphIsRunning])
 
-  const graph = workspace?.graph
+  const graph = graphData || workspace?.graph
   const selectedRepo = selected?.kind === 'repo' ? selected.data : null
   const selectedService = selected?.kind === 'service' ? selected.data : null
   const live = workspace?.live_status || {}
@@ -84,15 +113,18 @@ export function ProjectWorkspace({ pid }) {
     setBusy('graph')
     try {
       const serviceRepos = repos.filter((r) => (r.kind || 'service_repo') !== 'infra_repo')
-      const missing = serviceRepos.filter((r) => !isGeneratedDiffMindRun(r.latest_diffmind_run))
-      if (missing.length) {
-        throw new Error(`Cannot build full graph. Missing generated DiffMind runs for: ${missing.map((r) => r.name).join(', ')}. Run DiffMind deterministic for those repos first.`)
+      const available = serviceRepos
+        .map((r) => ({ repo: r, runID: diffmindRunID(r) }))
+        .filter((r) => r.runID)
+      const missing = serviceRepos.filter((r) => !diffmindRunID(r))
+      if (!available.length) {
+        throw new Error('No service repositories have generated DiffMind runs yet. Run DiffMind deterministic on at least one repo first.')
       }
-      const refs = serviceRepos.map((r) => ({ repo_id: r.id, diffmind_run_id: r.latest_diffmind_run.run_id }))
-      if (!refs.length) throw new Error('No service repositories are available for graph build.')
+      const refs = available.map(({ repo, runID }) => ({ repo_id: repo.id, diffmind_run_id: runID }))
       const run = await createRun(pid, { repos: refs })
       setPendingGraphRun(run)
-      setNotice(`Graph build ${run.id} started from ${refs.length} DiffMind runs. Status refreshes every 2 seconds while it is running.`)
+      const skipped = missing.length ? ` ${missing.length} repos without DiffMind output were skipped.` : ''
+      setNotice(`Graph build ${run.id} started from ${refs.length} DiffMind runs.${skipped} Status refreshes every 2 seconds while it is running.`)
       setTimeout(refresh, 500)
     } catch (e) { setError(e.message) }
     finally { setBusy('') }
@@ -144,7 +176,7 @@ export function ProjectWorkspace({ pid }) {
         </div>
         <div class="workspace-actions">
           <button class="btn ghost" onClick={refresh}>Refresh</button>
-          <button class="btn ghost" onClick={() => setImportOpen(true)}>Import org</button>
+          <button class="btn ghost" onClick={() => setImportOpen(true)}>Import repos</button>
           <button class="btn ghost" onClick={() => setAddOpen(true)}>Add repo</button>
           <button class="btn ghost" disabled={!repos.length || hasRunningDiffMind || busy === 'batch-diffmind'} onClick={() => setBatchOpen(true)}>{busy === 'batch-diffmind' ? 'Starting batch...' : 'Run DiffMind all'}</button>
           <button class="btn" disabled={busy === 'graph' || graphIsRunning} onClick={graphRun}>{graphIsRunning ? 'Building graph...' : busy === 'graph' ? 'Starting...' : 'Build graph'}</button>
@@ -152,6 +184,7 @@ export function ProjectWorkspace({ pid }) {
       </header>
 
       {error && <div class="workspace-error banner error">{error}</div>}
+      {graphError && <div class="workspace-error banner error">Graph load failed: {graphError}</div>}
       {currentGraphRun?.status === 'failed' && currentGraphRun.error && <div class="workspace-error banner error">Graph build failed: {currentGraphRun.error}</div>}
       {notice && <div class="workspace-notice banner ok">{notice}</div>}
       <GraphQualityBanner quality={(currentGraphRun?.graph_quality || workspace?.latest_run?.graph_quality)} />
@@ -178,7 +211,11 @@ export function ProjectWorkspace({ pid }) {
       </aside>
 
       <main class="workspace-board">
-        {graph ? <GraphCanvas graph={graph} onSelect={setSelected} /> : <EmptyBoard repos={repos} onAdd={() => setAddOpen(true)} />}
+        {graph
+          ? <GraphCanvas graph={graph} onSelect={setSelected} focusedServiceName={selectedService?.name || selectedRepo?.name || ''} />
+          : graphLoading
+            ? <GraphLoading run={workspace?.latest_run} />
+            : <EmptyBoard repos={repos} onAdd={() => setAddOpen(true)} />}
       </main>
 
       <aside class="workspace-right">
@@ -272,8 +309,8 @@ function GraphActivity({ run }) {
   )
 }
 
-function isGeneratedDiffMindRun(run) {
-  return Boolean(run?.run_id)
+function diffmindRunID(repo) {
+  return repo?.latest_diffmind_run?.run_id || repo?.last_diffmind_run_id || ''
 }
 
 function isGraphRunActive(run) {
@@ -286,6 +323,17 @@ function EmptyBoard({ repos, onAdd }) {
       <h2>Graph workspace</h2>
       <p>{repos.length ? 'Run DiffMind, then build a graph from the latest repository facts.' : 'Add repositories to start building the company graph.'}</p>
       <button class="btn" onClick={onAdd}>Add repository</button>
+    </div>
+  )
+}
+
+function GraphLoading({ run }) {
+  return (
+    <div class="workspace-empty graph-loading-panel">
+      <div class="activity-spinner" />
+      <h2>Loading graph</h2>
+      <p>Opening project metadata first. The large graph loads separately so the workspace stays responsive.</p>
+      {run?.id && <code>{run.id}</code>}
     </div>
   )
 }
@@ -418,52 +466,92 @@ function AddRepoModal({ pid, onClose, onDone }) {
 }
 
 function ImportOrgModal({ busy, onClose, onImport }) {
+  const [provider, setProvider] = useState('github')
   const [org, setOrg] = useState('')
+  const [root, setRoot] = useState('')
   const [apiBase, setAPIBase] = useState('')
   const [include, setInclude] = useState('')
   const [exclude, setExclude] = useState('')
   const [team, setTeam] = useState('default')
   const [limit, setLimit] = useState('')
   const [clone, setClone] = useState(true)
+  const [cloneTransport, setCloneTransport] = useState('auto')
+  const [concurrency, setConcurrency] = useState('4')
+  const [recursive, setRecursive] = useState(false)
+  const [maxDepth, setMaxDepth] = useState('2')
   const [dryRun, setDryRun] = useState(false)
   const [error, setError] = useState('')
   const submit = async () => {
     setError('')
     try {
       await onImport({
-        provider: 'github',
+        provider,
         org,
+        root,
         api_base: apiBase,
         include,
         exclude,
         team,
         limit: limit === '' ? 0 : Number(limit),
         clone,
+        clone_transport: cloneTransport,
+        concurrency: concurrency === '' ? 4 : Number(concurrency),
+        recursive,
+        max_depth: maxDepth === '' ? 2 : Number(maxDepth),
         dry_run: dryRun,
-        concurrency: 4,
       })
     } catch (e) { setError(e.message) }
   }
   return (
-    <Modal title="Import GitHub organization" onClose={onClose} wide>
-      <div class="option-grid">
-        <TextField label="GitHub org" value={org} onInput={setOrg} placeholder="company" />
-        <TextField label="API base" value={apiBase} onInput={setAPIBase} placeholder="https://api.github.com" />
-        <TextField label="Team" value={team} onInput={setTeam} />
+    <Modal title="Import repositories" onClose={onClose} wide>
+      <div class="mode-toggle">
+        <button class={provider === 'github' ? 'active' : ''} onClick={() => setProvider('github')}>GitHub org</button>
+        <button class={provider === 'local' ? 'active' : ''} onClick={() => setProvider('local')}>Local directory</button>
       </div>
+      {provider === 'github' ? (
+        <div class="option-grid">
+          <TextField label="GitHub org" value={org} onInput={setOrg} placeholder="company" />
+          <TextField label="API base" value={apiBase} onInput={setAPIBase} placeholder="https://api.github.com" />
+          <TextField label="Team" value={team} onInput={setTeam} />
+        </div>
+      ) : (
+        <div class="option-grid">
+          <TextField label="Root directory" value={root} onInput={setRoot} placeholder="/Users/me/repos/company" />
+          <TextField label="Team" value={team} onInput={setTeam} />
+          <NumberField label="Max depth" value={maxDepth} onInput={setMaxDepth} min="1" max="8" />
+        </div>
+      )}
       <div class="option-grid">
         <TextField label="Include regex" value={include} onInput={setInclude} placeholder=".*-api$" />
         <TextField label="Exclude regex" value={exclude} onInput={setExclude} placeholder="archive|template" />
         <NumberField label="Limit" value={limit} onInput={setLimit} placeholder="0 = all" min="0" />
       </div>
       <div class="check-grid">
-        <Check label="Clone after import" checked={clone} onInput={setClone} />
+        {provider === 'github' && <Check label="Clone after import" checked={clone} onInput={setClone} />}
+        {provider === 'local' && <Check label="Recursive scan" checked={recursive} onInput={setRecursive} />}
         <Check label="Dry run only" checked={dryRun} onInput={setDryRun} />
       </div>
-      <p class="muted small">Uses <code>GITHUB_TOKEN</code> when set. Imported repos are added as service repositories.</p>
+      {provider === 'github' && (
+        <div class="option-grid">
+          <div class="field">
+            <label>Clone transport</label>
+            <select value={cloneTransport} onInput={(e) => setCloneTransport(e.currentTarget.value)}>
+              <option value="auto">Auto</option>
+              <option value="https">HTTPS</option>
+              <option value="ssh">SSH</option>
+            </select>
+          </div>
+          <NumberField label="Clone concurrency" value={concurrency} onInput={setConcurrency} min="1" max="16" />
+        </div>
+      )}
+      <p class="muted small">
+        {provider === 'github'
+          ? <>Uses <code>GITHUB_TOKEN</code>, <code>GH_TOKEN</code>, or <code>gh auth token</code>. Auto prefers HTTPS when a token is available and SSH otherwise.</>
+          : <>Scans for directories containing <code>.git</code>. Imported repos keep their existing local paths; no clone is performed.</>}
+      </p>
       {error && <div class="banner error">{error}</div>}
       <div class="actions">
-        <button class="btn" disabled={busy || !org.trim()} onClick={submit}>{busy ? 'Importing...' : dryRun ? 'Preview import' : 'Import repositories'}</button>
+        <button class="btn" disabled={busy || (provider === 'github' ? !org.trim() : !root.trim())} onClick={submit}>{busy ? 'Importing...' : dryRun ? 'Preview import' : 'Import repositories'}</button>
         <button class="btn ghost" disabled={busy} onClick={onClose}>Cancel</button>
       </div>
     </Modal>

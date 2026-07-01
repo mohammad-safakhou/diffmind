@@ -10,6 +10,7 @@ const GROUP_COLORS = {
 
 const EDGE_COLORS = {
   http: '#3b9eff',
+  rpc: '#9b7cf9',
   queue_publish: '#22c997',
   queue_consume: '#22c997',
   database: '#f5943a',
@@ -24,16 +25,41 @@ const NODE_KINDS = {
   scheduler: { fill: '#151118', stroke: '#f0c040', text: '#f7e7a6' },
 }
 
-const MIN_GROUP_W = 300
-const GROUP_GAP = 26
-const TOP_GROUP_GAP = 24
-const COLUMN_GAP = 64
-const HULL_MIN_W = 390
-const HULL_H = 156
-const CHIP_H = 23
-const CHIP_ROW_GAP = 7
+const GROUP_GAP = 18
+const SERVICE_PAD_X = 34
+const SERVICE_PAD_TOP = 44
+const SERVICE_PAD_BOTTOM = 34
+const ENTRY_COL_W = 560
+const FLOW_COL_W = 620
+const DEP_COL_W = 560
+const WORKSPACE_COLUMN_GAP = 22
+const WORKSPACE_HEADER_H = 118
+const WORKSPACE_BODY_H = 760
+const WORKSPACE_SECTION_HEADER_H = 48
+const WORKSPACE_SECTION_VIEWPORT_H = 330
+const WORKSPACE_SECTION_FOOT_H = 24
+const WORKSPACE_SECTION_GAP = 18
+const WORKSPACE_SECTION_INNER_GAP = 12
+const WORKSPACE_ROW_H = 44
+const WORKSPACE_GROUP_HEAD_H = 56
+const WORKSPACE_GROUP_FOOT_H = 28
+const COLLAPSED_ROWS = 0
+const EXPANDED_ROW_LIMIT = 5
+const FLOW_TRACE_LIMIT = 4
 const COMPACT_SERVICE_W = 300
 const COMPACT_SERVICE_H = 116
+const LARGE_GRAPH_SERVICE_THRESHOLD = 70
+const TEAM_GRID_COLS = 3
+const TEAM_BLOCK_GAP_X = 520
+const TEAM_BLOCK_GAP_Y = 360
+const TEAM_SERVICE_GAP_X = 120
+const TEAM_SERVICE_GAP_Y = 70
+const TEAM_RESOURCE_GAP_X = 54
+const TEAM_RESOURCE_GAP_Y = 24
+const TEAM_ATTACH_GAP_X = 54
+const TEAM_ATTACH_GAP_Y = 18
+const TEAM_LEFT_ATTACH_W = 310
+const TEAM_RIGHT_ATTACH_W = 430
 
 function cleanLabel(s) {
   if (!s) return ''
@@ -70,34 +96,15 @@ function detailsOf(item) {
   return (item && item.details) || {}
 }
 
-function itemName(item) {
-  return first(item?.name, item?.summary, 'instance')
+function metadataDetail(d, key) {
+  const meta = d && d.metadata
+  const details = meta && meta.details
+  const value = details && details[key]
+  return value === undefined || value === null ? '' : String(value)
 }
 
-function groupItems(items, getKey, build) {
-  const buckets = new Map()
-  ;(items || []).forEach((item) => {
-    const d = detailsOf(item)
-    const keyRaw = getKey(item, d) || itemName(item)
-    const key = normalizeKey(keyRaw) || normalizeKey(itemName(item)) || `item-${buckets.size}`
-    if (!buckets.has(key)) buckets.set(key, { key, label: cleanLabel(keyRaw) || itemName(item), items: [], matchKeys: new Set() })
-    const bucket = buckets.get(key)
-    bucket.items.push(item)
-    bucket.matchKeys.add(normalizeKey(keyRaw))
-    bucket.matchKeys.add(normalizeKey(itemName(item)))
-    for (const value of Object.values(d)) {
-      if (typeof value === 'string') bucket.matchKeys.add(normalizeKey(value))
-    }
-  })
-  return Array.from(buckets.values()).map((bucket) => {
-    const derived = build ? build(bucket) : {}
-    return {
-      ...bucket,
-      matchKeys: Array.from(bucket.matchKeys).filter(Boolean),
-      sublabel: bucket.items.length > 1 ? `${bucket.items.length} instances` : derived.sublabel,
-      ...derived,
-    }
-  })
+function itemName(item) {
+  return first(item?.name, item?.summary, 'instance')
 }
 
 function classifyDependency(dep) {
@@ -106,6 +113,7 @@ function classifyDependency(dep) {
   if (hay.includes('cache') || hay.includes('redis') || hay.includes('key_pattern')) return 'cache_operations'
   if (hay.includes('database') || hay.includes('table') || hay.includes('entity') || hay.includes('postgres') || hay.includes('dynamo') || hay.includes('sql')) return 'db_operations'
   if (hay.includes('queue') || hay.includes('topic') || hay.includes('kafka') || hay.includes('sqs') || hay.includes('sns') || hay.includes('publish')) return 'event_outbound'
+  if (hay.includes('grpc') || hay.includes('rpc') || hay.includes('protobuf') || hay.includes('proto')) return 'rpc_outbound'
   if (hay.includes('http') || hay.includes('url') || hay.includes('endpoint') || hay.includes('service')) return 'http_outbound'
   return 'other_dependencies'
 }
@@ -129,6 +137,8 @@ function sourceBadge(raw, fallback = '') {
   if (value.includes('sqs')) return 'SQS'
   if (value.includes('sns')) return 'SNS'
   if (value.includes('kinesis')) return 'KINESIS'
+  if (value.includes('grpc')) return 'gRPC'
+  if (value.includes('rpc')) return 'RPC'
   if (value.includes('http')) return 'HTTP'
   return cleanLabel(raw || fallback).slice(0, 10).toUpperCase()
 }
@@ -138,87 +148,320 @@ function itemBadge(item, fallback = '') {
   return sourceBadge(first(d.database_type, d.cache_type, d.platform, d.kind, d.type, d.source, d.method, item?.operation_kind), fallback)
 }
 
-function measureGroup(group) {
-  const rows = Math.max(1, Math.ceil(group.items.length / 2))
-  const titleW = Math.max(group.title.length, group.subtitle.length) * 8 + 72
-  const longestItem = group.items.reduce((max, item) => Math.max(max, cleanLabel(item.label).length + cleanLabel(item.badge).length), 0)
-  const chipW = Math.max(122, Math.min(210, longestItem * 7 + 44))
+function objectID(item) {
+  const d = detailsOf(item)
+  return first(item?.id, d.id, metadataDetail(d, 'id'), item?.name)
+}
+
+function objectKind(item) {
+  const d = detailsOf(item)
+  return first(item?.kind, d.kind, metadataDetail(d, 'kind'), item?.type, d.type)
+}
+
+function objectPath(item) {
+  const d = detailsOf(item)
+  return first(d.path, d.route, d.endpoint, item?.name)
+}
+
+function routePrefix(path) {
+  const value = cleanLabel(path)
+  if (!value || !value.startsWith('/')) return '/other'
+  const parts = value.split('/').filter(Boolean)
+  return parts.length ? `/${parts[0]}` : '/'
+}
+
+function groupKeyPart(value) {
+  return normalizeKey(value).replace(/\s+/g, '_') || 'other'
+}
+
+function makeRows(items, build, connections, role) {
+  return (items || []).map((item, index) => {
+    const d = detailsOf(item)
+    const id = objectID(item)
+    const row = build(item, d) || {}
+    return {
+      key: first(id, item?.name, `row-${index}`),
+      objectID: id,
+      label: first(row.label, item?.name, id, 'object'),
+      badge: first(row.badge, itemBadge(item, 'OBJ')),
+      sublabel: first(row.sublabel, item?.summary),
+      meta: first(row.meta, objectKind(item)),
+      items: [item],
+      traceCount: countObjectConnections(id, item?.name, connections, role),
+      matchKeys: objectMatchKeys(item),
+    }
+  }).sort((a, b) => {
+    const ak = `${a.badge}|${a.label}`
+    const bk = `${b.badge}|${b.label}`
+    return ak.localeCompare(bk)
+  })
+}
+
+function objectMatchKeys(item) {
+  const keys = new Set([normalizeKey(objectID(item)), normalizeKey(item?.name), normalizeKey(item?.summary)])
+  const d = detailsOf(item)
+  Object.values(d).forEach((value) => {
+    if (typeof value === 'string') {
+      keys.add(normalizeKey(value))
+      keys.add(normalizeKey(hostFromURL(value)))
+    }
+    if (Array.isArray(value)) value.forEach((v) => keys.add(normalizeKey(String(v))))
+  })
+  return Array.from(keys).filter(Boolean)
+}
+
+function countObjectConnections(id, name, connections, role) {
+  const key = normalizeKey(id || name)
+  if (!key) return 0
+  return (connections || []).filter((conn) => {
+    const candidates = role === 'dependency'
+      ? [conn.to_id, conn.to_name, conn.to]
+      : [conn.from_id, conn.entrypoint_id, conn.from_name, conn.from]
+    return candidates.some((v) => {
+      const normalized = normalizeKey(v)
+      return normalized && (normalized === key || normalized.includes(key) || key.includes(normalized))
+    })
+  }).length
+}
+
+function splitRowsIntoGroups(rows, groupBy, titleFor, subtitleFor) {
+  const byGroup = new Map()
+  rows.forEach((row) => {
+    const groupValue = groupBy(row) || 'other'
+    const key = groupKeyPart(groupValue)
+    if (!byGroup.has(key)) {
+      byGroup.set(key, { key, groupValue, rows: [] })
+    }
+    byGroup.get(key).rows.push(row)
+  })
+  return Array.from(byGroup.values()).sort((a, b) => a.groupValue.localeCompare(b.groupValue)).map((group) => ({
+    key: group.key,
+    title: titleFor(group.groupValue, group.rows),
+    subtitle: subtitleFor(group.groupValue, group.rows),
+    items: group.rows,
+  }))
+}
+
+function clamp(n, min, max) {
+  return Math.min(max, Math.max(min, n))
+}
+
+function measureGroup(group, expandedGroups, groupScrollOffsets, serviceName) {
+  const stateKey = groupStateKey(serviceName, group.key)
+  const expanded = expandedGroups.has(stateKey)
+  const visibleCount = expanded ? Math.min(group.items.length, EXPANDED_ROW_LIMIT) : Math.min(group.items.length, COLLAPSED_ROWS)
+  const maxScroll = Math.max(0, group.items.length - visibleCount)
+  const scrollOffset = expanded ? clamp(Number(groupScrollOffsets.get(stateKey) || 0), 0, maxScroll) : 0
+  const hiddenBefore = scrollOffset
+  const hiddenAfter = Math.max(0, group.items.length - scrollOffset - visibleCount)
+  const hidden = Math.max(0, group.items.length - visibleCount)
   return {
     ...group,
-    width: Math.max(MIN_GROUP_W, titleW, chipW * 2 + 48),
-    height: 76 + rows * (CHIP_H + CHIP_ROW_GAP) + 12,
-    chipW,
+    expanded,
+    visibleCount,
+    scrollOffset,
+    hiddenBefore,
+    hiddenAfter,
+    hidden,
+    stateKey,
+    width: group.side === 'dependency' ? DEP_COL_W : ENTRY_COL_W,
+    height: WORKSPACE_GROUP_HEAD_H + visibleCount * WORKSPACE_ROW_H + (hidden ? WORKSPACE_GROUP_FOOT_H : 10),
   }
 }
 
-function measureGroups(groups) {
-  return groups.map(measureGroup)
+function measureGroups(groups, expandedGroups, groupScrollOffsets, serviceName) {
+  return groups.map((group) => measureGroup(group, expandedGroups, groupScrollOffsets, serviceName))
 }
 
-function stackHeight(groups) {
-  if (!groups.length) return 0
-  return groups.reduce((sum, group) => sum + group.height, 0) + (groups.length - 1) * GROUP_GAP
+function stackHeight(items, gap = GROUP_GAP) {
+  if (!items.length) return 0
+  return items.reduce((sum, item) => sum + item.height, 0) + (items.length - 1) * gap
 }
 
 function maxGroupWidth(groups) {
   return groups.reduce((max, group) => Math.max(max, group.width), 0)
 }
 
-function sumGroupWidth(groups) {
-  if (!groups.length) return 0
-  return groups.reduce((sum, group) => sum + group.width, 0) + (groups.length - 1) * TOP_GROUP_GAP
+function sectionTitle(lane, side) {
+  const titles = {
+    http_inbound: 'Inbound HTTP',
+    rpc_inbound: 'Inbound RPC',
+    event_inbound: 'Event consumers',
+    scheduled_jobs: 'Scheduled jobs',
+    webhooks: 'Webhooks',
+    cli_commands: 'Commands',
+    http_outbound: 'Outbound HTTP',
+    rpc_outbound: 'Outbound RPC',
+    db_operations: 'Database operations',
+    cache_operations: 'Cache operations',
+    event_outbound: 'Event publishers',
+    other_dependencies: 'Other dependencies',
+  }
+  return titles[lane] || (side === 'dependency' ? 'Dependencies' : 'Entrypoints')
+}
+
+function sectionSubtitle(lane, groupCount, itemCount) {
+  const labels = {
+    http_inbound: 'routes grouped by path prefix',
+    rpc_inbound: 'gRPC/protobuf services and methods',
+    event_inbound: 'queues, topics, and stream sources',
+    scheduled_jobs: 'time-based service entrypoints',
+    webhooks: 'external callbacks',
+    cli_commands: 'manual and automation commands',
+    http_outbound: 'targets grouped by host/service',
+    rpc_outbound: 'gRPC/protobuf targets grouped by service',
+    db_operations: 'tables/resources with query operations',
+    cache_operations: 'cache instances and key spaces',
+    event_outbound: 'publish targets grouped by queue/topic',
+    other_dependencies: 'uncategorized downstream facts',
+  }
+  return `${groupCount} group${groupCount === 1 ? '' : 's'} · ${itemCount} object${itemCount === 1 ? '' : 's'} · ${labels[lane] || 'semantic groups'}`
+}
+
+function makeSections(groups, side, serviceName, sectionScrollOffsets) {
+  const byLane = new Map()
+  groups.forEach((group) => {
+    const lane = group.lane || group.key
+    if (!byLane.has(lane)) byLane.set(lane, [])
+    byLane.get(lane).push(group)
+  })
+  return Array.from(byLane.entries()).map(([lane, laneGroups]) => {
+    const contentH = stackHeight(laneGroups, WORKSPACE_SECTION_INNER_GAP)
+    const viewportH = Math.min(contentH, WORKSPACE_SECTION_VIEWPORT_H)
+    const hidden = Math.max(0, contentH - viewportH)
+    const stateKey = groupStateKey(serviceName, `section:${lane}:${side}`)
+    const scrollOffset = clamp(Number(sectionScrollOffsets.get(stateKey) || 0), 0, hidden)
+    const itemCount = laneGroups.reduce((sum, group) => sum + group.items.length, 0)
+    return {
+      key: `${side}_${lane}`,
+      lane,
+      side,
+      stateKey,
+      title: sectionTitle(lane, side),
+      subtitle: sectionSubtitle(lane, laneGroups.length, itemCount),
+      groups: laneGroups,
+      itemCount,
+      groupCount: laneGroups.length,
+      scrollOffset,
+      hiddenBefore: scrollOffset,
+      hiddenAfter: Math.max(0, hidden - scrollOffset),
+      contentH,
+      viewportH,
+      width: side === 'dependency' ? DEP_COL_W : ENTRY_COL_W,
+      height: WORKSPACE_SECTION_HEADER_H + viewportH + (hidden ? WORKSPACE_SECTION_FOOT_H : 12),
+    }
+  })
 }
 
 function layoutServiceModel(model) {
-  const leftW = maxGroupWidth(model.left)
-  const rightW = maxGroupWidth(model.right)
-  const topW = sumGroupWidth(model.objectives)
-  const topH = model.objectives.reduce((max, group) => Math.max(max, group.height), 0)
-  const hullW = Math.max(HULL_MIN_W, Math.min(660, model.service.name.length * 18 + 150))
-  const leftStackH = stackHeight(model.left)
-  const rightStackH = stackHeight(model.right)
-  const bodyH = Math.max(leftStackH, rightStackH, HULL_H)
-  const topBlockH = model.objectives.length ? topH + 78 : 0
-  const bodyW = leftW + hullW + rightW + COLUMN_GAP * 2
+  const leftW = ENTRY_COL_W
+  const centerW = FLOW_COL_W
+  const rightW = DEP_COL_W
+  const leftStackH = stackHeight(model.leftSections, WORKSPACE_SECTION_GAP)
+  const rightStackH = stackHeight(model.rightSections, WORKSPACE_SECTION_GAP)
+  const bodyH = Math.max(WORKSPACE_BODY_H, leftStackH, rightStackH)
+  const bodyW = leftW + centerW + rightW + WORKSPACE_COLUMN_GAP * 2
 
-  model.hull = {
+  model.workspace = {
     x: 0,
-    y: -((topBlockH + bodyH + 96) / 2) + topBlockH + bodyH / 2 + 42,
-    width: hullW,
-    height: HULL_H,
+    y: 0,
+    width: bodyW,
+    height: bodyH + SERVICE_PAD_TOP + SERVICE_PAD_BOTTOM,
   }
-  model.width = Math.max(bodyW, topW) + 96
-  model.height = topBlockH + bodyH + 96
+  model.width = model.workspace.width + SERVICE_PAD_X * 2
+  model.height = model.workspace.height
+  model.boundary = {
+    x: -model.width / 2,
+    y: -model.height / 2,
+    width: model.width,
+    height: model.height,
+  }
 
-  const bodyCenterY = model.hull.y
-  const leftX = -hullW / 2 - COLUMN_GAP - leftW / 2
-  const rightX = hullW / 2 + COLUMN_GAP + rightW / 2
-  let y = bodyCenterY - leftStackH / 2
-  model.left.forEach((group) => {
-    group.x = leftX + (leftW - group.width) / 2
-    group.y = y + group.height / 2
-    y += group.height + GROUP_GAP
-  })
-  y = bodyCenterY - rightStackH / 2
-  model.right.forEach((group) => {
-    group.x = rightX - (rightW - group.width) / 2
-    group.y = y + group.height / 2
-    y += group.height + GROUP_GAP
-  })
-
-  const topStartX = -topW / 2
-  let x = topStartX
-  const topY = -model.height / 2 + 42 + topH / 2
-  model.objectives.forEach((group) => {
-    group.x = x + group.width / 2
-    group.y = topY
-    x += group.width + TOP_GROUP_GAP
-  })
-
+  const contentTop = -bodyH / 2
+  const leftX = -bodyW / 2 + leftW / 2
+  const centerX = leftX + leftW / 2 + WORKSPACE_COLUMN_GAP + centerW / 2
+  const rightX = bodyW / 2 - rightW / 2
+  layoutSections(model.leftSections, leftX, contentTop)
+  layoutSections(model.rightSections, rightX, contentTop)
+  model.center = {
+    x: centerX,
+    y: 0,
+    width: centerW,
+    height: bodyH,
+  }
   return model
 }
 
-function buildServiceModel(service, graphEdges) {
+function layoutSections(sections, x, top) {
+  let y = top
+  sections.forEach((section) => {
+    section.x = x
+    section.y = y + section.height / 2
+    const contentTop = section.y - section.height / 2 + WORKSPACE_SECTION_HEADER_H - section.scrollOffset
+    let gy = contentTop
+    section.groups.forEach((group) => {
+      group.x = x
+      group.y = gy + group.height / 2
+      gy += group.height + WORKSPACE_SECTION_INNER_GAP
+    })
+    y += section.height + WORKSPACE_SECTION_GAP
+  })
+}
+
+function recenterServiceModel(model) {
+  const boxes = [
+    {
+      x: model.hull.x - model.hull.width / 2,
+      y: model.hull.y - model.hull.height / 2,
+      width: model.hull.width,
+      height: model.hull.height,
+    },
+    ...model.left.map(groupBox),
+    ...model.right.map(groupBox),
+    ...model.objectives.map(groupBox),
+  ]
+  const minX = Math.min(...boxes.map((b) => b.x))
+  const minY = Math.min(...boxes.map((b) => b.y))
+  const maxX = Math.max(...boxes.map((b) => b.x + b.width))
+  const maxY = Math.max(...boxes.map((b) => b.y + b.height))
+  const centerX = (minX + maxX) / 2
+  const centerY = (minY + maxY) / 2
+  const shift = (obj) => {
+    obj.x -= centerX
+    obj.y -= centerY
+  }
+  shift(model.hull)
+  model.left.forEach(shift)
+  model.right.forEach(shift)
+  model.objectives.forEach(shift)
+
+  const contentW = maxX - minX
+  const contentH = maxY - minY
+  model.width = contentW + SERVICE_PAD_X * 2
+  model.height = contentH + SERVICE_PAD_TOP + SERVICE_PAD_BOTTOM
+  model.boundary = {
+    x: -model.width / 2,
+    y: -contentH / 2 - SERVICE_PAD_TOP,
+    width: model.width,
+    height: model.height,
+  }
+}
+
+function groupBox(group) {
+  return {
+    x: group.x - group.width / 2,
+    y: group.y - group.height / 2,
+    width: group.width,
+    height: group.height,
+  }
+}
+
+function groupStateKey(serviceName, groupKey) {
+  return `${serviceName}::${groupKey}`
+}
+
+function buildServiceModel(service, graphEdges, options = {}) {
+  const connections = service.connections || []
   const deps = service.dependencies || []
   const depByClass = deps.reduce((acc, dep) => {
     const cls = classifyDependency(dep)
@@ -226,97 +469,217 @@ function buildServiceModel(service, graphEdges) {
     return acc
   }, {})
 
+  const httpRows = makeRows(service.http_routes, (it, d) => ({
+    badge: sourceBadge(first(d.method, 'HTTP')),
+    label: first(d.path, d.route, it.name),
+    sublabel: first(d.handler, d.controller, requestResponseSummary(d)),
+    meta: requestResponseSummary(d),
+  }), connections, 'exposure')
   const left = [
+    ...splitRowsIntoGroups(
+      httpRows,
+      (row) => routePrefix(row.label),
+      (prefix) => `HTTP ${prefix}`,
+      (_prefix, rows) => `${rows.length} route${rows.length === 1 ? '' : 's'} grouped by path prefix`,
+    ).map((g) => ({ ...g, key: `http_${g.key}`, side: 'exposure', lane: 'http_inbound' })),
     {
-      key: 'http_inbound',
-      title: 'Inbound HTTP',
-      subtitle: 'routes grouped by endpoint',
-      items: groupItems(service.http_routes, (it, d) => first(d.route, d.path, d.endpoint, it.name), (b) => {
-        const d = detailsOf(b.items[0])
-        return { badge: sourceBadge(first(d.method, 'HTTP')), label: shortLabel(b.label, 28), sublabel: shortLabel(first(d.handler, d.controller, b.items[0]?.summary), 22) }
-      }),
+      key: 'rpc_inbound',
+      side: 'exposure',
+      lane: 'rpc_inbound',
+      title: 'Inbound RPC',
+      subtitle: 'gRPC/protobuf methods',
+      items: makeRows(service.rpc_endpoints, (it, d) => ({
+        badge: sourceBadge(first(metadataDetail(d, 'protocol'), d.protocol, d.platform, 'RPC')),
+        label: first(d.service && d.method ? `${d.service}/${d.method}` : '', d.instance, metadataDetail(d, 'instance'), it.name),
+        sublabel: first(metadataDetail(d, 'service'), d.service, it.summary),
+      }), connections, 'exposure'),
     },
     {
       key: 'event_inbound',
+      side: 'exposure',
+      lane: 'event_inbound',
       title: 'Event consumers',
-      subtitle: 'consumers grouped by queue/topic',
-      items: groupItems(service.queue_consumers, (it, d) => first(d.queue, d.queue_name, d.destination, d.stream_arn, d.source, it.name), (b) => ({ badge: itemBadge(b.items[0], 'QUEUE'), label: shortLabel(b.label, 28), sublabel: shortLabel(first(detailsOf(b.items[0]).kind, detailsOf(b.items[0]).type, b.items[0]?.summary), 22) })),
+      subtitle: 'queues and stream sources',
+      items: makeRows(service.queue_consumers, (it, d) => ({
+        badge: itemBadge(it, 'QUEUE'),
+        label: first(d.queue, d.queue_name, d.destination, d.stream_arn, d.source, it.name),
+        sublabel: first(d.kind, d.type, it.summary),
+      }), connections, 'exposure'),
     },
     {
       key: 'scheduled_jobs',
+      side: 'exposure',
+      lane: 'scheduled_jobs',
       title: 'Scheduled jobs',
-      subtitle: 'time-based entry points',
-      items: groupItems(service.scheduled_jobs, (it, d) => first(d.k8s_cronjob_name, d.schedule, d.cron, it.name), (b) => ({ badge: 'CRON', label: shortLabel(b.label, 28), sublabel: shortLabel(first(detailsOf(b.items[0]).schedule, detailsOf(b.items[0]).cron, b.items[0]?.summary), 22) })),
+      subtitle: 'time-based entrypoints',
+      items: makeRows(service.scheduled_jobs, (it, d) => ({
+        badge: 'CRON',
+        label: first(d.k8s_cronjob_name, d.schedule, d.cron, it.name),
+        sublabel: first(d.schedule, d.cron, it.summary),
+      }), connections, 'exposure'),
     },
     {
       key: 'webhooks',
+      side: 'exposure',
+      lane: 'webhooks',
       title: 'Webhooks',
       subtitle: 'external callbacks',
-      items: groupItems(service.webhooks, (it, d) => first(d.provider, d.source, d.path, it.name), (b) => ({ badge: 'HOOK', label: shortLabel(b.label, 28), sublabel: shortLabel(b.items[0]?.summary, 22) })),
+      items: makeRows(service.webhooks, (it, d) => ({
+        badge: 'HOOK',
+        label: first(d.provider, d.source, d.path, it.name),
+        sublabel: it.summary,
+      }), connections, 'exposure'),
     },
     {
       key: 'cli_commands',
+      side: 'exposure',
+      lane: 'cli_commands',
       title: 'Commands',
       subtitle: 'manual and automation commands',
-      items: groupItems(service.cli_commands, (it, d) => first(d.command, it.name), (b) => ({ badge: 'CLI', label: shortLabel(b.label, 28), sublabel: shortLabel(b.items[0]?.summary, 22) })),
+      items: makeRows(service.cli_commands, (it, d) => ({
+        badge: 'CLI',
+        label: first(d.command, it.name),
+        sublabel: it.summary,
+      }), connections, 'exposure'),
     },
   ].filter((g) => g.items.length)
 
   const right = [
     {
       key: 'http_outbound',
+      side: 'dependency',
+      lane: 'http_outbound',
       title: 'Outbound HTTP',
       subtitle: 'targets grouped by host/service',
-      items: groupItems(depByClass.http_outbound, (it, d) => first(d.target_service, hostFromURL(d.target_url), hostFromURL(d.url), d.host, it.name), (b) => ({ badge: sourceBadge(first(detailsOf(b.items[0]).method, 'HTTP')), label: shortLabel(b.label, 28), sublabel: shortLabel(first(detailsOf(b.items[0]).endpoint, b.items[0]?.summary), 22) })),
+      items: makeRows(depByClass.http_outbound, (it, d) => ({
+        badge: sourceBadge(first(d.method, 'HTTP')),
+        label: first(d.target_service, hostFromURL(d.target_url), hostFromURL(d.url), d.host, it.name),
+        sublabel: first(d.url_template, d.path, d.endpoint, it.summary),
+        meta: first(d.method, d.path),
+      }), connections, 'dependency'),
+    },
+    {
+      key: 'rpc_outbound',
+      side: 'dependency',
+      lane: 'rpc_outbound',
+      title: 'Outbound RPC',
+      subtitle: 'gRPC/protobuf targets grouped by service',
+      items: makeRows(depByClass.rpc_outbound, (it, d) => ({
+        badge: sourceBadge(first(d.protocol, d.platform, 'RPC')),
+        label: first(d.target_service, d.target_ref, d.service, d.service_name, it.name),
+        sublabel: first(d.method, it.summary),
+      }), connections, 'dependency'),
     },
     {
       key: 'db_operations',
+      side: 'dependency',
+      lane: 'db_operations',
       title: 'Database operations',
       subtitle: 'tables/resources with query operations',
-      items: groupItems(depByClass.db_operations, (it, d) => first(d.table_or_entity, d.table, d.entity, d.resource_name, d.database_name, it.name), (b) => ({ badge: itemBadge(b.items[0], 'DB'), label: shortLabel(b.label, 28), sublabel: b.items.length > 1 ? `${b.items.length} operations` : shortLabel(operationLabel(b.items[0]), 22) })),
+      items: makeRows(depByClass.db_operations, (it, d) => ({
+        badge: itemBadge(it, 'DB'),
+        label: first(d.table_or_entity, d.table, d.entity, d.resource_name, d.database_name, it.name),
+        sublabel: operationLabel(it),
+        meta: first(d.operation, d.access, d.database_name),
+      }), connections, 'dependency'),
     },
     {
       key: 'cache_operations',
+      side: 'dependency',
+      lane: 'cache_operations',
       title: 'Cache operations',
       subtitle: 'cache instances and key spaces',
-      items: groupItems(depByClass.cache_operations, (it, d) => first(d.cache_name, d.resource_name, d.key_pattern, it.name), (b) => ({ badge: itemBadge(b.items[0], 'CACHE'), label: shortLabel(b.label, 28), sublabel: shortLabel(operationLabel(b.items[0]), 22) })),
+      items: makeRows(depByClass.cache_operations, (it, d) => ({
+        badge: itemBadge(it, 'CACHE'),
+        label: first(d.cache_name, d.resource_name, d.key_pattern, it.name),
+        sublabel: operationLabel(it),
+      }), connections, 'dependency'),
     },
     {
       key: 'event_outbound',
+      side: 'dependency',
+      lane: 'event_outbound',
       title: 'Event publishers',
       subtitle: 'publish targets grouped by queue/topic',
-      items: groupItems(depByClass.event_outbound, (it, d) => first(d.queue, d.queue_name, d.destination, d.topic, it.name), (b) => ({ badge: itemBadge(b.items[0], 'QUEUE'), label: shortLabel(b.label, 28), sublabel: shortLabel(first(detailsOf(b.items[0]).kind, detailsOf(b.items[0]).type, b.items[0]?.summary), 22) })),
+      items: makeRows(depByClass.event_outbound, (it, d) => ({
+        badge: itemBadge(it, 'QUEUE'),
+        label: first(d.queue, d.queue_name, d.destination, d.topic, it.name),
+        sublabel: first(d.kind, d.type, it.summary),
+      }), connections, 'dependency'),
     },
     {
       key: 'other_dependencies',
+      side: 'dependency',
+      lane: 'other_dependencies',
       title: 'Other dependencies',
       subtitle: 'uncategorized downstream facts',
-      items: groupItems(depByClass.other_dependencies, (it) => it.name, (b) => ({ badge: 'DEP', label: shortLabel(b.label, 28), sublabel: shortLabel(b.items[0]?.summary, 22) })),
+      items: makeRows(depByClass.other_dependencies, (it) => ({ badge: 'DEP', label: it.name, sublabel: it.summary }), connections, 'dependency'),
     },
   ].filter((g) => g.items.length)
 
-  const objectives = []
+  const measuredLeft = measureGroups(left, options.expandedGroups || new Set(), options.groupScrollOffsets || new Map(), service.name)
+  const measuredRight = measureGroups(right, options.expandedGroups || new Set(), options.groupScrollOffsets || new Map(), service.name)
+  const flow = buildFlowView(service, options.selectedObjectID || '')
 
   return layoutServiceModel({
     service,
-    left: measureGroups(left),
-    right: measureGroups(right),
-    objectives: measureGroups(objectives),
+    left: measuredLeft,
+    right: measuredRight,
+    leftSections: makeSections(measuredLeft, 'exposure', service.name, options.sectionScrollOffsets || new Map()),
+    rightSections: makeSections(measuredRight, 'dependency', service.name, options.sectionScrollOffsets || new Map()),
+    flow,
     width: 0,
     height: 0,
     edges: graphEdges.filter((e) => e.from === service.name || e.to === service.name),
   })
 }
 
+function requestResponseSummary(d) {
+  const inputs = d.inputs || {}
+  const inputCount = countArray(inputs.path_params) + countArray(inputs.query_params) + countArray(inputs.headers) + (inputs.body ? 1 : 0)
+  const responseCount = countArray(d.responses)
+  return [inputCount ? `${inputCount} inputs` : '', responseCount ? `${responseCount} responses` : ''].filter(Boolean).join(' · ')
+}
+
+function countArray(value) {
+  return Array.isArray(value) ? value.length : 0
+}
+
+function buildFlowView(service, selectedObjectID) {
+  const connections = service.connections || []
+  if (!selectedObjectID) {
+    return { mode: 'idle', selection: null, traces: [] }
+  }
+  const selectedKey = normalizeKey(selectedObjectID)
+  const traces = connections.filter((conn) => {
+    const candidates = [conn.from_id, conn.entrypoint_id, conn.from_name, conn.to_id, conn.to_name]
+    return candidates.some((v) => {
+      const key = normalizeKey(v)
+      return key && (key === selectedKey || key.includes(selectedKey) || selectedKey.includes(key))
+    })
+  })
+  return {
+    mode: 'selected',
+    selection: {
+      selectedObjectID,
+      traces,
+      fallback: !traces.length && connections.length > 0,
+    },
+    traces,
+  }
+}
+
 function groupForEdge(edge, role) {
   if (role === 'source') {
     if (edge.type === 'http') return 'http_outbound'
+    if (edge.type === 'rpc') return 'rpc_outbound'
     if (edge.type === 'database') return 'db_operations'
     if (edge.type === 'cache') return 'cache_operations'
     if (edge.type === 'queue_publish') return 'event_outbound'
     return 'other_dependencies'
   }
   if (edge.type === 'http') return 'http_inbound'
+  if (edge.type === 'rpc') return 'rpc_inbound'
   if (edge.type === 'queue_consume') return 'event_inbound'
   if (edge.type === 'scheduler') return 'scheduled_jobs'
   return 'http_inbound'
@@ -478,17 +841,54 @@ function normalizeSharedName(raw) {
     .trim()
 }
 
-export function GraphCanvas({ graph, onSelect }) {
+export function GraphCanvas({ graph, onSelect, focusedServiceName = '' }) {
   const svgRef = useRef(null)
   const transformRef = useRef(d3.zoomIdentity)
   const graphLayoutKeyRef = useRef('')
+  const graphViewKeyRef = useRef('')
   const userMovedRef = useRef(false)
   const programmaticZoomRef = useRef(false)
   const [mode, setMode] = useState('focus')
   const [focusService, setFocusService] = useState('')
+  const [selectedObjectID, setSelectedObjectID] = useState('')
+  const [expandedGroups, setExpandedGroups] = useState(() => new Set())
+  const [groupScrollOffsets, setGroupScrollOffsets] = useState(() => new Map())
+  const [sectionScrollOffsets, setSectionScrollOffsets] = useState(() => new Map())
   const [activeSelection, setActiveSelection] = useState(null)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [teamFilter, setTeamFilter] = useState('')
+  const [teamScope, setTeamScope] = useState('team')
   const renderKey = graphRenderKey(graph)
   const layoutKey = graphLayoutKey(graph)
+  const expandedGroupsKey = Array.from(expandedGroups).sort().join('|')
+  const groupScrollKey = Array.from(groupScrollOffsets.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([k, v]) => `${k}:${v}`).join('|')
+  const sectionScrollKey = Array.from(sectionScrollOffsets.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([k, v]) => `${k}:${v}`).join('|')
+  const changeMode = (nextMode) => {
+    userMovedRef.current = false
+    setMode(nextMode)
+    if (nextMode === 'overview') setFocusService('')
+  }
+  const teamOptions = graphTeamOptions(graph)
+  const runSearch = () => {
+    const q = normalizeKey(searchQuery)
+    if (!q) return
+    const match = (graph?.services || []).find((svc) => normalizeKey(`${svc.name} ${svc.id || ''} ${svc.team || ''}`).includes(q))
+    if (!match) return
+    userMovedRef.current = false
+    setTeamFilter(match.team || '')
+    setTeamScope('connected')
+    setFocusService(match.name)
+    setMode('focus')
+    setActiveSelection({ kind: 'service', data: match, id: match.name })
+    onSelect && onSelect({ kind: 'service', data: match, id: match.name })
+  }
+
+  useEffect(() => {
+    if (!focusedServiceName) return
+    userMovedRef.current = false
+    setFocusService(focusedServiceName)
+    setMode((current) => current === 'overview' ? 'focus' : current)
+  }, [focusedServiceName])
 
   useEffect(() => {
     if (!graph || !svgRef.current) return
@@ -498,12 +898,15 @@ export function GraphCanvas({ graph, onSelect }) {
 
     const W = svgEl.clientWidth || 1200
     const H = svgEl.clientHeight || 800
-    const services = graph.services || []
-    const edges = graph.edges || []
+    const view = graphScopedView(graph, teamFilter, teamScope)
+    const services = view.services
+    const edges = view.edges
+    const largeGraph = services.length >= LARGE_GRAPH_SERVICE_THRESHOLD
+    const clusteredGraph = largeGraph || Boolean(teamFilter)
     const serviceNames = new Set(services.map((s) => s.name))
     const visibleResourceIDs = sharedResourceMeta(graph, serviceNames)
     const displayEdges = edges
-    const serviceModels = new Map(services.map((s) => [s.name, buildServiceModel(s, edges)]))
+    const serviceModels = new Map(services.map((s) => [s.name, buildServiceModel(s, edges, { selectedObjectID, expandedGroups, groupScrollOffsets, sectionScrollOffsets })]))
     const top = new dagre.graphlib.Graph({ compound: false, multigraph: true })
     top.setGraph({ rankdir: 'LR', nodesep: 100, ranksep: 190, edgesep: 45, marginx: 90, marginy: 90 })
     top.setDefaultEdgeLabel(() => ({}))
@@ -511,7 +914,7 @@ export function GraphCanvas({ graph, onSelect }) {
     const nodeInfo = new Map()
     services.forEach((svc) => {
       const model = serviceModels.get(svc.name)
-      const expanded = mode === 'detail' || (mode === 'focus' && focusService === svc.name)
+      const expanded = (mode === 'detail' && !largeGraph) || ((mode === 'focus' || mode === 'detail') && focusService === svc.name)
       top.setNode(svc.name, {
         width: expanded ? model.width : COMPACT_SERVICE_W,
         height: expanded ? model.height : COMPACT_SERVICE_H,
@@ -523,23 +926,27 @@ export function GraphCanvas({ graph, onSelect }) {
       })
       nodeInfo.set(svc.name, { type: 'service', data: svc, label: svc.name })
     })
-    ;(graph.external_nodes || []).forEach((n) => addTopNode(top, nodeInfo, n.name, 'external', n, cleanLabel(n.name)))
-    ;(graph.queue_nodes || []).forEach((n) => { const id = `queue:${n.id}`; addTopNode(top, nodeInfo, id, 'queue', { ...n, shared: visibleResourceIDs.get(id) }, cleanLabel(n.name)) })
-    ;(graph.database_nodes || []).forEach((n) => { const id = `db:${n.id}`; addTopNode(top, nodeInfo, id, 'db', { ...n, shared: visibleResourceIDs.get(id) }, cleanLabel(n.name)) })
-    ;(graph.scheduler_nodes || []).forEach((n) => { const id = `sched:${n.id}`; addTopNode(top, nodeInfo, id, 'scheduler', { ...n, shared: visibleResourceIDs.get(id) }, cleanLabel(n.name)) })
+    ;(view.external_nodes || []).forEach((n) => addTopNode(top, nodeInfo, n.name, 'external', n, cleanLabel(n.name)))
+    ;(view.queue_nodes || []).forEach((n) => { const id = `queue:${n.id}`; addTopNode(top, nodeInfo, id, 'queue', { ...n, shared: visibleResourceIDs.get(id) }, cleanLabel(n.name)) })
+    ;(view.database_nodes || []).forEach((n) => { const id = `db:${n.id}`; addTopNode(top, nodeInfo, id, 'db', { ...n, shared: visibleResourceIDs.get(id) }, cleanLabel(n.name)) })
+    ;(view.scheduler_nodes || []).forEach((n) => { const id = `sched:${n.id}`; addTopNode(top, nodeInfo, id, 'scheduler', { ...n, shared: visibleResourceIDs.get(id) }, cleanLabel(n.name)) })
     displayEdges.forEach((e, i) => {
       if (top.hasNode(e.from) && top.hasNode(e.to)) top.setEdge(e.from, e.to, { type: e.type, data: e }, `e${i}`)
     })
 
     const persistedLayout = layoutPositionMap(graph)
-    if (hasCompleteLayout(top, persistedLayout)) {
+    if (clusteredGraph) {
+      applyLargeGraphLayout(top, services, displayEdges, serviceNames)
+    } else if (hasCompleteLayout(top, persistedLayout)) {
       applyPersistedLayout(top, persistedLayout)
     } else {
       dagre.layout(top)
     }
 
+    const viewKey = `${layoutKey}|${clusteredGraph ? 'clustered' : mode}|${teamFilter}|${teamScope}|${focusService}`
     const previousLayoutKey = graphLayoutKeyRef.current
-    const preserveUserView = userMovedRef.current && previousLayoutKey === layoutKey
+    const previousViewKey = graphViewKeyRef.current
+    const preserveUserView = previousLayoutKey === layoutKey && (previousViewKey === viewKey || largeGraph)
     const rootG = svg.append('g')
     const zoom = d3.zoom().scaleExtent([0.035, 2.4]).on('zoom', (ev) => {
       transformRef.current = ev.transform
@@ -593,7 +1000,7 @@ export function GraphCanvas({ graph, onSelect }) {
       const n = top.node(id)
       if (!n) return
       if (n.type === 'service') {
-        if (n.expanded) drawServiceNode(nodeGroup, n.model, n.x, n.y, onSelect, selectThing)
+        if (n.expanded) drawServiceNode(nodeGroup, n.model, n.x, n.y, onSelect, selectThing, scrollGroupRows, scrollSection)
         else drawCompactServiceNode(nodeGroup, n, selectThing)
       } else {
         drawResourceNode(nodeGroup, id, n, onSelect, selectThing)
@@ -602,35 +1009,85 @@ export function GraphCanvas({ graph, onSelect }) {
 
     function selectThing(sel) {
       setActiveSelection(sel)
-      if (!sel) setFocusService('')
+      if (!sel) {
+        setFocusService('')
+        setSelectedObjectID('')
+      }
       if (sel?.kind === 'service') setFocusService(sel.data?.name || sel.id || '')
-      if ((sel?.kind === 'group' || sel?.kind === 'fact') && sel.data?.service) setFocusService(sel.data.service)
+      if (sel?.kind === 'section' && sel.data?.service) setFocusService(sel.data.service)
+      if (sel?.kind === 'group' && sel.data?.service) {
+        setFocusService(sel.data.service)
+        setExpandedGroups((prev) => {
+          const next = new Set(prev)
+          const key = groupStateKey(sel.data.service, sel.data.groupKey || sel.data.kind || sel.id)
+          if (next.has(key)) next.delete(key)
+          else next.add(key)
+          return next
+        })
+      }
+      if (sel?.kind === 'fact' && sel.data?.service) {
+        setFocusService(sel.data.service)
+        const nextObjectID = sel.data.objectID || objectID(sel.data.items?.[0]) || sel.data.name || ''
+        if (nextObjectID) setSelectedObjectID(nextObjectID)
+      }
       applyVisualSelection(sel)
       onSelect && onSelect(sel)
     }
 
+    function scrollGroupRows(stateKey, delta) {
+      if (!stateKey || !delta) return
+      setGroupScrollOffsets((prev) => {
+        const next = new Map(prev)
+        const current = Number(next.get(stateKey) || 0)
+        next.set(stateKey, Math.max(0, current + delta))
+        return next
+      })
+    }
+
+    function scrollSection(stateKey, delta) {
+      if (!stateKey || !delta) return
+      setSectionScrollOffsets((prev) => {
+        const next = new Map(prev)
+        const current = Number(next.get(stateKey) || 0)
+        next.set(stateKey, Math.max(0, current + delta))
+        return next
+      })
+    }
+
     function applyVisualSelection(sel) {
-      rootG.selectAll('[data-select-id]').classed('selected', false).classed('hl-dimmed', false)
+      rootG.selectAll('[data-select-id]').classed('selected', false).classed('hl-dimmed', false).classed('flow-active', false)
       rootG.selectAll('.edge').classed('hl-active', false).classed('hl-dimmed', false)
       if (!sel) {
         return
       }
       const selectedID = sel.id || (sel.data && (sel.data.name || sel.data.id)) || sel.kind
       rootG.selectAll(`[data-select-id="${cssEscape(selectedID)}"]`).classed('selected', true)
+      const flowKeys = selectionMatchKeys(sel)
       if (sel.kind !== 'edge' && selectedID) {
-        const impact = sel.kind === 'group' || sel.kind === 'fact' ? impactEdgeSet(sel, displayEdges, serviceNames) : null
+        const impact = sel.kind === 'section' || sel.kind === 'group' || sel.kind === 'fact' ? impactEdgeSet(sel, displayEdges, serviceNames) : null
         rootG.selectAll('.edge').each(function () {
           const el = d3.select(this)
           const key = `${el.attr('data-from')}|${el.attr('data-to')}|${el.attr('data-type') || ''}`
           const active = impact ? impact.has(key) : el.attr('data-from') === selectedID || el.attr('data-to') === selectedID
+          if (active) {
+            flowKeys.add(normalizeKey(el.attr('data-from')))
+            flowKeys.add(normalizeKey(el.attr('data-to')))
+          }
           el.classed(active ? 'hl-active' : 'hl-dimmed', true)
         })
       }
+      rootG.selectAll('.fact-chip,.objective-group,.objective-section,.service-system,.resource-node').each(function () {
+        const el = d3.select(this)
+        const hay = normalizeKey(`${el.attr('data-select-id') || ''} ${el.attr('data-match-keys') || ''}`)
+        const active = Array.from(flowKeys).some((key) => key && hay.includes(key))
+        el.classed('flow-active', active)
+      })
     }
 
     applyVisualSelection(activeSelection)
 
     graphLayoutKeyRef.current = layoutKey
+    graphViewKeyRef.current = viewKey
     programmaticZoomRef.current = true
     if (preserveUserView) {
       svg.call(zoom.transform, transformRef.current)
@@ -638,11 +1095,14 @@ export function GraphCanvas({ graph, onSelect }) {
       const graphW = top.graph().width || 1000
       const graphH = top.graph().height || 700
       const pad = 60
-      const fitScale = Math.min((W - pad * 2) / graphW, (H - pad * 2) / graphH, 1.05)
+      const overlayTopPad = 320
+      const availableW = Math.max(240, W - pad * 2)
+      const availableH = Math.max(240, H - overlayTopPad - pad)
+      const fitScale = Math.min(availableW / graphW, availableH / graphH, 1.05)
       const minScale = mode === 'detail' ? 0.04 : 0.12
       const scale = Math.min(Math.max(fitScale, minScale), 1.05)
       const tx = (W - graphW * scale) / 2
-      const ty = (H - graphH * scale) / 2
+      const ty = overlayTopPad + (H - overlayTopPad - graphH * scale) / 2
       transformRef.current = d3.zoomIdentity.translate(tx, ty).scale(scale)
       userMovedRef.current = false
       svg.call(zoom.transform, transformRef.current)
@@ -652,14 +1112,31 @@ export function GraphCanvas({ graph, onSelect }) {
     return () => {
       svg.on('.zoom', null)
     }
-  }, [renderKey, mode, focusService, activeSelection])
+  }, [renderKey, mode, focusService, activeSelection, selectedObjectID, expandedGroupsKey, groupScrollKey, sectionScrollKey, teamFilter, teamScope])
 
   return (
     <div class="graph-canvas-shell">
       <div class="graph-mode-toolbar" aria-label="Graph detail mode">
-        <button type="button" class={mode === 'overview' ? 'active' : ''} onClick={() => { setMode('overview'); setFocusService('') }}>Overview</button>
-        <button type="button" class={mode === 'focus' ? 'active' : ''} onClick={() => setMode('focus')}>Expand selected</button>
-        <button type="button" class={mode === 'detail' ? 'active' : ''} onClick={() => setMode('detail')}>Full detail</button>
+        <button type="button" class={mode === 'overview' ? 'active' : ''} onClick={() => changeMode('overview')}>Overview</button>
+        <button type="button" class={mode === 'focus' ? 'active' : ''} onClick={() => changeMode('focus')}>Expand selected</button>
+        <button type="button" class={mode === 'detail' ? 'active' : ''} onClick={() => changeMode('detail')}>Full detail</button>
+        <span class="graph-toolbar-divider" />
+        <input
+          class="graph-search"
+          value={searchQuery}
+          placeholder="Search service"
+          onInput={(e) => setSearchQuery(e.currentTarget.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') runSearch() }}
+        />
+        <button type="button" onClick={runSearch}>Focus</button>
+        <select class="graph-team-select" value={teamFilter} onInput={(e) => setTeamFilter(e.currentTarget.value)}>
+          <option value="">All teams</option>
+          {teamOptions.map((team) => <option key={team} value={team}>{team}</option>)}
+        </select>
+        <select class="graph-scope-select" value={teamScope} disabled={!teamFilter} onInput={(e) => setTeamScope(e.currentTarget.value)}>
+          <option value="team">Team only</option>
+          <option value="connected">Team + connected</option>
+        </select>
       </div>
       <svg ref={svgRef} class="graph-svg-full graph-svg-instance" />
     </div>
@@ -684,6 +1161,51 @@ function graphLayoutKey(graph) {
     edges,
     resources,
   })
+}
+
+function graphTeamOptions(graph) {
+  return Array.from(new Set((graph?.services || []).map((svc) => svc.team || 'default'))).sort((a, b) => a.localeCompare(b))
+}
+
+function graphScopedView(graph, teamFilter, teamScope) {
+  if (!graph || !teamFilter) return graph || {}
+  const allServices = graph.services || []
+  const allEdges = graph.edges || []
+  const allServiceNames = new Set(allServices.map((svc) => svc.name))
+  const teamServices = new Set(allServices.filter((svc) => (svc.team || 'default') === teamFilter).map((svc) => svc.name))
+  const visibleServices = new Set(teamServices)
+  if (teamScope === 'connected') {
+    allEdges.forEach((edge) => {
+      const fromTeam = teamServices.has(edge.from)
+      const toTeam = teamServices.has(edge.to)
+      if (fromTeam && allServiceNames.has(edge.to)) visibleServices.add(edge.to)
+      if (toTeam && allServiceNames.has(edge.from)) visibleServices.add(edge.from)
+    })
+  }
+  const visibleEdges = allEdges.filter((edge) => {
+    const fromSvc = allServiceNames.has(edge.from)
+    const toSvc = allServiceNames.has(edge.to)
+    if (fromSvc && toSvc) {
+      if (teamScope === 'connected') return visibleServices.has(edge.from) && visibleServices.has(edge.to) && (teamServices.has(edge.from) || teamServices.has(edge.to))
+      return teamServices.has(edge.from) && teamServices.has(edge.to)
+    }
+    return visibleServices.has(edge.from) || visibleServices.has(edge.to)
+  })
+  const visibleNodeIDs = new Set(visibleServices)
+  visibleEdges.forEach((edge) => {
+    visibleNodeIDs.add(edge.from)
+    visibleNodeIDs.add(edge.to)
+  })
+  const hasNode = (id) => visibleNodeIDs.has(id)
+  return {
+    ...graph,
+    services: allServices.filter((svc) => visibleServices.has(svc.name)),
+    edges: visibleEdges,
+    external_nodes: (graph.external_nodes || []).filter((n) => hasNode(n.name)),
+    queue_nodes: (graph.queue_nodes || []).filter((n) => hasNode(`queue:${n.id}`)),
+    database_nodes: (graph.database_nodes || []).filter((n) => hasNode(`db:${n.id}`)),
+    scheduler_nodes: (graph.scheduler_nodes || []).filter((n) => hasNode(`sched:${n.id}`)),
+  }
 }
 
 function graphRenderKey(graph) {
@@ -734,6 +1256,393 @@ function applyPersistedLayout(top, positions) {
   top.setGraph({ ...top.graph(), width: maxX || 1000, height: maxY || 700 })
 }
 
+function applyLargeGraphLayout(top, services, edges, serviceNames) {
+  const serviceTeam = new Map()
+  const serviceDegree = new Map()
+  const teams = new Map()
+  services.forEach((svc) => {
+    const team = svc.team || 'default'
+    serviceTeam.set(svc.name, team)
+    serviceDegree.set(svc.name, 0)
+    if (!teams.has(team)) teams.set(team, { name: team, services: [], degree: 0 })
+    teams.get(team).services.push(svc.name)
+  })
+
+  const teamLinks = new Map()
+  const serviceAffinity = new Map()
+  const resourceTeamWeights = new Map()
+  const resourceServiceLinks = new Map()
+  const resourceEdgeTypes = new Map()
+  edges.forEach((edge) => {
+    const fromService = serviceNames.has(edge.from)
+    const toService = serviceNames.has(edge.to)
+    const weight = Math.max(1, Number(edge.count || 1))
+    if (fromService) serviceDegree.set(edge.from, (serviceDegree.get(edge.from) || 0) + weight)
+    if (toService) serviceDegree.set(edge.to, (serviceDegree.get(edge.to) || 0) + weight)
+    if (fromService && toService) {
+      const a = serviceTeam.get(edge.from)
+      const b = serviceTeam.get(edge.to)
+      if (a && b && a !== b) addTeamLink(teamLinks, a, b, weight)
+      addPairWeight(serviceAffinity, edge.from, edge.to, weight)
+      if (a && teams.has(a)) teams.get(a).degree += weight
+      if (b && teams.has(b)) teams.get(b).degree += weight
+      return
+    }
+    const resource = fromService && !toService ? edge.to : toService && !fromService ? edge.from : ''
+    const team = fromService ? serviceTeam.get(edge.from) : toService ? serviceTeam.get(edge.to) : ''
+    if (resource && team) {
+      if (!resourceTeamWeights.has(resource)) resourceTeamWeights.set(resource, new Map())
+      const weights = resourceTeamWeights.get(resource)
+      weights.set(team, (weights.get(team) || 0) + weight)
+      if (!resourceServiceLinks.has(resource)) resourceServiceLinks.set(resource, new Set())
+      if (fromService) resourceServiceLinks.get(resource).add(edge.from)
+      if (toService) resourceServiceLinks.get(resource).add(edge.to)
+      if (!resourceEdgeTypes.has(resource)) resourceEdgeTypes.set(resource, new Set())
+      resourceEdgeTypes.get(resource).add(edge.type || '')
+      if (teams.has(team)) teams.get(team).degree += weight
+    }
+  })
+  resourceServiceLinks.forEach((linkedSet) => {
+    const linked = Array.from(linkedSet).filter((id) => serviceNames.has(id)).sort()
+    for (let i = 0; i < linked.length; i += 1) {
+      for (let j = i + 1; j < linked.length; j += 1) {
+        addPairWeight(serviceAffinity, linked[i], linked[j], 2)
+      }
+    }
+  })
+
+  const resourcesByTeam = new Map()
+  top.nodes().forEach((id) => {
+    if (serviceNames.has(id)) return
+    const team = primaryResourceTeam(id, resourceTeamWeights) || 'shared'
+    const node = top.node(id)
+    const linkedServices = Array.from(resourceServiceLinks.get(id) || [])
+    const linkedTeams = new Set(linkedServices.map((svc) => serviceTeam.get(svc)).filter(Boolean))
+    const edgeTypes = resourceEdgeTypes.get(id) || new Set()
+    if (node && linkedServices.length === 1) node.ownerService = linkedServices[0]
+    if (node) {
+      node.linkedServices = linkedServices.sort()
+      node.attachmentSide = attachmentSideForNode(id, node.type, edgeTypes)
+    }
+    if (node && linkedTeams.size === 1) node.teamFrame = Array.from(linkedTeams)[0]
+    if (!resourcesByTeam.has(team)) resourcesByTeam.set(team, [])
+    resourcesByTeam.get(team).push(id)
+  })
+  resourcesByTeam.forEach((ids) => ids.sort())
+  if (resourcesByTeam.has('shared') && !teams.has('shared')) {
+    teams.set('shared', { name: 'shared', services: [], degree: 0 })
+  }
+
+  const teamOrder = orderTeamsForLayout(Array.from(teams.values()), teamLinks)
+  const blocks = teamOrder.map((team) => buildTeamLayoutBlock(top, team, resourcesByTeam.get(team.name) || [], serviceDegree, serviceAffinity))
+  let cursorX = 180
+  let cursorY = 150
+  let rowH = 0
+  let col = 0
+  let maxX = 0
+  let maxY = 0
+  blocks.forEach((block) => {
+    if (col >= TEAM_GRID_COLS) {
+      cursorX = 180
+      cursorY += rowH + TEAM_BLOCK_GAP_Y
+      rowH = 0
+      col = 0
+    }
+    placeTeamLayoutBlock(top, block, cursorX, cursorY)
+    maxX = Math.max(maxX, cursorX + block.width)
+    maxY = Math.max(maxY, cursorY + block.height)
+    cursorX += block.width + TEAM_BLOCK_GAP_X
+    rowH = Math.max(rowH, block.height)
+    col += 1
+  })
+  const bounds = graphNodeBounds(top)
+  top.setGraph({ ...top.graph(), width: Math.max(maxX, bounds.maxX) + 240, height: Math.max(maxY, bounds.maxY) + 220 })
+}
+
+function addTeamLink(links, a, b, weight) {
+  const key = a < b ? `${a}|${b}` : `${b}|${a}`
+  links.set(key, (links.get(key) || 0) + weight)
+}
+
+function addPairWeight(links, a, b, weight) {
+  if (!a || !b || a === b) return
+  const key = a < b ? `${a}|${b}` : `${b}|${a}`
+  links.set(key, (links.get(key) || 0) + weight)
+}
+
+function pairWeight(links, a, b) {
+  if (!a || !b || a === b) return 0
+  const key = a < b ? `${a}|${b}` : `${b}|${a}`
+  return links.get(key) || 0
+}
+
+function teamLinkWeight(links, a, b) {
+  if (!a || !b || a === b) return 0
+  const key = a < b ? `${a}|${b}` : `${b}|${a}`
+  return links.get(key) || 0
+}
+
+function primaryResourceTeam(resourceID, resourceTeamWeights) {
+  const weights = resourceTeamWeights.get(resourceID)
+  if (!weights || !weights.size) return ''
+  return Array.from(weights.entries()).sort((a, b) => {
+    if (b[1] !== a[1]) return b[1] - a[1]
+    return a[0].localeCompare(b[0])
+  })[0][0]
+}
+
+function attachmentSideForNode(id, type, edgeTypes) {
+  if (type === 'scheduler' || id.startsWith('sched:')) return 'left'
+  if (edgeTypes && (edgeTypes.has('scheduler') || edgeTypes.has('queue_consume'))) return 'left'
+  return 'right'
+}
+
+function orderTeamsForLayout(teams, links) {
+  const remaining = teams.slice().sort((a, b) => {
+    if ((b.degree || 0) !== (a.degree || 0)) return (b.degree || 0) - (a.degree || 0)
+    if (b.services.length !== a.services.length) return b.services.length - a.services.length
+    return a.name.localeCompare(b.name)
+  })
+  const out = []
+  while (remaining.length) {
+    if (!out.length) {
+      out.push(remaining.shift())
+      continue
+    }
+    const placed = new Set(out.map((team) => team.name))
+    let bestIndex = 0
+    let bestScore = -1
+    remaining.forEach((team, i) => {
+      let score = 0
+      placed.forEach((name) => { score += teamLinkWeight(links, team.name, name) })
+      score += teamLinkWeight(links, team.name, out[out.length - 1].name) * 2
+      score += (team.degree || 0) * 0.001
+      if (score > bestScore || (score === bestScore && team.name < remaining[bestIndex].name)) {
+        bestScore = score
+        bestIndex = i
+      }
+    })
+    out.push(remaining.splice(bestIndex, 1)[0])
+  }
+  return out
+}
+
+function orderServicesForTeam(ids, serviceDegree, serviceAffinity) {
+  const remaining = ids.slice().sort((a, b) => {
+    const ad = serviceDegree.get(a) || 0
+    const bd = serviceDegree.get(b) || 0
+    if (bd !== ad) return bd - ad
+    return a.localeCompare(b)
+  })
+  const out = []
+  while (remaining.length) {
+    if (!out.length) {
+      out.push(remaining.shift())
+      continue
+    }
+    let bestIndex = 0
+    let bestScore = -1
+    remaining.forEach((candidate, index) => {
+      const adjacency = out.reduce((sum, placed) => sum + pairWeight(serviceAffinity, candidate, placed), 0)
+      const recent = pairWeight(serviceAffinity, candidate, out[out.length - 1]) * 2
+      const score = adjacency + recent + (serviceDegree.get(candidate) || 0) * 0.001
+      if (score > bestScore || (score === bestScore && candidate.localeCompare(remaining[bestIndex]) < 0)) {
+        bestScore = score
+        bestIndex = index
+      }
+    })
+    out.push(remaining.splice(bestIndex, 1)[0])
+  }
+  return out
+}
+
+function buildTeamLayoutBlock(top, team, resources, serviceDegree, serviceAffinity) {
+  const orderedServiceIDs = orderServicesForTeam(team.services, serviceDegree, serviceAffinity)
+  const serviceIDs = orderedServiceIDs.slice().sort((a, b) => {
+    const an = top.node(a)
+    const bn = top.node(b)
+    if (Boolean(bn?.expanded) !== Boolean(an?.expanded)) return bn?.expanded ? 1 : -1
+    return orderedServiceIDs.indexOf(a) - orderedServiceIDs.indexOf(b)
+  })
+  const expandedID = serviceIDs.find((id) => top.node(id)?.expanded)
+  const compactIDs = expandedID ? serviceIDs.filter((id) => id !== expandedID) : serviceIDs
+  const resourceIDs = resources.slice().sort((a, b) => {
+    const ao = top.node(a)?.ownerService || ''
+    const bo = top.node(b)?.ownerService || ''
+    if (ao !== bo) return ao.localeCompare(bo)
+    return a.localeCompare(b)
+  })
+  const compactCols = compactIDs.length ? clamp(Math.ceil(Math.sqrt(compactIDs.length * 1.25)), 2, 6) : 0
+  const compactRows = compactCols ? Math.ceil(compactIDs.length / compactCols) : 0
+  const compactCellW = COMPACT_SERVICE_W + TEAM_RIGHT_ATTACH_W + TEAM_SERVICE_GAP_X
+  const compactCellH = COMPACT_SERVICE_H + TEAM_SERVICE_GAP_Y
+  const expanded = expandedID ? top.node(expandedID) : null
+  const expandedW = expanded ? expanded.width + TEAM_RIGHT_ATTACH_W + TEAM_SERVICE_GAP_X : 0
+  const expandedH = expanded ? expanded.height + TEAM_SERVICE_GAP_Y : 0
+  const serviceGridW = expanded ? expandedW + Math.max(0, compactCols * compactCellW) : Math.max(COMPACT_SERVICE_W + 120, compactCols * compactCellW)
+  const serviceGridH = expanded ? Math.max(expandedH, compactRows * compactCellH) : Math.max(COMPACT_SERVICE_H + 120, compactRows * compactCellH)
+  const unattachedCount = resourceIDs.filter((id) => !(top.node(id)?.linkedServices || []).length).length
+  const unattachedRows = Math.ceil(unattachedCount / 2)
+  const unattachedH = unattachedRows * (118 + TEAM_RESOURCE_GAP_Y)
+  const width = TEAM_LEFT_ATTACH_W + serviceGridW + 180
+  const height = Math.max(serviceGridH, unattachedH, 220) + 150
+  return {
+    team,
+    expandedID,
+    compactIDs,
+    resourceIDs,
+    compactCols,
+    compactCellW,
+    compactCellH,
+    serviceGridW,
+    width,
+    height,
+  }
+}
+
+function placeTeamLayoutBlock(top, block, x, y) {
+  const headerPad = 78
+  const expanded = block.expandedID ? top.node(block.expandedID) : null
+  let compactX = x + TEAM_LEFT_ATTACH_W + 40
+  const compactY = y + headerPad
+  if (expanded) {
+    expanded.x = x + TEAM_LEFT_ATTACH_W + 40 + expanded.width / 2
+    expanded.y = y + headerPad + expanded.height / 2
+    compactX = x + TEAM_LEFT_ATTACH_W + 40 + expanded.width + TEAM_RIGHT_ATTACH_W + TEAM_SERVICE_GAP_X
+  }
+  block.compactIDs.forEach((id, i) => {
+    const node = top.node(id)
+    if (!node) return
+    const col = block.compactCols ? i % block.compactCols : 0
+    const row = block.compactCols ? Math.floor(i / block.compactCols) : 0
+    node.x = compactX + col * block.compactCellW + node.width / 2
+    node.y = compactY + row * block.compactCellH + node.height / 2
+  })
+  placeAttachedResources(top, block, x, y + headerPad)
+  resolveTeamCollisions(top, block)
+}
+
+function placeAttachedResources(top, block, blockX, contentY) {
+  const serviceIDs = new Set([block.expandedID, ...block.compactIDs].filter(Boolean))
+  const services = Array.from(serviceIDs).map((id) => ({ id, node: top.node(id) })).filter((item) => item.node)
+  const serviceByID = new Map(services.map((item) => [item.id, item.node]))
+  const ownerSlots = new Map()
+  const unattached = []
+
+  block.resourceIDs.forEach((id) => {
+    const node = top.node(id)
+    if (!node) return
+    const linked = (node.linkedServices || []).filter((svc) => serviceByID.has(svc))
+    if (!linked.length) {
+      unattached.push(id)
+      return
+    }
+    if (linked.length === 1) {
+      placeSingleOwnerResource(node, linked[0], serviceByID.get(linked[0]), ownerSlots)
+      return
+    }
+    placeSharedResource(node, linked.map((svc) => serviceByID.get(svc)).filter(Boolean))
+  })
+
+  const fallbackX = blockX + TEAM_LEFT_ATTACH_W + block.serviceGridW + 40
+  unattached.sort().forEach((id, i) => {
+    const node = top.node(id)
+    if (!node) return
+    const col = i % 2
+    const row = Math.floor(i / 2)
+    node.x = fallbackX + col * (320 + TEAM_RESOURCE_GAP_X) + node.width / 2
+    node.y = contentY + row * (118 + TEAM_RESOURCE_GAP_Y) + node.height / 2
+  })
+}
+
+function placeSingleOwnerResource(resourceNode, ownerID, ownerNode, ownerSlots) {
+  const side = resourceNode.attachmentSide === 'left' ? 'left' : 'right'
+  const key = `${ownerID}:${side}`
+  const slot = ownerSlots.get(key) || 0
+  ownerSlots.set(key, slot + 1)
+  const offset = stackSlotOffset(slot, resourceNode.height + TEAM_ATTACH_GAP_Y)
+  const sign = side === 'left' ? -1 : 1
+  resourceNode.x = ownerNode.x + sign * (ownerNode.width / 2 + TEAM_ATTACH_GAP_X + resourceNode.width / 2)
+  resourceNode.y = ownerNode.y + offset
+}
+
+function placeSharedResource(resourceNode, linkedNodes) {
+  if (!linkedNodes.length) return
+  const side = resourceNode.attachmentSide === 'left' ? 'left' : 'right'
+  const minX = Math.min(...linkedNodes.map((node) => node.x - node.width / 2))
+  const maxX = Math.max(...linkedNodes.map((node) => node.x + node.width / 2))
+  const avgX = linkedNodes.reduce((sum, node) => sum + node.x, 0) / linkedNodes.length
+  const avgY = linkedNodes.reduce((sum, node) => sum + node.y, 0) / linkedNodes.length
+  const spreadX = maxX - minX
+  if (side === 'left') {
+    resourceNode.x = minX - TEAM_ATTACH_GAP_X - resourceNode.width / 2
+  } else if (spreadX > resourceNode.width + 160) {
+    resourceNode.x = avgX
+  } else {
+    resourceNode.x = maxX + TEAM_ATTACH_GAP_X + resourceNode.width / 2
+  }
+  resourceNode.y = avgY
+}
+
+function stackSlotOffset(slot, step) {
+  if (slot === 0) return 0
+  const ring = Math.ceil(slot / 2)
+  return (slot % 2 === 1 ? 1 : -1) * ring * step
+}
+
+function resolveTeamCollisions(top, block) {
+  const serviceIDs = new Set([block.expandedID, ...block.compactIDs].filter(Boolean))
+  const fixedBoxes = Array.from(serviceIDs)
+    .map((id) => ({ id, node: top.node(id) }))
+    .filter((item) => item.node)
+    .map((item) => nodeBox(item.node, 26))
+  const placed = fixedBoxes.slice()
+  block.resourceIDs.slice().sort((a, b) => {
+    const an = top.node(a)
+    const bn = top.node(b)
+    if ((an?.attachmentSide || '') !== (bn?.attachmentSide || '')) return (an?.attachmentSide || '').localeCompare(bn?.attachmentSide || '')
+    if ((an?.linkedServices || []).join('|') !== (bn?.linkedServices || []).join('|')) return (an?.linkedServices || []).join('|').localeCompare((bn?.linkedServices || []).join('|'))
+    if ((an?.y || 0) !== (bn?.y || 0)) return (an?.y || 0) - (bn?.y || 0)
+    return a.localeCompare(b)
+  }).forEach((id) => {
+    const node = top.node(id)
+    if (!node) return
+    let guard = 0
+    while (guard < 80) {
+      const box = nodeBox(node, 18)
+      const hit = placed.find((candidate) => boxesOverlap(box, candidate))
+      if (!hit) break
+      node.y = hit.bottom + node.height / 2 + TEAM_ATTACH_GAP_Y
+      guard += 1
+    }
+    placed.push(nodeBox(node, 18))
+  })
+}
+
+function nodeBox(node, pad = 0) {
+  return {
+    left: node.x - node.width / 2 - pad,
+    right: node.x + node.width / 2 + pad,
+    top: node.y - node.height / 2 - pad,
+    bottom: node.y + node.height / 2 + pad,
+  }
+}
+
+function boxesOverlap(a, b) {
+  return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top
+}
+
+function graphNodeBounds(top) {
+  const bounds = { maxX: 0, maxY: 0 }
+  top.nodes().forEach((id) => {
+    const node = top.node(id)
+    if (!node) return
+    bounds.maxX = Math.max(bounds.maxX, node.x + node.width / 2)
+    bounds.maxY = Math.max(bounds.maxY, node.y + node.height / 2)
+  })
+  return bounds
+}
+
 function addTopNode(top, nodeInfo, id, type, data, label) {
   const shared = data && data.shared
   const tableCount = Array.isArray(data?.tables) ? data.tables.length : 0
@@ -747,15 +1656,16 @@ function addTopNode(top, nodeInfo, id, type, data, label) {
 }
 
 function computeServicePorts(model, cx, cy) {
-  const hull = model.hull
+  const boundary = model.boundary || { x: -model.width / 2, y: -model.height / 2, width: model.width, height: model.height }
   const ports = {
-    hullIn: { x: cx + hull.x - hull.width / 2, y: cy + hull.y },
-    hullOut: { x: cx + hull.x + hull.width / 2, y: cy + hull.y },
-    hullTop: { x: cx + hull.x, y: cy + hull.y - hull.height / 2 },
+    hullIn: { x: cx + boundary.x, y: cy },
+    hullOut: { x: cx + boundary.x + boundary.width, y: cy },
+    hullTop: { x: cx, y: cy + boundary.y },
     groups: {},
     items: [],
   }
-  model.objectives.forEach((group) => assignGroupPorts(ports, group, cx + group.x, cy + group.y, 'objective'))
+  ;(model.leftSections || []).forEach((section) => assignSectionPort(ports, section, cx + section.x, cy + section.y, 'exposure'))
+  ;(model.rightSections || []).forEach((section) => assignSectionPort(ports, section, cx + section.x, cy + section.y, 'dependency'))
   model.left.forEach((group) => assignGroupPorts(ports, group, cx + group.x, cy + group.y, 'exposure'))
   model.right.forEach((group) => assignGroupPorts(ports, group, cx + group.x, cy + group.y, 'dependency'))
   return ports
@@ -774,7 +1684,16 @@ function computeCompactServicePorts(cx, cy, width, height) {
 function assignGroupPorts(ports, group, cx, cy, side) {
   const portX = side === 'exposure' ? cx + group.width / 2 : side === 'dependency' ? cx - group.width / 2 : cx
   const portY = side === 'objective' ? cy + group.height / 2 : cy
-  ports.groups[group.key] = { x: portX, y: portY, side, group }
+  const port = { x: portX, y: portY, side, group }
+  ports.groups[group.key] = port
+  if (group.lane && !ports.groups[group.lane]) ports.groups[group.lane] = port
+}
+
+function assignSectionPort(ports, section, cx, cy, side) {
+  const portX = side === 'exposure' ? cx + section.width / 2 : cx - section.width / 2
+  const port = { x: portX, y: cy, side, section }
+  ports.groups[section.key] = port
+  if (section.lane) ports.groups[section.lane] = port
 }
 
 function endpointFor(id, edge, role, topPositions, servicePorts, serviceNames) {
@@ -809,7 +1728,7 @@ function impactEdgeSet(sel, edges, serviceNames = new Set()) {
     if (!service) return
     const fromService = edge.from === service
     const toService = edge.to === service
-    if (kind === 'http_inbound' || kind === 'event_inbound' || kind === 'scheduled_jobs' || kind === 'cli_commands' || kind === 'webhooks') {
+    if (kind === 'http_inbound' || kind === 'rpc_inbound' || kind === 'event_inbound' || kind === 'scheduled_jobs' || kind === 'cli_commands' || kind === 'webhooks') {
       const traced = traceImpactEdgeSet(data, edges, service)
       if (traced.size) {
         traced.forEach((key) => out.add(key))
@@ -829,11 +1748,35 @@ function impactEdgeSet(sel, edges, serviceNames = new Set()) {
       }
     }
     if (kind === 'http_outbound' && edge.type === 'http' && fromService) out.add(edgeKey(edge))
+    if (kind === 'rpc_outbound' && edge.type === 'rpc' && fromService) out.add(edgeKey(edge))
     if (kind === 'db_operations' && edge.type === 'database' && fromService) out.add(edgeKey(edge))
     if (kind === 'cache_operations' && edge.type === 'cache' && fromService) out.add(edgeKey(edge))
     if (kind === 'event_outbound' && edge.type === 'queue_publish' && fromService) out.add(edgeKey(edge))
   })
   return out
+}
+
+function selectionMatchKeys(sel) {
+  const keys = new Set()
+  const data = sel?.data || {}
+  ;[sel?.id, data.name, data.kind, data.service, data.objectID].forEach((value) => keys.add(normalizeKey(value)))
+  ;(data.items || []).forEach((item) => {
+    if (Array.isArray(item.items)) item.items.forEach((raw) => addImpactKeys(keys, raw))
+    else addImpactKeys(keys, item)
+  })
+  ;(data.connections || []).forEach((conn) => {
+    ;[
+      conn.from_id,
+      conn.from_name,
+      conn.from_type,
+      conn.to_id,
+      conn.to_name,
+      conn.to_type,
+      conn.entrypoint_id,
+      conn.summary,
+    ].forEach((value) => keys.add(normalizeKey(value)))
+  })
+  return keys
 }
 
 function expandKnownServiceImpact(selected, edges, serviceNames) {
@@ -927,6 +1870,7 @@ function drawCompactServiceNode(parent, n, selectThing) {
   const g = parent.append('g')
     .attr('class', 'service-system service-compact')
     .attr('data-select-id', service.name)
+    .attr('data-match-keys', normalizeKey(`${service.name} ${service.id || ''}`))
     .on('click', (ev) => {
       ev.stopPropagation()
       selectThing({ kind: 'service', data: service, id: service.name })
@@ -968,9 +1912,10 @@ function serviceCompactSubtitle(service) {
 
 function serviceCompactCounts(service) {
   const routes = (service.http_routes || []).length
+  const rpc = (service.rpc_endpoints || []).length
   const deps = (service.dependencies || []).length
   const traces = (service.connections || []).length
-  return `${routes} routes · ${deps} downstream · ${traces} traces`
+  return `${routes + rpc} entrypoints · ${deps} downstream · ${traces} traces`
 }
 
 function compactServiceBadges(service) {
@@ -979,11 +1924,12 @@ function compactServiceBadges(service) {
   return [service.domain, service.criticality, loc].filter(Boolean).slice(0, 3)
 }
 
-function drawServiceNode(parent, model, cx, cy, onSelect, selectThing) {
+function drawServiceNode(parent, model, cx, cy, onSelect, selectThing, scrollGroupRows, scrollSection) {
   const ports = computeServicePorts(model, cx, cy)
   const g = parent.append('g')
-    .attr('class', 'service-system')
+    .attr('class', 'service-system service-workspace')
     .attr('data-select-id', model.service.name)
+    .attr('data-match-keys', normalizeKey(`${model.service.name} ${model.service.id || ''}`))
     .on('click', (ev) => {
       ev.stopPropagation()
       selectThing({ kind: 'service', data: model.service, id: model.service.name })
@@ -991,26 +1937,79 @@ function drawServiceNode(parent, model, cx, cy, onSelect, selectThing) {
 
   drawServiceBoundary(g, model, cx, cy)
   const connections = model.service.connections || []
-  model.objectives.forEach((group) => drawGroup(g, group, cx + group.x, cy + group.y, 'objective', ports, selectThing, model.service.name, connections))
-  model.left.forEach((group) => drawGroup(g, group, cx + group.x, cy + group.y, 'exposure', ports, selectThing, model.service.name, connections))
-  model.right.forEach((group) => drawGroup(g, group, cx + group.x, cy + group.y, 'dependency', ports, selectThing, model.service.name, connections))
+  ;(model.leftSections || []).forEach((section) => drawSection(g, section, cx, cy, 'exposure', ports, selectThing, model.service.name, connections, scrollGroupRows, scrollSection))
+  ;(model.rightSections || []).forEach((section) => drawSection(g, section, cx, cy, 'dependency', ports, selectThing, model.service.name, connections, scrollGroupRows, scrollSection))
+  drawFlowPanel(g, model, cx + model.center.x, cy + model.center.y, selectThing)
 
-  drawHull(g, model, cx + model.hull.x, cy + model.hull.y)
-
-  g.append('circle').attr('class', 'service-port exposure-port').attr('cx', ports.hullIn.x).attr('cy', ports.hullIn.y).attr('r', 13)
-  g.append('circle').attr('class', 'service-port dependency-port').attr('cx', ports.hullOut.x).attr('cy', ports.hullOut.y).attr('r', 13)
-  if (model.objectives.length) {
-    g.append('circle').attr('class', 'service-port objective-port').attr('cx', ports.hullTop.x).attr('cy', ports.hullTop.y).attr('r', 13)
-  }
+  g.append('circle').attr('class', 'service-port exposure-port').attr('cx', ports.hullIn.x).attr('cy', ports.hullIn.y).attr('r', 10)
+  g.append('circle').attr('class', 'service-port dependency-port').attr('cx', ports.hullOut.x).attr('cy', ports.hullOut.y).attr('r', 10)
 
   return g
 }
 
+function drawSection(g, section, serviceCX, serviceCY, kind, ports, selectThing, serviceName, connections, scrollGroupRows, scrollSection) {
+  const colors = GROUP_COLORS[kind]
+  const cx = serviceCX + section.x
+  const cy = serviceCY + section.y
+  const x = cx - section.width / 2
+  const y = cy - section.height / 2
+  const sg = g.append('g')
+    .attr('class', `objective-section ${kind}-section`)
+    .attr('data-select-id', `${serviceName}:${section.key}`)
+    .attr('data-match-keys', [section.key, section.lane, section.title, ...section.groups.flatMap((group) => [group.key, group.title])].map(normalizeKey).join('|'))
+    .on('click', (ev) => {
+      ev.stopPropagation()
+      selectThing({ kind: 'section', id: `${serviceName}:${section.key}`, data: { name: section.title, kind: section.lane, service: serviceName, count: section.itemCount, items: section.groups.flatMap((group) => group.items), connections } })
+    })
+    .on('wheel', (ev) => {
+      if (!section.hiddenBefore && !section.hiddenAfter) return
+      ev.preventDefault()
+      ev.stopPropagation()
+      scrollSection && scrollSection(section.stateKey, ev.deltaY > 0 ? 72 : -72)
+    })
+
+  sg.append('rect')
+    .attr('class', 'section-card-bg')
+    .attr('x', x)
+    .attr('y', y)
+    .attr('width', section.width)
+    .attr('height', section.height)
+    .attr('rx', 12)
+    .attr('fill', colors.fill)
+    .attr('stroke', colors.stroke)
+    .append('title').text(`${section.title}: ${section.groupCount} groups, ${section.itemCount} objects`)
+  sg.append('rect').attr('class', 'section-card-accent').attr('x', x).attr('y', y).attr('width', 6).attr('height', section.height).attr('rx', 3).attr('fill', colors.stroke)
+  drawText(sg, section.title, x + 20, y + 25, 'section-title', 'start')
+  drawText(sg, `${section.itemCount} object${section.itemCount === 1 ? '' : 's'}`, x + section.width - 18, y + 25, 'section-count', 'end')
+  drawText(sg, section.subtitle, x + 20, y + 43, 'section-subtitle', 'start')
+
+  const clipID = `clip-${groupKeyPart(serviceName)}-${groupKeyPart(section.key)}`
+  const clip = sg.append('clipPath').attr('id', clipID)
+  clip.append('rect')
+    .attr('x', x + 12)
+    .attr('y', y + WORKSPACE_SECTION_HEADER_H)
+    .attr('width', section.width - 24)
+    .attr('height', section.viewportH)
+    .attr('rx', 8)
+
+  const content = sg.append('g').attr('clip-path', `url(#${clipID})`)
+  section.groups.forEach((group) => drawGroup(content, group, serviceCX + group.x, serviceCY + group.y, kind, ports, selectThing, serviceName, connections, scrollGroupRows))
+
+  if (section.hiddenBefore || section.hiddenAfter) {
+    const msg = `${section.hiddenBefore ? `↑ ${Math.ceil(section.hiddenBefore)}px ` : ''}${section.hiddenAfter ? `↓ ${Math.ceil(section.hiddenAfter)}px` : ''}`.trim()
+    drawText(sg, msg || 'scroll', x + section.width / 2, y + section.height - 9, 'section-more')
+  }
+
+  const port = ports.groups[section.lane] || ports.groups[section.key]
+  if (port) sg.append('circle').attr('class', `${kind}-port group-port`).attr('cx', port.x).attr('cy', port.y).attr('r', 11)
+}
+
 function drawServiceBoundary(g, model, cx, cy) {
-  const x = cx - model.width / 2 + 20
-  const y = cy - model.height / 2 + 20
-  const w = model.width - 40
-  const h = model.height - 40
+  const boundary = model.boundary || { x: -model.width / 2, y: -model.height / 2, width: model.width, height: model.height }
+  const x = cx + boundary.x
+  const y = cy + boundary.y
+  const w = boundary.width
+  const h = boundary.height
   g.append('rect')
     .attr('class', 'service-boundary')
     .attr('x', x)
@@ -1020,7 +2019,12 @@ function drawServiceBoundary(g, model, cx, cy) {
     .attr('rx', 18)
     .append('title').text(`${model.service.name} service boundary`)
   drawText(g, 'ENTRYPOINTS', x + 28, y + 30, 'service-lane-label', 'start')
-  drawText(g, 'DOWNSTREAM', x + w - 28, y + 30, 'service-lane-label', 'end')
+  drawText(g, 'FLOW', x + w / 2, y + 30, 'service-lane-label', 'middle')
+  drawText(g, 'DEPENDENCIES', x + w - 28, y + 30, 'service-lane-label', 'end')
+  const leftSep = x + SERVICE_PAD_X + ENTRY_COL_W + WORKSPACE_COLUMN_GAP / 2
+  const rightSep = x + w - SERVICE_PAD_X - DEP_COL_W - WORKSPACE_COLUMN_GAP / 2
+  g.append('line').attr('class', 'service-column-separator').attr('x1', leftSep).attr('x2', leftSep).attr('y1', y + 50).attr('y2', y + h - 24)
+  g.append('line').attr('class', 'service-column-separator').attr('x1', rightSep).attr('x2', rightSep).attr('y1', y + 50).attr('y2', y + h - 24)
 }
 
 function drawHull(g, model, cx, cy) {
@@ -1044,7 +2048,7 @@ function drawHull(g, model, cx, cy) {
   drawText(g, shortLabel(service.name, 28), cx, cy - 10, 'service-name')
   drawText(g, 'extracted service context', cx, cy + 23, 'service-caption')
   const counts = [
-    (service.http_routes || []).length && `${(service.http_routes || []).length} routes`,
+    ((service.http_routes || []).length + (service.rpc_endpoints || []).length) && `${(service.http_routes || []).length + (service.rpc_endpoints || []).length} entrypoints`,
     (service.dependencies || []).length && `${(service.dependencies || []).length} downstream`,
     (service.connections || []).length && `${(service.connections || []).length} traces`,
   ].filter(Boolean).join(' · ')
@@ -1074,19 +2078,28 @@ function drawServiceBadges(g, service, cx, y) {
 
 function drawTeamFrames(parent, services, topPositions) {
   const teams = new Map()
-  services.forEach((svc) => {
-    const pos = topPositions.get(svc.name)
+  const extendTeam = (teamName, pos, isResource = false) => {
     if (!pos) return
-    const team = svc.team || 'default'
-    const item = teams.get(team) || { name: team, minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity, count: 0 }
+    const team = teamName || 'default'
+    const item = teams.get(team) || { name: team, minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity, count: 0, resources: 0 }
     const w = pos.width || COMPACT_SERVICE_W
     const h = pos.height || COMPACT_SERVICE_H
     item.minX = Math.min(item.minX, pos.x - w / 2 - 54)
     item.maxX = Math.max(item.maxX, pos.x + w / 2 + 54)
     item.minY = Math.min(item.minY, pos.y - h / 2 - 60)
     item.maxY = Math.max(item.maxY, pos.y + h / 2 + 60)
-    item.count += 1
+    if (isResource) item.resources += 1
+    else item.count += 1
     teams.set(team, item)
+  }
+  services.forEach((svc) => {
+    const pos = topPositions.get(svc.name)
+    if (!pos) return
+    extendTeam(svc.team || 'default', pos, false)
+  })
+  topPositions.forEach((pos) => {
+    if (pos.type === 'service' || !pos.teamFrame) return
+    extendTeam(pos.teamFrame, pos, true)
   })
   Array.from(teams.values()).forEach((team, i) => {
     if (!Number.isFinite(team.minX)) return
@@ -1096,18 +2109,137 @@ function drawTeamFrames(parent, services, topPositions) {
     const w = team.maxX - team.minX
     const h = team.maxY - team.minY
     g.append('rect').attr('class', `team-frame-bg tone-${i % 5}`).attr('x', x).attr('y', y).attr('width', w).attr('height', h).attr('rx', 24)
-    g.append('text').attr('class', 'team-frame-label').attr('x', x + 24).attr('y', y + 34).text(`${team.name} · ${team.count}`)
+    const resourceText = team.resources ? ` · ${team.resources} resources` : ''
+    g.append('text').attr('class', 'team-frame-label').attr('x', x + 24).attr('y', y + 34).text(`${team.name} · ${team.count}${resourceText}`)
   })
 }
 
-function drawGroup(g, group, cx, cy, kind, ports, selectThing, serviceName, connections) {
+function drawFlowPanel(g, model, cx, cy, selectThing) {
+  const service = model.service
+  const panelW = model.center.width
+  const panelH = model.center.height
+  const x = cx - panelW / 2
+  const y = cy - panelH / 2
+  const panel = g.append('g').attr('class', 'flow-panel')
+  panel.append('rect').attr('class', 'flow-panel-bg').attr('x', x).attr('y', y).attr('width', panelW).attr('height', panelH).attr('rx', 14)
+  drawText(panel, shortLabel(service.name, 30), cx, y + 34, 'flow-service-name')
+  drawText(panel, serviceCompactSubtitle(service) || 'service context', cx, y + 57, 'flow-service-subtitle')
+  drawServiceBadges(panel, service, cx, y + 88)
+
+  const flow = model.flow || { mode: 'idle', traces: [] }
+  const startY = y + WORKSPACE_HEADER_H
+  panel.append('line').attr('class', 'flow-panel-divider').attr('x1', x + 20).attr('x2', x + panelW - 20).attr('y1', startY - 16).attr('y2', startY - 16)
+  if (flow.mode === 'idle') {
+    drawFlowIdle(panel, service, x, startY, panelW)
+  } else {
+    drawSelectedFlow(panel, flow, x, startY, panelW, panelH - WORKSPACE_HEADER_H - 18, selectThing, service.name)
+  }
+}
+
+function drawFlowIdle(g, service, x, y, width) {
+  const stats = [
+    ['Entry', (service.http_routes || []).length + (service.rpc_endpoints || []).length],
+    ['Deps', (service.dependencies || []).length],
+    ['Traces', (service.connections || []).length],
+  ]
+  let sx = x + 28
+  stats.forEach(([label, value]) => {
+    g.append('rect').attr('class', 'flow-stat').attr('x', sx).attr('y', y).attr('width', 112).attr('height', 58).attr('rx', 10)
+    drawText(g, String(value || 0), sx + 56, y + 25, 'flow-stat-value')
+    drawText(g, label, sx + 56, y + 45, 'flow-stat-label')
+    sx += 124
+  })
+  drawText(g, 'Select a row from the left or right columns to show that object sequence here.', x + width / 2, y + 96, 'flow-empty-text')
+  drawText(g, 'The selected objective stays focused until another objective is selected.', x + width / 2, y + 120, 'flow-empty-text')
+}
+
+function drawSelectedFlow(g, flow, x, y, width, height, selectThing, serviceName) {
+  const selection = flow.selection
+  const maxY = y + height
+  drawText(g, 'Selected objective flow', x + 24, y + 6, 'flow-section-title', 'start')
+  if (!selection) {
+    drawText(g, 'No extracted sequence yet. Request/response and evidence are still available in the inspector.', x + width / 2, y + 72, 'flow-empty-text')
+    return
+  }
+  let cursorY = y + 28
+  drawText(g, shortLabel(selection.selectedObjectID, 54), x + 24, cursorY, 'flow-selected-object', 'start')
+  cursorY += 16
+  if (selection.fallback) {
+    drawText(g, 'No exact trace matched this object yet.', x + width - 24, cursorY - 16, 'flow-empty-text', 'end')
+  }
+  const traces = (selection.fallback ? [] : selection.traces).slice(0, FLOW_TRACE_LIMIT)
+  if (!traces.length) {
+    drawText(g, 'No extracted sequence yet. Details remain available in the inspector.', x + 34, cursorY + 30, 'flow-empty-text', 'start')
+    return
+  }
+  traces.forEach((trace) => {
+    if (cursorY > maxY - 96) return
+    drawSequenceTrace(g, trace, x + 24, cursorY, width - 48, selectThing, serviceName)
+    cursorY += 112
+  })
+  const hidden = selection.traces.length - traces.length
+  if (hidden > 0) {
+    drawText(g, `+ ${hidden} more trace${hidden === 1 ? '' : 's'} available in the inspector data`, x + width / 2, Math.min(cursorY - 8, maxY - 8), 'flow-more')
+  }
+}
+
+function drawTracePill(g, trace, x, y, width) {
+  g.append('rect').attr('class', 'flow-trace-pill').attr('x', x).attr('y', y).attr('width', width).attr('height', 38).attr('rx', 8)
+  drawText(g, first(trace.from_name, trace.from_id, 'entrypoint'), x + 14, y + 24, 'flow-trace-from', 'start')
+  drawText(g, '→', x + width / 2, y + 24, 'flow-arrow')
+  drawText(g, first(trace.to_name, trace.to_id, 'dependency'), x + width - 14, y + 24, 'flow-trace-to', 'end')
+}
+
+function drawSequenceTrace(g, trace, x, y, width, selectThing, serviceName) {
+  const reach = first(trace.reachability, 'must')
+  g.append('rect').attr('class', 'flow-sequence-card').attr('x', x).attr('y', y).attr('width', width).attr('height', 96).attr('rx', 10)
+  const nodeY = y + 48
+  const leftX = x + 34
+  const rightX = x + width - 34
+  const midX = x + width / 2
+  g.append('circle').attr('class', 'flow-node entry').attr('cx', leftX).attr('cy', nodeY).attr('r', 8)
+  g.append('circle').attr('class', 'flow-node action').attr('cx', rightX).attr('cy', nodeY).attr('r', 8)
+  g.append('path').attr('class', `flow-seq-line reach-${reach}`).attr('d', `M ${leftX + 10} ${nodeY} C ${midX - 42} ${nodeY}, ${midX + 42} ${nodeY}, ${rightX - 10} ${nodeY}`)
+  drawText(g, first(trace.from_name, trace.from_id), leftX, y + 22, 'flow-node-label', 'start')
+  drawText(g, first(trace.from_type, trace.entrypoint_id), leftX, y + 38, 'flow-node-meta', 'start')
+  drawText(g, first(trace.to_name, trace.to_id), rightX, y + 22, 'flow-node-label', 'end')
+  drawText(g, first(trace.to_type, trace.to_id), rightX, y + 38, 'flow-node-meta', 'end')
+  const cond = conditionLabel(trace.condition)
+  drawText(g, cond || reach, midX, y + 43, cond ? 'flow-condition' : 'flow-reachability')
+  const data = dataDependencyLabel(trace.data_dependencies)
+  if (data) drawText(g, data, midX, y + 76, 'flow-data-label')
+}
+
+function conditionLabel(condition) {
+  if (!condition) return ''
+  return first(condition.summary, condition.expression, condition.kind)
+}
+
+function dataDependencyLabel(data) {
+  if (!Array.isArray(data) || !data.length) return ''
+  const firstDep = data[0]
+  const from = first(firstDep.from?.expression, firstDep.from?.object_ref)
+  const to = first(firstDep.to?.expression, firstDep.to?.object_ref)
+  if (!from && !to) return `${data.length} data dependencies`
+  return `${from || 'input'} → ${to || 'target'}`
+}
+
+function drawGroup(g, group, cx, cy, kind, ports, selectThing, serviceName, connections, scrollGroupRows) {
   const colors = GROUP_COLORS[kind]
   const gg = g.append('g')
     .attr('class', `objective-group ${kind}-group`)
     .attr('data-select-id', `${serviceName}:${group.key}:${group.title}`)
+    .attr('data-match-keys', [group.key, group.title, group.lane, ...group.items.flatMap((item) => item.matchKeys || [])].map(normalizeKey).join('|'))
     .on('click', (ev) => {
       ev.stopPropagation()
-      selectThing({ kind: 'group', id: `${serviceName}:${group.key}:${group.title}`, data: { name: group.title, kind: group.key, service: serviceName, count: group.items.length, items: group.items, connections } })
+      selectThing({ kind: 'group', id: `${serviceName}:${group.key}:${group.title}`, data: { name: group.title, kind: group.lane || group.key, groupKey: group.key, service: serviceName, count: group.items.length, items: group.items, connections } })
+    })
+    .on('wheel', (ev) => {
+      if (!group.expanded || group.items.length <= group.visibleCount) return
+      ev.preventDefault()
+      ev.stopPropagation()
+      const delta = ev.deltaY > 0 ? 1 : -1
+      scrollGroupRows && scrollGroupRows(group.stateKey, delta)
     })
   const x = cx - group.width / 2
   const y = cy - group.height / 2
@@ -1119,8 +2251,13 @@ function drawGroup(g, group, cx, cy, kind, ports, selectThing, serviceName, conn
   drawText(gg, `${group.items.length} instance${group.items.length === 1 ? '' : 's'}`, x + group.width - 18, y + 27, 'group-count', 'end')
   drawText(gg, group.subtitle, x + 18, y + 49, 'group-subtitle', 'start')
 
-  const chipW = (group.width - 48) / 2
-  group.items.forEach((item, i) => drawFactChip(gg, group, item, x + 18 + (i % 2) * (chipW + 12), y + 66 + Math.floor(i / 2) * (CHIP_H + CHIP_ROW_GAP), chipW, colors, selectThing, serviceName, connections))
+  group.items.slice(group.scrollOffset, group.scrollOffset + group.visibleCount).forEach((item, i) => drawFactChip(gg, group, item, x + 18, y + 62 + i * WORKSPACE_ROW_H, group.width - 36, colors, selectThing, serviceName, connections))
+  if (group.hidden) {
+    const message = group.expanded
+      ? `${group.hiddenBefore ? `↑ ${group.hiddenBefore} ` : ''}${group.hiddenAfter ? `↓ ${group.hiddenAfter}` : ''}`.trim() || 'showing all'
+      : `open ${group.hidden} item${group.hidden === 1 ? '' : 's'}`
+    drawText(gg, message, x + group.width / 2, y + group.height - 12, 'group-more')
+  }
 
   const port = ports.groups[group.key]
   if (port) gg.append('circle').attr('class', `${kind}-port group-port`).attr('cx', port.x).attr('cy', port.y).attr('r', 11)
@@ -1130,22 +2267,30 @@ function drawFactChip(g, group, item, x, y, width, colors, selectThing, serviceN
   const chip = g.append('g')
     .attr('class', 'instance-fact fact-chip')
     .attr('data-select-id', `${serviceName}:${group.key}:${item.key}`)
+    .attr('data-match-keys', item.matchKeys.join('|'))
     .on('click', (ev) => {
       ev.stopPropagation()
-      selectThing({ kind: 'fact', id: `${serviceName}:${group.key}:${item.key}`, data: { name: item.label, kind: group.key, service: serviceName, count: item.items.length, items: item.items, connections } })
+      selectThing({ kind: 'fact', id: `${serviceName}:${group.key}:${item.key}`, data: { name: item.label, kind: group.key, service: serviceName, objectID: item.objectID, count: item.items.length, items: item.items, connections } })
     })
-  chip.append('rect').attr('x', x).attr('y', y).attr('width', width).attr('height', 23).attr('rx', 6)
+  chip.append('rect').attr('x', x).attr('y', y).attr('width', width).attr('height', 38).attr('rx', 6)
     .attr('fill', '#111827').attr('stroke', colors.inner)
     .append('title').text(`${item.label}${item.sublabel ? `: ${item.sublabel}` : ''}`)
   const badge = cleanLabel(item.badge || '')
   const badgeW = badge ? Math.max(30, Math.min(58, badge.length * 6 + 12)) : 0
   if (badge) {
-    chip.append('rect').attr('class', 'fact-badge').attr('x', x + 5).attr('y', y + 5).attr('width', badgeW).attr('height', 13).attr('rx', 4).attr('fill', colors.inner)
-    drawText(chip, badge, x + 5 + badgeW / 2, y + 15, 'fact-badge-text')
+    chip.append('rect').attr('class', 'fact-badge').attr('x', x + 5).attr('y', y + 7).attr('width', badgeW).attr('height', 14).attr('rx', 4).attr('fill', colors.inner)
+    drawText(chip, badge, x + 5 + badgeW / 2, y + 18, 'fact-badge-text')
   } else {
-    chip.append('circle').attr('cx', x + 11).attr('cy', y + 11.5).attr('r', 3.5).attr('fill', colors.inner)
+    chip.append('circle').attr('cx', x + 11).attr('cy', y + 14).attr('r', 3.5).attr('fill', colors.inner)
   }
-  drawText(chip, shortLabel(item.label, Math.max(8, Math.floor((width - badgeW - 20) / 8))), x + 10 + badgeW + 8, y + 15.5, 'fact-title', 'start')
+  const traceW = item.traceCount ? 34 : 0
+  drawText(chip, shortLabel(item.label, 46), x + 10 + badgeW + 8, y + 17, 'fact-title', 'start')
+  const metaLine = [item.meta, item.sublabel].filter(Boolean).join(' · ')
+  if (metaLine) drawText(chip, shortLabel(metaLine, 58), x + 10 + badgeW + 8, y + 32, 'fact-meta', 'start')
+  if (item.traceCount) {
+    chip.append('rect').attr('class', 'fact-trace-badge').attr('x', x + width - 35).attr('y', y + 7).attr('width', 28).attr('height', 14).attr('rx', 4)
+    drawText(chip, String(item.traceCount), x + width - 21, y + 18, 'fact-trace-text')
+  }
 }
 
 function drawResourceNode(parent, id, n, onSelect, selectThing) {
@@ -1154,6 +2299,7 @@ function drawResourceNode(parent, id, n, onSelect, selectThing) {
   const g = parent.append('g')
     .attr('class', `resource-node resource-${n.type}${shared ? ' shared-resource' : ''}`)
     .attr('data-select-id', id)
+    .attr('data-match-keys', normalizeKey(`${id} ${n.label || ''} ${n.data?.name || ''} ${n.data?.kind || ''}`))
     .on('click', (ev) => {
       ev.stopPropagation()
       selectThing({ kind: n.type, data: n.data, id })

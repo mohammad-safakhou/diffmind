@@ -29,6 +29,11 @@ func (s *Server) handleRunArchGraph(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreErr(w, err)
 		return
 	}
+	if graph, err := s.persistedArchGraphForRun(pid, rid); err == nil {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(graph)
+		return
+	}
 
 	serviceRepoDirs := map[string]string{}
 	for _, ref := range mft.Repos {
