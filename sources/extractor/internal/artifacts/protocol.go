@@ -104,6 +104,7 @@ func (b *protocolBuilder) addExposure(exp model.Exposure) {
 	objectID := semanticObjectID(base)
 	if b.objects[objectID] {
 		b.oldToNew[base.ID] = objectID
+		b.mergeDuplicateObjectiveEvidence(objectID, base, "deterministic")
 		return
 	}
 	b.objects[objectID] = true
@@ -165,6 +166,7 @@ func (b *protocolBuilder) addDependency(dep model.Dependency) {
 	objectID := semanticObjectID(base)
 	if b.objects[objectID] {
 		b.oldToNew[base.ID] = objectID
+		b.mergeDuplicateObjectiveEvidence(objectID, base, "deterministic")
 		return
 	}
 	b.objects[objectID] = true
@@ -293,14 +295,108 @@ func (b *protocolBuilder) originForBase(base model.BaseEntity) protocol.Origin {
 	}
 }
 
+func (b *protocolBuilder) mergeDuplicateObjectiveEvidence(objectID string, base model.BaseEntity, detector string) {
+	obsRefs, evRefs := b.addObservationsAndEvidence(objectID, base, detector)
+	b.appendObjectiveRefs(objectID, obsRefs, evRefs)
+}
+
+func (b *protocolBuilder) appendObjectiveRefs(objectID string, obsRefs, evRefs []string) {
+	for i := range b.doc.Objects.HTTPEndpoints {
+		if b.doc.Objects.HTTPEndpoints[i].ID == objectID {
+			appendObjectiveBaseRefs(&b.doc.Objects.HTTPEndpoints[i].ObjectiveBase, obsRefs, evRefs)
+			return
+		}
+	}
+	for i := range b.doc.Objects.HTTPCalls {
+		if b.doc.Objects.HTTPCalls[i].ID == objectID {
+			appendObjectiveBaseRefs(&b.doc.Objects.HTTPCalls[i].ObjectiveBase, obsRefs, evRefs)
+			return
+		}
+	}
+	for i := range b.doc.Objects.DBResources {
+		if b.doc.Objects.DBResources[i].ID == objectID {
+			appendObjectiveBaseRefs(&b.doc.Objects.DBResources[i].ObjectiveBase, obsRefs, evRefs)
+			return
+		}
+	}
+	for i := range b.doc.Objects.DBQueries {
+		if b.doc.Objects.DBQueries[i].ID == objectID {
+			appendObjectiveBaseRefs(&b.doc.Objects.DBQueries[i].ObjectiveBase, obsRefs, evRefs)
+			return
+		}
+	}
+	for i := range b.doc.Objects.QueueConsumers {
+		if b.doc.Objects.QueueConsumers[i].ID == objectID {
+			appendObjectiveBaseRefs(&b.doc.Objects.QueueConsumers[i].ObjectiveBase, obsRefs, evRefs)
+			return
+		}
+	}
+	for i := range b.doc.Objects.QueuePublishers {
+		if b.doc.Objects.QueuePublishers[i].ID == objectID {
+			appendObjectiveBaseRefs(&b.doc.Objects.QueuePublishers[i].ObjectiveBase, obsRefs, evRefs)
+			return
+		}
+	}
+	for i := range b.doc.Objects.RPCEndpoints {
+		if b.doc.Objects.RPCEndpoints[i].ID == objectID {
+			appendObjectiveBaseRefs(&b.doc.Objects.RPCEndpoints[i].ObjectiveBase, obsRefs, evRefs)
+			return
+		}
+	}
+	for i := range b.doc.Objects.RPCCalls {
+		if b.doc.Objects.RPCCalls[i].ID == objectID {
+			appendObjectiveBaseRefs(&b.doc.Objects.RPCCalls[i].ObjectiveBase, obsRefs, evRefs)
+			return
+		}
+	}
+	for i := range b.doc.Objects.CLICommands {
+		if b.doc.Objects.CLICommands[i].ID == objectID {
+			appendObjectiveBaseRefs(&b.doc.Objects.CLICommands[i].ObjectiveBase, obsRefs, evRefs)
+			return
+		}
+	}
+	for i := range b.doc.Objects.Activations {
+		if b.doc.Objects.Activations[i].ID == objectID {
+			appendObjectiveBaseRefs(&b.doc.Objects.Activations[i].ObjectiveBase, obsRefs, evRefs)
+			return
+		}
+	}
+	for i := range b.doc.Objects.CacheOperations {
+		if b.doc.Objects.CacheOperations[i].ID == objectID {
+			appendObjectiveBaseRefs(&b.doc.Objects.CacheOperations[i].ObjectiveBase, obsRefs, evRefs)
+			return
+		}
+	}
+	for i := range b.doc.Objects.ConfigReads {
+		if b.doc.Objects.ConfigReads[i].ID == objectID {
+			appendObjectiveBaseRefs(&b.doc.Objects.ConfigReads[i].ObjectiveBase, obsRefs, evRefs)
+			return
+		}
+	}
+	for i := range b.doc.Objects.FeatureFlags {
+		if b.doc.Objects.FeatureFlags[i].ID == objectID {
+			appendObjectiveBaseRefs(&b.doc.Objects.FeatureFlags[i].ObjectiveBase, obsRefs, evRefs)
+			return
+		}
+	}
+}
+
+func appendObjectiveBaseRefs(base *protocol.ObjectiveBase, obsRefs, evRefs []string) {
+	base.Observations = appendUniqueStrings(base.Observations, obsRefs...)
+	base.EvidenceRefs = appendUniqueStrings(base.EvidenceRefs, evRefs...)
+}
+
 func (b *protocolBuilder) addObservationsAndEvidence(objectID string, base model.BaseEntity, detector string) ([]string, []string) {
 	var obsRefs []string
 	var evRefs []string
+	obsN := b.nextObservationOrdinal(objectID)
+	evN := b.nextEvidenceOrdinal(objectID)
 	for i, loc := range base.Locations {
 		if strings.TrimSpace(loc.File) == "" {
 			continue
 		}
-		obsID := fmt.Sprintf("obs.%s.%d", objectID, i+1)
+		obsID := fmt.Sprintf("obs.%s.%d", objectID, obsN)
+		obsN++
 		obsRefs = append(obsRefs, obsID)
 		b.doc.Observations = append(b.doc.Observations, protocol.Observation{
 			ID:          obsID,
@@ -311,12 +407,13 @@ func (b *protocolBuilder) addObservationsAndEvidence(objectID string, base model
 			Confidence:  confidence(base.Confidence),
 		})
 	}
-	for i, ev := range base.Evidence {
+	for _, ev := range base.Evidence {
 		loc := ev.Location
 		key := fmt.Sprintf("%s:%d:%d:%s:%s", loc.File, loc.StartLine, loc.EndLine, ev.Source, ev.Snippet)
 		evID, ok := b.evSeen[key]
 		if !ok {
-			evID = fmt.Sprintf("ev.%s.%d", objectID, i+1)
+			evID = fmt.Sprintf("ev.%s.%d", objectID, evN)
+			evN++
 			b.evSeen[key] = evID
 			b.doc.Evidence = append(b.doc.Evidence, protocol.Evidence{
 				ID:          evID,
@@ -335,7 +432,7 @@ func (b *protocolBuilder) addObservationsAndEvidence(objectID string, base model
 		evRefs = append(evRefs, evID)
 	}
 	if len(evRefs) == 0 {
-		for i, loc := range base.Locations {
+		for _, loc := range base.Locations {
 			if strings.TrimSpace(loc.File) == "" {
 				continue
 			}
@@ -346,7 +443,8 @@ func (b *protocolBuilder) addObservationsAndEvidence(objectID string, base model
 			key := fmt.Sprintf("%s:%d:%d:%s:%s", loc.File, loc.StartLine, loc.EndLine, source, detectorName(base, detector))
 			evID, ok := b.evSeen[key]
 			if !ok {
-				evID = fmt.Sprintf("ev.%s.%d", objectID, i+1)
+				evID = fmt.Sprintf("ev.%s.%d", objectID, evN)
+				evN++
 				b.evSeen[key] = evID
 				b.doc.Evidence = append(b.doc.Evidence, protocol.Evidence{
 					ID:         evID,
@@ -365,6 +463,28 @@ func (b *protocolBuilder) addObservationsAndEvidence(objectID string, base model
 		}
 	}
 	return obsRefs, evRefs
+}
+
+func (b *protocolBuilder) nextObservationOrdinal(objectID string) int {
+	prefix := "obs." + objectID + "."
+	n := 1
+	for _, obs := range b.doc.Observations {
+		if strings.HasPrefix(obs.ID, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
+func (b *protocolBuilder) nextEvidenceOrdinal(objectID string) int {
+	prefix := "ev." + objectID + "."
+	n := 1
+	for _, ev := range b.doc.Evidence {
+		if strings.HasPrefix(ev.ID, prefix) {
+			n++
+		}
+	}
+	return n
 }
 
 func (b *protocolBuilder) ensureDBResource(base model.BaseEntity) string {
@@ -797,6 +917,14 @@ func inputsFromBase(base model.BaseEntity) *protocol.HTTPInputs {
 			out.QueryParams = append(out.QueryParams, f)
 		case strings.Contains(lower, "header"):
 			out.Headers = append(out.Headers, f)
+		case strings.Contains(lower, "body"):
+			out.Body = &protocol.BodySpec{
+				ContentType: "application/json",
+				Required:    in.Required,
+			}
+			if typ := strings.TrimSpace(in.Type); typ != "" {
+				out.Body.Schema = map[string]any{"type": "object", "name": typ}
+			}
 		default:
 			out.Metadata = ensureMap(out.Metadata)
 			out.Metadata[in.Name] = map[string]any{"type": in.Type, "required": in.Required, "description": in.Description}
@@ -813,6 +941,12 @@ func ensureMap(m map[string]any) map[string]any {
 }
 
 func responsesFromDetails(d map[string]any) []protocol.HTTPResponse {
+	if raw, ok := d["responses"]; ok {
+		out := responsesFromAny(raw)
+		if len(out) > 0 {
+			return out
+		}
+	}
 	if s := stringDetail(d, "status", "response_status"); s != "" {
 		var code int
 		if _, err := fmt.Sscanf(s, "%d", &code); err == nil && code > 0 {
@@ -820,6 +954,84 @@ func responsesFromDetails(d map[string]any) []protocol.HTTPResponse {
 		}
 	}
 	return nil
+}
+
+func responsesFromAny(raw any) []protocol.HTTPResponse {
+	switch v := raw.(type) {
+	case []map[string]any:
+		out := make([]protocol.HTTPResponse, 0, len(v))
+		for _, item := range v {
+			if r, ok := responseFromMap(item); ok {
+				out = append(out, r)
+			}
+		}
+		return out
+	case []any:
+		out := make([]protocol.HTTPResponse, 0, len(v))
+		for _, item := range v {
+			switch m := item.(type) {
+			case map[string]any:
+				if r, ok := responseFromMap(m); ok {
+					out = append(out, r)
+				}
+			case map[string]string:
+				anyMap := map[string]any{}
+				for k, val := range m {
+					anyMap[k] = val
+				}
+				if r, ok := responseFromMap(anyMap); ok {
+					out = append(out, r)
+				}
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func responseFromMap(m map[string]any) (protocol.HTTPResponse, bool) {
+	var code int
+	switch v := m["status"].(type) {
+	case int:
+		code = v
+	case int64:
+		code = int(v)
+	case float64:
+		code = int(v)
+	case string:
+		if _, err := fmt.Sscanf(v, "%d", &code); err != nil {
+			code = 0
+		}
+	}
+	if code <= 0 {
+		return protocol.HTTPResponse{}, false
+	}
+	resp := protocol.HTTPResponse{
+		Status:      code,
+		Error:       strings.TrimSpace(fmt.Sprint(m["error"])),
+		ContentType: strings.TrimSpace(fmt.Sprint(m["content_type"])),
+	}
+	if resp.Error == "<nil>" {
+		resp.Error = ""
+	}
+	if resp.ContentType == "<nil>" {
+		resp.ContentType = ""
+	}
+	switch schema := m["schema"].(type) {
+	case map[string]any:
+		resp.Schema = schema
+	case map[string]string:
+		resp.Schema = map[string]any{}
+		for k, v := range schema {
+			resp.Schema[k] = v
+		}
+	case string:
+		if strings.TrimSpace(schema) != "" {
+			resp.Schema = map[string]any{"type": "object", "name": strings.TrimSpace(schema)}
+		}
+	}
+	return resp, true
 }
 
 func authFromDetails(d map[string]any) *protocol.Auth {

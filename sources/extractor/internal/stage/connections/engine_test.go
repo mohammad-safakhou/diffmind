@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 
 	astpkg "github.com/mohammad-safakhou/diffmind/internal/ast"
@@ -131,6 +133,182 @@ func TestLastIdentTrimsScipSymbol(t *testing.T) {
 			t.Errorf("lastIdent(%q) = %q, want %q", sym, got, want)
 		}
 	}
+}
+
+func TestResolveExposureEntriesScopesAmbiguousShortHandlerToRoutePackage(t *testing.T) {
+	idx := &astpkg.ProjectIndex{
+		Files: map[string]*astpkg.FileAST{
+			"internal/affiliate/http/controller.go": {},
+			"internal/portfolio/http/controller.go": {},
+		},
+		Symbols: map[string][]astpkg.SymbolDef{
+			"affiliate.Controller.Delete": {{
+				Name:      "Delete",
+				Qualified: "affiliate.Controller.Delete",
+				Kind:      astpkg.SymbolKindMethod,
+				File:      "internal/affiliate/http/delete.go",
+				Receiver:  "Controller",
+			}},
+			"portfolio.Controller.Delete": {{
+				Name:      "Delete",
+				Qualified: "portfolio.Controller.Delete",
+				Kind:      astpkg.SymbolKindMethod,
+				File:      "internal/portfolio/http/delete.go",
+				Receiver:  "Controller",
+			}},
+		},
+	}
+	exp := model.Exposure{BaseEntity: model.BaseEntity{
+		ID:   "http.delete_marketing_asset",
+		Type: "http_route",
+		Name: "DELETE /admin/marketing-assets/:id",
+		Details: map[string]any{
+			"handler": "Delete",
+		},
+		Locations: []model.Location{{
+			File:      "internal/affiliate/http/controller.go",
+			StartLine: 18,
+			EndLine:   18,
+		}},
+	}}
+	got := resolveExposureEntries(idx, exp)
+	if len(got) != 1 || got[0] != "affiliate.Controller.Delete" {
+		t.Fatalf("expected scoped affiliate handler only, got %#v", got)
+	}
+	if global := resolveExactEntitySymbolAST(idx, "Delete"); len(global) != 0 {
+		t.Fatalf("ambiguous global short handler should not resolve, got %#v", global)
+	}
+}
+
+func TestResolveExposureEntriesScopesShortHandlerToSiblingGoFile(t *testing.T) {
+	repo := "/Users/developer/Downloads/game-service"
+	if _, err := os.Stat(repo); err != nil {
+		t.Skipf("game-service fixture not available: %v", err)
+	}
+	idx, err := astpkg.Build(context.Background(), repo, "go", 6)
+	if err != nil {
+		t.Fatalf("build index: %v", err)
+	}
+	exp := model.Exposure{BaseEntity: model.BaseEntity{
+		Type: "http_route",
+		Name: "DELETE /admin/marketing-assets/:id",
+		Details: map[string]any{
+			"handler": "Delete",
+		},
+		Locations: []model.Location{{
+			File:      "internal/affiliate/adapter/inbound/http/marketing_asset_http/controller.go",
+			StartLine: 31,
+			EndLine:   31,
+		}},
+	}}
+	got := resolveExposureEntrySymbolsAST(idx, exp)
+	if len(got) != 1 {
+		t.Fatalf("expected exactly one scoped handler, got %#v; candidates: %#v", got, debugSymbolsInPath(idx, "internal/affiliate/adapter/inbound/http/marketing_asset_http"))
+	}
+	defs := idx.Symbols[got[0]]
+	if len(defs) == 0 {
+		t.Fatalf("resolved symbol has no definitions: %s", got[0])
+	}
+	if defs[0].File != "internal/affiliate/adapter/inbound/http/marketing_asset_http/delete.go" {
+		t.Fatalf("expected sibling delete handler file, got symbol=%s file=%s; candidates: %#v", got[0], defs[0].File, debugSymbolsInPath(idx, "internal/affiliate/adapter/inbound/http/marketing_asset_http"))
+	}
+	if len(idx.CallGraph[got[0]]) == 0 {
+		t.Fatalf("expected handler call graph edges for %s", got[0])
+	}
+	t.Logf("handler calls: %#v", debugCalls(idx, got[0]))
+	t.Logf("handler fields: %#v", debugFieldTypes(idx, "marketingAssetSrv"))
+}
+
+func TestResolveFiberLowercaseHandlerAndPortField(t *testing.T) {
+	repo := "/Users/developer/Downloads/metadata"
+	if _, err := os.Stat(repo); err != nil {
+		t.Skipf("metadata fixture not available: %v", err)
+	}
+	idx, err := astpkg.Build(context.Background(), repo, "go", 6)
+	if err != nil {
+		t.Fatalf("build index: %v", err)
+	}
+	exp := model.Exposure{BaseEntity: model.BaseEntity{
+		Type: "http_route",
+		Name: "POST /metadata",
+		Details: map[string]any{
+			"handler": "get",
+		},
+		Locations: []model.Location{{
+			File:      "internal/collector/adapter/inbound/metadata/http/metadatahttp/controller.go",
+			StartLine: 16,
+			EndLine:   16,
+		}},
+	}}
+	got := resolveExposureEntrySymbolsAST(idx, exp)
+	if len(got) != 1 {
+		t.Fatalf("expected one metadata handler, got %#v; candidates: %#v", got, debugSymbolsInPath(idx, "internal/collector/adapter/inbound/metadata/http/metadatahttp"))
+	}
+	calls := debugCalls(idx, got[0])
+	t.Logf("metadata calls: %#v", calls)
+	if !debugCallsContain(calls, "internal.collector.core.service.metadatasrv.Service.GetMetadata") {
+		t.Fatalf("expected handler to resolve metadata service; calls=%#v fields=%#v typeMap=%#v", calls, debugFieldTypes(idx, "service"), idx.TypeMap["MetadataService"])
+	}
+	dep := model.Dependency{BaseEntity: model.BaseEntity{
+		ID:   "dep.coingecko_metadata",
+		Type: "outbound_http",
+		Name: "coingecko GET /coins/{value}",
+		Locations: []model.Location{{
+			File:      "internal/collector/adapter/outbound/provider/coingecko/metadata/coin_data.go",
+			StartLine: 14,
+			EndLine:   14,
+		}},
+	}}
+	conns, unresolved := runASTConnections(context.Background(), idx, []model.Exposure{exp}, []model.Dependency{dep}, 0.7, 1)
+	if len(conns) == 0 {
+		t.Fatalf("expected metadata route to connect to coingecko dependency; unresolved=%#v depSymbols=%#v", unresolved, debugResolveDependency(idx, dep))
+	}
+}
+
+func debugSymbolsInPath(idx *astpkg.ProjectIndex, path string) []string {
+	var out []string
+	for qualified, defs := range idx.Symbols {
+		for _, def := range defs {
+			if strings.Contains(def.File, path) {
+				out = append(out, qualified+"|"+def.Name+"|"+def.File+"|"+def.Kind.String())
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func debugCalls(idx *astpkg.ProjectIndex, caller string) []string {
+	var out []string
+	for _, call := range idx.CallGraph[caller] {
+		out = append(out, call.CalleeRaw+"=>"+strings.Join(call.CalleeResolved, ","))
+	}
+	sort.Strings(out)
+	return out
+}
+
+func debugFieldTypes(idx *astpkg.ProjectIndex, field string) []string {
+	var out []string
+	for key, typ := range idx.FieldTypes {
+		if strings.Contains(key, field) || strings.Contains(typ, field) {
+			out = append(out, key+"=>"+typ)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func debugCallsContain(calls []string, want string) bool {
+	for _, call := range calls {
+		if strings.Contains(call, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func debugResolveDependency(idx *astpkg.ProjectIndex, dep model.Dependency) []string {
+	return resolveEntitySymbolsAST(idx, dep.Name, dependencyTargetLocations(dep))
 }
 
 // TestASTConnectionPreservesPerPathConditions verifies that conditional

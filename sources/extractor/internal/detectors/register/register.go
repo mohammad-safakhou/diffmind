@@ -3,6 +3,8 @@ package register
 
 import (
 	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/dotnet/http/aspnet"
+	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/golang/ai/openai"
+	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/golang/di/wire"
 	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/golang/http/echo"
 	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/golang/http/fiber"
 	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/golang/http/gin"

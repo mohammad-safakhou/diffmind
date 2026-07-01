@@ -84,14 +84,24 @@ func parseSource(ctx context.Context, src []byte, lang string, sitterLang *sitte
 
 	// Extract symbol definitions.
 	fa.Symbols = extractSymbols(root, src, lang, sitterLang, relPath)
+	scopeGoSymbolsByPackage(fa.Symbols, lang, relPath)
 
 	// Extract call sites.
 	fa.Calls = extractCalls(root, src, lang, sitterLang, relPath, fa.Symbols)
 
 	// Extract lightweight field declarations for receiver/type resolution.
 	fa.FieldTypes = extractFieldTypes(src, fa.Symbols)
+	for key, typ := range extractGoFieldTypes(src, lang, relPath) {
+		fa.FieldTypes[key] = typ
+	}
 	fa.LocalTypes = extractLocalTypes(src, fa.Symbols)
 	fa.Implements = extractImplements(src, fa.Symbols)
+	for iface, impls := range extractGoImplements(src, lang, relPath) {
+		fa.Implements[iface] = append(fa.Implements[iface], impls...)
+	}
+	for iface, impls := range extractGoWireBinds(src, lang, fa.Imports) {
+		fa.Implements[iface] = append(fa.Implements[iface], impls...)
+	}
 
 	return fa, nil
 }

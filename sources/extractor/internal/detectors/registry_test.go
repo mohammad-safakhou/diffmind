@@ -7,6 +7,8 @@ func TestRegistryHasStableKnownDetectors(t *testing.T) {
 		"golang.http.echo",
 		"golang.http.fiber",
 		"golang.db.bun",
+		"golang.di.wire",
+		"golang.ai.openai",
 		"java.http.spring",
 		"java.httpclient.feign",
 		"java.httpclient.retrofit",

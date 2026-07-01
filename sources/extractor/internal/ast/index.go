@@ -300,13 +300,48 @@ func receiverTypeForCall(call *CallSite, receiver string, idx *ProjectIndex) str
 	if dot := strings.LastIndex(className, "."); dot > 0 {
 		className = className[:dot]
 	}
+	if field := selectorField(receiver); field != "" && field != receiver {
+		if typ := idx.FieldTypes[className+"."+field]; typ != "" {
+			return typ
+		}
+		if typ := idx.LocalTypes[call.Caller+"."+field]; typ != "" {
+			return typ
+		}
+	}
 	if typ := idx.FieldTypes[className+"."+receiver]; typ != "" {
 		return typ
 	}
 	if typ := idx.LocalTypes[call.Caller+"."+receiver]; typ != "" {
 		return typ
 	}
+	if isLikelyGoMethodReceiver(receiver) && className != "" {
+		return className
+	}
 	return ""
+}
+
+func selectorField(receiver string) string {
+	receiver = strings.TrimSpace(receiver)
+	if receiver == "" {
+		return ""
+	}
+	if bracket := strings.Index(receiver, "["); bracket >= 0 {
+		receiver = strings.TrimSpace(receiver[:bracket])
+	}
+	parts := strings.Split(receiver, ".")
+	if len(parts) < 2 {
+		return receiver
+	}
+	return parts[len(parts)-1]
+}
+
+func isLikelyGoMethodReceiver(receiver string) bool {
+	switch strings.TrimSpace(receiver) {
+	case "c", "s", "r", "p", "h", "srv", "svc":
+		return true
+	default:
+		return false
+	}
 }
 
 func symbolsWithTypeAndMethod(idx *ProjectIndex, typ, method string) []string {
