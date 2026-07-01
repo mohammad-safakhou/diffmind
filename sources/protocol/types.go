@@ -132,8 +132,10 @@ type HTTPInputs struct {
 }
 
 type HTTPResponse struct {
-	Status int    `json:"status" yaml:"status"`
-	Error  string `json:"error,omitempty" yaml:"error,omitempty"`
+	Status      int            `json:"status" yaml:"status"`
+	Error       string         `json:"error,omitempty" yaml:"error,omitempty"`
+	ContentType string         `json:"content_type,omitempty" yaml:"content_type,omitempty"`
+	Schema      map[string]any `json:"schema,omitempty" yaml:"schema,omitempty"`
 }
 
 type HTTPEndpoint struct {
