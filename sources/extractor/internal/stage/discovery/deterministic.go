@@ -355,7 +355,7 @@ func supportedDeterministicObjectives(objs []objectives.Objective) map[string]ob
 			}
 		case model.KindDependency:
 			switch obj.Type {
-			case "outbound_http", "cache_operation", "workflow_orchestration":
+			case "outbound_http", "queue_publish", "cache_operation", "workflow_orchestration":
 				out[obj.Type] = obj
 			}
 		}
@@ -376,6 +376,9 @@ func objectiveForBinding(objs map[string]objectives.Objective, b astpkg.Framewor
 		return obj, ok
 	case "queue_consumer":
 		obj, ok := objs["queue_consumer"]
+		return obj, ok
+	case "queue_publisher":
+		obj, ok := objs["queue_publish"]
 		return obj, ok
 	case "scheduler":
 		obj, ok := objs["scheduled_job"]
@@ -489,7 +492,7 @@ func EntityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objecti
 		// Resolve ${...} property placeholders to the real queue name using the
 		// already-parsed config index, so the entity is named after the queue
 		// (e.g. catalogue-target-response-sqs) rather than the raw placeholder.
-		queue = ResolveResourceName(idx, queue)
+		queue = normalizeQueueOrTopicDestination(ResolveResourceName(idx, queue), platform)
 		if queue == "" {
 			return candidate{}, false
 		}
@@ -497,6 +500,20 @@ func EntityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objecti
 		e.Summary = fmt.Sprintf("%s queue consumer detected from framework binding", displayFramework(b.Framework))
 		e.Details["platform"] = platform
 		e.Details["queue"] = queue
+	case "queue_publish":
+		platform, dest := parseQueueTrigger(trigger)
+		dest = normalizeQueueOrTopicDestination(ResolveResourceName(idx, dest), platform)
+		if dest == "" {
+			return candidate{}, false
+		}
+		e.Name = dest
+		e.Summary = fmt.Sprintf("%s queue publisher detected from framework binding", displayFramework(b.Framework))
+		e.Details["platform"] = platform
+		if platform == "kafka" || platform == "sns" || strings.Contains(platform, "stream") {
+			e.Details["topic"] = dest
+		} else {
+			e.Details["queue"] = dest
+		}
 	case "scheduled_job":
 		schedule := parseScheduleTrigger(trigger)
 		if schedule == "" {
