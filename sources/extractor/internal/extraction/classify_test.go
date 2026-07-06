@@ -47,6 +47,30 @@ func TestDeriveGroupingIgnoresStructuredDetails(t *testing.T) {
 	}
 }
 
+func TestDeriveGroupingPreservesS3ObjectStorageCacheOperation(t *testing.T) {
+	b := model.BaseEntity{
+		Type: "cache_operation",
+		Name: "write dynamic-uploads",
+		Tags: []string{"deterministic", "object-storage:s3", "aws-sdk"},
+		Details: map[string]any{
+			"cache":      "dynamic-uploads",
+			"cache_type": "object_storage",
+			"operation":  "write",
+			"platform":   "s3",
+		},
+	}
+	platform, instance, _, opKind := DeriveGrouping(b)
+	if platform != "s3" {
+		t.Fatalf("S3 cache operation platform should remain s3, got %q", platform)
+	}
+	if instance != "dynamic-uploads" {
+		t.Fatalf("S3 cache operation instance should be bucket/cache name, got %q", instance)
+	}
+	if opKind != "write" {
+		t.Fatalf("S3 cache operation kind should stay write, got %q", opKind)
+	}
+}
+
 // P3b: an SQS consumer is a queue_consumer exposure; the old alias routed it
 // to the stream_consume dependency, mislabeling the architectural fact.
 func TestSQSConsumerAlias(t *testing.T) {

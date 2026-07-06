@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -51,10 +52,17 @@ func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 	util.Debug("app.run", "resolved repo path", map[string]any{"repo": repo})
 
 	runID := strings.TrimSpace(in.RunID)
+	runDir := ""
 	if runID == "" {
-		runID = started.Format("20060102T150405Z")
+		var allocErr error
+		runID, runDir, allocErr = allocateDefaultRunDir(in.Config.Artifacts.BaseDir, started)
+		if allocErr != nil {
+			util.Error("app.run", "failed allocating run directory", map[string]any{"error": allocErr})
+			return RunOutput{}, allocErr
+		}
+	} else {
+		runDir = filepath.Join(in.Config.Artifacts.BaseDir, runID)
 	}
-	runDir := filepath.Join(in.Config.Artifacts.BaseDir, runID)
 	out, err := execute(ctx, executionInput{
 		Config: in.Config, Sink: in.Sink,
 		RunID: runID, RunDir: runDir, BaseDir: in.Config.Artifacts.BaseDir,
@@ -80,6 +88,28 @@ func Run(ctx context.Context, in RunInput) (RunOutput, error) {
 		"warnings":    len(out.Warning),
 	})
 	return out, nil
+}
+
+func allocateDefaultRunDir(baseDir string, started time.Time) (string, string, error) {
+	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+		return "", "", err
+	}
+	base := started.Format("20060102T150405.000000000Z")
+	for i := 0; ; i++ {
+		runID := base
+		if i > 0 {
+			runID = fmt.Sprintf("%s-%d", base, i+1)
+		}
+		runDir := filepath.Join(baseDir, runID)
+		err := os.Mkdir(runDir, 0o755)
+		if err == nil {
+			return runID, runDir, nil
+		}
+		if os.IsExist(err) {
+			continue
+		}
+		return "", "", err
+	}
 }
 
 func PrintSummary(out RunOutput) string {

@@ -126,3 +126,30 @@ func TestParseYAMLMalformedTail(t *testing.T) {
 		t.Errorf("valid leading document should survive a malformed tail, got %v", got)
 	}
 }
+
+func TestParseHCLEntries(t *testing.T) {
+	src := []byte(`
+resource "aws_sqs_queue" "cleanup" {
+  name = "cleanup-events"
+}
+
+resource "aws_sns_topic" "content_events" {
+  name = "content-events-topic"
+}
+
+module "assets" {
+  bucket = "dynamic-content-assets"
+}
+`)
+	got := entryMap(parseHCLEntries(src))
+	want := map[string]string{
+		"resource.aws_sqs_queue.cleanup.name":        "cleanup-events",
+		"resource.aws_sns_topic.content_events.name": "content-events-topic",
+		"module.assets.bucket":                       "dynamic-content-assets",
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("want %s=%q, got %q (all: %v)", k, v, got[k], got)
+		}
+	}
+}

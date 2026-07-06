@@ -18,6 +18,8 @@ func extractConfigEntries(src []byte, format string) []ConfigEntry {
 		return parsePropertiesEntries(src)
 	case "toml":
 		return parseTOMLEntries(src)
+	case "hcl":
+		return parseHCLEntries(src)
 	default:
 		return nil
 	}
@@ -206,4 +208,82 @@ func parseTOMLEntries(src []byte) []ConfigEntry {
 		entries = append(entries, ConfigEntry{Key: section + key, Value: value, Line: lineNum + 1})
 	}
 	return entries
+}
+
+func parseHCLEntries(src []byte) []ConfigEntry {
+	var entries []ConfigEntry
+	var stack []hclBlock
+	for lineNum, raw := range strings.Split(string(src), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
+			continue
+		}
+		for strings.HasPrefix(line, "}") && len(stack) > 0 {
+			stack = stack[:len(stack)-1]
+			line = strings.TrimSpace(strings.TrimPrefix(line, "}"))
+		}
+		if block, ok := parseHCLBlock(line); ok {
+			stack = append(stack, block)
+			if strings.Contains(line, "}") {
+				stack = stack[:len(stack)-1]
+			}
+			continue
+		}
+		eqIdx := strings.Index(line, "=")
+		if eqIdx < 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:eqIdx])
+		value := strings.TrimSpace(line[eqIdx+1:])
+		if key == "" || strings.HasPrefix(value, "{") || strings.HasPrefix(value, "[") {
+			continue
+		}
+		value = strings.TrimRight(value, ",")
+		value = strings.Trim(value, `"'`)
+		if value == "" {
+			continue
+		}
+		entries = append(entries, ConfigEntry{Key: hclEntryKey(stack, key), Value: value, Line: lineNum + 1})
+	}
+	return entries
+}
+
+type hclBlock struct {
+	Type   string
+	Labels []string
+}
+
+func parseHCLBlock(line string) (hclBlock, bool) {
+	if !strings.HasSuffix(line, "{") && !strings.Contains(line, "{") {
+		return hclBlock{}, false
+	}
+	head := strings.TrimSpace(strings.SplitN(line, "{", 2)[0])
+	if head == "" || strings.Contains(head, "=") {
+		return hclBlock{}, false
+	}
+	fields := strings.Fields(head)
+	if len(fields) == 0 {
+		return hclBlock{}, false
+	}
+	block := hclBlock{Type: strings.Trim(fields[0], `"`)}
+	for _, f := range fields[1:] {
+		label := strings.Trim(strings.TrimSpace(f), `",`)
+		if label != "" {
+			block.Labels = append(block.Labels, label)
+		}
+	}
+	return block, true
+}
+
+func hclEntryKey(stack []hclBlock, key string) string {
+	var parts []string
+	for _, b := range stack {
+		if b.Type == "" {
+			continue
+		}
+		parts = append(parts, b.Type)
+		parts = append(parts, b.Labels...)
+	}
+	parts = append(parts, key)
+	return strings.Join(parts, ".")
 }

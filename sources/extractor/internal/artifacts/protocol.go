@@ -26,6 +26,7 @@ func protocolEncodeYAML(w io.Writer, doc *protocol.Document) error { return prot
 type protocolBuilder struct {
 	doc        *protocol.Document
 	oldToNew   map[string]string
+	entities   map[string]model.BaseEntity
 	evSeen     map[string]string
 	objects    map[string]bool
 	resources  map[string]string
@@ -75,6 +76,7 @@ func buildDiffMind protocol(in WriteInput, manifest model.RunManifest) (*protoco
 			},
 		},
 		oldToNew:   map[string]string{},
+		entities:   map[string]model.BaseEntity{},
 		evSeen:     map[string]string{},
 		objects:    map[string]bool{},
 		resources:  map[string]string{},
@@ -101,6 +103,7 @@ func buildDiffMind protocol(in WriteInput, manifest model.RunManifest) (*protoco
 
 func (b *protocolBuilder) addExposure(exp model.Exposure) {
 	base := exp.BaseEntity
+	b.entities[base.ID] = base
 	objectID := semanticObjectID(base)
 	if b.objects[objectID] {
 		b.oldToNew[base.ID] = objectID
@@ -163,6 +166,7 @@ func (b *protocolBuilder) addExposure(exp model.Exposure) {
 
 func (b *protocolBuilder) addDependency(dep model.Dependency) {
 	base := dep.BaseEntity
+	b.entities[base.ID] = base
 	objectID := semanticObjectID(base)
 	if b.objects[objectID] {
 		b.oldToNew[base.ID] = objectID
@@ -239,6 +243,13 @@ func (b *protocolBuilder) addDependency(dep model.Dependency) {
 			Service:       targetName,
 			Method:        stringDetail(base.Details, "method"),
 			Target:        targetRef(targetName),
+		})
+	case "workflow_orchestration":
+		b.doc.Objects.ConfigReads = append(b.doc.Objects.ConfigReads, protocol.ConfigRead{
+			ObjectiveBase: common,
+			Key:           firstNonEmpty(stringDetail(base.Details, "topic", "process_key"), base.Name),
+			Value:         firstNonEmpty(stringDetail(base.Details, "url_template", "target_service"), base.Instance),
+			Source:        firstNonEmpty(stringDetail(base.Details, "config_source"), "source"),
 		})
 	case "command_exec":
 		b.doc.Objects.CLICommands = append(b.doc.Objects.CLICommands, protocol.CLICommand{
@@ -548,6 +559,7 @@ func (b *protocolBuilder) addFlow(conn model.Connection) {
 		Confidence:   confidence(conn.Confidence),
 		Origin:       protocol.OriginDeterministic,
 	}
+	flow.DataDependencies = b.dataDependenciesForConnection(conn, from, to)
 	if len(conn.Paths) == 0 {
 		b.doc.Flows = append(b.doc.Flows, flow)
 		return
@@ -593,6 +605,296 @@ func (b *protocolBuilder) addEntrypointTrace(exp model.Exposure) {
 		EvidenceRefs: b.evidenceRefsForObject(from),
 	}
 	b.doc.Flows = append(b.doc.Flows, flow)
+}
+
+type dataField struct {
+	Name       string
+	Expression string
+	Kind       string
+}
+
+func (b *protocolBuilder) dataDependenciesForConnection(conn model.Connection, fromRef, toRef string) []protocol.DataDependency {
+	source := b.entities[conn.FromExposureID]
+	target := b.entities[conn.ToDependencyID]
+	if source.ID == "" || target.ID == "" {
+		return nil
+	}
+	fromFields := sourceDataFields(source)
+	toFields := targetDataFields(target)
+	if len(fromFields) == 0 || len(toFields) == 0 {
+		return nil
+	}
+	var out []protocol.DataDependency
+	seen := map[string]bool{}
+	for _, from := range fromFields {
+		fromKey := canonicalFieldName(from.Name)
+		if fromKey == "" {
+			continue
+		}
+		for _, to := range toFields {
+			if fromKey != canonicalFieldName(to.Name) {
+				continue
+			}
+			id := "data." + slug(fromRef+"."+from.Expression+"."+toRef+"."+to.Expression)
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			out = append(out, protocol.DataDependency{
+				ID:   id,
+				From: protocol.DataEndpoint{ObjectRef: fromRef, Expression: from.Expression},
+				To:   protocol.DataEndpoint{ObjectRef: toRef, Expression: to.Expression},
+				Kind: dataDependencyKind(from.Kind, to.Kind),
+				Sanitization: map[string]any{
+					"validated": false,
+					"source":    "static_field_name_match",
+				},
+				Confidence: confidenceForDataDependency(from, to),
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+func sourceDataFields(base model.BaseEntity) []dataField {
+	var out []dataField
+	method, path := methodPath(base)
+	_ = method
+	for _, name := range routeParamNames(path) {
+		out = appendDataField(out, name, "request.path."+name, "path")
+	}
+	for _, in := range base.Inputs {
+		name := strings.TrimSpace(in.Name)
+		if name == "" {
+			continue
+		}
+		lower := strings.ToLower(in.Type + " " + in.Description)
+		switch {
+		case strings.Contains(lower, "path"):
+			out = appendDataField(out, name, "request.path."+name, "path")
+		case strings.Contains(lower, "query"):
+			out = appendDataField(out, name, "request.query."+name, "query")
+		case strings.Contains(lower, "header"):
+			out = appendDataField(out, name, "request.headers."+name, "header")
+		case strings.Contains(lower, "body"):
+			out = appendDataField(out, name, "request.body."+name, "body")
+		default:
+			out = appendDataField(out, name, "request."+name, "input")
+		}
+	}
+	out = appendDetailFields(out, base.Details, "path_params", "request.path.", "path")
+	out = appendDetailFields(out, base.Details, "query_params", "request.query.", "query")
+	out = appendDetailFields(out, base.Details, "headers", "request.headers.", "header")
+	out = appendDetailFields(out, base.Details, "body_fields", "request.body.", "body")
+	out = appendDetailFields(out, base.Details, "request_fields", "request.body.", "body")
+	return uniqueDataFields(out)
+}
+
+func targetDataFields(base model.BaseEntity) []dataField {
+	var out []dataField
+	switch base.Type {
+	case "db_operation":
+		table := dataResource(base)
+		for _, col := range stringSliceDetail(base.Details, "writes", "write_columns", "columns_written") {
+			out = appendDataField(out, col, dbFieldExpression(table, col), "db_write")
+		}
+		for _, col := range stringSliceDetail(base.Details, "reads", "read_columns", "columns_read") {
+			out = appendDataField(out, col, dbFieldExpression(table, col), "db_read")
+		}
+		for _, col := range stringSliceDetail(base.Details, "columns") {
+			out = appendDataField(out, col, dbFieldExpression(table, col), "db_column")
+		}
+	case "outbound_http":
+		for _, name := range routeParamNames(stringDetail(base.Details, "url_template", "url", "target_url", "endpoint")) {
+			out = appendDataField(out, name, "path."+name, "path")
+		}
+		out = appendDetailFields(out, base.Details, "path_params", "path.", "path")
+		out = appendDetailFields(out, base.Details, "query_params", "query.", "query")
+		out = appendDetailFields(out, base.Details, "headers", "headers.", "header")
+		out = appendDetailFields(out, base.Details, "body_fields", "body.", "body")
+		out = appendDetailFields(out, base.Details, "request_fields", "body.", "body")
+	case "queue_publish":
+		out = appendDetailFields(out, base.Details, "message_fields", "message.", "message")
+		out = appendDetailFields(out, base.Details, "payload_fields", "message.", "message")
+	case "cache_operation":
+		for _, name := range routeParamNames(stringDetail(base.Details, "key_pattern", "key")) {
+			out = appendDataField(out, name, "cache.key."+name, "cache_key")
+		}
+		out = appendDetailFields(out, base.Details, "key_fields", "cache.key.", "cache_key")
+	case "workflow_orchestration":
+		out = appendDetailFields(out, base.Details, "variables", "workflow.variables.", "workflow_variable")
+		out = appendDetailFields(out, base.Details, "process_variables", "workflow.variables.", "workflow_variable")
+	case "outbound_rpc":
+		out = appendDetailFields(out, base.Details, "request_fields", "request.", "rpc_request")
+	}
+	for _, in := range base.Inputs {
+		if strings.TrimSpace(in.Name) != "" {
+			out = appendDataField(out, in.Name, "input."+in.Name, "input")
+		}
+	}
+	return uniqueDataFields(out)
+}
+
+func dbFieldExpression(table, column string) string {
+	column = strings.TrimSpace(column)
+	table = strings.TrimSpace(table)
+	if table == "" {
+		return column
+	}
+	return table + "." + column
+}
+
+func appendDetailFields(out []dataField, details map[string]any, key, prefix, kind string) []dataField {
+	for _, name := range fieldNamesFromAny(anyDetail(details, key)) {
+		out = appendDataField(out, name, prefix+name, kind)
+	}
+	return out
+}
+
+func appendDataField(out []dataField, name, expr, kind string) []dataField {
+	name = strings.TrimSpace(name)
+	expr = strings.TrimSpace(expr)
+	if name == "" || expr == "" {
+		return out
+	}
+	return append(out, dataField{Name: name, Expression: expr, Kind: kind})
+}
+
+func uniqueDataFields(in []dataField) []dataField {
+	seen := map[string]bool{}
+	var out []dataField
+	for _, f := range in {
+		key := canonicalFieldName(f.Name) + "|" + f.Expression + "|" + f.Kind
+		if canonicalFieldName(f.Name) == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, f)
+	}
+	return out
+}
+
+func fieldNamesFromAny(v any) []string {
+	switch t := v.(type) {
+	case []string:
+		return cleanFieldNames(t)
+	case []any:
+		var out []string
+		for _, item := range t {
+			out = append(out, fieldNamesFromAny(item)...)
+		}
+		return cleanFieldNames(out)
+	case map[string]any:
+		return fieldNamesFromMap(t)
+	case map[string]string:
+		out := make([]string, 0, len(t))
+		for k, v := range t {
+			out = append(out, firstNonEmpty(v, k))
+		}
+		return cleanFieldNames(out)
+	case string:
+		return splitFieldNameString(t)
+	default:
+		return nil
+	}
+}
+
+func fieldNamesFromMap(m map[string]any) []string {
+	for _, key := range []string{"name", "field", "column", "key", "path"} {
+		if s := strings.TrimSpace(fmt.Sprint(m[key])); s != "" && s != "<nil>" {
+			return []string{s}
+		}
+	}
+	var out []string
+	for k := range m {
+		out = append(out, k)
+	}
+	return cleanFieldNames(out)
+}
+
+func splitFieldNameString(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\t'
+	})
+	return cleanFieldNames(parts)
+}
+
+func cleanFieldNames(in []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, s := range in {
+		s = strings.TrimSpace(strings.Trim(s, "`\"' "))
+		if s == "" || s == "<nil>" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func routeParamNames(s string) []string {
+	var out []string
+	re := regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}|:([A-Za-z_][A-Za-z0-9_]*)`)
+	for _, m := range re.FindAllStringSubmatch(s, -1) {
+		out = append(out, firstNonEmpty(m[1], m[2]))
+	}
+	return cleanFieldNames(out)
+}
+
+func canonicalFieldName(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r + ('a' - 'A'))
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func dataDependencyKind(fromKind, toKind string) string {
+	switch {
+	case strings.Contains(toKind, "db"):
+		return "value_flow"
+	case strings.Contains(toKind, "path"):
+		return "path_flow"
+	case strings.Contains(toKind, "query"):
+		return "query_flow"
+	case strings.Contains(toKind, "header"):
+		return "header_flow"
+	case strings.Contains(toKind, "message"):
+		return "payload_flow"
+	case strings.Contains(toKind, "cache_key"):
+		return "key_flow"
+	default:
+		_ = fromKind
+		return "value_flow"
+	}
+}
+
+func confidenceForDataDependency(from, to dataField) protocol.Confidence {
+	if from.Kind == "body" && (strings.Contains(to.Kind, "db") || strings.Contains(to.Kind, "message")) {
+		return protocol.ConfidenceHigh
+	}
+	if from.Kind == "path" && strings.Contains(to.Kind, "path") {
+		return protocol.ConfidenceHigh
+	}
+	return protocol.ConfidenceMedium
 }
 
 func (b *protocolBuilder) evidenceRefsForObject(id string) []string {
@@ -649,6 +951,8 @@ func semanticObjectID(base model.BaseEntity) string {
 		return "act." + slug(firstNonEmpty(stringDetail(base.Details, "handler", "entry_method", "method", "k8s_cronjob_name"), base.Name, stringDetail(base.Details, "schedule", "cron")))
 	case "outbound_rpc":
 		return "rpccall." + slug(firstNonEmpty(stringDetail(base.Details, "service"), base.Instance, base.Name)+"."+stringDetail(base.Details, "method"))
+	case "workflow_orchestration":
+		return "workflow." + slug(firstNonEmpty(stringDetail(base.Details, "orchestrator"), base.Platform, "workflow")+"."+firstNonEmpty(stringDetail(base.Details, "topic", "process_key"), base.Name))
 	case "rpc_endpoint":
 		return "rpc." + slug(base.Name)
 	default:
@@ -676,6 +980,8 @@ func kindForType(t string) string {
 		return "cache_operation"
 	case "outbound_rpc":
 		return "rpc_call"
+	case "workflow_orchestration":
+		return "workflow_orchestration"
 	case "rpc_endpoint":
 		return "rpc_endpoint"
 	default:

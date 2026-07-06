@@ -270,6 +270,11 @@ func CollectRepoMetrics(repoPath string, facts *extraction.RepoFacts) *model.Rep
 		m.Languages = append(m.Languages, *lm)
 	}
 	sort.Slice(m.Languages, func(i, j int) bool {
+		wi := languageMetricWeight(m.Languages[i])
+		wj := languageMetricWeight(m.Languages[j])
+		if wi != wj {
+			return wi > wj
+		}
 		if m.Languages[i].LOC != m.Languages[j].LOC {
 			return m.Languages[i].LOC > m.Languages[j].LOC
 		}
@@ -290,6 +295,16 @@ func CollectRepoMetrics(repoPath string, facts *extraction.RepoFacts) *model.Rep
 		sort.Strings(m.BuildTools)
 	}
 	return m
+}
+
+func languageMetricWeight(m model.LanguageMetric) int {
+	weight := m.LOC
+	switch strings.ToLower(m.Language) {
+	case "json", "yaml", "yml", "xml", "toml", "markdown", "md", "sql", "proto":
+		return weight / 8
+	default:
+		return weight
+	}
 }
 
 func skipMetricsDir(name string) bool {

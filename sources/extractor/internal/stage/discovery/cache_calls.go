@@ -95,10 +95,50 @@ func DeterministicCacheOperations(idx *astpkg.ProjectIndex) []candidate {
 		seen[key] = a
 		order = append(order, key)
 	}
+	for _, e := range deterministicS3StorageOperations(idx) {
+		op := stringAny(e.Details["operation"])
+		cache := stringAny(e.Details["cache"])
+		if op == "" || cache == "" {
+			continue
+		}
+		key := "s3|" + cache + "|" + op
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		a := &agg{op: op, seenLoc: map[string]struct{}{}}
+		a.locations = append(a.locations, e.Locations...)
+		a.evidence = append(a.evidence, e.Evidence...)
+		seen[key] = a
+		order = append(order, key)
+	}
 	sort.Strings(order)
 	out := make([]candidate, 0, len(order))
 	for _, key := range order {
 		a := seen[key]
+		if strings.HasPrefix(key, "s3|") {
+			parts := strings.Split(key, "|")
+			cache := "s3"
+			if len(parts) > 1 && parts[1] != "" {
+				cache = parts[1]
+			}
+			out = append(out, candidate{
+				Type:       "cache_operation",
+				Name:       a.op + " " + cache,
+				Summary:    fmt.Sprintf("AST-derived S3 object storage %s", a.op),
+				Confidence: 1.0,
+				Tags:       []string{"deterministic", "object-storage:s3", "aws-sdk"},
+				Details: map[string]any{
+					"cache":         cache,
+					"cache_type":    "object_storage",
+					"operation":     a.op,
+					"platform":      "s3",
+					"discovered_by": "ast_aws_s3_call",
+				},
+				Locations: a.locations,
+				Evidence:  a.evidence,
+			})
+			continue
+		}
 		out = append(out, candidate{
 			Type:       "cache_operation",
 			Name:       a.op + " redis",
@@ -117,6 +157,115 @@ func DeterministicCacheOperations(idx *astpkg.ProjectIndex) []candidate {
 		})
 	}
 	return out
+}
+
+func deterministicS3StorageOperations(idx *astpkg.ProjectIndex) []candidate {
+	if idx == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var out []candidate
+	forEachCall(idx, func(cs astpkg.CallSite) {
+		fa := idx.Files[cs.File]
+		if fa == nil || (fa.Language != "java" && fa.Language != "kotlin") || isLowSignalCacheArtifactPath(cs.File) {
+			return
+		}
+		op, ok := s3Operation(cs)
+		if !ok {
+			return
+		}
+		loc := callLoc(cs)
+		if loc.File == "" {
+			return
+		}
+		bucket := s3BucketFromCall(idx, cs)
+		if bucket == "" {
+			bucket = "s3"
+		}
+		key := bucket + "|" + op
+		if _, dup := seen[key]; dup {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, candidate{
+			Type:       "cache_operation",
+			Name:       op + " " + bucket,
+			Summary:    fmt.Sprintf("AST-derived S3 object storage %s", op),
+			Confidence: 1.0,
+			Tags:       []string{"deterministic", "object-storage:s3", "aws-sdk"},
+			Details: map[string]any{
+				"cache":         bucket,
+				"cache_type":    "object_storage",
+				"operation":     op,
+				"platform":      "s3",
+				"discovered_by": "ast_aws_s3_call",
+			},
+			Locations: []candidateLocation{loc},
+			Evidence:  []candidateEvidence{callEvidence(cs)},
+		})
+	})
+	return out
+}
+
+func s3Operation(cs astpkg.CallSite) (string, bool) {
+	receiver, callee := splitCall(cs)
+	r := strings.ToLower(receiver)
+	c := strings.ToLower(callee)
+	if !strings.Contains(r, "s3") {
+		return "", false
+	}
+	switch c {
+	case "putobject", "putobjectlegalhold", "putobjecttagging":
+		return "write", true
+	case "getobject", "headobject", "listobjects", "listobjectsv2":
+		return "read", true
+	case "deleteobject", "deleteobjects":
+		return "evict", true
+	default:
+		return "", false
+	}
+}
+
+func s3BucketFromCall(idx *astpkg.ProjectIndex, cs astpkg.CallSite) string {
+	window := callWindowSource(idx, cs, 10)
+	if value := javaBuilderStringValue(window, "bucket"); value != "" {
+		return normalizeResourceToken(ResolveResourceName(idx, value))
+	}
+	if value := javaAssignedStringValue(window, "bucketName"); value != "" {
+		return normalizeResourceToken(ResolveResourceName(idx, value))
+	}
+	return canonicalS3Bucket(idx)
+}
+
+func canonicalS3Bucket(idx *astpkg.ProjectIndex) string {
+	if idx == nil {
+		return ""
+	}
+	distinct := map[string]struct{}{}
+	for _, path := range sortedConfigPaths(idx) {
+		cf := idx.Configs[path]
+		if cf == nil {
+			continue
+		}
+		for _, e := range cf.Entries {
+			k := strings.ToLower(strings.TrimSpace(e.Key))
+			if !strings.Contains(k, "bucket") && !strings.Contains(k, "s3") {
+				continue
+			}
+			v := normalizeResourceToken(stripPlaceholderDefault(e.Value))
+			if v == "" || IsPlaceholder(v) || strings.Contains(v, "example") {
+				continue
+			}
+			distinct[v] = struct{}{}
+		}
+	}
+	if len(distinct) != 1 {
+		return ""
+	}
+	for v := range distinct {
+		return v
+	}
+	return ""
 }
 
 var goRedisCallRE = regexp.MustCompile(`\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?(?:redisClient|cacheRepo|cache)\s*\.\s*(Get|Set|Del|Delete|Exists|Expire)\s*\(`)

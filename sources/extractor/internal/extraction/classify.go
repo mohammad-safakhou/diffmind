@@ -185,7 +185,7 @@ func DeriveGrouping(b model.BaseEntity) (platform, instance, operation, opKind s
 		instance = FirstNonEmpty(get("command"), b.Name)
 		operation = b.Name
 		opKind = "execute"
-	case "db_operation", "cache_operation":
+	case "db_operation":
 		platform = DBPlatform(nameLower, get("database", "database_type", "aws_service", "cache_type", "client_class"))
 		// Instance is the physical datastore, NOT the table/entity (that is the
 		// resource, and lives in the identity key already). Using the table/entity
@@ -200,6 +200,11 @@ func DeriveGrouping(b model.BaseEntity) (platform, instance, operation, opKind s
 		// -> write, findBy/select -> read) and not a raw verb. The raw verb is
 		// preserved in details["operation"] (C5).
 		opKind = entitykey.NormalizeDBOperation(operation)
+	case "cache_operation":
+		platform = CachePlatform(nameLower, get("platform", "cache_type", "cache", "cache_name", "aws_service", "client_class"))
+		instance = FirstNonEmpty(get("cache", "cache_name", "namespace", "bucket", "database", "database_name"), platform)
+		operation = FirstNonEmpty(get("operation", "method", "service_method"), b.Name)
+		opKind = NormalizeCacheOperation(operation)
 	case "outbound_http", "outbound_rpc":
 		platform = map[bool]string{true: "rpc", false: "http"}[b.Type == "outbound_rpc"]
 		instance = OutboundInstance(get("target_service", "service", "host", "target_host", "base_url", "target_url", "default_url", "production_url", "base_url_property", "client_class"), b.Name)
@@ -208,6 +213,11 @@ func DeriveGrouping(b model.BaseEntity) (platform, instance, operation, opKind s
 			operation = b.Name
 		}
 		opKind = NormalizeOperationKind(operation)
+	case "workflow_orchestration":
+		platform = FirstNonEmpty(get("orchestrator", "platform"), "workflow")
+		instance = FirstNonEmpty(get("target_service", "workflow_engine", "engine", "base_url", "url_template"), b.Instance, platform)
+		operation = FirstNonEmpty(get("topic", "process_key", "operation"), b.Name)
+		opKind = FirstNonEmpty(get("invocation_mode"), "workflow")
 	case "queue_publish":
 		platform = QueuePlatform(nameLower, get("platform", "destination", "queue", "topic", "queue_url"))
 		instance = FirstNonEmpty(get("destination", "queue", "topic", "queue_name", "queue_url", "destination_queue"), b.Name)
@@ -269,6 +279,51 @@ func DBPlatform(text, hint string) string {
 		return "elasticsearch"
 	}
 	return "database"
+}
+
+func CachePlatform(text, hint string) string {
+	t := strings.ToLower(text + " " + hint)
+	switch {
+	case strings.Contains(t, "object_storage"), strings.Contains(t, " s3"), strings.Contains(t, "aws s3"), strings.Contains(t, "s3"):
+		return "s3"
+	case strings.Contains(t, "redis"):
+		return "redis"
+	case strings.Contains(t, "memcache"):
+		return "memcached"
+	case strings.Contains(t, "caffeine"):
+		return "caffeine"
+	}
+	if h := strings.TrimSpace(hint); h != "" {
+		return h
+	}
+	return "cache"
+}
+
+func NormalizeCacheOperation(operation string) string {
+	operation = strings.ToLower(strings.TrimSpace(operation))
+	switch {
+	case operation == "":
+		return ""
+	case hasAnyPrefix(operation, "read", "get", "list", "head", "exists", "scan", "load", "fetch"):
+		return "read"
+	case hasAnyPrefix(operation, "write", "set", "put", "store", "save", "mset", "hset"):
+		return "write"
+	case hasAnyPrefix(operation, "delete", "del", "evict", "remove", "unlink", "flush"):
+		return "evict"
+	case hasAnyPrefix(operation, "expire", "pexpire", "persist"):
+		return "expire"
+	default:
+		return operation
+	}
+}
+
+func hasAnyPrefix(s string, prefixes ...string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func QueuePlatform(text, hint string) string {

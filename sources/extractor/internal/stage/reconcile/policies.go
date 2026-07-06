@@ -692,7 +692,7 @@ func dependencyPriority(t string) int {
 	switch t {
 	case "queue_publish":
 		return 40
-	case "outbound_http", "outbound_rpc", "db_operation", "cache_operation":
+	case "outbound_http", "outbound_rpc", "workflow_orchestration", "db_operation", "cache_operation":
 		return 30
 	case "stream_consume":
 		return 20
