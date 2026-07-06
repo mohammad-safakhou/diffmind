@@ -156,6 +156,87 @@ func TestResolutionFallsBackToRegisteredServiceNames(t *testing.T) {
 	}
 }
 
+func TestResolutionMatchesQueuePublishToConsumerTopic(t *testing.T) {
+	reg := registry.New()
+	reg.AddArchitecture("publisher", &model.ServiceArchitecture{
+		ServiceName: "publisher",
+		Dependencies: []model.Dependency{{BaseEntity: model.BaseEntity{
+			ID:      "dep-queue",
+			Type:    "queue_publish",
+			Name:    "publish order",
+			Details: map[string]any{"topic": "arn:aws:sns:eu-central-1:123:order-events.fifo"},
+		}}},
+	})
+	reg.AddArchitecture("consumer", &model.ServiceArchitecture{
+		ServiceName: "consumer",
+		Exposures: []model.Exposure{{BaseEntity: model.BaseEntity{
+			ID:      "exp-queue",
+			Type:    "queue_consumer",
+			Name:    "consume order",
+			Details: map[string]any{"queue": "https://sqs.eu-central-1.amazonaws.com/123/order_events.fifo"},
+		}}},
+	})
+
+	resolution, err := New(reg, util.NewLogger(util.LevelInfo)).Resolve()
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	if len(resolution.Matches) != 1 {
+		t.Fatalf("expected 1 queue match, got %+v", resolution.Matches)
+	}
+	match := resolution.Matches[0]
+	if match.ToService != "consumer" || match.MatchType != "queue" || match.Confidence != 0.9 {
+		t.Fatalf("unexpected queue match: %+v", match)
+	}
+}
+
+func TestResolutionAvoidsShortSubstringMatch(t *testing.T) {
+	reg := registry.New()
+	reg.AddArchitecture("caller", &model.ServiceArchitecture{
+		ServiceName: "caller",
+		Dependencies: []model.Dependency{{BaseEntity: model.BaseEntity{
+			ID:      "dep-http",
+			Type:    "outbound_http",
+			Name:    "GET /api/widgets",
+			Details: map[string]any{"target_service": "api"},
+		}}},
+	})
+	reg.AddArchitecture("inventory-api", &model.ServiceArchitecture{ServiceName: "inventory-api"})
+
+	resolution, err := New(reg, util.NewLogger(util.LevelInfo)).Resolve()
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	if len(resolution.Matches) != 0 {
+		t.Fatalf("short substring should not match a service name: %+v", resolution.Matches)
+	}
+	if len(resolution.Unresolved) != 1 {
+		t.Fatalf("expected unresolved dependency, got %+v", resolution.Unresolved)
+	}
+}
+
+func TestResolutionNormalizesHostnameTargets(t *testing.T) {
+	reg := registry.New()
+	reg.AddArchitecture("caller", &model.ServiceArchitecture{
+		ServiceName: "caller",
+		Dependencies: []model.Dependency{{BaseEntity: model.BaseEntity{
+			ID:      "dep-http",
+			Type:    "outbound_http",
+			Name:    "call billing",
+			Details: map[string]any{"url": "lb://billing-service.internal:8080/v1/charge"},
+		}}},
+	})
+	reg.AddArchitecture("billing-service", &model.ServiceArchitecture{ServiceName: "billing-service"})
+
+	resolution, err := New(reg, util.NewLogger(util.LevelInfo)).Resolve()
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	if len(resolution.Matches) != 1 || resolution.Matches[0].ToService != "billing-service" {
+		t.Fatalf("expected normalized hostname match, got %+v", resolution.Matches)
+	}
+}
+
 func TestExtractTarget(t *testing.T) {
 	tests := []struct {
 		name     string
