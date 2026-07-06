@@ -10,7 +10,10 @@ export function GraphDetailBody({ sel }) {
   if (sel?.kind === 'edge') return <EdgeDetail e={d} />
   if (sel?.kind === 'group' || sel?.kind === 'fact') return <GroupedFactDetail d={d} />
   if (sel?.kind === 'queue') return <ResourceDetail d={d} rows={[['Name', d.name], ['Kind', d.kind], ['FIFO', d.fifo ? 'yes' : 'no']]} />
-  if (sel?.kind === 'db') return <ResourceDetail d={d} rows={[['Name', d.name], ['Kind', d.kind], ['Host', d.host || '-'], ['Tables', d.tables?.length || 0], ['Operations', d.operation_count || 0]]} />
+  if (sel?.kind === 'db') return <ResourceDetail d={d} rows={[['Name', d.name], ['Kind', d.kind], ['Platform', d.platform || d.kind], ['Host', d.host || '-'], ['Tables', d.tables?.length || 0], ['Operations', d.operation_count || 0]]} />
+  if (sel?.kind === 'cache') return <ResourceDetail d={d} rows={[['Name', d.name], ['Kind', d.kind || 'cache'], ['Platform', d.platform || '-'], ['Keyspaces', d.tables?.length || 0], ['Operations', d.operation_count || 0]]} />
+  if (sel?.kind === 'object_storage') return <ResourceDetail d={d} rows={[['Name', d.name], ['Kind', d.kind || 'object_storage'], ['Platform', d.platform || 's3'], ['Buckets/objects', d.tables?.length || 0], ['Operations', d.operation_count || 0]]} />
+  if (sel?.kind === 'workflow') return <ResourceDetail d={d} rows={[['Name', d.name], ['Kind', d.kind || 'workflow'], ['Platform', d.platform || '-'], ['Operations', d.operation_count || 0]]} />
   if (sel?.kind === 'scheduler') return <KV rows={[['Job', d.name], ['Service', d.service], ['Schedule', d.schedule || '-'], ['Profile', d.profile || '-']]} />
   return <KV rows={[['Name', d.name], ['Kind', d.kind || 'external']]} />
 }
@@ -98,6 +101,12 @@ function ResourceDetail({ d, rows }) {
           <ul class="detail-list">{shared.services.map((s) => <li key={s}><code>{s}</code></li>)}</ul>
         </div>
       )}
+      {d.services?.length > 0 && (
+        <div class="detail-sec">
+          <h4>Connected services</h4>
+          <ul class="detail-list">{d.services.map((svc) => <li key={svc.name || svc}><code>{svc.name || svc}</code></li>)}</ul>
+        </div>
+      )}
       {d.facts?.length > 0 && (
         <div class="detail-sec">
           <h4>Extracted facts</h4>
@@ -140,12 +149,75 @@ function GroupedFactDetail({ d }) {
   return (
     <div>
       <KV rows={[['Name', d.name], ['Group', d.kind], ['Extracted instances', d.count || rawItems.length || 0]]} />
+      <TraceViewDetail trace={d.trace_view} />
       {rawItems.length > 0 && (
         <div class="detail-sec">
           <h4>Instances</h4>
           {rawItems.map((item, i) => <ObjectCard key={i} item={item} />)}
         </div>
       )}
+    </div>
+  )
+}
+
+function TraceViewDetail({ trace }) {
+  if (!trace) {
+    return (
+      <div class="detail-sec trace-detail-empty">
+        <h4>Trace and data dependencies</h4>
+        <p class="muted small">Select an exact objective row to load its extracted trace.</p>
+      </div>
+    )
+  }
+  const deps = trace.data_dependencies || []
+  const segments = trace.segments || []
+  const continuations = trace.continuations || []
+  const relatedEdges = trace.related_edges || []
+  return (
+    <div class="detail-sec trace-detail">
+      <h4>Trace and data dependencies</h4>
+      <KV rows={compactRows([
+        ['Status', trace.status],
+        ['Service', trace.service],
+        ['Object', trace.object_id],
+        ['Segments', segments.length],
+        ['Data dependencies', deps.length],
+        ['Continuations', continuations.length],
+      ])} compact />
+      {trace.quality?.length > 0 && (
+        <div class="trace-quality">
+          {trace.quality.map((q) => <span key={q}>{q}</span>)}
+        </div>
+      )}
+      {deps.length > 0 ? (
+        <div class="trace-data-deps">
+          {deps.map((dep, i) => <DataDependencyCard dep={dep} key={dep.id || i} />)}
+        </div>
+      ) : (
+        <p class="muted small">No field-level data dependency was extracted for this objective in the selected DiffMind run.</p>
+      )}
+      <DetailJSON title="Trace segments" value={segments} />
+      <DetailJSON title="Continuations" value={continuations} />
+      <DetailJSON title="Related graph edges" value={relatedEdges} />
+    </div>
+  )
+}
+
+function DataDependencyCard({ dep }) {
+  const from = dep?.from || {}
+  const to = dep?.to || {}
+  return (
+    <div class="object-card data-dependency-card">
+      <KV rows={compactRows([
+        ['Kind', dep.kind],
+        ['Confidence', dep.confidence],
+        ['From object', from.object_ref],
+        ['From field', from.expression],
+        ['To object', to.object_ref],
+        ['To field', to.expression],
+      ])} compact />
+      <DetailJSON title="Transforms" value={dep.transforms} />
+      <DetailJSON title="Sanitization" value={dep.sanitization} />
     </div>
   )
 }

@@ -70,12 +70,36 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("at least one repo is required"))
 		return
 	}
+	req.Repos = s.validGraphRunRepos(pid, req.Repos)
+	if len(req.Repos) == 0 {
+		writeErr(w, http.StatusBadRequest, errors.New("no selected repo has matching DiffMind artifacts"))
+		return
+	}
 	run, err := s.runs.Start(pid, req.Repos, req.Options)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, run)
+}
+
+func (s *Server) validGraphRunRepos(pid string, refs []store.RunRepoRef) []store.RunRepoRef {
+	out := make([]store.RunRepoRef, 0, len(refs))
+	for _, ref := range refs {
+		if ref.DiffMindRunID == "" {
+			continue
+		}
+		repo, err := s.store.GetRepo(pid, ref.RepoID)
+		if err != nil || repo.Kind == "infra_repo" {
+			continue
+		}
+		info, ok := artifacts.DiffMindRunByID(s.diffmindRunsDir, ref.DiffMindRunID)
+		if !ok || !artifacts.RunMatchesRepo(info, repo.Name, repo.ID, repo.Path) {
+			continue
+		}
+		out = append(out, ref)
+	}
+	return out
 }
 
 func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {

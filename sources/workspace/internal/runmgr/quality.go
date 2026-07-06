@@ -46,6 +46,9 @@ func (m *Manager) architectureStats(pid string, manifest store.RunManifest) arch
 		if err != nil || repo.Kind == "infra_repo" || ref.DiffMindRunID == "" {
 			continue
 		}
+		if info, ok := artifacts.DiffMindRunByID(m.diffmindRunsDir, ref.DiffMindRunID); !ok || !artifacts.RunMatchesRepo(info, repo.Name, repo.ID, repo.Path) {
+			continue
+		}
 		runPath := filepath.Join(m.diffmindRunsDir, ref.DiffMindRunID)
 		if strings.EqualFold(repo.DiffMindFreshness, "stale") {
 			stats.quality.StaleRepos++
@@ -90,6 +93,13 @@ func (m *Manager) persistArchitectureGraph(pid string, manifest store.RunManifes
 	if err := os.WriteFile(filepath.Join(m.store.RunDir(pid, manifest.ID), "graph.json"), append(data, '\n'), 0o644); err != nil {
 		return nil, err
 	}
+	overviewData, err := json.MarshalIndent(archgraph.Overview(graph), "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(m.store.RunDir(pid, manifest.ID), "graph-overview.json"), append(overviewData, '\n'), 0o644); err != nil {
+		return nil, err
+	}
 	return graph, nil
 }
 
@@ -98,6 +108,9 @@ func (m *Manager) architectureServiceRepoDirs(pid string, manifest store.RunMani
 	for _, ref := range manifest.Repos {
 		repo, err := m.store.GetRepo(pid, ref.RepoID)
 		if err != nil || repo.Kind == "infra_repo" || ref.DiffMindRunID == "" {
+			continue
+		}
+		if info, ok := artifacts.DiffMindRunByID(m.diffmindRunsDir, ref.DiffMindRunID); !ok || !artifacts.RunMatchesRepo(info, repo.Name, repo.ID, repo.Path) {
 			continue
 		}
 		serviceRepoDirs[repo.Name] = filepath.Join(m.diffmindRunsDir, ref.DiffMindRunID)

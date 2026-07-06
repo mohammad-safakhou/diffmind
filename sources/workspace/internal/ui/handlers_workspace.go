@@ -95,7 +95,9 @@ func (s *Server) handleWorkspace(w http.ResponseWriter, r *http.Request) {
 		rr := runGroups[wr.Path]
 		if len(rr) == 0 && wr.LastDiffMindRunID != "" {
 			if info, ok := artifacts.DiffMindRunByID(s.diffmindRunsDir, wr.LastDiffMindRunID); ok {
-				rr = []artifacts.DiffMindRunInfo{info}
+				if artifacts.RunMatchesRepo(info, wr.Name, wr.ID, wr.Path) {
+					rr = []artifacts.DiffMindRunInfo{info}
+				}
 			}
 		}
 		runs[wr.ID] = rr
@@ -133,8 +135,10 @@ func (s *Server) workspaceReposWithRuns(pid string, runGroups map[string][]artif
 			latest = &copy
 		} else if repo.LastDiffMindRunID != "" {
 			if info, ok := artifacts.DiffMindRunByID(s.diffmindRunsDir, repo.LastDiffMindRunID); ok {
-				latest = &info
-				runs = []artifacts.DiffMindRunInfo{info}
+				if artifacts.RunMatchesRepo(info, repo.Name, repo.ID, repo.Path) {
+					latest = &info
+					runs = []artifacts.DiffMindRunInfo{info}
+				}
 			}
 		}
 		team := firstNonEmpty(repo.Team, "default")
@@ -212,6 +216,40 @@ func (s *Server) persistedArchGraphForRun(pid, rid string) (*ArchGraph, error) {
 	return &graph, nil
 }
 
+func (s *Server) persistedArchGraphForRunFast(pid, rid string, r *http.Request) (*ArchGraph, error) {
+	if archGraphRequestOverview(r) {
+		if data, err := os.ReadFile(filepath.Join(s.store.RunDir(pid, rid), "graph-overview.json")); err == nil {
+			var graph ArchGraph
+			if err := json.Unmarshal(data, &graph); err == nil {
+				return &graph, nil
+			}
+		}
+	}
+	graph, err := s.persistedArchGraphForRun(pid, rid)
+	if err != nil {
+		return nil, err
+	}
+	return graph, nil
+}
+
+func (s *Server) persistArchGraphFiles(pid, rid string, graph *ArchGraph) error {
+	if graph == nil {
+		return nil
+	}
+	data, err := json.MarshalIndent(graph, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(s.store.RunDir(pid, rid), "graph.json"), append(data, '\n'), 0o644); err != nil {
+		return err
+	}
+	overviewData, err := json.MarshalIndent(archGraphView(graph, &http.Request{URL: &url.URL{RawQuery: "view=overview"}}), "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(s.store.RunDir(pid, rid), "graph-overview.json"), append(overviewData, '\n'), 0o644)
+}
+
 func (s *Server) latestWorkspaceRun(pid string) *store.RunManifest {
 	runs, err := s.store.ListRuns(pid)
 	if err != nil || len(runs) == 0 {
@@ -240,6 +278,9 @@ func (s *Server) archGraphForRun(pid string, mft *store.RunManifest) (*ArchGraph
 	for _, ref := range mft.Repos {
 		repo, err := s.store.GetRepo(pid, ref.RepoID)
 		if err != nil || repo.Kind == "infra_repo" || ref.DiffMindRunID == "" {
+			continue
+		}
+		if info, ok := artifacts.DiffMindRunByID(s.diffmindRunsDir, ref.DiffMindRunID); !ok || !artifacts.RunMatchesRepo(info, repo.Name, repo.ID, repo.Path) {
 			continue
 		}
 		serviceRepoDirs[repo.Name] = filepath.Join(s.diffmindRunsDir, ref.DiffMindRunID)
@@ -568,8 +609,10 @@ func (s *Server) runDiffMindForRepo(pid, rid string, repo store.Repo, opts orche
 	var team string
 	var freshness string
 	if len(runs) > 0 {
-		latest = runs[0].RunID
-		team = firstNonEmpty(runs[0].Team, "default")
+		if artifacts.RunMatchesRepo(runs[0], repo.Name, repo.ID, repoPath) {
+			latest = runs[0].RunID
+			team = firstNonEmpty(runs[0].Team, "default")
+		}
 	}
 	_, _ = s.store.UpdateRepo(pid, rid, func(rp *store.Repo) {
 		if err != nil {
@@ -584,9 +627,11 @@ func (s *Server) runDiffMindForRepo(pid, rid string, repo store.Repo, opts orche
 		if team != "" {
 			rp.Team = team
 		}
-		if len(runs) > 0 {
+		if len(runs) > 0 && latest != "" {
 			freshness = diffmindFreshness(*rp, &runs[0])
 			rp.DiffMindFreshness = freshness
+		} else {
+			rp.DiffMindFreshness = "unknown"
 		}
 	})
 }

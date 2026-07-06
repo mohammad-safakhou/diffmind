@@ -80,3 +80,15 @@ func TestDiscoverMissingDir(t *testing.T) {
 		t.Fatalf("expected nil runs, got %v", runs)
 	}
 }
+
+func TestRunMatchesRepo(t *testing.T) {
+	if !RunMatchesRepo(DiffMindRunInfo{RepoPath: "/old/worktrees/routing-service"}, "routing-service", "repo-1", "/new/worktrees/routing-service") {
+		t.Fatal("expected matching repo basename to preserve moved checkout run")
+	}
+	if !RunMatchesRepo(DiffMindRunInfo{ServiceID: "service.catalogue_service"}, "checkout-service", "repo-2", "/new/checkout/fma") {
+		t.Fatal("expected DiffMind protocol service identity to match repo")
+	}
+	if RunMatchesRepo(DiffMindRunInfo{RepoPath: "/repo/gateway-service", ServiceID: "gateway-service"}, "routing-service", "repo-3", "/repo/routing-service") {
+		t.Fatal("expected mismatched service identity to be rejected")
+	}
+}

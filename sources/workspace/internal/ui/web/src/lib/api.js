@@ -72,5 +72,27 @@ export const getRun = (pid, rid) => api(`/api/projects/${pid}/runs/${rid}`)
 export const cancelRun = (pid, rid) => api(`/api/projects/${pid}/runs/${rid}/cancel`, { method: 'POST' })
 export const deleteRun = (pid, rid) => api(`/api/projects/${pid}/runs/${rid}`, { method: 'DELETE' })
 export const getRunGraph = (pid, rid) => api(`/api/projects/${pid}/runs/${rid}/graph`)
-export const getRunArchGraph = (pid, rid) => api(`/api/projects/${pid}/runs/${rid}/archgraph`)
+export const getRunArchGraph = (pid, rid, opts = {}) => {
+  const params = new URLSearchParams()
+  if (opts.view) params.set('view', opts.view)
+  const qs = params.toString()
+  return api(`/api/projects/${pid}/runs/${rid}/archgraph${qs ? `?${qs}` : ''}`)
+}
+export const getRunArchGraphTeam = (pid, rid, team, opts = {}) => {
+  const params = new URLSearchParams()
+  if (opts.scope) params.set('scope', opts.scope)
+  const qs = params.toString()
+  return api(`/api/projects/${pid}/runs/${rid}/archgraph/teams/${encodeURIComponent(team)}${qs ? `?${qs}` : ''}`)
+}
+export const getRunArchGraphService = (pid, rid, service) => api(`/api/projects/${pid}/runs/${rid}/archgraph/services/${encodeURIComponent(service)}`)
+export const getRunArchGraphResource = (pid, rid, resource) => api(`/api/projects/${pid}/runs/${rid}/archgraph/resources/${encodeURIComponent(resource)}`)
+export const getRunArchGraphTrace = (pid, rid, params = {}) => {
+  const qs = new URLSearchParams()
+  if (params.service) qs.set('service', params.service)
+  if (params.object_id) qs.set('object_id', params.object_id)
+  if (params.entrypoint_id) qs.set('entrypoint_id', params.entrypoint_id)
+  if (params.flow_id) qs.set('flow_id', params.flow_id)
+  const query = qs.toString()
+  return api(`/api/projects/${pid}/runs/${rid}/archgraph/trace${query ? `?${query}` : ''}`)
+}
 export const runEventsURL = (pid, rid) => `/api/projects/${pid}/runs/${rid}/events`

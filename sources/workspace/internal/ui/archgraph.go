@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 
 	"github.com/mohammad-safakhou/diffmind/internal/archgraph"
+	"github.com/mohammad-safakhou/diffmind/internal/artifacts"
 )
 
 type ArchGraph = archgraph.ArchGraph
@@ -15,6 +17,7 @@ type SchedulerNode = archgraph.SchedulerNode
 type ServiceNode = archgraph.ServiceNode
 type ConnectionSummary = archgraph.ConnectionSummary
 type ExternalNode = archgraph.ExternalNode
+type ResourceNode = archgraph.ResourceNode
 type QueueNode = archgraph.QueueNode
 type DatabaseNode = archgraph.DatabaseNode
 type GraphEdge = archgraph.GraphEdge
@@ -29,7 +32,14 @@ func (s *Server) handleRunArchGraph(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreErr(w, err)
 		return
 	}
-	if graph, err := s.persistedArchGraphForRun(pid, rid); err == nil {
+	if graph, err := s.persistedArchGraphForRunFast(pid, rid, r); err == nil {
+		if archGraphNeedsResourceIndex(graph) {
+			if rebuilt, rebuildErr := s.archGraphForRun(pid, mft); rebuildErr == nil {
+				graph = rebuilt
+				_ = s.persistArchGraphFiles(pid, rid, rebuilt)
+			}
+		}
+		graph = archGraphView(graph, r)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(graph)
 		return
@@ -44,6 +54,9 @@ func (s *Server) handleRunArchGraph(w http.ResponseWriter, r *http.Request) {
 		if repo.Kind == "infra_repo" || ref.DiffMindRunID == "" {
 			continue
 		}
+		if info, ok := artifacts.DiffMindRunByID(s.diffmindRunsDir, ref.DiffMindRunID); !ok || !artifacts.RunMatchesRepo(info, repo.Name, repo.ID, repo.Path) {
+			continue
+		}
 		serviceRepoDirs[repo.Name] = filepath.Join(s.diffmindRunsDir, ref.DiffMindRunID)
 	}
 	if len(serviceRepoDirs) == 0 {
@@ -51,13 +64,125 @@ func (s *Server) handleRunArchGraph(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	g := buildArchitectureGraph(rid, serviceRepoDirs)
+	g := archGraphView(buildArchitectureGraph(rid, serviceRepoDirs), r)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(g)
 }
 
+func archGraphNeedsResourceIndex(graph *ArchGraph) bool {
+	if graph == nil || len(graph.ResourceNodes) > 0 {
+		return false
+	}
+	return len(graph.DatabaseNodes) > 0 || len(graph.QueueNodes) > 0 || len(graph.SchedulerNodes) > 0
+}
+
+func archGraphView(graph *ArchGraph, r *http.Request) *ArchGraph {
+	if archGraphRequestOverview(r) {
+		return archgraph.Overview(graph)
+	}
+	return graph
+}
+
+func archGraphRequestOverview(r *http.Request) bool {
+	view := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("view")))
+	return view == "" || view == "overview" || view == "metadata"
+}
+
 func buildArchitectureGraph(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 	return archgraph.Build(runID, serviceRepoDirs)
+}
+
+func (s *Server) fullArchGraphForRun(pid, rid string) (*ArchGraph, error) {
+	mft, err := s.store.GetRun(pid, rid)
+	if err != nil {
+		return nil, err
+	}
+	if graph, err := s.persistedArchGraphForRunFast(pid, rid, &http.Request{URL: &url.URL{RawQuery: "view=full"}}); err == nil {
+		if archGraphNeedsResourceIndex(graph) {
+			if rebuilt, rebuildErr := s.archGraphForRun(pid, mft); rebuildErr == nil {
+				graph = rebuilt
+				_ = s.persistArchGraphFiles(pid, rid, rebuilt)
+			}
+		}
+		return graph, nil
+	}
+	graph, err := s.archGraphForRun(pid, mft)
+	if err != nil {
+		return nil, err
+	}
+	_ = s.persistArchGraphFiles(pid, rid, graph)
+	return graph, nil
+}
+
+func (s *Server) handleRunArchGraphTeam(w http.ResponseWriter, r *http.Request) {
+	pid, rid := r.PathValue("pid"), r.PathValue("rid")
+	graph, err := s.fullArchGraphForRun(pid, rid)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	team := pathValue(r, "team")
+	view, ok := archgraph.BuildTeamView(graph, team, r.URL.Query().Get("scope"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, errors.New("team not found in architecture graph"))
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) handleRunArchGraphService(w http.ResponseWriter, r *http.Request) {
+	pid, rid := r.PathValue("pid"), r.PathValue("rid")
+	graph, err := s.fullArchGraphForRun(pid, rid)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	view, ok := archgraph.BuildServiceView(graph, pathValue(r, "service"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, errors.New("service not found in architecture graph"))
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) handleRunArchGraphResource(w http.ResponseWriter, r *http.Request) {
+	pid, rid := r.PathValue("pid"), r.PathValue("rid")
+	graph, err := s.fullArchGraphForRun(pid, rid)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	view, ok := archgraph.BuildResourceView(graph, pathValue(r, "resource"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, errors.New("resource not found in architecture graph"))
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) handleRunArchGraphTrace(w http.ResponseWriter, r *http.Request) {
+	pid, rid := r.PathValue("pid"), r.PathValue("rid")
+	graph, err := s.fullArchGraphForRun(pid, rid)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	serviceName := firstNonEmpty(r.URL.Query().Get("service"), r.URL.Query().Get("service_name"))
+	objectID := firstNonEmpty(r.URL.Query().Get("object_id"), r.URL.Query().Get("entrypoint_id"), r.URL.Query().Get("flow_id"))
+	view, ok := archgraph.BuildTraceView(graph, serviceName, objectID)
+	if !ok {
+		writeErr(w, http.StatusNotFound, errors.New("trace service not found in architecture graph"))
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+func pathValue(r *http.Request, key string) string {
+	value := r.PathValue(key)
+	if decoded, err := url.PathUnescape(value); err == nil {
+		return decoded
+	}
+	return value
 }
 
 func looksLikeHTTPMethodSlug(raw string) bool {

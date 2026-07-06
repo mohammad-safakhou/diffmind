@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
 import { navigate } from '../lib/router.js'
-import { createRepo, createRun, deleteRepo, getDiffMindConfigurationYaml, getRunArchGraph, getWorkspace, importRepos, putDiffMindConfigurationYaml, startDiffMindBatch, startRepoDiffMind, syncRepo } from '../lib/api.js'
+import { createRepo, createRun, deleteRepo, getDiffMindConfigurationYaml, getRunArchGraph, getRunArchGraphResource, getRunArchGraphService, getRunArchGraphTrace, getWorkspace, importRepos, putDiffMindConfigurationYaml, startDiffMindBatch, startRepoDiffMind, syncRepo } from '../lib/api.js'
 import { Modal, ConfirmDialog } from '../components/Modal.jsx'
 import { GraphCanvas } from './GraphCanvas.jsx'
 import { GraphDetailBody } from './GraphDetails.jsx'
@@ -16,6 +16,7 @@ export function ProjectWorkspace({ pid }) {
   const [pendingGraphRun, setPendingGraphRun] = useState(null)
   const [graphData, setGraphData] = useState(null)
   const [graphRunID, setGraphRunID] = useState('')
+  const [graphDetailLoaded, setGraphDetailLoaded] = useState(false)
   const [graphLoading, setGraphLoading] = useState(false)
   const [graphError, setGraphError] = useState('')
   const [addOpen, setAddOpen] = useState(false)
@@ -69,17 +70,19 @@ export function ProjectWorkspace({ pid }) {
     if (!run?.id || run.status !== 'completed') {
       setGraphData(null)
       setGraphRunID('')
+      setGraphDetailLoaded(false)
       return
     }
     if (graphRunID === run.id && graphData) return
     let cancelled = false
     setGraphLoading(true)
     setGraphError('')
-    getRunArchGraph(pid, run.id)
+    getRunArchGraph(pid, run.id, { view: 'overview' })
       .then((graph) => {
         if (cancelled) return
         setGraphData(graph)
         setGraphRunID(run.id)
+        setGraphDetailLoaded(false)
       })
       .catch((e) => {
         if (!cancelled) setGraphError(e.message)
@@ -128,6 +131,53 @@ export function ProjectWorkspace({ pid }) {
       setTimeout(refresh, 500)
     } catch (e) { setError(e.message) }
     finally { setBusy('') }
+  }
+
+  const loadFullGraph = async () => {
+    const runID = workspace?.latest_run?.id || graphRunID
+    if (!runID || graphDetailLoaded) return
+    setGraphLoading(true)
+    setGraphError('')
+    try {
+      const full = await getRunArchGraph(pid, runID, { view: 'full' })
+      setGraphData(full)
+      setGraphRunID(runID)
+      setGraphDetailLoaded(true)
+    } catch (e) {
+      setGraphError(e.message)
+      throw e
+    } finally {
+      setGraphLoading(false)
+    }
+  }
+
+  const handleGraphSelect = async (sel) => {
+    setSelected(sel)
+    const runID = workspace?.latest_run?.id || graphRunID
+    if (!sel || !runID) return
+    try {
+      if (sel.kind === 'service' && sel.data?.name) {
+        const view = await getRunArchGraphService(pid, runID, sel.data.name)
+        setSelected((cur) => cur?.kind === 'service' && cur.data?.name === sel.data.name
+          ? { kind: 'service', data: { ...(view.service || sel.data), service_view: view } }
+          : cur)
+      } else if (sel.kind === 'fact' && sel.data?.service) {
+        const objectID = sel.data.objectID || sel.data.items?.[0]?.id || sel.data.items?.[0]?.details?.id || ''
+        if (objectID) {
+          const view = await getRunArchGraphTrace(pid, runID, { service: sel.data.service, object_id: objectID })
+          setSelected((cur) => cur?.kind === 'fact' && cur.data?.service === sel.data.service && (cur.data?.objectID || '') === (sel.data?.objectID || '')
+            ? { kind: 'fact', id: sel.id, data: { ...sel.data, trace_view: view } }
+            : cur)
+        }
+      } else if (['db', 'queue', 'cache', 'object_storage', 'scheduler', 'workflow'].includes(sel.kind) && sel.id) {
+        const view = await getRunArchGraphResource(pid, runID, sel.id)
+        setSelected((cur) => cur?.id === sel.id
+          ? { kind: sel.kind, id: sel.id, data: { ...(view.resource || sel.data), resource_view: view, services: view.services, tables: view.tables } }
+          : cur)
+      }
+    } catch {
+      // Keep the immediate overview selection; the banner already covers hard graph-load failures.
+    }
   }
 
   const doSync = async (repo) => runAction('sync:' + repo.id, async () => { await syncRepo(pid, repo.id); await refresh() })
@@ -212,7 +262,7 @@ export function ProjectWorkspace({ pid }) {
 
       <main class="workspace-board">
         {graph
-          ? <GraphCanvas graph={graph} onSelect={setSelected} focusedServiceName={selectedService?.name || selectedRepo?.name || ''} />
+          ? <GraphCanvas graph={graph} onSelect={handleGraphSelect} detailLoaded={graphDetailLoaded} onRequestFullDetail={loadFullGraph} />
           : graphLoading
             ? <GraphLoading run={workspace?.latest_run} />
             : <EmptyBoard repos={repos} onAdd={() => setAddOpen(true)} />}

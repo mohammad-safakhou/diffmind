@@ -105,6 +105,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/projects/{pid}/runs/{rid}/events", s.handleRunEvents)
 	mux.HandleFunc("GET /api/projects/{pid}/runs/{rid}/graph", s.handleRunGraph)
 	mux.HandleFunc("GET /api/projects/{pid}/runs/{rid}/archgraph", s.handleRunArchGraph)
+	mux.HandleFunc("GET /api/projects/{pid}/runs/{rid}/archgraph/teams/{team}", s.handleRunArchGraphTeam)
+	mux.HandleFunc("GET /api/projects/{pid}/runs/{rid}/archgraph/services/{service}", s.handleRunArchGraphService)
+	mux.HandleFunc("GET /api/projects/{pid}/runs/{rid}/archgraph/resources/{resource}", s.handleRunArchGraphResource)
+	mux.HandleFunc("GET /api/projects/{pid}/runs/{rid}/archgraph/trace", s.handleRunArchGraphTrace)
 	mux.HandleFunc("POST /api/projects/{pid}/runs/{rid}/cancel", s.handleCancelRun)
 	mux.HandleFunc("DELETE /api/projects/{pid}/runs/{rid}", s.handleDeleteRun)
 

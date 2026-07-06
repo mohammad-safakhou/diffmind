@@ -24,6 +24,7 @@ type ArchGraph struct {
 	Layout         *GraphLayout     `json:"layout,omitempty"`
 	Services       []*ServiceNode   `json:"services"`
 	ExternalNodes  []*ExternalNode  `json:"external_nodes"`
+	ResourceNodes  []*ResourceNode  `json:"resource_nodes,omitempty"`
 	QueueNodes     []*QueueNode     `json:"queue_nodes"`
 	DatabaseNodes  []*DatabaseNode  `json:"database_nodes"`
 	SchedulerNodes []*SchedulerNode `json:"scheduler_nodes"`
@@ -55,12 +56,27 @@ type SchedulerNode struct {
 	Profile  string `json:"profile,omitempty"`
 }
 
+type ResourceNode struct {
+	ID             string          `json:"id"`
+	GraphID        string          `json:"graph_id"`
+	Name           string          `json:"name"`
+	Kind           string          `json:"kind"` // database, cache, object_storage, queue_topic_stream, scheduler, workflow, saas_api
+	Platform       string          `json:"platform,omitempty"`
+	OwnerService   string          `json:"owner_service,omitempty"`
+	OwnerTeam      string          `json:"owner_team,omitempty"`
+	Tables         []DatabaseTable `json:"tables,omitempty"`
+	OperationCount int             `json:"operation_count,omitempty"`
+	Details        map[string]any  `json:"details,omitempty"`
+}
+
 type ServiceNode struct {
 	Name              string              `json:"name"`
 	Known             bool                `json:"known"`
 	RepoID            string              `json:"repo_id,omitempty"`
 	RepoPath          string              `json:"repo_path,omitempty"`
 	Team              string              `json:"team,omitempty"`
+	ComponentKind     string              `json:"component_kind,omitempty"`
+	ComponentType     string              `json:"component_type,omitempty"`
 	DiffMindFreshness string              `json:"diffmind_freshness,omitempty"`
 	RepoMetrics       *model.RepoMetrics  `json:"repo_metrics,omitempty"`
 	HTTPRoutes        []EntitySummary     `json:"http_routes"`
@@ -72,6 +88,9 @@ type ServiceNode struct {
 	Databases         []string            `json:"databases"`
 	Dependencies      []EntitySummary     `json:"dependencies"`
 	Connections       []ConnectionSummary `json:"connections"`
+	EntrypointCount   int                 `json:"entrypoint_count,omitempty"`
+	DownstreamCount   int                 `json:"downstream_count,omitempty"`
+	TraceCount        int                 `json:"trace_count,omitempty"`
 }
 
 type ConnectionSummary struct {
@@ -95,7 +114,7 @@ type ConnectionSummary struct {
 
 type ExternalNode struct {
 	Name string `json:"name"`
-	Kind string `json:"kind"` // "service", "api", "saas"
+	Kind string `json:"kind"` // "service", "api", "saas", "workflow"
 }
 
 type QueueNode struct {
@@ -125,7 +144,7 @@ type GraphEdge struct {
 	FromPort   string          `json:"from_port"`
 	To         string          `json:"to"`
 	ToPort     string          `json:"to_port"`
-	Type       string          `json:"type"` // "http", "rpc", "queue_publish", "queue_consume", "database", "cache", "scheduler"
+	Type       string          `json:"type"` // "http", "rpc", "workflow", "queue_publish", "queue_consume", "database", "cache", "scheduler"
 	Label      string          `json:"label"`
 	Details    []EntitySummary `json:"details"`
 	Confidence float64         `json:"confidence"`
@@ -139,6 +158,105 @@ type EntitySummary struct {
 	Details map[string]any `json:"details,omitempty"`
 }
 
+// Overview returns a graph suitable for first paint. It keeps topology,
+// counts, teams, and resource summaries, but strips object/evidence detail that
+// can be lazy-loaded when the user enters full-detail or service/object views.
+func Overview(g *ArchGraph) *ArchGraph {
+	if g == nil {
+		return nil
+	}
+	out := &ArchGraph{
+		RunID:          g.RunID,
+		Layout:         g.Layout,
+		Services:       make([]*ServiceNode, 0, len(g.Services)),
+		ExternalNodes:  g.ExternalNodes,
+		ResourceNodes:  make([]*ResourceNode, 0, len(g.ResourceNodes)),
+		QueueNodes:     g.QueueNodes,
+		DatabaseNodes:  make([]*DatabaseNode, 0, len(g.DatabaseNodes)),
+		SchedulerNodes: g.SchedulerNodes,
+		Edges:          make([]*GraphEdge, 0, len(g.Edges)),
+	}
+	for _, svc := range g.Services {
+		if svc == nil {
+			continue
+		}
+		out.Services = append(out.Services, &ServiceNode{
+			Name:              svc.Name,
+			Known:             svc.Known,
+			RepoID:            svc.RepoID,
+			RepoPath:          svc.RepoPath,
+			Team:              svc.Team,
+			ComponentKind:     svc.ComponentKind,
+			ComponentType:     svc.ComponentType,
+			DiffMindFreshness: svc.DiffMindFreshness,
+			RepoMetrics:       svc.RepoMetrics,
+			EntrypointCount:   firstPositive(svc.EntrypointCount, len(svc.HTTPRoutes)+len(svc.RPCEndpoints)+len(svc.QueueConsumers)+len(svc.ScheduledJobs)+len(svc.Webhooks)+len(svc.CLICommands)),
+			DownstreamCount:   firstPositive(svc.DownstreamCount, len(svc.Dependencies)),
+			TraceCount:        firstPositive(svc.TraceCount, len(svc.Connections)),
+		})
+	}
+	for _, node := range g.ResourceNodes {
+		out.ResourceNodes = append(out.ResourceNodes, overviewResourceNode(node))
+	}
+	for _, node := range g.DatabaseNodes {
+		out.DatabaseNodes = append(out.DatabaseNodes, overviewDatabaseNode(node))
+	}
+	for _, edge := range g.Edges {
+		if edge == nil {
+			continue
+		}
+		out.Edges = append(out.Edges, &GraphEdge{
+			From:       edge.From,
+			FromPort:   edge.FromPort,
+			To:         edge.To,
+			ToPort:     edge.ToPort,
+			Type:       edge.Type,
+			Label:      edge.Label,
+			Confidence: edge.Confidence,
+		})
+	}
+	return out
+}
+
+func overviewResourceNode(node *ResourceNode) *ResourceNode {
+	if node == nil {
+		return nil
+	}
+	out := *node
+	out.Details = nil
+	out.Tables = overviewTables(node.Tables)
+	return &out
+}
+
+func overviewDatabaseNode(node *DatabaseNode) *DatabaseNode {
+	if node == nil {
+		return nil
+	}
+	out := *node
+	out.Tables = overviewTables(node.Tables)
+	return &out
+}
+
+func overviewTables(tables []DatabaseTable) []DatabaseTable {
+	if len(tables) == 0 {
+		return nil
+	}
+	out := make([]DatabaseTable, 0, len(tables))
+	for _, table := range tables {
+		out = append(out, DatabaseTable{Name: table.Name, Kind: table.Kind})
+	}
+	return out
+}
+
+func firstPositive(vals ...int) int {
+	for _, v := range vals {
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
+}
+
 // Build builds the architecture graph from DiffMind artifacts.
 // serviceRepoDirs maps a service name to the DiffMind run directory whose
 // exposures/dependencies/connections describe that service.
@@ -148,6 +266,7 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 	knownServices := serviceAliasMap(serviceRepoDirs)
 	allOutboundHTTP := map[string][]outboundRef{} // source svc -> targets
 	allOutboundRPC := map[string][]outboundRef{}  // source svc -> targets
+	allWorkflow := map[string][]outboundRef{}     // source svc -> workflow engines
 	allQueuePublish := map[string][]queueRef{}    // source svc -> queues
 	allQueueConsume := map[string][]queueRef{}    // source svc -> queues
 	allDBs := map[string][]dbRef{}                // source svc -> databases
@@ -165,6 +284,8 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 		meta := serviceMetadataForRun(name, diffmindDir)
 		svc.RepoPath = meta.repoPath
 		svc.Team = meta.team
+		svc.ComponentKind = meta.componentKind
+		svc.ComponentType = meta.componentType
 		svc.RepoMetrics = meta.repoMetrics
 
 		// Extract exposures
@@ -195,6 +316,9 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 		// Extract dependencies
 		for _, item := range dependencies["outbound_http"] {
 			target := graphServiceTarget(item)
+			if target == "" {
+				continue
+			}
 			allOutboundHTTP[name] = append(allOutboundHTTP[name], outboundRef{
 				target:    target,
 				endpoints: toSummary(item),
@@ -202,7 +326,20 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 		}
 		for _, item := range dependencies["outbound_rpc"] {
 			target := graphServiceTarget(item)
+			if target == "" {
+				continue
+			}
 			allOutboundRPC[name] = append(allOutboundRPC[name], outboundRef{
+				target:    target,
+				endpoints: toSummary(item),
+			})
+		}
+		for _, item := range dependencies["workflow_orchestration"] {
+			target := graphWorkflowTarget(item)
+			if target == "" {
+				target = "camunda"
+			}
+			allWorkflow[name] = append(allWorkflow[name], outboundRef{
 				target:    target,
 				endpoints: toSummary(item),
 			})
@@ -248,7 +385,7 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 		}
 
 		// Collect raw dependencies for sidebar display
-		for _, depType := range []string{"outbound_http", "outbound_rpc", "queue_publish", "db_operation", "cache_operation"} {
+		for _, depType := range []string{"outbound_http", "outbound_rpc", "workflow_orchestration", "queue_publish", "db_operation", "cache_operation"} {
 			for _, item := range dependencies[depType] {
 				svc.Dependencies = append(svc.Dependencies, toSummary(item))
 			}
@@ -264,7 +401,7 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 			}
 		}
 		depByID := map[string]string{}
-		for _, depType := range []string{"outbound_http", "outbound_rpc", "queue_publish", "db_operation", "cache_operation"} {
+		for _, depType := range []string{"outbound_http", "outbound_rpc", "workflow_orchestration", "queue_publish", "db_operation", "cache_operation"} {
 			for _, item := range dependencies[depType] {
 				if id := getString(item, "id"); id != "" {
 					depByID[id] = getString(item, "name")
@@ -311,6 +448,9 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 			}
 		}
 
+		svc.EntrypointCount = len(svc.HTTPRoutes) + len(svc.RPCEndpoints) + len(svc.QueueConsumers) + len(svc.ScheduledJobs) + len(svc.Webhooks) + len(svc.CLICommands)
+		svc.DownstreamCount = len(svc.Dependencies)
+		svc.TraceCount = len(svc.Connections)
 		g.Services = append(g.Services, svc)
 	}
 
@@ -318,21 +458,37 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 	externalSvcs := map[string]*ExternalNode{}
 	queueMap := map[string]*QueueNode{}
 	dbMap := map[string]*DatabaseNode{}
+	resourceMap := map[string]*ResourceNode{}
 	resourceEdges := map[string]*GraphEdge{}
 	httpEdges := map[string]*GraphEdge{}
 	rpcEdges := map[string]*GraphEdge{}
+	workflowEdges := map[string]*GraphEdge{}
 
 	// Databases
 	for _, svcName := range sortedStringKeys(allDBs) {
 		dbs := allDBs[svcName]
 		sortDBRefs(dbs)
 		for _, db := range dbs {
+			category := graphResourceKindForDBKind(db.kind)
+			if category != "database" {
+				resourceID, resourceName, childName := graphResourceNodeIdentity(category, db.kind, svcName, db)
+				graphID := "resource:" + resourceID
+				if _, ok := resourceMap[graphID]; !ok {
+					resourceMap[graphID] = &ResourceNode{ID: resourceID, GraphID: graphID, Name: resourceName, Kind: category, Platform: db.kind}
+				}
+				addResourceOperation(resourceMap[graphID], childName, db.summary)
+				addResourceEdge(resourceEdges, svcName, graphID, category, db.operation, db.summary)
+				continue
+			}
 			dbID, dbName, tableName := graphDBNodeIdentity(svcName, db)
+			graphID := "db:" + dbID
 			if _, ok := dbMap[dbID]; !ok {
 				dbMap[dbID] = &DatabaseNode{ID: dbID, Name: dbName, Kind: db.kind, Host: db.host}
+				resourceMap[graphID] = &ResourceNode{ID: dbID, GraphID: graphID, Name: dbName, Kind: "database", Platform: db.kind}
 			}
 			addDatabaseOperation(dbMap[dbID], tableName, db.summary)
-			addResourceEdge(resourceEdges, svcName, "db:"+dbID, "database", db.operation, db.summary)
+			addResourceOperation(resourceMap[graphID], tableName, db.summary)
+			addResourceEdge(resourceEdges, svcName, graphID, "database", db.operation, db.summary)
 		}
 	}
 
@@ -341,12 +497,13 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 		ops := allCacheOps[svcName]
 		sortDBRefs(ops)
 		for _, op := range ops {
-			dbID := normalizeID(op.kind + "_" + op.name)
-			if _, ok := dbMap[dbID]; !ok {
-				dbMap[dbID] = &DatabaseNode{ID: dbID, Name: op.name, Kind: op.kind}
+			resourceID, resourceName, childName := graphResourceNodeIdentity("cache", op.kind, svcName, op)
+			graphID := "resource:" + resourceID
+			if _, ok := resourceMap[graphID]; !ok {
+				resourceMap[graphID] = &ResourceNode{ID: resourceID, GraphID: graphID, Name: resourceName, Kind: "cache", Platform: op.kind}
 			}
-			addDatabaseOperation(dbMap[dbID], op.name, op.summary)
-			addResourceEdge(resourceEdges, svcName, "db:"+dbID, "cache", op.operation, op.summary)
+			addResourceOperation(resourceMap[graphID], childName, op.summary)
+			addResourceEdge(resourceEdges, svcName, graphID, "cache", op.operation, op.summary)
 		}
 	}
 
@@ -364,6 +521,8 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 			qID := normalizeID(q.name)
 			if _, ok := queueMap[qID]; !ok {
 				queueMap[qID] = &QueueNode{ID: qID, Name: q.name, Kind: q.kind, FIFO: q.fifo}
+				graphID := "queue:" + qID
+				resourceMap[graphID] = &ResourceNode{ID: qID, GraphID: graphID, Name: q.name, Kind: "queue_topic_stream", Platform: q.kind}
 			}
 			g.Edges = append(g.Edges, &GraphEdge{
 				From: svcName, To: "queue:" + qID, Type: "queue_publish",
@@ -380,6 +539,8 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 			qID := normalizeID(q.name)
 			if _, ok := queueMap[qID]; !ok {
 				queueMap[qID] = &QueueNode{ID: qID, Name: q.name, Kind: q.kind, FIFO: q.fifo}
+				graphID := "queue:" + qID
+				resourceMap[graphID] = &ResourceNode{ID: qID, GraphID: graphID, Name: q.name, Kind: "queue_topic_stream", Platform: q.kind}
 			}
 			g.Edges = append(g.Edges, &GraphEdge{
 				From: "queue:" + qID, To: svcName, Type: "queue_consume",
@@ -439,6 +600,25 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 		g.Edges = append(g.Edges, rpcEdges[key])
 	}
 
+	// Workflow orchestration engines such as Camunda external-task workers.
+	for _, svcName := range sortedStringKeys(allWorkflow) {
+		targets := allWorkflow[svcName]
+		sortOutboundRefs(targets)
+		for _, t := range targets {
+			targetName := t.target
+			if canonical, ok := canonicalKnownService(knownServices, targetName); ok {
+				targetName = canonical
+			} else if _, ok := externalSvcs[targetName]; !ok {
+				externalSvcs[targetName] = &ExternalNode{Name: targetName, Kind: "workflow"}
+			}
+			label := strings.ToUpper(firstNonEmpty(getString(t.endpoints.Details, "orchestrator"), getString(t.endpoints.Details, "platform"), "workflow"))
+			addTargetEdge(workflowEdges, svcName, targetName, "workflow", label, t.endpoints)
+		}
+	}
+	for _, key := range sortedStringKeys(workflowEdges) {
+		g.Edges = append(g.Edges, workflowEdges[key])
+	}
+
 	// Phase 3: Assemble final lists
 	for _, n := range externalSvcs {
 		g.ExternalNodes = append(g.ExternalNodes, n)
@@ -491,6 +671,13 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 				ID: schID, Name: job.Name, Service: svc.Name,
 				Schedule: schedule, Profile: profile,
 			})
+			graphID := "sched:" + schID
+			resourceMap[graphID] = &ResourceNode{
+				ID: schID, GraphID: graphID, Name: job.Name, Kind: "scheduler", Platform: "cron",
+				OwnerService: svc.Name,
+				OwnerTeam:    firstNonEmpty(svc.Team, "default"),
+				Details:      map[string]any{"schedule": schedule, "profile": profile},
+			}
 			g.Edges = append(g.Edges, &GraphEdge{
 				From: "sched:" + schID, To: svc.Name, Type: "scheduler",
 				Label: schedule,
@@ -499,6 +686,10 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 	}
 
 	sortSchedulers(g.SchedulerNodes)
+	for _, id := range sortedStringKeys(resourceMap) {
+		g.ResourceNodes = append(g.ResourceNodes, resourceMap[id])
+	}
+	sortResources(g.ResourceNodes)
 	sortServices(g.Services)
 	sortEdges(g.Edges)
 	g.Layout = buildLayout(g)
@@ -529,9 +720,11 @@ type dbRef struct {
 }
 
 type serviceRunMetadata struct {
-	team        string
-	repoPath    string
-	repoMetrics *model.RepoMetrics
+	team          string
+	repoPath      string
+	componentKind string
+	componentType string
+	repoMetrics   *model.RepoMetrics
 }
 
 // ---- Data Loading ----
@@ -551,20 +744,48 @@ func serviceMetadataForRun(serviceName, runDir string) serviceRunMetadata {
 	data, err := os.ReadFile(filepath.Join(runDir, "run_manifest.json"))
 	if err != nil {
 		meta.team = firstNonEmpty(meta.team, "default")
+		meta.componentKind, meta.componentType = catalogComponent(meta.repoPath)
 		return meta
 	}
 	var manifest model.RunManifest
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		meta.team = firstNonEmpty(meta.team, "default")
+		meta.componentKind, meta.componentType = catalogComponent(meta.repoPath)
 		return meta
 	}
 	meta.team = firstNonEmpty(meta.team, manifest.Team, "default")
 	meta.repoPath = firstNonEmpty(meta.repoPath, manifest.RepoPath)
 	meta.repoMetrics = manifest.RepoMetrics
+	kind, typ := catalogComponent(meta.repoPath)
+	meta.componentKind = kind
+	meta.componentType = typ
 	if meta.team == "" && strings.TrimSpace(serviceName) != "" {
 		meta.team = "default"
 	}
 	return meta
+}
+
+type catalogInfo struct {
+	Kind string `yaml:"kind"`
+	Spec struct {
+		Type string `yaml:"type"`
+	} `yaml:"spec"`
+}
+
+func catalogComponent(repoPath string) (kind, typ string) {
+	repoPath = strings.TrimSpace(repoPath)
+	if repoPath == "" {
+		return "", ""
+	}
+	data, err := os.ReadFile(filepath.Join(repoPath, "catalog-info.yaml"))
+	if err != nil {
+		return "", ""
+	}
+	var catalog catalogInfo
+	if err := yaml.Unmarshal(data, &catalog); err != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(catalog.Kind), strings.TrimSpace(catalog.Spec.Type)
 }
 
 // ---- Helpers ----
@@ -668,7 +889,27 @@ func graphServiceTarget(item map[string]any) string {
 			return target
 		}
 	}
-	return "unresolved-service-target"
+	return ""
+}
+
+func graphWorkflowTarget(item map[string]any) string {
+	d := getDetails(item)
+	for _, raw := range []string{
+		d["target_service"],
+		d["workflow_engine"],
+		d["engine"],
+		getString(item, "instance"),
+		d["url_template"],
+		d["base_url"],
+		d["value"],
+		d["orchestrator"],
+	} {
+		target := cleanServiceTarget(raw)
+		if target != "" {
+			return target
+		}
+	}
+	return ""
 }
 
 func cleanServiceTarget(raw string) string {
@@ -782,6 +1023,70 @@ func graphDBNodeIdentity(serviceName string, db dbRef) (id, name, table string) 
 	return id, name, table
 }
 
+func graphResourceKindForDBKind(kind string) string {
+	switch strings.ToLower(kind) {
+	case "redis", "memcached", "cache":
+		return "cache"
+	case "s3", "s3bucket", "object_storage", "object-storage", "bucket":
+		return "object_storage"
+	default:
+		return "database"
+	}
+}
+
+func graphResourceNodeIdentity(category, platform, serviceName string, ref dbRef) (id, name, child string) {
+	platform = firstNonEmpty(platform, category)
+	name = firstNonEmpty(ref.name, serviceName+"-"+category)
+	child = firstNonEmpty(ref.table, ref.name)
+	if isGenericResourceInstanceName(category, platform, name) {
+		switch category {
+		case "cache":
+			name = serviceName + "-cache"
+		case "object_storage":
+			name = serviceName + "-object-storage"
+		default:
+			name = serviceName + "-" + category
+		}
+	}
+	if isGenericResourceInstanceName(category, platform, child) {
+		child = firstNonEmpty(ref.operation, name)
+	}
+	id = normalizeID(platform + "_" + name)
+	return id, name, child
+}
+
+func isGenericResourceInstanceName(category, platform, name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	lower = strings.Trim(lower, "`\"' ")
+	if lower == "" || lower == "unknown" || lower == "database" {
+		return true
+	}
+	switch lower {
+	case "getbucket", "gets3bucket", "getbucketname", "put", "get", "set", "delete", "retry", "getfromcache", "puttocache":
+		return true
+	}
+	if category == "object_storage" || strings.Contains(strings.ToLower(platform), "s3") {
+		if lower == "s3" || lower == "bucket" {
+			return true
+		}
+		return strings.HasPrefix(lower, "get") && strings.Contains(lower, "bucket")
+	}
+	if category == "cache" || strings.Contains(strings.ToLower(platform), "redis") {
+		if lower == "cache" {
+			return true
+		}
+		switch {
+		case strings.HasPrefix(lower, "getfrom"),
+			strings.HasPrefix(lower, "putto"),
+			strings.HasPrefix(lower, "set"),
+			strings.HasPrefix(lower, "delete"),
+			strings.HasPrefix(lower, "evict"):
+			return true
+		}
+	}
+	return false
+}
+
 func isDatasourceDBKind(kind string) bool {
 	switch strings.ToLower(kind) {
 	case "postgresql", "postgres", "mysql", "mariadb", "athena", "redshift", "bigquery", "snowflake", "oracle", "mssql", "sqlserver", "database":
@@ -806,6 +1111,27 @@ func addDatabaseOperation(node *DatabaseNode, tableName string, summary EntitySu
 	node.Tables = append(node.Tables, DatabaseTable{
 		Name:       tableName,
 		Kind:       node.Kind,
+		Operations: []EntitySummary{summary},
+	})
+	node.OperationCount++
+	sort.Slice(node.Tables, func(i, j int) bool { return node.Tables[i].Name < node.Tables[j].Name })
+}
+
+func addResourceOperation(node *ResourceNode, childName string, summary EntitySummary) {
+	if node == nil {
+		return
+	}
+	childName = firstNonEmpty(childName, node.Name)
+	for i := range node.Tables {
+		if node.Tables[i].Name == childName {
+			node.Tables[i].Operations = append(node.Tables[i].Operations, summary)
+			node.OperationCount++
+			return
+		}
+	}
+	node.Tables = append(node.Tables, DatabaseTable{
+		Name:       childName,
+		Kind:       node.Platform,
 		Operations: []EntitySummary{summary},
 	})
 	node.OperationCount++
@@ -1040,14 +1366,60 @@ func sameServiceIdentity(a, b string) bool {
 
 func serviceAliases(name string) []string {
 	normalized := normalizeServiceName(name)
-	noHyphen := strings.ReplaceAll(normalized, "-", "")
-	noUnderscore := strings.ReplaceAll(normalized, "_", "")
-	return []string{
-		strings.ToLower(normalized),
-		strings.ToLower(strings.ReplaceAll(normalized, "_", "-")),
-		strings.ToLower(strings.ReplaceAll(normalized, "-", "_")),
-		strings.ToLower(noHyphen),
-		strings.ToLower(noUnderscore),
+	candidates := []string{
+		normalized,
+		strings.ReplaceAll(normalized, "_", "-"),
+		strings.ReplaceAll(normalized, "-", "_"),
+		strings.ReplaceAll(normalized, ".", "-"),
+		strings.ReplaceAll(normalized, ".", "_"),
+		strings.ReplaceAll(strings.ReplaceAll(normalized, ".", "-"), "_", "-"),
+		strings.ReplaceAll(strings.ReplaceAll(normalized, ".", "_"), "-", "_"),
+	}
+	for _, candidate := range append([]string{}, candidates...) {
+		candidates = append(candidates,
+			strings.ReplaceAll(candidate, "-", ""),
+			strings.ReplaceAll(candidate, "_", ""),
+			strings.ReplaceAll(candidate, ".", ""),
+		)
+		if stripped, ok := strings.CutPrefix(candidate, "cdp-"); ok {
+			candidates = append(candidates, stripped)
+		}
+		if stripped, ok := strings.CutPrefix(candidate, "cdp_"); ok {
+			candidates = append(candidates, stripped)
+		}
+		if stripped, ok := strings.CutPrefix(candidate, "cdp."); ok {
+			candidates = append(candidates, stripped)
+		}
+		if alt := catalogueSpellingVariant(candidate); alt != "" {
+			candidates = append(candidates, alt)
+		}
+		if strings.HasSuffix(candidate, "-api") {
+			candidates = append(candidates, strings.TrimSuffix(candidate, "-api"))
+		} else if candidate != "" {
+			candidates = append(candidates, candidate+"-api")
+		}
+	}
+	aliases := make([]string, 0, len(candidates))
+	seen := map[string]bool{}
+	for _, candidate := range candidates {
+		candidate = strings.ToLower(strings.TrimSpace(candidate))
+		if candidate == "" || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		aliases = append(aliases, candidate)
+	}
+	return aliases
+}
+
+func catalogueSpellingVariant(raw string) string {
+	switch {
+	case strings.Contains(raw, "catalogue"):
+		return strings.ReplaceAll(raw, "catalogue", "catalog")
+	case strings.Contains(raw, "catalog"):
+		return strings.ReplaceAll(raw, "catalog", "catalogue")
+	default:
+		return ""
 	}
 }
 
@@ -1066,7 +1438,7 @@ func isHTTPOperationLabel(raw string) bool {
 		return false
 	}
 	switch strings.ToUpper(fields[0]) {
-	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS":
+	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "ANY":
 		return true
 	default:
 		return false
@@ -1076,7 +1448,7 @@ func isHTTPOperationLabel(raw string) bool {
 func LooksLikeHTTPMethodSlug(raw string) bool {
 	raw = strings.TrimPrefix(strings.TrimSpace(raw), "service.")
 	raw = strings.ReplaceAll(strings.ToLower(raw), "_", "-")
-	for _, method := range []string{"get", "post", "put", "patch", "delete", "head", "options"} {
+	for _, method := range []string{"get", "post", "put", "patch", "delete", "head", "options", "any"} {
 		if raw == method || strings.HasPrefix(raw, method+"-") {
 			return true
 		}
@@ -1100,6 +1472,8 @@ func normalizeDBKind(raw string) string {
 	switch {
 	case strings.Contains(lower, "postgres"):
 		return "postgresql"
+	case strings.Contains(lower, "s3") || strings.Contains(lower, "bucket"):
+		return "s3"
 	case strings.Contains(lower, "dynamo"):
 		return "dynamodb"
 	case strings.Contains(lower, "redis"):
@@ -1160,6 +1534,17 @@ func sortQueues(s []*QueueNode) {
 }
 func sortDatabases(s []*DatabaseNode) {
 	sort.Slice(s, func(i, j int) bool { return s[i].Name < s[j].Name })
+}
+func sortResources(s []*ResourceNode) {
+	sort.Slice(s, func(i, j int) bool {
+		if s[i].Kind != s[j].Kind {
+			return s[i].Kind < s[j].Kind
+		}
+		if s[i].Name != s[j].Name {
+			return s[i].Name < s[j].Name
+		}
+		return s[i].GraphID < s[j].GraphID
+	})
 }
 func sortSchedulers(s []*SchedulerNode) {
 	sort.Slice(s, func(i, j int) bool {
@@ -1272,21 +1657,32 @@ func buildLayout(g *ArchGraph) *GraphLayout {
 }
 
 func graphNodeIDs(g *ArchGraph) []string {
+	seen := map[string]bool{}
 	var ids []string
+	add := func(id string) {
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
 	for _, n := range g.Services {
-		ids = append(ids, n.Name)
+		add(n.Name)
 	}
 	for _, n := range g.ExternalNodes {
-		ids = append(ids, n.Name)
+		add(n.Name)
+	}
+	for _, n := range g.ResourceNodes {
+		add(firstNonEmpty(n.GraphID, "resource:"+n.ID))
 	}
 	for _, n := range g.QueueNodes {
-		ids = append(ids, "queue:"+n.ID)
+		add("queue:" + n.ID)
 	}
 	for _, n := range g.DatabaseNodes {
-		ids = append(ids, "db:"+n.ID)
+		add("db:" + n.ID)
 	}
 	for _, n := range g.SchedulerNodes {
-		ids = append(ids, "sched:"+n.ID)
+		add("sched:" + n.ID)
 	}
 	sort.Strings(ids)
 	return ids
@@ -1321,7 +1717,7 @@ func layoutConstraints(g *ArchGraph, nodeSet map[string]struct{}) []layoutConstr
 		switch e.Type {
 		case "queue_consume", "queue_publish", "http", "scheduler":
 			add(e.From, e.To)
-		case "database", "cache":
+		case "database", "cache", "object_storage":
 			switch layoutOperationDirection(e.Label) {
 			case "read":
 				add(e.To, e.From)
@@ -1371,6 +1767,8 @@ func layoutOperationDirection(label string) string {
 	case strings.Contains(lower, "insert"),
 		strings.Contains(lower, "create"),
 		strings.Contains(lower, "write"),
+		strings.Contains(lower, "put"),
+		strings.Contains(lower, "store"),
 		strings.Contains(lower, "update"),
 		strings.Contains(lower, "delete"),
 		strings.Contains(lower, "upsert"),
@@ -1489,7 +1887,7 @@ func sortByBarycenter(nodes []string, constraints []layoutConstraint, pos map[st
 
 func layoutSize(g *ArchGraph, id string) (float64, float64) {
 	switch {
-	case strings.HasPrefix(id, "db:"), strings.HasPrefix(id, "queue:"):
+	case strings.HasPrefix(id, "db:"), strings.HasPrefix(id, "queue:"), strings.HasPrefix(id, "resource:"):
 		return 220, 88
 	case strings.HasPrefix(id, "sched:"):
 		return 190, 72
@@ -1520,6 +1918,8 @@ func layoutCluster(g *ArchGraph, id string) string {
 
 func layoutRole(id string) string {
 	switch {
+	case strings.HasPrefix(id, "resource:"):
+		return "resource.instance"
 	case strings.HasPrefix(id, "db:"):
 		return "resource.database"
 	case strings.HasPrefix(id, "queue:"):
@@ -1538,6 +1938,9 @@ func layoutSeed(g *ArchGraph) string {
 	}
 	for _, n := range g.ExternalNodes {
 		parts = append(parts, "ext:"+n.Name)
+	}
+	for _, n := range g.ResourceNodes {
+		parts = append(parts, "resource:"+firstNonEmpty(n.GraphID, n.ID)+":"+n.Kind+":"+n.Platform)
 	}
 	for _, n := range g.QueueNodes {
 		parts = append(parts, "queue:"+n.ID)

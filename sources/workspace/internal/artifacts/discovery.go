@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/mohammad-safakhou/diffmind/internal/model"
@@ -14,6 +15,8 @@ import (
 type DiffMindRunInfo struct {
 	RunID            string             `json:"run_id"`
 	RepoPath         string             `json:"repo_path"`
+	ServiceID        string             `json:"service_id,omitempty"`
+	ServiceName      string             `json:"service_name,omitempty"`
 	StartedAt        time.Time          `json:"started_at"`
 	FinishedAt       time.Time          `json:"finished_at"`
 	Team             string             `json:"team,omitempty"`
@@ -105,6 +108,65 @@ func DiffMindRunByID(runsDir, runID string) (DiffMindRunInfo, bool) {
 	return info, true
 }
 
+func RunMatchesRepo(info DiffMindRunInfo, repoName, repoID, repoPath string) bool {
+	if samePath(info.RepoPath, repoPath) {
+		return true
+	}
+	runNames := []string{info.ServiceName, info.ServiceID, filepath.Base(info.RepoPath)}
+	repoNames := []string{repoName, repoID, filepath.Base(repoPath)}
+	for _, a := range runNames {
+		for _, b := range repoNames {
+			if sameIdentity(a, b) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func samePath(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return false
+	}
+	if aa, err := filepath.Abs(a); err == nil {
+		a = aa
+	}
+	if bb, err := filepath.Abs(b); err == nil {
+		b = bb
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
+}
+
+func sameIdentity(a, b string) bool {
+	aa := normalizeIdentity(a)
+	bb := normalizeIdentity(b)
+	return aa != "" && aa == bb
+}
+
+func normalizeIdentity(raw string) string {
+	raw = strings.TrimSpace(strings.ToLower(raw))
+	raw = strings.TrimPrefix(raw, "service.")
+	raw = strings.TrimPrefix(raw, "external.")
+	raw = strings.TrimSuffix(raw, ".git")
+	var out strings.Builder
+	lastDash := false
+	for _, r := range raw {
+		isAlphaNum := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if isAlphaNum {
+			out.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			out.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(out.String(), "-")
+}
+
 // ReadRunDir reads a specific DiffMind run directory into a ServiceArchitecture.
 // Used by the run manager once a user has selected a run per repo.
 func ReadRunDir(runDir string) (*model.ServiceArchitecture, error) {
@@ -127,8 +189,11 @@ func readRunManifest(dir string) (DiffMindRunInfo, bool) {
 	if team == "" {
 		team = "default"
 	}
+	serviceID, serviceName := protocolServiceIdentity(dir)
 	return DiffMindRunInfo{
 		RepoPath:         m.RepoPath,
+		ServiceID:        serviceID,
+		ServiceName:      serviceName,
 		StartedAt:        m.StartedAt,
 		FinishedAt:       m.FinishedAt,
 		Team:             team,
@@ -138,6 +203,14 @@ func readRunManifest(dir string) (DiffMindRunInfo, bool) {
 		RepoGitDirty:     m.RepoGitDirty,
 		RepoMetrics:      m.RepoMetrics,
 	}, true
+}
+
+func protocolServiceIdentity(runDir string) (string, string) {
+	doc, err := ReadDiffMind protocol(runDir)
+	if err != nil || doc == nil {
+		return "", ""
+	}
+	return doc.Service.ID, doc.Service.Name
 }
 
 func sortRuns(runs []DiffMindRunInfo) {

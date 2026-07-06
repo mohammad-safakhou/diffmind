@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	ag "github.com/mohammad-safakhou/diffmind/internal/archgraph"
 )
 
 func TestBuildArchitectureGraphUsesDiffMind protocolTargetsAndResourceKinds(t *testing.T) {
@@ -42,6 +44,16 @@ func TestBuildArchitectureGraphUsesDiffMind protocolTargetsAndResourceKinds(t *t
         "name": "GET /campaigns/{id}",
         "method": "GET",
         "target": {"type": "unresolved", "ref": "service.get_campaigns_id", "unresolved": true},
+        "status": "confirmed",
+        "confidence": "medium",
+        "origin": "deterministic"
+      },
+      {
+        "id": "httpcall.path_only_any",
+        "kind": "http_call",
+        "name": "ANY /contents/{id}",
+        "method": "ANY",
+        "url_template": "ANY /contents/{id}",
         "status": "confirmed",
         "confidence": "medium",
         "origin": "deterministic"
@@ -105,15 +117,23 @@ func TestBuildArchitectureGraphUsesDiffMind protocolTargetsAndResourceKinds(t *t
 		if strings.HasPrefix(n.Name, "GET /") || looksLikeHTTPMethodSlug(n.Name) {
 			t.Fatalf("operation label became external service node: %+v", n)
 		}
+		if n.Name == "unresolved-service-target" || n.Name == "any-contents-id" {
+			t.Fatalf("placeholder target became external service node: %+v", n)
+		}
 	}
 	foundRedis := false
-	for _, n := range graph.DatabaseNodes {
-		if n.Name == "redis-main" && n.Kind == "redis" {
+	for _, n := range graph.ResourceNodes {
+		if n.Name == "redis-main" && n.Kind == "cache" && n.Platform == "redis" {
 			foundRedis = true
 		}
 	}
 	if !foundRedis {
-		t.Fatalf("expected redis cache resource node, got %+v", graph.DatabaseNodes)
+		t.Fatalf("expected redis cache resource node, got %+v", graph.ResourceNodes)
+	}
+	for _, n := range graph.DatabaseNodes {
+		if n.Kind == "redis" {
+			t.Fatalf("redis cache leaked into database nodes: %+v", n)
+		}
 	}
 	foundDynamoTable := false
 	for _, n := range graph.DatabaseNodes {
@@ -135,6 +155,94 @@ func TestBuildArchitectureGraphUsesDiffMind protocolTargetsAndResourceKinds(t *t
 	}
 	if !foundStream {
 		t.Fatalf("expected DynamoDB stream queue node, got %+v", graph.QueueNodes)
+	}
+}
+
+func TestArchitectureGraphBuildsLazyViewsAndTraceContinuation(t *testing.T) {
+	graph := &ArchGraph{
+		RunID: "run-views",
+		Services: []*ServiceNode{
+			{
+				Name:            "entry-api",
+				Team:            "mantra",
+				EntrypointCount: 1,
+				DownstreamCount: 2,
+				TraceCount:      1,
+				HTTPRoutes:      []EntitySummary{{ID: "http.entry", Kind: "http_endpoint", Name: "GET /entry"}},
+				Dependencies:    []EntitySummary{{ID: "httpcall.worker", Kind: "http_call", Name: "Call worker"}},
+				Connections: []ConnectionSummary{{
+					FromID:       "http.entry",
+					FromName:     "GET /entry",
+					FromType:     "http_endpoint",
+					ToID:         "httpcall.worker",
+					ToName:       "Call worker",
+					ToType:       "http_call",
+					FlowID:       "flow.entry",
+					EntrypointID: "http.entry",
+					Nodes:        []any{map[string]any{"id": "n1", "ref": "http.entry"}, map[string]any{"id": "n2", "ref": "httpcall.worker"}},
+					Edges:        []any{map[string]any{"from": "n1", "to": "n2"}},
+				}},
+			},
+			{
+				Name:            "worker-api",
+				Team:            "dynamite",
+				EntrypointCount: 1,
+				HTTPRoutes:      []EntitySummary{{ID: "http.worker", Kind: "http_endpoint", Name: "GET /worker"}},
+			},
+		},
+		ResourceNodes: []*ResourceNode{{
+			ID:             "redis_entry",
+			GraphID:        "resource:redis_entry",
+			Name:           "entry-cache",
+			Kind:           "cache",
+			Platform:       "redis",
+			OperationCount: 1,
+		}},
+		Edges: []*GraphEdge{
+			{From: "entry-api", To: "worker-api", Type: "http", Label: "HTTP", Details: []EntitySummary{{ID: "httpcall.worker", Kind: "http_call", Name: "Call worker"}}},
+			{From: "entry-api", To: "resource:redis_entry", Type: "cache", Label: "read", Details: []EntitySummary{{ID: "cache.entry", Kind: "cache_operation", Name: "Read entry cache"}}},
+		},
+	}
+
+	teamView, ok := ag.BuildTeamView(graph, "mantra", "connected")
+	if !ok {
+		t.Fatal("expected mantra team view")
+	}
+	if teamView.Summary.ServiceCount != 2 || teamView.Summary.ResourceCount != 1 || teamView.Summary.EdgeCount != 2 {
+		t.Fatalf("unexpected team view summary: %+v", teamView.Summary)
+	}
+
+	serviceView, ok := ag.BuildServiceView(graph, "entry-api")
+	if !ok {
+		t.Fatal("expected service view")
+	}
+	if len(serviceView.OutboundEdges) != 2 || len(serviceView.NeighborServices) != 1 || len(serviceView.ResourceNodes) != 1 {
+		t.Fatalf("unexpected service view: %+v", serviceView)
+	}
+	if len(serviceView.AvailableTraceIDs) != 1 || serviceView.AvailableTraceIDs[0] != "flow.entry" {
+		t.Fatalf("expected trace ids, got %+v", serviceView.AvailableTraceIDs)
+	}
+
+	resourceView, ok := ag.BuildResourceView(graph, "resource:redis_entry")
+	if !ok {
+		t.Fatal("expected resource view")
+	}
+	if resourceView.Resource.Kind != "cache" || len(resourceView.Services) != 1 || resourceView.Services[0].Name != "entry-api" {
+		t.Fatalf("unexpected resource view: %+v", resourceView)
+	}
+
+	traceView, ok := ag.BuildTraceView(graph, "entry-api", "http.entry")
+	if !ok {
+		t.Fatal("expected trace view")
+	}
+	if traceView.Status != "complete" || len(traceView.Segments) != 1 || len(traceView.Continuations) != 1 {
+		t.Fatalf("unexpected trace view: %+v", traceView)
+	}
+	if traceView.Continuations[0].ToService != "worker-api" || traceView.Continuations[0].Status != "matched_known_service" {
+		t.Fatalf("unexpected continuation: %+v", traceView.Continuations)
+	}
+	if !containsString(traceView.Quality, "no field-level data dependencies extracted yet") {
+		t.Fatalf("expected data dependency quality warning, got %+v", traceView.Quality)
 	}
 }
 
@@ -264,6 +372,113 @@ aliases:
 	t.Fatalf("expected alias target to join known service, edges=%+v external=%+v", graph.Edges, graph.ExternalNodes)
 }
 
+func TestBuildArchitectureGraphUsesExampleServiceNameConventions(t *testing.T) {
+	root := t.TempDir()
+	contentStoreRun := filepath.Join(root, "content-store")
+	mediaStoreRun := filepath.Join(root, "media-store")
+	catalogueRun := filepath.Join(root, "catalogue")
+	callerRun := filepath.Join(root, "caller")
+	writeDiffMind protocolRun(t, contentStoreRun, `{
+  "schema": "diffmind.service.v1",
+  "service": {"id": "cdp.content-store", "name": "cdp.content-store"},
+  "objects": {},
+  "flows": [],
+  "observations": [],
+  "evidence": []
+}`)
+	writeDiffMind protocolRun(t, mediaStoreRun, `{
+  "schema": "diffmind.service.v1",
+  "service": {"id": "cdp.media-store", "name": "cdp.media-store"},
+  "objects": {},
+  "flows": [],
+  "observations": [],
+  "evidence": []
+}`)
+	writeDiffMind protocolRun(t, catalogueRun, `{
+  "schema": "diffmind.service.v1",
+  "service": {"id": "checkout-service", "name": "checkout-service"},
+  "objects": {},
+  "flows": [],
+  "observations": [],
+  "evidence": []
+}`)
+	writeDiffMind protocolRun(t, callerRun, `{
+  "schema": "diffmind.service.v1",
+  "service": {"id": "caller", "name": "caller"},
+  "objects": {
+    "http_calls": [
+      {
+        "id": "httpcall.content",
+        "kind": "http_call",
+        "name": "Call content store",
+        "method": "GET",
+        "target": {"type": "service", "ref": "service.content-store", "unresolved": false},
+        "status": "confirmed",
+        "confidence": "high",
+        "origin": "deterministic"
+      },
+      {
+        "id": "httpcall.media",
+        "kind": "http_call",
+        "name": "Call media store",
+        "method": "GET",
+        "target": {"type": "service", "ref": "service.cdp-media-store", "unresolved": false},
+        "status": "confirmed",
+        "confidence": "high",
+        "origin": "deterministic"
+      },
+      {
+        "id": "httpcall.content_store_api",
+        "kind": "http_call",
+        "name": "Call content store API",
+        "method": "GET",
+        "target": {"type": "service", "ref": "service.cdp-content-store-api", "unresolved": false},
+        "status": "confirmed",
+        "confidence": "high",
+        "origin": "deterministic"
+      },
+      {
+        "id": "httpcall.catalog",
+        "kind": "http_call",
+        "name": "Call catalog",
+        "method": "GET",
+        "target": {"type": "service", "ref": "service.catalog-management-api", "unresolved": false},
+        "status": "confirmed",
+        "confidence": "high",
+        "origin": "deterministic"
+      }
+    ]
+  },
+  "flows": [],
+  "observations": [],
+  "evidence": []
+}`)
+
+	graph := buildArchitectureGraph("run-1", map[string]string{
+		"cdp.content-store":         contentStoreRun,
+		"cdp.media-store":           mediaStoreRun,
+		"checkout-service": catalogueRun,
+		"caller":                    callerRun,
+	})
+	expected := map[string]bool{
+		"cdp.content-store":         false,
+		"cdp.media-store":           false,
+		"checkout-service": false,
+	}
+	for _, edge := range graph.Edges {
+		if edge.Type == "http" && edge.From == "caller" {
+			if _, ok := expected[edge.To]; ok {
+				expected[edge.To] = true
+			}
+		}
+	}
+	for target, found := range expected {
+		if !found {
+			t.Fatalf("expected caller to resolve %s, edges=%+v external=%+v", target, graph.Edges, graph.ExternalNodes)
+		}
+	}
+}
+
 func TestBuildArchitectureGraphRendersDiffMind protocolRPCCalls(t *testing.T) {
 	root := t.TempDir()
 	callerRun := filepath.Join(root, "game-service")
@@ -353,6 +568,81 @@ func TestBuildArchitectureGraphRendersDiffMind protocolRPCCalls(t *testing.T) {
 	}
 	if !foundEndpoint {
 		t.Fatalf("expected RPC endpoint in service entrypoint details, services=%+v", graph.Services)
+	}
+}
+
+func TestBuildArchitectureGraphRendersWorkflowOrchestration(t *testing.T) {
+	root := t.TempDir()
+	payloadBuilderRun := filepath.Join(root, "payload-builder")
+	camundaRun := filepath.Join(root, "camunda")
+	writeDiffMind protocolRun(t, camundaRun, `{
+  "schema": "diffmind.service.v1",
+  "service": {"id": "cdp.stories.camunda", "name": "cdp.stories.camunda"},
+  "objects": {},
+  "flows": [],
+  "observations": [],
+  "evidence": []
+}`)
+	writeDiffMind protocolRun(t, payloadBuilderRun, `{
+  "schema": "diffmind.service.v1",
+  "service": {"id": "cdp.stories.payload-builder", "name": "cdp.stories.payload-builder"},
+  "objects": {
+    "config_reads": [{
+      "id": "workflow.camunda.stories_import_build_initial_payload",
+      "kind": "workflow_orchestration",
+      "name": "Camunda external task stories::import::build_initial_payload",
+      "key": "stories::import::build_initial_payload",
+      "value": "https://cdp-stories-camunda/rest",
+      "source": "application.yml:external-task.url",
+      "metadata": {
+        "legacy_type": "workflow_orchestration",
+        "details": {
+          "orchestrator": "camunda",
+          "target_service": "cdp-stories-camunda",
+          "url_template": "https://cdp-stories-camunda/rest",
+          "topic": "stories::import::build_initial_payload",
+          "invocation_mode": "external_task_worker"
+        }
+      },
+      "status": "confirmed",
+      "confidence": "high",
+      "origin": "deterministic"
+    }]
+  },
+  "flows": [],
+  "observations": [],
+  "evidence": []
+}`)
+
+	graph := buildArchitectureGraph("run-1", map[string]string{
+		"cdp.stories.payload-builder": payloadBuilderRun,
+		"cdp.stories.camunda":         camundaRun,
+	})
+	foundEdge := false
+	foundDependency := false
+	for _, edge := range graph.Edges {
+		if edge.Type == "workflow" && edge.From == "cdp.stories.payload-builder" && edge.To == "cdp.stories.camunda" {
+			foundEdge = true
+			if edge.Label != "CAMUNDA" || len(edge.Details) != 1 {
+				t.Fatalf("expected Camunda workflow edge details, got %+v", edge)
+			}
+		}
+	}
+	for _, svc := range graph.Services {
+		if svc.Name != "cdp.stories.payload-builder" {
+			continue
+		}
+		for _, dep := range svc.Dependencies {
+			if dep.Kind == "workflow_orchestration" && dep.Details["topic"] == "stories::import::build_initial_payload" {
+				foundDependency = true
+			}
+		}
+	}
+	if !foundEdge {
+		t.Fatalf("expected workflow edge to known Camunda service, edges=%+v external=%+v", graph.Edges, graph.ExternalNodes)
+	}
+	if !foundDependency {
+		t.Fatalf("expected workflow dependency in service details, services=%+v", graph.Services)
 	}
 }
 
@@ -544,12 +834,21 @@ func TestArchitectureGraphLayoutIsStableAndRanksSharedResourceFlow(t *testing.T)
 	}
 	assertBefore("pricing-service", "db:dynamodb_traffic-info")
 	assertBefore("db:dynamodb_traffic-info", "sync-service")
-	assertBefore("sync-service", "db:redis_redis")
-	assertBefore("db:redis_redis", "gateway-service")
+	assertBefore("sync-service", "resource:redis_redis")
+	assertBefore("resource:redis_redis", "gateway-service")
 }
 
 func writeDiffMind protocolRun(t *testing.T, runDir, body string) {
 	writeDiffMind protocolRunWithRepoPath(t, runDir, "", body)
+}
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
 
 func writeDiffMind protocolRunWithRepoPath(t *testing.T, runDir, repoPath, body string) {

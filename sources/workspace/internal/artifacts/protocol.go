@@ -135,6 +135,20 @@ func protocolToArchitecture(doc *protocol.Document) *model.ServiceArchitecture {
 		base.Instance = targetName(o.Target, o.Service)
 		arch.Dependencies = append(arch.Dependencies, model.Dependency{BaseEntity: base})
 	}
+	for _, o := range doc.Objects.ConfigReads {
+		if o.Kind != "workflow_orchestration" && stringMeta(o.Metadata, "legacy_type") != "workflow_orchestration" {
+			continue
+		}
+		details := mapFromAny(o)
+		flattenMetadataDetails(details, o.Metadata)
+		details["key"] = o.Key
+		details["value"] = o.Value
+		details["source"] = o.Source
+		platform := firstString(stringFromAny(details["orchestrator"]), stringFromAny(details["platform"]), "workflow")
+		base := baseFromDiffMind protocol(o.ObjectiveBase, "workflow_orchestration", o.Name, platform, details)
+		base.Instance = firstString(stringFromAny(details["target_service"]), stringFromAny(details["url_template"]), o.Value, platform)
+		arch.Dependencies = append(arch.Dependencies, model.Dependency{BaseEntity: base})
+	}
 	for _, flow := range doc.Flows {
 		conn, ok := connectionFromDiffMind protocolFlow(flow, arch)
 		if ok {
@@ -308,6 +322,30 @@ func mapFromAny(v any) map[string]any {
 	out := map[string]any{}
 	_ = json.Unmarshal(data, &out)
 	return out
+}
+
+func flattenMetadataDetails(out map[string]any, metadata map[string]any) {
+	if out == nil || metadata == nil {
+		return
+	}
+	if details, ok := metadata["details"].(map[string]any); ok {
+		for k, v := range details {
+			out[k] = v
+		}
+		return
+	}
+	if details, ok := metadata["details"].(map[any]any); ok {
+		for k, v := range details {
+			out[fmt.Sprint(k)] = v
+		}
+	}
+}
+
+func stringFromAny(v any) string {
+	if v == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(v))
 }
 
 func stringMeta(m map[string]any, key string) string {
