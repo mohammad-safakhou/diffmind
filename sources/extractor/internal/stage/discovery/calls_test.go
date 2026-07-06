@@ -227,6 +227,156 @@ class Publisher {
 	}
 }
 
+func TestDeterministicPythonQueuePublishers(t *testing.T) {
+	idx := &astpkg.ProjectIndex{Files: map[string]*astpkg.FileAST{
+		"publishers.py": {
+			Language: "python",
+			Calls: []astpkg.CallSite{
+				{
+					File:        "publishers.py",
+					ReceiverRaw: "sqs",
+					CalleeRaw:   "send_message",
+					Range:       astpkg.Range{StartLine: 4, EndLine: 4},
+					Arguments: []astpkg.ArgumentExpr{{
+						Index:  0,
+						Source: "QueueUrl=\"https://sqs.eu-west-1.amazonaws.com/123/traffic-events.fifo\"",
+						Kind:   "other",
+					}},
+				},
+				{
+					File:        "publishers.py",
+					ReceiverRaw: "sns_client",
+					CalleeRaw:   "publish",
+					Range:       astpkg.Range{StartLine: 8, EndLine: 8},
+					Arguments: []astpkg.ArgumentExpr{{
+						Index:  0,
+						Source: "TopicArn=\"arn:aws:sns:eu-west-1:123:content-cleanup\"",
+						Kind:   "other",
+					}},
+				},
+				{
+					File:        "publishers.py",
+					ReceiverRaw: "kafka_producer",
+					CalleeRaw:   "send",
+					Range:       astpkg.Range{StartLine: 12, EndLine: 12},
+					Arguments: []astpkg.ArgumentExpr{{
+						Index:  0,
+						Source: "\"orders-topic\"",
+						Kind:   "literal",
+					}},
+				},
+			},
+		},
+	}}
+	got := DeterministicQueuePublish(idx)
+	if len(got) != 3 {
+		t.Fatalf("expected three Python publishes, got %d: %+v", len(got), got)
+	}
+	byName := map[string]candidate{}
+	for _, e := range got {
+		byName[e.Name] = e
+	}
+	for name, platform := range map[string]string{
+		"traffic-events.fifo": "sqs",
+		"content-cleanup":     "sns",
+		"orders-topic":        "kafka",
+	} {
+		e, ok := byName[name]
+		if !ok {
+			t.Fatalf("missing publish %s in %+v", name, got)
+		}
+		if e.Details["platform"] != platform || e.Details["destination"] != name {
+			t.Fatalf("unexpected details for %s: %+v", name, e.Details)
+		}
+	}
+}
+
+func TestDeterministicJavaScriptQueuePublishers(t *testing.T) {
+	idx := &astpkg.ProjectIndex{Files: map[string]*astpkg.FileAST{
+		"publishers.ts": {
+			Language: "typescript",
+			Calls: []astpkg.CallSite{
+				{
+					File:        "publishers.ts",
+					ReceiverRaw: "producer",
+					CalleeRaw:   "send",
+					Range:       astpkg.Range{StartLine: 4, EndLine: 4},
+					Arguments: []astpkg.ArgumentExpr{{
+						Index:  0,
+						Source: "{ topic: 'orders-topic', messages: [{ value: payload }] }",
+						Kind:   "other",
+					}},
+				},
+				{
+					File:        "publishers.ts",
+					ReceiverRaw: "sqsClient",
+					CalleeRaw:   "send",
+					Range:       astpkg.Range{StartLine: 8, EndLine: 8},
+					Arguments: []astpkg.ArgumentExpr{{
+						Index:  0,
+						Source: "new SendMessageCommand({ QueueUrl: 'https://sqs.eu-west-1.amazonaws.com/123/traffic-events' })",
+						Kind:   "new",
+					}},
+				},
+				{
+					File:        "publishers.ts",
+					ReceiverRaw: "snsClient",
+					CalleeRaw:   "send",
+					Range:       astpkg.Range{StartLine: 12, EndLine: 12},
+					Arguments: []astpkg.ArgumentExpr{{
+						Index:  0,
+						Source: "new PublishCommand({ TopicArn: 'arn:aws:sns:eu-west-1:123:content-cleanup' })",
+						Kind:   "new",
+					}},
+				},
+			},
+		},
+	}}
+	got := DeterministicQueuePublish(idx)
+	if len(got) != 3 {
+		t.Fatalf("expected three JavaScript publishes, got %d: %+v", len(got), got)
+	}
+	byName := map[string]candidate{}
+	for _, e := range got {
+		byName[e.Name] = e
+	}
+	for name, platform := range map[string]string{
+		"orders-topic":    "kafka",
+		"traffic-events":  "sqs",
+		"content-cleanup": "sns",
+	} {
+		e, ok := byName[name]
+		if !ok {
+			t.Fatalf("missing publish %s in %+v", name, got)
+		}
+		if e.Details["platform"] != platform || e.Details["destination"] != name {
+			t.Fatalf("unexpected details for %s: %+v", name, e.Details)
+		}
+	}
+}
+
+func TestDeterministicQueuePublishRejectsGenericProducerSend(t *testing.T) {
+	idx := &astpkg.ProjectIndex{Files: map[string]*astpkg.FileAST{
+		"plain.ts": {
+			Language: "typescript",
+			Calls: []astpkg.CallSite{{
+				File:        "plain.ts",
+				ReceiverRaw: "producer",
+				CalleeRaw:   "send",
+				Range:       astpkg.Range{StartLine: 4, EndLine: 4},
+				Arguments: []astpkg.ArgumentExpr{{
+					Index:  0,
+					Source: "{ payload: 'not-messaging' }",
+					Kind:   "other",
+				}},
+			}},
+		},
+	}}
+	if got := DeterministicQueuePublish(idx); len(got) != 0 {
+		t.Fatalf("generic producer.send without topic must not match queue_publish: %+v", got)
+	}
+}
+
 func TestDeterministicAWSQueueConsumerFromReceiveMessage(t *testing.T) {
 	dir := t.TempDir()
 	src := `package com.example;
