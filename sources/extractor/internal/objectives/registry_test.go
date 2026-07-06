@@ -16,6 +16,7 @@ func TestDefaultOrderAndCount(t *testing.T) {
 		"dependency.db_operation",
 		"dependency.outbound_http",
 		"dependency.outbound_rpc",
+		"dependency.workflow_orchestration",
 		"dependency.queue_publish",
 		"dependency.command_exec",
 		"dependency.cache_operation",

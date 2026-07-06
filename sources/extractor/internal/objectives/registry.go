@@ -35,6 +35,7 @@ func defaultObjectives() []Objective {
 		objDBOperation,
 		objOutboundHTTP,
 		objOutboundRPC,
+		objWorkflowOrchestration,
 		objQueuePublish,
 		objCommandExec,
 		objCacheOperation,

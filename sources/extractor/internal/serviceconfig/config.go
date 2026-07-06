@@ -3,7 +3,6 @@
 package serviceconfig
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -120,21 +119,138 @@ func Path(repoPath string) string {
 }
 
 func Load(repoPath string) (*Config, error) {
-	data, err := os.ReadFile(Path(repoPath))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return &Config{}, nil
+	paths := inheritedPaths(repoPath)
+	cfg := Config{}
+	for _, path := range paths {
+		next, err := loadFile(path)
+		if err != nil {
+			return nil, err
 		}
-		return nil, err
-	}
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, err
+		mergeConfig(&cfg, next)
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+func loadFile(path string) (Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Config{}, err
+	}
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return Config{}, err
+	}
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+func inheritedPaths(repoPath string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(path string) {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			return
+		}
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
+		path = filepath.Clean(path)
+		if seen[path] {
+			return
+		}
+		if st, err := os.Stat(path); err == nil && !st.IsDir() {
+			seen[path] = true
+			out = append(out, path)
+		}
+	}
+	for _, path := range filepath.SplitList(os.Getenv("DIFFMIND_CONFIGURATION_PATHS")) {
+		add(path)
+	}
+	repoAbs, err := filepath.Abs(repoPath)
+	if err != nil {
+		repoAbs = repoPath
+	}
+	var dirs []string
+	for dir := filepath.Clean(repoAbs); ; dir = filepath.Dir(dir) {
+		dirs = append(dirs, dir)
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+	}
+	for i := len(dirs) - 1; i >= 0; i-- {
+		add(filepath.Join(dirs[i], FileName))
+	}
+	return out
+}
+
+func mergeConfig(dst *Config, src Config) {
+	if strings.TrimSpace(src.Schema) != "" {
+		dst.Schema = src.Schema
+	}
+	mergeService(&dst.Service, src.Service)
+	dst.Paths.Include = append(dst.Paths.Include, src.Paths.Include...)
+	dst.Paths.Exclude = append(dst.Paths.Exclude, src.Paths.Exclude...)
+	mergeStringSliceMap(&dst.Aliases.Services, src.Aliases.Services)
+	mergeStringSliceMap(&dst.Aliases.Resources, src.Aliases.Resources)
+	dst.HTTPTargets = append(dst.HTTPTargets, src.HTTPTargets...)
+	dst.ResourcePatterns = append(dst.ResourcePatterns, src.ResourcePatterns...)
+	dst.Config.Paths = append(dst.Config.Paths, src.Config.Paths...)
+	mergeStringMap(&dst.Config.Profiles, src.Config.Profiles)
+	mergeStringMap(&dst.Config.Env, src.Config.Env)
+	dst.Conventions.DependencyInjection = append(dst.Conventions.DependencyInjection, src.Conventions.DependencyInjection...)
+	dst.Detectors.Enabled = append(dst.Detectors.Enabled, src.Detectors.Enabled...)
+	dst.Detectors.Disabled = append(dst.Detectors.Disabled, src.Detectors.Disabled...)
+	mergeStringMap(&dst.Detectors.Options, src.Detectors.Options)
+	dst.Patterns = append(dst.Patterns, src.Patterns...)
+}
+
+func mergeService(dst *ServiceConfig, src ServiceConfig) {
+	if strings.TrimSpace(src.ID) != "" {
+		dst.ID = src.ID
+	}
+	if strings.TrimSpace(src.Name) != "" {
+		dst.Name = src.Name
+	}
+	if strings.TrimSpace(src.Team) != "" {
+		dst.Team = src.Team
+	}
+	if strings.TrimSpace(src.Domain) != "" {
+		dst.Domain = src.Domain
+	}
+	if strings.TrimSpace(src.Criticality) != "" {
+		dst.Criticality = src.Criticality
+	}
+}
+
+func mergeStringMap(dst *map[string]string, src map[string]string) {
+	if len(src) == 0 {
+		return
+	}
+	if *dst == nil {
+		*dst = map[string]string{}
+	}
+	for k, v := range src {
+		(*dst)[k] = v
+	}
+}
+
+func mergeStringSliceMap(dst *map[string][]string, src map[string][]string) {
+	if len(src) == 0 {
+		return
+	}
+	if *dst == nil {
+		*dst = map[string][]string{}
+	}
+	for k, v := range src {
+		(*dst)[k] = append((*dst)[k], v...)
+	}
 }
 
 func (c Config) Validate() error {

@@ -185,14 +185,15 @@ func TestWriteEmitsDiffMind protocolServiceContext(t *testing.T) {
 	exp := model.Exposure{BaseEntity: model.BaseEntity{
 		ID: "legacy-exp", Type: "http_route", Name: "POST /orders", Service: repo, Platform: "http",
 		Summary: "create order", Confidence: 1, Tags: []string{"deterministic"},
-		Details:   map[string]any{"method": "POST", "path": "/orders"},
+		Inputs:    []model.InputSpec{{Name: "orderId", Type: "body", Required: true}},
+		Details:   map[string]any{"method": "POST", "path": "/orders", "body_fields": []string{"orderId"}},
 		Locations: []model.Location{{File: "controller.go", StartLine: 10, EndLine: 20}},
 		Evidence:  []model.Evidence{{Location: model.Location{File: "controller.go", StartLine: 10, EndLine: 20}, Source: "deterministic_ast", Snippet: "POST /orders"}},
 	}}
 	dep := model.Dependency{BaseEntity: model.BaseEntity{
 		ID: "legacy-dep", Type: "db_operation", Name: "write orders", Service: repo, Platform: "postgres",
 		Summary: "insert order", Confidence: 1, Tags: []string{"deterministic"},
-		Details:   map[string]any{"table": "orders", "operation": "write"},
+		Details:   map[string]any{"table": "orders", "operation": "write", "writes": []string{"order_id"}},
 		Locations: []model.Location{{File: "repo.go", StartLine: 30, EndLine: 40}},
 		Evidence:  []model.Evidence{{Location: model.Location{File: "repo.go", StartLine: 30, EndLine: 40}, Source: "deterministic_ast", Snippet: "insert orders"}},
 	}}
@@ -251,6 +252,12 @@ func TestWriteEmitsDiffMind protocolServiceContext(t *testing.T) {
 	}
 	if len(doc.Flows) != 1 || doc.Flows[0].From != "http.post_orders" || doc.Flows[0].To != "dbq.create_orders" {
 		t.Fatalf("unexpected flows: %+v", doc.Flows)
+	}
+	if len(doc.Flows[0].DataDependencies) != 1 {
+		t.Fatalf("expected one data dependency, got %+v", doc.Flows[0].DataDependencies)
+	}
+	if got := doc.Flows[0].DataDependencies[0]; got.From.Expression != "request.body.orderId" || got.To.Expression != "orders.order_id" || got.Kind != "value_flow" {
+		t.Fatalf("unexpected data dependency: %+v", got)
 	}
 	if len(doc.Observations) == 0 || len(doc.Evidence) == 0 {
 		t.Fatalf("expected observations/evidence: obs=%+v ev=%+v", doc.Observations, doc.Evidence)
@@ -328,6 +335,99 @@ func TestBuildDiffMind protocolMergesDuplicateDBResourceIDs(t *testing.T) {
 	if len(doc.Objects.DBQueries) != 2 {
 		t.Fatalf("expected semantic db query dedup, got %+v", doc.Objects.DBQueries)
 	}
+	if err := protocol.ValidateCanonical(doc); err != nil {
+		t.Fatalf("canonical DiffMind protocol validation failed: %v", err)
+	}
+}
+
+func TestBuildDiffMind protocolEmitsFieldDataDependenciesForActionTypes(t *testing.T) {
+	repo := t.TempDir()
+	exp := model.Exposure{BaseEntity: model.BaseEntity{
+		ID:         "exp-campaign",
+		Type:       "http_route",
+		Name:       "GET /campaigns/{campaignId}",
+		Platform:   "http",
+		Summary:    "get campaign",
+		Confidence: 1,
+		Tags:       []string{"deterministic"},
+		Inputs: []model.InputSpec{
+			{Name: "campaignId", Type: "path", Required: true},
+			{Name: "storeCode", Type: "query", Required: false},
+		},
+		Details:   map[string]any{"method": "GET", "path": "/campaigns/{campaignId}", "query_params": []string{"storeCode"}},
+		Locations: []model.Location{{File: "campaign.go", StartLine: 10, EndLine: 20}},
+		Evidence:  []model.Evidence{{Location: model.Location{File: "campaign.go", StartLine: 10, EndLine: 20}, Source: "deterministic_ast", Snippet: "GET /campaigns/{campaignId}"}},
+	}}
+	deps := []model.Dependency{
+		{BaseEntity: model.BaseEntity{
+			ID: "http-dep", Type: "outbound_http", Name: "GET score", Platform: "http", Instance: "score-api",
+			Summary: "call score", Confidence: 1, Tags: []string{"deterministic"},
+			Details:   map[string]any{"method": "GET", "target_service": "score-api", "url_template": "http://score-api/scores/{storeCode}", "path_params": []string{"storeCode"}},
+			Locations: []model.Location{{File: "client.go", StartLine: 30, EndLine: 35}},
+			Evidence:  []model.Evidence{{Location: model.Location{File: "client.go", StartLine: 30, EndLine: 35}, Source: "deterministic_ast", Snippet: "score call"}},
+		}},
+		{BaseEntity: model.BaseEntity{
+			ID: "queue-dep", Type: "queue_publish", Name: "campaign events", Platform: "kafka", Instance: "campaign-events",
+			Summary: "publish campaign event", Confidence: 1, Tags: []string{"deterministic"},
+			Details:   map[string]any{"topic": "campaign-events", "message_fields": []string{"campaignId"}},
+			Locations: []model.Location{{File: "publisher.go", StartLine: 40, EndLine: 45}},
+			Evidence:  []model.Evidence{{Location: model.Location{File: "publisher.go", StartLine: 40, EndLine: 45}, Source: "deterministic_ast", Snippet: "publish"}},
+		}},
+		{BaseEntity: model.BaseEntity{
+			ID: "cache-dep", Type: "cache_operation", Name: "read campaign cache", Platform: "redis", Instance: "campaign-cache",
+			Summary: "read campaign cache", Confidence: 1, Tags: []string{"deterministic"},
+			Details:   map[string]any{"cache": "campaign-cache", "operation": "read", "key_pattern": "campaign:{campaignId}"},
+			Locations: []model.Location{{File: "cache.go", StartLine: 50, EndLine: 55}},
+			Evidence:  []model.Evidence{{Location: model.Location{File: "cache.go", StartLine: 50, EndLine: 55}, Source: "deterministic_ast", Snippet: "cache read"}},
+		}},
+		{BaseEntity: model.BaseEntity{
+			ID: "workflow-dep", Type: "workflow_orchestration", Name: "campaign workflow", Platform: "camunda", Instance: "camunda",
+			Summary: "send campaign variable", Confidence: 1, Tags: []string{"deterministic"},
+			Details:   map[string]any{"orchestrator": "camunda", "topic": "campaign", "variables": []string{"campaignId"}},
+			Locations: []model.Location{{File: "workflow.go", StartLine: 60, EndLine: 65}},
+			Evidence:  []model.Evidence{{Location: model.Location{File: "workflow.go", StartLine: 60, EndLine: 65}, Source: "deterministic_ast", Snippet: "workflow"}},
+		}},
+	}
+	var conns []model.Connection
+	for _, dep := range deps {
+		conns = append(conns, model.Connection{
+			ID: dep.ID + "-conn", FromExposureID: exp.ID, ToDependencyID: dep.ID,
+			FromType: exp.Type, ToType: dep.Type, Confidence: 1,
+			Condition: model.Condition{Kind: "unconditional", Expression: "true"},
+		})
+	}
+	doc, err := buildDiffMind protocol(WriteInput{
+		RunID:        "run-data-deps",
+		RepoPath:     repo,
+		FinishedAt:   time.Now().UTC(),
+		Exposures:    []model.Exposure{exp},
+		Dependencies: deps,
+		Connections:  conns,
+	}, model.RunManifest{Pipeline: "deterministic", SchemaVersion: protocol.SchemaServiceV1})
+	if err != nil {
+		t.Fatalf("build DiffMind protocol: %v", err)
+	}
+	byTarget := map[string]protocol.DataDependency{}
+	for _, flow := range doc.Flows {
+		if len(flow.DataDependencies) != 1 {
+			t.Fatalf("expected one data dependency per flow, got flow=%s deps=%+v", flow.ID, flow.DataDependencies)
+		}
+		byTarget[flow.DataDependencies[0].To.ObjectRef] = flow.DataDependencies[0]
+	}
+	assertDep := func(target, fromExpr, toExpr, kind string) {
+		t.Helper()
+		dep, ok := byTarget[target]
+		if !ok {
+			t.Fatalf("missing data dependency for %s; all=%+v", target, byTarget)
+		}
+		if dep.From.Expression != fromExpr || dep.To.Expression != toExpr || dep.Kind != kind {
+			t.Fatalf("unexpected data dependency for %s: %+v", target, dep)
+		}
+	}
+	assertDep("httpcall.get_score_api", "request.query.storeCode", "path.storeCode", "path_flow")
+	assertDep("queue.publish_campaign_events", "request.path.campaignId", "message.campaignId", "payload_flow")
+	assertDep("cache.read_campaign_cache", "request.path.campaignId", "cache.key.campaignId", "key_flow")
+	assertDep("workflow.camunda_campaign", "request.path.campaignId", "workflow.variables.campaignId", "value_flow")
 	if err := protocol.ValidateCanonical(doc); err != nil {
 		t.Fatalf("canonical DiffMind protocol validation failed: %v", err)
 	}

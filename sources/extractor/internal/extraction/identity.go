@@ -19,19 +19,20 @@ import (
 // present.
 func MissingRequiredDetails(objType string, details map[string]any) string {
 	required := map[string][]string{
-		"http_route":      {"method", "path"},
-		"webhook":         {"path"},
-		"rpc_endpoint":    {"service", "method"},
-		"queue_consumer":  {"queue"},
-		"scheduled_job":   {"schedule"},
-		"cli_command":     {"command"},
-		"db_operation":    {"operation"},
-		"outbound_http":   {"method"},
-		"outbound_rpc":    {"method"},
-		"queue_publish":   {"destination"},
-		"cache_operation": {"operation"},
-		"stream_consume":  {"stream"},
-		"command_exec":    {"command"},
+		"http_route":             {"method", "path"},
+		"webhook":                {"path"},
+		"rpc_endpoint":           {"service", "method"},
+		"queue_consumer":         {"queue"},
+		"scheduled_job":          {"schedule"},
+		"cli_command":            {"command"},
+		"db_operation":           {"operation"},
+		"outbound_http":          {"method"},
+		"outbound_rpc":           {"method"},
+		"workflow_orchestration": {"orchestrator"},
+		"queue_publish":          {"destination"},
+		"cache_operation":        {"operation"},
+		"stream_consume":         {"stream"},
+		"command_exec":           {"command"},
 	}
 	keys, ok := required[objType]
 	if !ok {

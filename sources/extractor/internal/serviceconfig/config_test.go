@@ -7,6 +7,7 @@ import (
 )
 
 func TestLoadMissingReturnsEmptyConfig(t *testing.T) {
+	t.Setenv("DIFFMIND_CONFIGURATION_PATHS", "")
 	cfg, err := Load(t.TempDir())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -17,6 +18,7 @@ func TestLoadMissingReturnsEmptyConfig(t *testing.T) {
 }
 
 func TestLoadConfiguration(t *testing.T) {
+	t.Setenv("DIFFMIND_CONFIGURATION_PATHS", "")
 	dir := t.TempDir()
 	body := []byte(`
 schema: diffmind.config.v1
@@ -78,7 +80,64 @@ patterns:
 	}
 }
 
+func TestLoadInheritsParentConfigurationAndRepoOverrides(t *testing.T) {
+	t.Setenv("DIFFMIND_CONFIGURATION_PATHS", "")
+	root := t.TempDir()
+	team := filepath.Join(root, "mantra")
+	repo := filepath.Join(team, "traffic-estimation-management")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, FileName), []byte(`
+schema: diffmind.config.v1
+service:
+  team: company-default
+aliases:
+  services:
+    traffic-estimation-management: ["traffic-estimation-api"]
+http_targets:
+  - id: example-global
+    service_ref: service.${host}
+    url_host: "*.example.global"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(team, FileName), []byte(`
+schema: diffmind.config.v1
+service:
+  team: mantra
+resource_patterns:
+  - id: sqs
+    kind: queue
+    platform: sqs
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, FileName), []byte(`
+schema: diffmind.config.v1
+service:
+  name: traffic-estimation-management
+  criticality: high
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(repo)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Service.Team != "mantra" || cfg.Service.Name != "traffic-estimation-management" || cfg.Service.Criticality != "high" {
+		t.Fatalf("service inheritance failed: %+v", cfg.Service)
+	}
+	if got := cfg.Aliases.Services["traffic-estimation-management"]; len(got) != 1 || got[0] != "traffic-estimation-api" {
+		t.Fatalf("parent aliases not inherited: %+v", cfg.Aliases.Services)
+	}
+	if len(cfg.HTTPTargets) != 1 || len(cfg.ResourcePatterns) != 1 {
+		t.Fatalf("expected inherited targets/resources: %+v %+v", cfg.HTTPTargets, cfg.ResourcePatterns)
+	}
+}
+
 func TestLoadRejectsUnsupportedSchema(t *testing.T) {
+	t.Setenv("DIFFMIND_CONFIGURATION_PATHS", "")
 	dir := t.TempDir()
 	body := []byte(`schema: diffmind.config.v2`)
 	if err := os.WriteFile(filepath.Join(dir, FileName), body, 0o644); err != nil {
@@ -90,6 +149,7 @@ func TestLoadRejectsUnsupportedSchema(t *testing.T) {
 }
 
 func TestLoadIgnoresDeprecatedUnknownEnabledDetector(t *testing.T) {
+	t.Setenv("DIFFMIND_CONFIGURATION_PATHS", "")
 	dir := t.TempDir()
 	body := []byte(`
 schema: diffmind.config.v1
@@ -105,6 +165,7 @@ detectors:
 }
 
 func TestLoadRejectsUnknownDisabledDetector(t *testing.T) {
+	t.Setenv("DIFFMIND_CONFIGURATION_PATHS", "")
 	dir := t.TempDir()
 	body := []byte(`
 schema: diffmind.config.v1
@@ -120,6 +181,7 @@ detectors:
 }
 
 func TestLoadRejectsBadCustomPatternRegex(t *testing.T) {
+	t.Setenv("DIFFMIND_CONFIGURATION_PATHS", "")
 	dir := t.TempDir()
 	body := []byte(`
 schema: diffmind.config.v1

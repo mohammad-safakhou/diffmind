@@ -58,6 +58,12 @@ func (DeterministicRunner) Run(input DeterministicInput) DeterministicOutput {
 		for _, e := range DeterministicSAMQueueConsumers(input.Index) {
 			outMap[obj.ID] = append(outMap[obj.ID], e)
 		}
+		for _, e := range DeterministicAWSQueueConsumers(input.Index) {
+			outMap[obj.ID] = append(outMap[obj.ID], e)
+		}
+		for _, e := range DeterministicPythonSQSConsumers(input.Index) {
+			outMap[obj.ID] = append(outMap[obj.ID], e)
+		}
 	}
 
 	// Call-graph-derived dependencies (not framework-binding based). These
@@ -94,6 +100,11 @@ func (DeterministicRunner) Run(input DeterministicInput) DeterministicOutput {
 	}
 	if obj, ok := objectiveByTypeIn(input.Objectives, "outbound_rpc"); ok {
 		for _, e := range DeterministicOutboundRPC(input.Index) {
+			outMap[obj.ID] = append(outMap[obj.ID], e)
+		}
+	}
+	if obj, ok := objectiveByTypeIn(input.Objectives, "workflow_orchestration"); ok {
+		for _, e := range DeterministicWorkflowOrchestration(input.Index) {
 			outMap[obj.ID] = append(outMap[obj.ID], e)
 		}
 	}
@@ -344,7 +355,7 @@ func supportedDeterministicObjectives(objs []objectives.Objective) map[string]ob
 			}
 		case model.KindDependency:
 			switch obj.Type {
-			case "outbound_http", "cache_operation":
+			case "outbound_http", "cache_operation", "workflow_orchestration":
 				out[obj.Type] = obj
 			}
 		}

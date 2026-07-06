@@ -139,6 +139,180 @@ public class Publisher {
 	}
 }
 
+func TestDeterministicAWSQueuePublishFromRequestBuilder(t *testing.T) {
+	dir := t.TempDir()
+	src := `package com.example;
+
+import software.amazon.awssdk.services.sns.SnsClient;
+import software.amazon.awssdk.services.sns.model.PublishRequest;
+
+class Publisher {
+  private SnsClient snsClient;
+  void publish() {
+    var request = PublishRequest.builder()
+      .topicArn("arn:aws:sns:eu-west-1:123:content-cleanup")
+      .message("payload")
+      .build();
+    snsClient.publish(request);
+  }
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "Publisher.java"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx := &astpkg.ProjectIndex{RepoRoot: dir, Files: map[string]*astpkg.FileAST{
+		"Publisher.java": {
+			Language: "java",
+			Calls: []astpkg.CallSite{{
+				File:        "Publisher.java",
+				ReceiverRaw: "snsClient",
+				CalleeRaw:   "publish",
+				Range:       astpkg.Range{StartLine: 11, EndLine: 11},
+				Arguments: []astpkg.ArgumentExpr{{
+					Index:  0,
+					Source: "request",
+					Kind:   "identifier",
+				}},
+			}},
+		},
+	}}
+	got := DeterministicQueuePublish(idx)
+	if len(got) != 1 {
+		t.Fatalf("expected one SNS publish, got %d: %+v", len(got), got)
+	}
+	if got[0].Name != "content-cleanup" || got[0].Details["platform"] != "sns" {
+		t.Fatalf("unexpected SNS publish: %+v", got[0])
+	}
+}
+
+func TestDeterministicAWSQueuePublishIgnoresUnresolvedTopicParameter(t *testing.T) {
+	dir := t.TempDir()
+	src := `package com.example;
+
+import software.amazon.awssdk.services.sns.SnsClient;
+import software.amazon.awssdk.services.sns.model.PublishRequest;
+
+class Publisher {
+  private SnsClient snsClient;
+  void publish(String topicArn) {
+    final PublishRequest request = PublishRequest.builder()
+      .topicArn(topicArn)
+      .message("payload")
+      .build();
+    snsClient.publish(request);
+  }
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "Publisher.java"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx := &astpkg.ProjectIndex{RepoRoot: dir, Files: map[string]*astpkg.FileAST{
+		"Publisher.java": {
+			Language: "java",
+			Calls: []astpkg.CallSite{{
+				File:        "Publisher.java",
+				ReceiverRaw: "snsClient",
+				CalleeRaw:   "publish",
+				Range:       astpkg.Range{StartLine: 13, EndLine: 13},
+				Arguments: []astpkg.ArgumentExpr{{
+					Index:  0,
+					Source: "request",
+					Kind:   "identifier",
+				}},
+			}},
+		},
+	}}
+	if got := DeterministicQueuePublish(idx); len(got) != 0 {
+		t.Fatalf("expected unresolved topic parameter to be ignored, got %+v", got)
+	}
+}
+
+func TestDeterministicAWSQueueConsumerFromReceiveMessage(t *testing.T) {
+	dir := t.TempDir()
+	src := `package com.example;
+
+import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
+
+class Consumer {
+  private SqsClient sqsClient;
+  void receive() {
+    var request = ReceiveMessageRequest.builder()
+      .queueUrl("https://sqs.eu-west-1.amazonaws.com/123/cdp-cps-input.fifo")
+      .build();
+    sqsClient.receiveMessage(request);
+  }
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "Consumer.java"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx := &astpkg.ProjectIndex{RepoRoot: dir, Files: map[string]*astpkg.FileAST{
+		"Consumer.java": {
+			Language: "java",
+			Calls: []astpkg.CallSite{{
+				File:        "Consumer.java",
+				ReceiverRaw: "sqsClient",
+				CalleeRaw:   "receiveMessage",
+				Range:       astpkg.Range{StartLine: 11, EndLine: 11},
+				Arguments: []astpkg.ArgumentExpr{{
+					Index:  0,
+					Source: "request",
+					Kind:   "identifier",
+				}},
+			}},
+		},
+	}}
+	got := DeterministicAWSQueueConsumers(idx)
+	if len(got) != 1 {
+		t.Fatalf("expected one SQS consumer, got %d: %+v", len(got), got)
+	}
+	if got[0].Name != "cdp-cps-input.fifo" || got[0].Details["platform"] != "sqs" {
+		t.Fatalf("unexpected SQS consumer: %+v", got[0])
+	}
+}
+
+func TestDeterministicAWSQueueConsumerDoesNotRecurseOnSelfNamedVariable(t *testing.T) {
+	dir := t.TempDir()
+	src := `package com.example;
+
+import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
+
+class Consumer {
+  private SqsClient sqsClient;
+  void receive(String queueUrl) {
+    var request = ReceiveMessageRequest.builder()
+      .queueUrl(queueUrl)
+      .build();
+    sqsClient.receiveMessage(request);
+  }
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "Consumer.java"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx := &astpkg.ProjectIndex{RepoRoot: dir, Files: map[string]*astpkg.FileAST{
+		"Consumer.java": {
+			Language: "java",
+			Calls: []astpkg.CallSite{{
+				File:        "Consumer.java",
+				ReceiverRaw: "sqsClient",
+				CalleeRaw:   "receiveMessage",
+				Range:       astpkg.Range{StartLine: 12, EndLine: 12},
+				Arguments: []astpkg.ArgumentExpr{{
+					Index:  0,
+					Source: "request",
+					Kind:   "identifier",
+				}},
+			}},
+		},
+	}}
+	if got := DeterministicAWSQueueConsumers(idx); len(got) != 0 {
+		t.Fatalf("expected unresolved local variable to be ignored, got %+v", got)
+	}
+}
+
 func TestDeterministicRedisCacheOperations(t *testing.T) {
 	idx := buildAgentsIndex(t, map[string]string{
 		"cache.py": `import redis
@@ -170,6 +344,52 @@ def handle():
 		if !ops[op] {
 			t.Fatalf("missing redis %s operation in %+v", op, got)
 		}
+	}
+}
+
+func TestDeterministicS3StorageOperations(t *testing.T) {
+	dir := t.TempDir()
+	src := `package com.example;
+
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+
+class Storage {
+  private S3Client s3Client;
+  void write() {
+    var putRequest = PutObjectRequest.builder()
+      .bucket("dynamic-uploads")
+      .key("file.jpg")
+      .build();
+    s3Client.putObject(putRequest, body);
+  }
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "Storage.java"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx := &astpkg.ProjectIndex{RepoRoot: dir, Files: map[string]*astpkg.FileAST{
+		"Storage.java": {
+			Language: "java",
+			Calls: []astpkg.CallSite{{
+				File:        "Storage.java",
+				ReceiverRaw: "s3Client",
+				CalleeRaw:   "putObject",
+				Range:       astpkg.Range{StartLine: 12, EndLine: 12},
+				Arguments: []astpkg.ArgumentExpr{{
+					Index:  0,
+					Source: "putRequest",
+					Kind:   "identifier",
+				}},
+			}},
+		},
+	}}
+	got := DeterministicCacheOperations(idx)
+	if len(got) != 1 {
+		t.Fatalf("expected one S3 storage operation, got %d: %+v", len(got), got)
+	}
+	if got[0].Name != "write dynamic-uploads" || got[0].Details["platform"] != "s3" || got[0].Details["cache_type"] != "object_storage" {
+		t.Fatalf("unexpected S3 operation: %+v", got[0])
 	}
 }
 
@@ -289,6 +509,79 @@ Resources:
 	}
 	if len(got[0].Evidence) == 0 || got[0].Evidence[0].File != "template.yaml" {
 		t.Fatalf("expected template evidence, got %+v", got[0].Evidence)
+	}
+}
+
+func TestDeterministicSAMSQSConsumer(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"template.yaml": `Transform: AWS::Serverless-2016-10-31
+Resources:
+  TrafficObserver:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: observer.handler
+      Events:
+        TrafficQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: arn:aws:sqs:eu-west-1:123456789012:routing-events
+            BatchSize: 10
+`,
+	})
+	got := DeterministicSAMQueueConsumers(idx)
+	if len(got) != 1 {
+		t.Fatalf("expected one SAM SQS consumer, got %d: %+v", len(got), got)
+	}
+	if got[0].Type != "queue_consumer" || got[0].Name != "routing-events" {
+		t.Fatalf("unexpected SAM SQS consumer: %+v", got[0])
+	}
+	if got[0].Details["platform"] != "sqs" || got[0].Details["queue"] != "routing-events" {
+		t.Fatalf("unexpected SAM SQS details: %+v", got[0].Details)
+	}
+}
+
+func TestDeterministicPythonSQSConsumer(t *testing.T) {
+	idx := &astpkg.ProjectIndex{Files: map[string]*astpkg.FileAST{
+		"observer.py": {
+			Language: "python",
+			Calls: []astpkg.CallSite{{
+				File:        "observer.py",
+				ReceiverRaw: "sqs",
+				CalleeRaw:   "get_queue_by_name",
+				Range:       astpkg.Range{StartLine: 4, EndLine: 4},
+				Arguments: []astpkg.ArgumentExpr{{
+					Index:  0,
+					Source: "QueueName=configuration.TRAFFIC_EVENTS_QUEUE_NAME",
+					Kind:   "other",
+				}},
+			}},
+		},
+	}}
+	got := DeterministicPythonSQSConsumers(idx)
+	if len(got) != 1 {
+		t.Fatalf("expected one Python SQS consumer, got %d: %+v", len(got), got)
+	}
+	if got[0].Name != "traffic-events" || got[0].Details["platform"] != "sqs" {
+		t.Fatalf("unexpected Python SQS consumer: %+v", got[0])
+	}
+	if len(got[0].Evidence) == 0 || got[0].Evidence[0].File != "observer.py" {
+		t.Fatalf("expected Python SQS evidence, got %+v", got[0].Evidence)
+	}
+}
+
+func TestPythonHTTPClientKeepsAPIServiceSuffix(t *testing.T) {
+	method, path, target, ok := pythonHTTPCall(&astpkg.FileAST{Language: "python"}, astpkg.CallSite{
+		File:        "clients/catalogue_service_client.py",
+		ReceiverRaw: "self",
+		CalleeRaw:   "get",
+		Arguments: []astpkg.ArgumentExpr{{
+			Index:  0,
+			Source: "\"/campaigns/{campaign_id}\"",
+			Kind:   "literal",
+		}},
+	})
+	if !ok || method != "GET" || path != "/campaigns/{value}" || target != "checkout-service" {
+		t.Fatalf("unexpected Python HTTP call: ok=%v method=%q path=%q target=%q", ok, method, path, target)
 	}
 }
 
@@ -503,6 +796,231 @@ func (p Provider) Get(ctx any, coinID string) {
 		got[0].Details["path"] != "/coins/{value}?localization=false" ||
 		got[0].Details["discovered_by"] != "ast_go_nethttp_request" {
 		t.Fatalf("unexpected net/http details: %+v", got[0].Details)
+	}
+}
+
+func TestDeterministicJavaWorkflowCallbackHTTP(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"src/main/resources/application.yml": `services:
+  cdp:
+    stories-media-loader:
+      url: https://cdp-stories-media-loader.example.biz
+`,
+		"src/main/java/com/example/Constants.java": `package com.example;
+
+public class Constants {
+    public static final String MEDIA_LOADER_CONFIG_NAME = "stories-media-loader";
+    public static final String MEDIA_LOADER_CHANGE_TTL_PATH = "/api/media/ttl";
+}
+`,
+		"src/main/java/com/example/ImportVarsProvider.java": `package com.example;
+
+import static com.example.Constants.*;
+
+public class ImportVarsProvider {
+    private ServicesConfig servicesConfig;
+
+    public String buildChangeMediaTttUrl() {
+        return servicesConfig.getCdp().get(MEDIA_LOADER_CONFIG_NAME).getUrl() + MEDIA_LOADER_CHANGE_TTL_PATH;
+    }
+}
+`,
+	})
+	got := DeterministicOutboundHTTP(idx)
+	var found *candidate
+	for i := range got {
+		if got[i].Details["discovered_by"] == "source_java_workflow_callback_url" {
+			found = &got[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected workflow callback HTTP dependency, got %+v", got)
+	}
+	if found.Details["target_service"] != "cdp-stories-media-loader" ||
+		found.Details["method"] != "ANY" ||
+		found.Details["path"] != "/api/media/ttl" ||
+		found.Details["url_template"] != "https://cdp-stories-media-loader.example.biz/api/media/ttl" {
+		t.Fatalf("unexpected workflow callback details: %+v", found.Details)
+	}
+}
+
+func TestDeterministicJavaScriptAxiosInstanceHTTP(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"libs/api/src/constants/services.ts": "const CONSOLE_URL = 'https://console.example.test';\n" +
+			"const UPLOAD_MEDIA_FILE_URL = `https://cdp-stories-media-loader.example.biz`;\n" +
+			"const STORIES_IMPORT_URL = 'https://cdp-stories-import-api.example.biz';\n" +
+			"\n" +
+			"export default {\n" +
+			"  CONSOLE_URL,\n" +
+			"  UPLOAD_MEDIA_FILE_URL,\n" +
+			"  STORIES_IMPORT_URL,\n" +
+			"};\n",
+		"libs/client/story/src/StoryClient.ts": "import axios, { AxiosInstance } from 'axios';\n" +
+			"\n" +
+			"import { apiUrlsInstance } from '@example/api';\n" +
+			"\n" +
+			"const UPLOAD_MEDIA_FILE_URL = apiUrlsInstance.getUrl('UPLOAD_MEDIA_FILE_URL');\n" +
+			"const STORIES_IMPORT_URL = apiUrlsInstance.getUrl('STORIES_IMPORT_URL');\n" +
+			"\n" +
+			"export const uploadStorySnippetFileInstance: AxiosInstance = axios.create({\n" +
+			"  baseURL: `${UPLOAD_MEDIA_FILE_URL}`,\n" +
+			"});\n" +
+			"\n" +
+			"export const campaignStoriesInstance: AxiosInstance = axios.create({\n" +
+			"  baseURL: `${STORIES_IMPORT_URL}`,\n" +
+			"});\n" +
+			"\n" +
+			"uploadStorySnippetFileInstance.interceptors.request.use(withExampleHeader);\n" +
+			"campaignStoriesInstance.interceptors.request.use(withExampleHeader);\n" +
+			"\n" +
+			"const uploadStorySnippetFile = (snippetFileData: FormData) => {\n" +
+			"  return uploadStorySnippetFileInstance.post('/api/media/upload', snippetFileData);\n" +
+			"};\n" +
+			"\n" +
+			"const getCampaignStories = (campaignId: string) => {\n" +
+			"  return campaignStoriesInstance.get(`/api/import?campaignId=${campaignId}`);\n" +
+			"};\n",
+	})
+	got := DeterministicOutboundHTTP(idx)
+	var found *candidate
+	for i := range got {
+		if got[i].Details["discovered_by"] == "source_js_axios_instance" && got[i].Details["path"] == "/api/media/upload" {
+			found = &got[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected axios HTTP dependency, got %+v", got)
+	}
+	if found.Details["target_service"] != "cdp-stories-media-loader" ||
+		found.Details["method"] != "POST" ||
+		found.Details["path"] != "/api/media/upload" ||
+		found.Details["url_template"] != "https://cdp-stories-media-loader.example.biz/api/media/upload" {
+		t.Fatalf("unexpected axios details: %+v", found.Details)
+	}
+}
+
+func TestServiceNameFromURLTemplateWithPlaceholderHost(t *testing.T) {
+	cases := map[string]string{
+		"https://cdp-${UUID}-cdp-stories-media-loader.aws-sdlc-example.com":             "cdp-stories-media-loader",
+		"https://globalservices-${UUID}-checkout-service.aws-sdlc-example.com": "checkout-service",
+		"https://cdp-${UUID}-publisher-api.aws-sdlc-example.com":                        "publisher-api",
+	}
+	for raw, want := range cases {
+		if got := serviceNameFromURLTemplate(raw); got != want {
+			t.Fatalf("serviceNameFromURLTemplate(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+func TestDeterministicInheritedFeignClientEmitsServiceLevelDependency(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"src/main/resources/application.yml": `
+services:
+  cdp:
+    media-store:
+      url: https://example.org
+`,
+		"src/main/java/com/acme/MediaStoreClient.java": `package com.acme;
+
+import com.example.cdp.mediastore.client.MediaStoreAPI;
+import org.springframework.cloud.openfeign.FeignClient;
+
+@FeignClient(name = "media-store", url = "${services.cdp.media-store.url}")
+public interface MediaStoreClient extends MediaStoreAPI {
+}
+`,
+	})
+
+	got := DeterministicOutboundHTTP(idx)
+	var found *candidate
+	for i := range got {
+		if got[i].Details["discovered_by"] == "source_java_inherited_feign_client" {
+			found = &got[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected inherited Feign HTTP dependency, got %+v", got)
+	}
+	if found.Details["target_service"] != "media-store" ||
+		found.Details["method"] != "ANY" ||
+		found.Details["inherited_contract"] != "MediaStoreAPI" ||
+		found.Details["invocation_mode"] != "generated_feign_contract" {
+		t.Fatalf("unexpected inherited Feign details: %+v", found.Details)
+	}
+}
+
+func TestDeterministicSpringCloudGatewayRouteEmitsHTTPDependency(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"src/main/resources/application.yaml": `
+spring:
+  cloud:
+    gateway:
+      server:
+        webflux:
+          routes:
+            - id: media-store
+              uri: https://cdp-${UUID}-cdp-media-store.aws-sdlc-example.com
+              predicates:
+                - Path=/media-store/**
+              filters:
+                - StripPrefix=1
+`,
+	})
+
+	got := DeterministicOutboundHTTP(idx)
+	var found *candidate
+	for i := range got {
+		if got[i].Details["discovered_by"] == "config_spring_cloud_gateway_route" {
+			found = &got[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected Spring Cloud Gateway route dependency, got %+v", got)
+	}
+	if found.Details["target_service"] != "media-store" ||
+		found.Details["method"] != "ANY" ||
+		found.Details["path"] != "/media-store/**" ||
+		found.Details["gateway_route_id"] != "media-store" ||
+		found.Details["spring_filter"] != "StripPrefix=1" {
+		t.Fatalf("unexpected gateway route details: %+v", found.Details)
+	}
+}
+
+func TestDeterministicMicronautClientEmitsHTTPDependency(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"src/main/java/com/acme/MediaStoreClient.java": `package com.acme;
+
+import io.micronaut.http.annotation.Get;
+import io.micronaut.http.client.annotation.Client;
+
+@Client("media-store")
+public interface MediaStoreClient {
+    @Get("/media/metadata")
+    String getMediaMetadata();
+}
+`,
+	})
+
+	got := DeterministicOutboundHTTP(idx)
+	var found *candidate
+	for i := range got {
+		if got[i].Details["discovered_by"] == "source_java_micronaut_client" {
+			found = &got[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected Micronaut HTTP dependency, got %+v", got)
+	}
+	if found.Details["target_service"] != "media-store" ||
+		found.Details["method"] != "GET" ||
+		found.Details["path"] != "/media/metadata" ||
+		found.Details["client"] != "MediaStoreClient" {
+		t.Fatalf("unexpected Micronaut details: %+v", found.Details)
 	}
 }
 

@@ -492,6 +492,9 @@ func applyClientInstance(idx *astpkg.ProjectIndex, c *model.ConnectionClient, d 
 			}
 		}
 	case "http":
+		if hasSourceResolvedHTTPTarget(d) {
+			return
+		}
 		if d.InstanceRef == nil {
 			cp := *ref
 			d.InstanceRef = &cp
@@ -528,6 +531,21 @@ func applyClientInstance(idx *astpkg.ProjectIndex, c *model.ConnectionClient, d 
 			convergeQueueIdentity(d, ref.LogicalName)
 		}
 	}
+}
+
+func hasSourceResolvedHTTPTarget(d *model.BaseEntity) bool {
+	if d == nil || d.Details == nil {
+		return false
+	}
+	discoveredBy, _ := d.Details["discovered_by"].(string)
+	switch discoveredBy {
+	case "source_java_workflow_callback_url", "source_js_axios_instance":
+	default:
+		return false
+	}
+	target, _ := d.Details["target_service"].(string)
+	urlTemplate, _ := d.Details["url_template"].(string)
+	return strings.TrimSpace(target) != "" && strings.TrimSpace(urlTemplate) != ""
 }
 
 // scalarDetail returns the first non-empty scalar detail among keys.
