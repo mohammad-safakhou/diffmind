@@ -227,6 +227,47 @@ class Publisher {
 	}
 }
 
+func TestDeterministicAWSQueuePublishIgnoresHelperMethodQueueURL(t *testing.T) {
+	dir := t.TempDir()
+	src := `package com.example;
+
+import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.model.SendMessageBatchRequest;
+
+class Publisher {
+  private SqsClient sqsClient;
+  void publish() {
+    var request = SendMessageBatchRequest.builder()
+      .queueUrl(this.getQueueUrlUtil().getQueueUrl())
+      .build();
+    sqsClient.sendMessageBatch(request);
+  }
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "Publisher.java"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx := &astpkg.ProjectIndex{RepoRoot: dir, Files: map[string]*astpkg.FileAST{
+		"Publisher.java": {
+			Language: "java",
+			Calls: []astpkg.CallSite{{
+				File:        "Publisher.java",
+				ReceiverRaw: "sqsClient",
+				CalleeRaw:   "sendMessageBatch",
+				Range:       astpkg.Range{StartLine: 12, EndLine: 12},
+				Arguments: []astpkg.ArgumentExpr{{
+					Index:  0,
+					Source: "request",
+					Kind:   "identifier",
+				}},
+			}},
+		},
+	}}
+	if got := DeterministicQueuePublish(idx); len(got) != 0 {
+		t.Fatalf("expected helper-derived queue URL to be ignored, got %+v", got)
+	}
+}
+
 func TestDeterministicPythonQueuePublishers(t *testing.T) {
 	idx := &astpkg.ProjectIndex{Files: map[string]*astpkg.FileAST{
 		"publishers.py": {
@@ -288,6 +329,41 @@ func TestDeterministicPythonQueuePublishers(t *testing.T) {
 		if e.Details["platform"] != platform || e.Details["destination"] != name {
 			t.Fatalf("unexpected details for %s: %+v", name, e.Details)
 		}
+	}
+}
+
+func TestDeterministicPythonQueuePublishIgnoresParameterDestinations(t *testing.T) {
+	idx := &astpkg.ProjectIndex{Files: map[string]*astpkg.FileAST{
+		"publishers.py": {
+			Language: "python",
+			Calls: []astpkg.CallSite{
+				{
+					File:        "publishers.py",
+					ReceiverRaw: "sqs_client",
+					CalleeRaw:   "send_message",
+					Range:       astpkg.Range{StartLine: 4, EndLine: 4},
+					Arguments: []astpkg.ArgumentExpr{{
+						Index:  0,
+						Source: "QueueUrl=queue_url",
+						Kind:   "other",
+					}},
+				},
+				{
+					File:        "publishers.py",
+					ReceiverRaw: "sns_client",
+					CalleeRaw:   "publish",
+					Range:       astpkg.Range{StartLine: 8, EndLine: 8},
+					Arguments: []astpkg.ArgumentExpr{{
+						Index:  0,
+						Source: "TopicArn=topic_arn",
+						Kind:   "other",
+					}},
+				},
+			},
+		},
+	}}
+	if got := DeterministicQueuePublish(idx); len(got) != 0 {
+		t.Fatalf("parameter queue/topic destinations must not become queue_publish: %+v", got)
 	}
 }
 
