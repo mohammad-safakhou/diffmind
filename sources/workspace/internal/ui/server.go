@@ -109,6 +109,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/projects/{pid}/runs/{rid}/archgraph/services/{service}", s.handleRunArchGraphService)
 	mux.HandleFunc("GET /api/projects/{pid}/runs/{rid}/archgraph/resources/{resource}", s.handleRunArchGraphResource)
 	mux.HandleFunc("GET /api/projects/{pid}/runs/{rid}/archgraph/trace", s.handleRunArchGraphTrace)
+	mux.HandleFunc("GET /api/projects/{pid}/runs/{rid}/archgraph/flow", s.handleRunArchGraphFlow)
 	mux.HandleFunc("POST /api/projects/{pid}/runs/{rid}/cancel", s.handleCancelRun)
 	mux.HandleFunc("DELETE /api/projects/{pid}/runs/{rid}", s.handleDeleteRun)
 

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/mohammad-safakhou/diffmind/internal/archgraph"
@@ -175,6 +176,39 @@ func (s *Server) handleRunArchGraphTrace(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) handleRunArchGraphFlow(w http.ResponseWriter, r *http.Request) {
+	pid, rid := r.PathValue("pid"), r.PathValue("rid")
+	graph, err := s.fullArchGraphForRun(pid, rid)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	serviceName := firstNonEmpty(r.URL.Query().Get("service"), r.URL.Query().Get("service_name"))
+	objectID := firstNonEmpty(r.URL.Query().Get("object_id"), r.URL.Query().Get("entrypoint_id"), r.URL.Query().Get("flow_id"))
+	view, ok := archgraph.BuildFlowView(graph, serviceName, objectID, archgraph.FlowOptions{
+		Depth:    queryInt(r, "depth", 6),
+		MaxNodes: queryInt(r, "max_nodes", 500),
+		Expand:   r.URL.Query().Get("expand"),
+	})
+	if !ok {
+		writeErr(w, http.StatusNotFound, errors.New("flow service not found in architecture graph"))
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+func queryInt(r *http.Request, key string, fallback int) int {
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v <= 0 {
+		return fallback
+	}
+	return v
 }
 
 func pathValue(r *http.Request, key string) string {
