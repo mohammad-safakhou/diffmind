@@ -13,6 +13,8 @@ import (
 	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/java/http/spring"
 	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/java/httpclient/feign"
 	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/java/httpclient/retrofit"
+	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/java/queue/kafka"
+	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/java/queue/sqs"
 	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/javascript/http/express"
 	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/php/http/laravel"
 	_ "github.com/mohammad-safakhou/diffmind/internal/detectors/languages/python/http/django"

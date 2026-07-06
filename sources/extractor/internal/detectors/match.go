@@ -104,7 +104,7 @@ func IDsForFrameworkBinding(framework, kind, trigger, reason string) []string {
 			if strings.Contains(trigger, "kafka:") || strings.Contains(reason, "kafka") {
 				return []string{"java.queue.kafka"}
 			}
-			if strings.Contains(trigger, "sqs:") || strings.Contains(reason, "sqs") || strings.Contains(reason, "aws") {
+			if strings.Contains(trigger, "sqs:") || strings.Contains(trigger, "sns:") || strings.Contains(reason, "sqs") || strings.Contains(reason, "sns") || strings.Contains(reason, "aws") {
 				return []string{"java.queue.sqs"}
 			}
 			return []string{"java.queue.kafka", "java.queue.sqs"}
