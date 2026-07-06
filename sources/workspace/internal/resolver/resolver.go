@@ -144,6 +144,11 @@ func (r *Resolver) buildIdentityIndex() []identityEntry {
 func (r *Resolver) tryDeterministicMatch(fromService string, dep *model.Dependency, index []identityEntry) *ResolvedMatch {
 	targetRaw := extractTarget(dep)
 	target := strings.ToLower(targetRaw)
+	if isHTTPDependency(dep.Type) {
+		if match := r.tryHTTPExposureMatch(fromService, dep); match != nil {
+			return match
+		}
+	}
 	if target == "" {
 		return nil
 	}
@@ -192,6 +197,84 @@ func (r *Resolver) tryDeterministicMatch(fromService string, dep *model.Dependen
 		}
 	}
 	return nil
+}
+
+func (r *Resolver) tryHTTPExposureMatch(fromService string, dep *model.Dependency) *ResolvedMatch {
+	depMethod, depPath := httpRouteFromDependency(dep)
+	if depPath == "" {
+		return nil
+	}
+	exact := r.findHTTPRouteCandidates(fromService, depMethod, depPath, false)
+	if len(exact) == 1 {
+		return httpExposureResolvedMatch(fromService, dep, exact[0], 0.92, "deterministic exact HTTP exposure route match")
+	}
+	if len(exact) > 1 {
+		return nil
+	}
+	stripped := r.findHTTPRouteCandidates(fromService, depMethod, depPath, true)
+	if len(stripped) == 1 {
+		return httpExposureResolvedMatch(fromService, dep, stripped[0], 0.84, "deterministic normalized HTTP exposure route match")
+	}
+	return nil
+}
+
+type httpRouteCandidate struct {
+	ServiceName string
+	ExposureID  string
+	Method      string
+	Path        string
+}
+
+func (r *Resolver) findHTTPRouteCandidates(fromService, depMethod, depPath string, stripPrefixes bool) []httpRouteCandidate {
+	depNorm := normalizeHTTPPath(depPath, stripPrefixes)
+	if depNorm == "" {
+		return nil
+	}
+	depMethod = strings.ToUpper(strings.TrimSpace(depMethod))
+	var out []httpRouteCandidate
+	for _, entry := range r.registry.AllWithArchitecture() {
+		if entry.Name == fromService || entry.Architecture == nil {
+			continue
+		}
+		for _, exp := range entry.Architecture.Exposures {
+			if !isHTTPExposure(exp.Type) {
+				continue
+			}
+			method, path := httpRouteFromExposure(&exp)
+			if path == "" {
+				continue
+			}
+			if depMethod != "" && method != "" && depMethod != method {
+				continue
+			}
+			if depMethod != "" && method == "" {
+				continue
+			}
+			if normalizeHTTPPath(path, stripPrefixes) != depNorm {
+				continue
+			}
+			out = append(out, httpRouteCandidate{
+				ServiceName: entry.Name,
+				ExposureID:  exp.ID,
+				Method:      method,
+				Path:        path,
+			})
+		}
+	}
+	return out
+}
+
+func httpExposureResolvedMatch(fromService string, dep *model.Dependency, candidate httpRouteCandidate, confidence float64, prefix string) *ResolvedMatch {
+	return &ResolvedMatch{
+		FromService:    fromService,
+		DependencyID:   dep.ID,
+		DependencyName: dep.Name,
+		DependencyType: dep.Type,
+		ToService:      candidate.ServiceName,
+		MatchType:      "http",
+		Confidence:     confidence,
+		Reasoning:      fmt.Sprintf("%s: dependency route matches %s %s on exposure %s", prefix, candidate.Method, candidate.Path, candidate.ExposureID),
+	}
 }
 
 func queueExposureIdentities(entry *registry.ServiceEntry) []identityEntry {
@@ -322,6 +405,141 @@ func classifyMatchType(depType string) string {
 	default:
 		return depType
 	}
+}
+
+func isHTTPDependency(depType string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(depType)), "http")
+}
+
+func isHTTPExposure(expType string) bool {
+	expType = strings.ToLower(strings.TrimSpace(expType))
+	return expType == "http_route" || strings.Contains(expType, "http")
+}
+
+func httpRouteFromDependency(dep *model.Dependency) (method, path string) {
+	if dep == nil {
+		return "", ""
+	}
+	if dep.Details != nil {
+		method = strings.ToUpper(detailString(dep.Details["method"]))
+		for _, key := range []string{"path", "url_template", "endpoint", "url"} {
+			if s := detailString(dep.Details[key]); s != "" {
+				path = routePathOnly(s)
+				break
+			}
+		}
+	}
+	if method == "" || path == "" {
+		nameMethod, namePath := parseHTTPRouteText(dep.Name)
+		if method == "" {
+			method = nameMethod
+		}
+		if path == "" {
+			path = namePath
+		}
+	}
+	if path == "" {
+		if target := extractTarget(dep); target != dep.Name {
+			_, path = parseHTTPRouteText(target)
+			if path == "" {
+				path = routePathOnly(target)
+			}
+		}
+	}
+	return method, path
+}
+
+func httpRouteFromExposure(exp *model.Exposure) (method, path string) {
+	if exp == nil {
+		return "", ""
+	}
+	if exp.Details != nil {
+		method = strings.ToUpper(detailString(exp.Details["method"]))
+		for _, key := range []string{"path", "url_template", "route", "endpoint", "url"} {
+			if s := detailString(exp.Details[key]); s != "" {
+				path = routePathOnly(s)
+				break
+			}
+		}
+	}
+	if method == "" || path == "" {
+		nameMethod, namePath := parseHTTPRouteText(exp.Name)
+		if method == "" {
+			method = nameMethod
+		}
+		if path == "" {
+			path = namePath
+		}
+	}
+	return method, path
+}
+
+func parseHTTPRouteText(raw string) (method, path string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", ""
+	}
+	re := regexp.MustCompile(`(?i)\b(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+([^\s]+)`)
+	if m := re.FindStringSubmatch(raw); len(m) > 2 {
+		return strings.ToUpper(m[1]), routePathOnly(m[2])
+	}
+	return "", ""
+}
+
+func routePathOnly(raw string) string {
+	raw = strings.TrimSpace(strings.Trim(raw, `"'`))
+	if raw == "" {
+		return ""
+	}
+	if strings.Contains(raw, "://") {
+		parseable := regexp.MustCompile(`\$\{[^}]+\}`).ReplaceAllString(raw, "placeholder")
+		if u, err := url.Parse(parseable); err == nil && u.Path != "" {
+			raw = u.Path
+		}
+	}
+	if idx := strings.Index(raw, "?"); idx >= 0 {
+		raw = raw[:idx]
+	}
+	if !strings.HasPrefix(raw, "/") {
+		return ""
+	}
+	return raw
+}
+
+func normalizeHTTPPath(raw string, stripPrefixes bool) string {
+	raw = routePathOnly(raw)
+	if raw == "" {
+		return ""
+	}
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	raw = regexp.MustCompile(`\$\{[^}]+\}`).ReplaceAllString(raw, "{}")
+	raw = regexp.MustCompile(`\{[^}/]+\}`).ReplaceAllString(raw, "{}")
+	raw = regexp.MustCompile(`:[a-z_][a-z0-9_]*`).ReplaceAllString(raw, "{}")
+	raw = regexp.MustCompile(`/+`).ReplaceAllString(raw, "/")
+	raw = strings.TrimRight(raw, "/")
+	if raw == "" {
+		raw = "/"
+	}
+	if stripPrefixes {
+		raw = stripHTTPRoutePrefixes(raw)
+	}
+	return raw
+}
+
+func stripHTTPRoutePrefixes(path string) string {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	for len(parts) > 0 {
+		switch parts[0] {
+		case "api", "v1", "v2", "public", "internal":
+			parts = parts[1:]
+		default:
+			if len(parts) == 0 {
+				return "/"
+			}
+			return "/" + strings.Join(parts, "/")
+		}
+	}
+	return "/"
 }
 
 func isQueuePublish(depType string) bool {

@@ -237,6 +237,106 @@ func TestResolutionNormalizesHostnameTargets(t *testing.T) {
 	}
 }
 
+func TestResolutionMatchesHTTPRouteExposure(t *testing.T) {
+	reg := registry.New()
+	reg.AddArchitecture("routing-service", &model.ServiceArchitecture{
+		ServiceName: "routing-service",
+		Dependencies: []model.Dependency{{BaseEntity: model.BaseEntity{
+			ID:      "dep-http",
+			Type:    "outbound_http",
+			Name:    "PUT /traffic-info/{catalogueCampaignId}/placements",
+			Details: map[string]any{"method": "PUT", "url_template": "/traffic-info/{catalogueCampaignId}/placements"},
+		}}},
+	})
+	reg.AddArchitecture("pricing-service", &model.ServiceArchitecture{
+		ServiceName: "pricing-service",
+		Exposures: []model.Exposure{{BaseEntity: model.BaseEntity{
+			ID:   "exp-http",
+			Type: "http_route",
+			Name: "PUT /traffic-info/{campaignId}/placements",
+		}}},
+	})
+
+	resolution, err := New(reg, util.NewLogger(util.LevelInfo)).Resolve()
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	if len(resolution.Matches) != 1 {
+		t.Fatalf("expected one route match, got %+v", resolution.Matches)
+	}
+	match := resolution.Matches[0]
+	if match.ToService != "pricing-service" || match.MatchType != "http" || match.Confidence != 0.92 {
+		t.Fatalf("unexpected route match: %+v", match)
+	}
+}
+
+func TestResolutionMatchesHTTPRouteAfterPrefixNormalization(t *testing.T) {
+	reg := registry.New()
+	reg.AddArchitecture("caller", &model.ServiceArchitecture{
+		ServiceName: "caller",
+		Dependencies: []model.Dependency{{BaseEntity: model.BaseEntity{
+			ID:      "dep-http",
+			Type:    "outbound_http",
+			Name:    "GET /api/v1/public/widgets/{widgetId}",
+			Details: map[string]any{"method": "GET", "path": "/api/v1/public/widgets/{widgetId}"},
+		}}},
+	})
+	reg.AddArchitecture("inventory-api", &model.ServiceArchitecture{
+		ServiceName: "inventory-api",
+		Exposures: []model.Exposure{{BaseEntity: model.BaseEntity{
+			ID:   "exp-http",
+			Type: "http_route",
+			Name: "GET /widgets/:id",
+		}}},
+	})
+
+	resolution, err := New(reg, util.NewLogger(util.LevelInfo)).Resolve()
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	if len(resolution.Matches) != 1 {
+		t.Fatalf("expected one normalized route match, got %+v", resolution.Matches)
+	}
+	match := resolution.Matches[0]
+	if match.ToService != "inventory-api" || match.MatchType != "http" || match.Confidence != 0.84 {
+		t.Fatalf("unexpected normalized route match: %+v", match)
+	}
+}
+
+func TestResolutionDoesNotGuessAmbiguousHTTPRoute(t *testing.T) {
+	reg := registry.New()
+	reg.AddArchitecture("caller", &model.ServiceArchitecture{
+		ServiceName: "caller",
+		Dependencies: []model.Dependency{{BaseEntity: model.BaseEntity{
+			ID:      "dep-http",
+			Type:    "outbound_http",
+			Name:    "GET /health",
+			Details: map[string]any{"method": "GET", "path": "/health"},
+		}}},
+	})
+	for _, service := range []string{"service-a", "service-b"} {
+		reg.AddArchitecture(service, &model.ServiceArchitecture{
+			ServiceName: service,
+			Exposures: []model.Exposure{{BaseEntity: model.BaseEntity{
+				ID:   "exp-" + service,
+				Type: "http_route",
+				Name: "GET /health",
+			}}},
+		})
+	}
+
+	resolution, err := New(reg, util.NewLogger(util.LevelInfo)).Resolve()
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	if len(resolution.Matches) != 0 {
+		t.Fatalf("ambiguous route should not match: %+v", resolution.Matches)
+	}
+	if len(resolution.Unresolved) != 1 {
+		t.Fatalf("expected unresolved ambiguous dependency, got %+v", resolution.Unresolved)
+	}
+}
+
 func TestExtractTarget(t *testing.T) {
 	tests := []struct {
 		name     string
