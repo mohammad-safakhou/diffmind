@@ -377,6 +377,111 @@ func TestDeterministicQueuePublishRejectsGenericProducerSend(t *testing.T) {
 	}
 }
 
+func TestDeterministicGoQueuePublishers(t *testing.T) {
+	idx := &astpkg.ProjectIndex{Files: map[string]*astpkg.FileAST{
+		"publishers.go": {
+			Language: "go",
+			Calls: []astpkg.CallSite{
+				{
+					File:        "publishers.go",
+					ReceiverRaw: "producer",
+					CalleeRaw:   "SendMessage",
+					Range:       astpkg.Range{StartLine: 4, EndLine: 4},
+					Arguments: []astpkg.ArgumentExpr{{
+						Index:  0,
+						Source: "&sarama.ProducerMessage{Topic: \"orders-topic\", Value: sarama.StringEncoder(payload)}",
+						Kind:   "other",
+					}},
+				},
+				{
+					File:        "publishers.go",
+					ReceiverRaw: "sqsClient",
+					CalleeRaw:   "SendMessage",
+					Range:       astpkg.Range{StartLine: 8, EndLine: 8},
+					Arguments: []astpkg.ArgumentExpr{{
+						Index:  0,
+						Source: "&sqs.SendMessageInput{QueueUrl: aws.String(\"https://sqs.eu-west-1.amazonaws.com/123/traffic-events\")}",
+						Kind:   "other",
+					}},
+				},
+				{
+					File:        "publishers.go",
+					ReceiverRaw: "snsClient",
+					CalleeRaw:   "Publish",
+					Range:       astpkg.Range{StartLine: 12, EndLine: 12},
+					Arguments: []astpkg.ArgumentExpr{{
+						Index:  0,
+						Source: "&sns.PublishInput{TopicArn: aws.String(\"arn:aws:sns:eu-west-1:123:content-cleanup\")}",
+						Kind:   "other",
+					}},
+				},
+			},
+		},
+	}}
+	got := DeterministicQueuePublish(idx)
+	if len(got) != 3 {
+		t.Fatalf("expected three Go publishes, got %d: %+v", len(got), got)
+	}
+	byName := map[string]candidate{}
+	for _, e := range got {
+		byName[e.Name] = e
+	}
+	for name, platform := range map[string]string{
+		"orders-topic":    "kafka",
+		"traffic-events":  "sqs",
+		"content-cleanup": "sns",
+	} {
+		e, ok := byName[name]
+		if !ok {
+			t.Fatalf("missing publish %s in %+v", name, got)
+		}
+		if e.Details["platform"] != platform || e.Details["destination"] != name {
+			t.Fatalf("unexpected details for %s: %+v", name, e.Details)
+		}
+	}
+}
+
+func TestDeterministicGoKafkaWriterTopicFromWindow(t *testing.T) {
+	dir := t.TempDir()
+	src := `package publishers
+
+import "github.com/segmentio/kafka-go"
+
+func publish(ctx context.Context, payload []byte) error {
+	writer := &kafka.Writer{
+		Addr: kafka.TCP("localhost:9092"),
+		Topic: "settlements",
+	}
+	return writer.WriteMessages(ctx, kafka.Message{Value: payload})
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "publishers.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx := &astpkg.ProjectIndex{RepoRoot: dir, Files: map[string]*astpkg.FileAST{
+		"publishers.go": {
+			Language: "go",
+			Calls: []astpkg.CallSite{{
+				File:        "publishers.go",
+				ReceiverRaw: "writer",
+				CalleeRaw:   "WriteMessages",
+				Range:       astpkg.Range{StartLine: 9, EndLine: 9},
+				Arguments: []astpkg.ArgumentExpr{
+					{Index: 0, Source: "ctx", Kind: "identifier"},
+					{Index: 1, Source: "kafka.Message{Value: payload}", Kind: "other"},
+				},
+			}},
+		},
+	}}
+	got := DeterministicQueuePublish(idx)
+	if len(got) != 1 {
+		t.Fatalf("expected one kafka-go publish, got %d: %+v", len(got), got)
+	}
+	if got[0].Name != "settlements" || got[0].Details["platform"] != "kafka" {
+		t.Fatalf("unexpected kafka-go publish: %+v", got[0])
+	}
+}
+
 func TestDeterministicAWSQueueConsumerFromReceiveMessage(t *testing.T) {
 	dir := t.TempDir()
 	src := `package com.example;
