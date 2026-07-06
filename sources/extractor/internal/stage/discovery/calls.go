@@ -127,6 +127,10 @@ func queuePublishDestinationFromCall(idx *astpkg.ProjectIndex, cs astpkg.CallSit
 			if dest := javascriptQueuePublishDestination(cs, platform); dest != "" {
 				return normalizeQueueOrTopicDestination(ResolveResourceName(idx, dest), platform)
 			}
+		case "go":
+			if dest := goQueuePublishDestination(idx, cs, platform); dest != "" {
+				return normalizeQueueOrTopicDestination(ResolveResourceName(idx, dest), platform)
+			}
 		}
 	}
 	return awsQueueDestinationFromCall(idx, cs, platform)
@@ -1355,6 +1359,65 @@ func javascriptObjectStringValue(src string, keys ...string) string {
 	return ""
 }
 
+func goQueuePublishDestination(idx *astpkg.ProjectIndex, cs astpkg.CallSite, platform string) string {
+	switch platform {
+	case "sqs":
+		return goCompositeStringField(cs.Arguments, "QueueUrl", "QueueName")
+	case "sns":
+		return goCompositeStringField(cs.Arguments, "TopicArn", "Topic")
+	case "kafka":
+		if value := goCompositeStringField(cs.Arguments, "Topic"); value != "" {
+			return value
+		}
+		return goKafkaWriterTopicFromWindow(idx, cs)
+	}
+	return ""
+}
+
+func goCompositeStringField(args []astpkg.ArgumentExpr, fields ...string) string {
+	for _, arg := range args {
+		if value := goStringFieldValue(arg.Source, fields...); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func goStringFieldValue(src string, fields ...string) string {
+	src = strings.TrimSpace(src)
+	if src == "" {
+		return ""
+	}
+	for _, field := range fields {
+		re := regexp.MustCompile(`(?s)\b` + regexp.QuoteMeta(field) + `\s*:\s*(?:[A-Za-z_][A-Za-z0-9_./]*\.String\s*\(\s*)?(` + goStringLiteralPattern + `)`)
+		if m := re.FindStringSubmatch(src); len(m) > 1 {
+			return unquoteGoString(m[1])
+		}
+	}
+	return ""
+}
+
+func goKafkaWriterTopicFromWindow(idx *astpkg.ProjectIndex, cs astpkg.CallSite) string {
+	receiver, _ := splitCall(cs)
+	receiver = strings.TrimSpace(receiver)
+	if receiver == "" {
+		return ""
+	}
+	window := callWindowSource(idx, cs, 20)
+	if window == "" {
+		return ""
+	}
+	re := regexp.MustCompile(`(?s)\b` + regexp.QuoteMeta(receiver) + `\s*(?::=|=)\s*&?(?:kafka\.)?Writer\s*\{[^}]*\bTopic\s*:\s*(` + goStringLiteralPattern + `)`)
+	if m := re.FindStringSubmatch(window); len(m) > 1 {
+		return unquoteGoString(m[1])
+	}
+	re = regexp.MustCompile(`(?s)\b` + regexp.QuoteMeta(receiver) + `\s*(?::=|=)\s*kafka\.NewWriter\s*\(\s*kafka\.WriterConfig\s*\{[^}]*\bTopic\s*:\s*(` + goStringLiteralPattern + `)`)
+	if m := re.FindStringSubmatch(window); len(m) > 1 {
+		return unquoteGoString(m[1])
+	}
+	return ""
+}
+
 func pythonURLTemplateFromArg(arg astpkg.ArgumentExpr) string {
 	src := strings.TrimSpace(arg.Source)
 	if src == "" {
@@ -1783,7 +1846,11 @@ func MatchQueuePublish(cs astpkg.CallSite) (string, bool) {
 		return "sqs", true
 	case (r == "sns" || strings.Contains(r, "sns_client") || strings.Contains(r, "snsclient")) && c == "publish":
 		return "sns", true
-	case (strings.Contains(r, "kafka") || r == "producer") && (c == "send" || c == "produce") && queuePublishArgHasKey(cs.Arguments, "topic"):
+	case (strings.Contains(r, "kafka") || r == "producer") && (c == "send" || c == "produce") && queuePublishArgHasTopic(cs.Arguments):
+		return "kafka", true
+	case (strings.Contains(compactR, "producer") || strings.Contains(compactR, "kafka")) && c == "sendmessage" && queuePublishArgHasTopic(cs.Arguments):
+		return "kafka", true
+	case c == "writemessages" && (strings.Contains(compactR, "kafka") || r == "writer" || strings.HasSuffix(r, "writer")):
 		return "kafka", true
 	case strings.Contains(r, "sqsclient") && c == "send" && queuePublishArgMentions(cs.Arguments, "SendMessageCommand"):
 		return "sqs", true
@@ -1876,6 +1943,10 @@ func queuePublishArgHasKey(args []astpkg.ArgumentExpr, key string) bool {
 		}
 	}
 	return false
+}
+
+func queuePublishArgHasTopic(args []astpkg.ArgumentExpr) bool {
+	return queuePublishArgHasKey(args, "topic") || queuePublishArgHasKey(args, "Topic") || goCompositeStringField(args, "Topic") != ""
 }
 
 func callLoc(cs astpkg.CallSite) candidateLocation {
