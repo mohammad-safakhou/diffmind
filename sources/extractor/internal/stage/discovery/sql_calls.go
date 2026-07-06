@@ -42,6 +42,7 @@ func DeterministicSQLOperations(idx *astpkg.ProjectIndex) []candidate {
 	}
 	type agg struct {
 		table, opKind string
+		sql           string
 		loc           candidateLocation
 		ev            candidateEvidence
 	}
@@ -53,7 +54,8 @@ func DeterministicSQLOperations(idx *astpkg.ProjectIndex) []candidate {
 		if _, ok := sqlCallees[strings.ToLower(callee)]; !ok {
 			return
 		}
-		opKind, table := parseSQLStatement(leadingStringLiteral(cs.Arguments))
+		sql := leadingStringLiteral(cs.Arguments)
+		opKind, table := parseSQLStatement(sql)
 		if table == "" {
 			return
 		}
@@ -65,26 +67,33 @@ func DeterministicSQLOperations(idx *astpkg.ProjectIndex) []candidate {
 		if _, dup := seen[key]; dup {
 			return
 		}
-		seen[key] = &agg{table: table, opKind: opKind, loc: loc, ev: callEvidence(cs)}
+		seen[key] = &agg{table: table, opKind: opKind, sql: sql, loc: loc, ev: callEvidence(cs)}
 		order = append(order, key)
 	})
 
 	out := make([]candidate, 0, len(order))
 	for _, key := range order {
 		a := seen[key]
+		details := map[string]any{
+			"table":         a.table,
+			"operation":     a.opKind,
+			"sql":           a.sql,
+			"discovered_by": "ast_sql_literal",
+		}
+		for k, v := range sqlColumnDetails(a.sql) {
+			if len(v) > 0 {
+				details[k] = v
+			}
+		}
 		out = append(out, candidate{
 			Type:       "db_operation",
 			Name:       a.opKind + " " + a.table,
 			Summary:    fmt.Sprintf("AST-derived %s on %s (raw SQL)", a.opKind, a.table),
 			Confidence: 1.0,
 			Tags:       []string{"deterministic", "sql"},
-			Details: map[string]any{
-				"table":         a.table,
-				"operation":     a.opKind,
-				"discovered_by": "ast_sql_literal",
-			},
-			Locations: []candidateLocation{a.loc},
-			Evidence:  []candidateEvidence{a.ev},
+			Details:    details,
+			Locations:  []candidateLocation{a.loc},
+			Evidence:   []candidateEvidence{a.ev},
 		})
 	}
 	return out
