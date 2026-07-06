@@ -6,6 +6,7 @@
 //   #/                              project index
 //   #/projects/{pid}                project home (tabs)
 //   #/projects/{pid}/runs/{rid}     graph viewer
+//   #/projects/{pid}/runs/{rid}/trace?service=&object_id=  flow trace
 import { useEffect, useState } from 'preact/hooks'
 
 export function currentPath() {
@@ -31,9 +32,13 @@ export function useRoute() {
 }
 
 export function parseRoute(path) {
-  let m = path.match(/^\/projects\/([^/]+)\/runs\/([^/]+)$/)
+  const [pathname, query = ''] = path.split('?')
+  const params = Object.fromEntries(new URLSearchParams(query))
+  let m = pathname.match(/^\/projects\/([^/]+)\/runs\/([^/]+)\/trace$/)
+  if (m) return { name: 'trace', pid: decodeURIComponent(m[1]), rid: decodeURIComponent(m[2]), params }
+  m = pathname.match(/^\/projects\/([^/]+)\/runs\/([^/]+)$/)
   if (m) return { name: 'run', pid: decodeURIComponent(m[1]), rid: decodeURIComponent(m[2]) }
-  m = path.match(/^\/projects\/([^/]+)$/)
+  m = pathname.match(/^\/projects\/([^/]+)$/)
   if (m) return { name: 'project', pid: decodeURIComponent(m[1]) }
   return { name: 'projects' }
 }

@@ -1,12 +1,14 @@
+import { navigate } from '../lib/router.js'
+
 export function graphDetailTitle(sel) {
   const d = sel?.data || {}
   if (sel?.kind === 'edge') return `${d.from} -> ${d.to}`
   return d.name || sel?.id || sel?.kind || 'Details'
 }
 
-export function GraphDetailBody({ sel }) {
+export function GraphDetailBody({ sel, pid, rid }) {
   const d = sel?.data || {}
-  if (sel?.kind === 'service') return <ServiceDetail s={d} />
+  if (sel?.kind === 'service') return <ServiceDetail s={d} pid={pid} rid={rid} />
   if (sel?.kind === 'edge') return <EdgeDetail e={d} />
   if (sel?.kind === 'group' || sel?.kind === 'fact') return <GroupedFactDetail d={d} />
   if (sel?.kind === 'queue') return <ResourceDetail d={d} rows={[['Name', d.name], ['Kind', d.kind], ['FIFO', d.fifo ? 'yes' : 'no']]} />
@@ -18,7 +20,7 @@ export function GraphDetailBody({ sel }) {
   return <KV rows={[['Name', d.name], ['Kind', d.kind || 'external']]} />
 }
 
-function ServiceDetail({ s }) {
+function ServiceDetail({ s, pid, rid }) {
   const list = (title, items) => {
     const arr = items || []
     if (!arr.length) return null
@@ -47,7 +49,7 @@ function ServiceDetail({ s }) {
       {s.connections && s.connections.length > 0 && (
         <div class="detail-sec">
           <h4>Object traces <span class="muted">({s.connections.length})</span></h4>
-          {s.connections.slice(0, 120).map((c, i) => <TraceCard key={i} trace={c} />)}
+          {s.connections.slice(0, 120).map((c, i) => <TraceCard key={i} trace={c} service={s.name} pid={pid} rid={rid} />)}
           {s.connections.length > 120 && <p class="muted small">Showing first 120 traces.</p>}
         </div>
       )}
@@ -55,7 +57,9 @@ function ServiceDetail({ s }) {
   )
 }
 
-function TraceCard({ trace }) {
+function TraceCard({ trace, service, pid, rid }) {
+  const objectID = trace.flow_id || trace.entrypoint_id || trace.from_id
+  const canTrace = pid && rid && service && objectID
   return (
     <div class="object-card trace-card">
       <KV rows={compactRows([
@@ -66,6 +70,11 @@ function TraceCard({ trace }) {
         ['Confidence', trace.confidence],
       ])} compact />
       {trace.summary && <p class="object-summary">{trace.summary}</p>}
+      {canTrace && (
+        <button class="btn ghost tiny trace-link-btn" onClick={() => navigate(`/projects/${encodeURIComponent(pid)}/runs/${encodeURIComponent(rid)}/trace?service=${encodeURIComponent(service)}&object_id=${encodeURIComponent(objectID)}`)}>
+          Trace full flow →
+        </button>
+      )}
       <DetailJSON title="Condition" value={trace.condition} />
       <DetailJSON title="Data dependencies" value={trace.data_dependencies} />
       <DetailJSON title="Side effects" value={trace.side_effects} />

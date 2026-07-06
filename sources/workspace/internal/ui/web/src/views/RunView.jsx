@@ -87,7 +87,7 @@ export function RunView({ pid, rid }) {
         {sel && (
           <aside class="drawer drawer-right">
             <div class="drawer-head"><h3>{graphDetailTitle(sel)}</h3><button class="btn ghost tiny" onClick={() => setSel(null)}>×</button></div>
-            <GraphDetailBody sel={sel} />
+            <GraphDetailBody sel={sel} pid={pid} rid={rid} />
           </aside>
         )}
       </div>

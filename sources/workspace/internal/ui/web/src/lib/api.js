@@ -95,4 +95,16 @@ export const getRunArchGraphTrace = (pid, rid, params = {}) => {
   const query = qs.toString()
   return api(`/api/projects/${pid}/runs/${rid}/archgraph/trace${query ? `?${query}` : ''}`)
 }
+export const getRunArchGraphFlow = (pid, rid, params = {}) => {
+  const qs = new URLSearchParams()
+  if (params.service) qs.set('service', params.service)
+  if (params.object_id) qs.set('object_id', params.object_id)
+  if (params.entrypoint_id) qs.set('entrypoint_id', params.entrypoint_id)
+  if (params.flow_id) qs.set('flow_id', params.flow_id)
+  if (params.depth) qs.set('depth', params.depth)
+  if (params.max_nodes) qs.set('max_nodes', params.max_nodes)
+  if (params.expand) qs.set('expand', params.expand)
+  const query = qs.toString()
+  return api(`/api/projects/${pid}/runs/${rid}/archgraph/flow${query ? `?${query}` : ''}`)
+}
 export const runEventsURL = (pid, rid) => `/api/projects/${pid}/runs/${rid}/events`
