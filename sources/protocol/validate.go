@@ -458,7 +458,9 @@ func validateCanonicalEntrypointFlows(doc *Document) error {
 		add(v.ObjectiveBase)
 	}
 	for _, v := range doc.Objects.CLICommands {
-		add(v.ObjectiveBase)
+		if v.Kind == "cli_command" {
+			add(v.ObjectiveBase)
+		}
 	}
 	for _, v := range doc.Objects.Activations {
 		add(v.ObjectiveBase)

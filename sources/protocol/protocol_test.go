@@ -170,6 +170,39 @@ func TestValidateCanonicalRequiresEntrypointFlows(t *testing.T) {
 	}
 }
 
+func TestValidateCanonicalDoesNotRequireCommandExecFlow(t *testing.T) {
+	doc := canonicalDoc()
+	doc.Objects.CLICommands = append(doc.Objects.CLICommands, CLICommand{
+		ObjectiveBase: ObjectiveBase{
+			ID: "cmd.run_script", Kind: "command_exec", Name: "run script",
+			Status: StatusConfirmed, Confidence: ConfidenceHigh, Origin: OriginDeterministic,
+			Observations: []string{"obs.cmd.run_script.1"}, EvidenceRefs: []string{"ev.cmd.run_script.1"},
+		},
+		Command: map[string]any{"raw": "bin/script"},
+	})
+	doc.Observations = append(doc.Observations, Observation{ID: "obs.cmd.run_script.1", ObjectRef: "cmd.run_script", Perspective: "command_execution"})
+	doc.Evidence = append(doc.Evidence, Evidence{ID: "ev.cmd.run_script.1", Type: "source_location", Source: "code", Confidence: ConfidenceHigh})
+
+	if err := ValidateCanonical(doc); err != nil {
+		t.Fatalf("ValidateCanonical should not require command_exec flow: %v", err)
+	}
+
+	doc.Objects.CLICommands = append(doc.Objects.CLICommands, CLICommand{
+		ObjectiveBase: ObjectiveBase{
+			ID: "cli.migrate", Kind: "cli_command", Name: "migrate",
+			Status: StatusConfirmed, Confidence: ConfidenceHigh, Origin: OriginDeterministic,
+			Observations: []string{"obs.cli.migrate.1"}, EvidenceRefs: []string{"ev.cli.migrate.1"},
+		},
+		Command: map[string]any{"raw": "migrate"},
+	})
+	doc.Observations = append(doc.Observations, Observation{ID: "obs.cli.migrate.1", ObjectRef: "cli.migrate", Perspective: "cli_registration"})
+	doc.Evidence = append(doc.Evidence, Evidence{ID: "ev.cli.migrate.1", Type: "source_location", Source: "code", Confidence: ConfidenceHigh})
+
+	if err := ValidateCanonical(doc); err == nil {
+		t.Fatal("expected canonical validation to still require cli_command flow")
+	}
+}
+
 func TestValidateRejectsUnknownDataDependencyRefs(t *testing.T) {
 	doc := canonicalDoc()
 	doc.Flows[0].DataDependencies = []DataDependency{{
