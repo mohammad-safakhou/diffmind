@@ -202,3 +202,132 @@ func (c *Controller) AdminList(ctx echo.Context) error {
 		t.Fatalf("schema = %#v", responses[0]["schema"])
 	}
 }
+
+func TestEnrichDataContractsFromJavaDTOAndEntity(t *testing.T) {
+	root := t.TempDir()
+	file := "src/Orders.java"
+	src := `package demo;
+
+class OrderController {
+  void create(@RequestBody OrderRequest request) {
+    repository.save(new Order());
+  }
+}
+
+class OrderRequest {
+  @JsonProperty("order_id")
+  private String orderId;
+  private String storeCode;
+}
+
+class Order {
+  @Column(name = "order_id")
+  private String orderId;
+  private String storeCode;
+}
+`
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, file), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx := &astpkg.ProjectIndex{
+		RepoRoot: root,
+		Files: map[string]*astpkg.FileAST{
+			file: {
+				Path:     file,
+				Language: "java",
+				Symbols: []astpkg.SymbolDef{{
+					Name: "create", Qualified: "OrderController.create", Kind: astpkg.SymbolKindMethod,
+					File: file, Range: astpkg.Range{StartLine: 3, EndLine: 5},
+					Parameters: []astpkg.Param{{
+						Name: "request", Type: "OrderRequest",
+						Annotations: []astpkg.Annotation{{Name: "RequestBody"}},
+					}},
+				}},
+			},
+		},
+	}
+	exposures := []model.Exposure{{BaseEntity: model.BaseEntity{
+		Type:      "http_route",
+		Name:      "POST /orders",
+		Locations: []model.Location{{File: file, StartLine: 4, EndLine: 6}},
+	}}}
+	deps := []model.Dependency{{BaseEntity: model.BaseEntity{
+		Type: "db_operation",
+		Name: "write orders",
+		Details: map[string]any{
+			"operation":  "write",
+			"repository": "OrderRepository",
+		},
+		Locations: []model.Location{{File: file, StartLine: 5, EndLine: 5}},
+	}}}
+
+	EnrichDataContracts(idx, exposures, deps)
+
+	if got := exposures[0].Details["body_fields"]; !sameStrings(got, []string{"order_id", "storeCode"}) {
+		t.Fatalf("body_fields = %#v", got)
+	}
+	if got := deps[0].Details["writes"]; !sameStrings(got, []string{"order_id", "storeCode"}) {
+		t.Fatalf("writes = %#v", got)
+	}
+}
+
+func TestEnrichDataContractsFromQueuePayloadExpression(t *testing.T) {
+	idx := &astpkg.ProjectIndex{
+		Files: map[string]*astpkg.FileAST{
+			"publisher.java": {
+				Path:     "publisher.java",
+				Language: "java",
+				Calls: []astpkg.CallSite{{
+					File:        "publisher.java",
+					CalleeRaw:   "send",
+					ReceiverRaw: "kafkaTemplate",
+					Range:       astpkg.Range{StartLine: 9, EndLine: 9},
+					Arguments: []astpkg.ArgumentExpr{
+						{Index: 0, Source: `"campaign-events"`, Kind: "literal"},
+						{Index: 1, Source: `CampaignEvent.builder().campaignId(campaignId).storeCode(storeCode).build()`, Kind: "call"},
+					},
+				}},
+			},
+		},
+	}
+	deps := []model.Dependency{{BaseEntity: model.BaseEntity{
+		Type:      "queue_publish",
+		Name:      "campaign-events",
+		Details:   map[string]any{},
+		Locations: []model.Location{{File: "publisher.java", StartLine: 10, EndLine: 10}},
+	}}}
+
+	EnrichDataContracts(idx, nil, deps)
+
+	if got := deps[0].Details["message_fields"]; !sameStrings(got, []string{"campaignId", "storeCode"}) {
+		t.Fatalf("message_fields = %#v", got)
+	}
+}
+
+func TestSQLColumnDetails(t *testing.T) {
+	if got := sqlColumnDetails(`INSERT INTO orders (order_id, store_code) VALUES ($1, $2)`)["writes"]; !sameStrings(got, []string{"order_id", "store_code"}) {
+		t.Fatalf("insert writes = %#v", got)
+	}
+	if got := sqlColumnDetails(`UPDATE orders SET order_id = ?, store_code = ? WHERE id = ?`)["writes"]; !sameStrings(got, []string{"order_id", "store_code"}) {
+		t.Fatalf("update writes = %#v", got)
+	}
+	if got := sqlColumnDetails(`SELECT order_id, store_code FROM orders`)["reads"]; !sameStrings(got, []string{"order_id", "store_code"}) {
+		t.Fatalf("select reads = %#v", got)
+	}
+}
+
+func sameStrings(got any, want []string) bool {
+	g, ok := got.([]string)
+	if !ok || len(g) != len(want) {
+		return false
+	}
+	for i := range g {
+		if g[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}

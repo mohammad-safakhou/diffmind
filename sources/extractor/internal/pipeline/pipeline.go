@@ -171,9 +171,12 @@ func (o *orchestrator) runDeterministicOnly(
 		discoverystage.EnrichExposuresFromAnnotations(o.astIndex, exposures)
 		discoverystage.EnrichExposuresFromParams(o.astIndex, exposures)
 		discoverystage.EnrichHTTPContractsFromHandlers(o.astIndex, exposures)
+		discoverystage.EnrichDataContracts(o.astIndex, exposures, dependencies)
 		dependencies = reconcile.DedupeDependencies(dependencies)
 		provenance.NormalizeDeterministic(exposures, dependencies, nil)
+		state.Exposures = append([]model.Exposure(nil), exposures...)
 		state.Dependencies = append([]model.Dependency(nil), dependencies...)
+		o.persistStageState("entities_exposures.json", state.Exposures)
 		o.persistStageState("entities_dependencies.json", state.Dependencies)
 	}
 
