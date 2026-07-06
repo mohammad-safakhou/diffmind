@@ -340,6 +340,48 @@ func TestBuildDiffMind protocolMergesDuplicateDBResourceIDs(t *testing.T) {
 	}
 }
 
+func TestBuildDiffMind protocolAllowsCommandExecWithoutFlow(t *testing.T) {
+	repo := t.TempDir()
+	dep := model.Dependency{BaseEntity: model.BaseEntity{
+		ID:         "dep-script",
+		Type:       "command_exec",
+		Name:       "run import script",
+		Platform:   "shell",
+		Summary:    "executes a helper script",
+		Confidence: 1,
+		Tags:       []string{"deterministic"},
+		Details:    map[string]any{"command": "bin/import"},
+		Locations:  []model.Location{{File: "Makefile", StartLine: 12, EndLine: 12}},
+		Evidence: []model.Evidence{{
+			Location: model.Location{File: "Makefile", StartLine: 12, EndLine: 12},
+			Snippet:  "bin/import",
+			Source:   "deterministic_ast",
+		}},
+	}}
+
+	doc, err := buildDiffMind protocol(WriteInput{
+		RunID:        "run-command-exec",
+		RepoPath:     repo,
+		FinishedAt:   time.Now().UTC(),
+		Dependencies: []model.Dependency{dep},
+	}, model.RunManifest{Pipeline: "deterministic", SchemaVersion: protocol.SchemaServiceV1})
+	if err != nil {
+		t.Fatalf("build DiffMind protocol: %v", err)
+	}
+	if len(doc.Objects.CLICommands) != 1 {
+		t.Fatalf("expected command_exec in cli_commands, got %+v", doc.Objects.CLICommands)
+	}
+	if doc.Objects.CLICommands[0].Kind != "command_exec" {
+		t.Fatalf("kind = %q, want command_exec", doc.Objects.CLICommands[0].Kind)
+	}
+	if len(doc.Flows) != 0 {
+		t.Fatalf("expected no flows for dependency-only document, got %+v", doc.Flows)
+	}
+	if err := protocol.ValidateCanonical(doc); err != nil {
+		t.Fatalf("canonical DiffMind protocol validation failed: %v", err)
+	}
+}
+
 func TestBuildDiffMind protocolEmitsFieldDataDependenciesForActionTypes(t *testing.T) {
 	repo := t.TempDir()
 	exp := model.Exposure{BaseEntity: model.BaseEntity{
