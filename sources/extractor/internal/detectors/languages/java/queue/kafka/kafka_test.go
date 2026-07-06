@@ -95,3 +95,22 @@ func TestDetectStreamBridgeProducerResolvesBindingDestination(t *testing.T) {
 		t.Fatalf("trigger = %q, want stream destination", got[0].Trigger)
 	}
 }
+
+func TestDetectSpringCloudStreamOutputBindingFromConfig(t *testing.T) {
+	idx := &ast.ProjectIndex{
+		Files: map[string]*ast.FileAST{},
+		Configs: map[string]*ast.ConfigFile{"application.yml": {
+			Path: "application.yml",
+			Entries: []ast.ConfigEntry{
+				{Key: "spring.cloud.stream.bindings.order-out-0.destination", Value: "order-events", Line: 12},
+			},
+		}},
+	}
+	got := (&detector{}).Detect(idx)
+	if len(got) != 1 {
+		t.Fatalf("expected one binding, got %+v", got)
+	}
+	if got[0].Trigger != "kafka: order-events" || got[0].File != "application.yml" {
+		t.Fatalf("unexpected binding: %+v", got[0])
+	}
+}

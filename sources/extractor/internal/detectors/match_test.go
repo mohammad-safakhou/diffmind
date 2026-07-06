@@ -17,6 +17,8 @@ func TestIDsForFrameworkBinding(t *testing.T) {
 		{name: "spring kafka listener", framework: "spring", kind: "queue_consumer", trigger: "kafka:campaigns", want: "java.queue.kafka"},
 		{name: "spring sqs listener", framework: "spring", kind: "queue_consumer", trigger: "sqs:jobs", want: "java.queue.sqs"},
 		{name: "spring sns publisher", framework: "spring", kind: "queue_publisher", trigger: "sns:campaigns", want: "java.queue.sqs"},
+		{name: "spring rabbit publisher", framework: "spring", kind: "queue_publisher", trigger: "rabbitmq:orders.created", want: "java.queue.rabbitmq"},
+		{name: "spring jms publisher", framework: "spring", kind: "queue_publisher", trigger: "jms:orders", want: "java.queue.jms"},
 		{name: "flask route", framework: "flask", kind: "http_handler", want: "python.http.flask"},
 		{name: "go fiber route", framework: "fiber", kind: "http_handler", want: "golang.http.fiber"},
 	}
