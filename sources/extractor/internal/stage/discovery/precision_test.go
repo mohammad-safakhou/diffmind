@@ -122,3 +122,20 @@ func TestEntityFromFrameworkBindingRejectsDynamicQueuePublisher(t *testing.T) {
 		t.Fatal("expected dynamic publisher destination to be rejected")
 	}
 }
+
+func TestEntityFromFrameworkBindingNormalizesSQSPublisherURL(t *testing.T) {
+	obj := objectiveByType(t, "queue_publish")
+	e, ok := EntityFromFrameworkBinding(nil, obj, astpkg.FrameworkBinding{
+		Framework: "spring", Kind: "queue_publisher",
+		Symbol:  "com.example.Publisher.publish",
+		Trigger: "sqs: https://sqs.eu-central-1.amazonaws.com/123/orders.fifo",
+		File:    "src/main/java/com/example/Publisher.java",
+		Range:   astpkg.Range{StartLine: 20, EndLine: 20},
+	})
+	if !ok {
+		t.Fatal("expected entity")
+	}
+	if e.Name != "orders.fifo" || e.Details["queue"] != "orders.fifo" {
+		t.Fatalf("publisher destination not normalized: name=%q details=%+v", e.Name, e.Details)
+	}
+}
