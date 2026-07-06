@@ -307,6 +307,9 @@ func javaStringOrIdentValue(src, expr string) string {
 	}
 	if strings.Contains(expr, ".") {
 		last := expr[strings.LastIndex(expr, ".")+1:]
+		if !isJavaConstantName(last) {
+			return ""
+		}
 		return trimResourceConstantSuffix(last)
 	}
 	if assigned := javaAssignedStringValue(src, expr); assigned != "" && assigned != expr {
@@ -1291,13 +1294,39 @@ func pythonResourceValue(src string) string {
 	if strings.Contains(src, ".") {
 		last := src[strings.LastIndex(src, ".")+1:]
 		last = strings.Trim(last, "\"'`")
-		last = strings.TrimSuffix(last, "_QUEUE_NAME")
-		last = strings.TrimSuffix(last, "_QUEUE_URL")
-		last = strings.TrimSuffix(last, "_URL")
-		last = strings.TrimSuffix(last, "_NAME")
-		return last
+		if !isPythonResourceConstant(last) {
+			return ""
+		}
+		return trimPythonResourceConstantSuffix(last)
 	}
-	return strings.Trim(src, "\"'`")
+	src = strings.Trim(src, "\"'`")
+	if isPythonResourceConstant(src) {
+		return trimPythonResourceConstantSuffix(src)
+	}
+	return ""
+}
+
+func isPythonResourceConstant(src string) bool {
+	src = strings.TrimSpace(src)
+	if src == "" {
+		return false
+	}
+	for _, r := range src {
+		if r >= 'a' && r <= 'z' {
+			return false
+		}
+	}
+	return strings.Contains(src, "_")
+}
+
+func trimPythonResourceConstantSuffix(src string) string {
+	src = strings.TrimSuffix(src, "_QUEUE_NAME")
+	src = strings.TrimSuffix(src, "_QUEUE_URL")
+	src = strings.TrimSuffix(src, "_TOPIC_ARN")
+	src = strings.TrimSuffix(src, "_TOPIC_NAME")
+	src = strings.TrimSuffix(src, "_URL")
+	src = strings.TrimSuffix(src, "_NAME")
+	return src
 }
 
 func javascriptQueuePublishDestination(cs astpkg.CallSite, platform string) string {
