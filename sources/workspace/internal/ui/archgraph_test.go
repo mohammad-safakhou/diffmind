@@ -479,6 +479,72 @@ func TestBuildArchitectureGraphUsesExampleServiceNameConventions(t *testing.T) {
 	}
 }
 
+func TestBuildArchitectureGraphCanonicalizesQueueNodeKeys(t *testing.T) {
+	root := t.TempDir()
+	publisherRun := filepath.Join(root, "publisher")
+	consumerRun := filepath.Join(root, "consumer")
+	writeDiffMind protocolRun(t, publisherRun, `{
+  "schema": "diffmind.service.v1",
+  "service": {"id": "publisher", "name": "publisher"},
+  "objects": {
+    "queue_publishers": [{
+      "id": "queue.publish_order_events",
+      "kind": "queue_publish",
+      "name": "Publish order events",
+      "platform": "sns",
+      "topic": "arn:aws:sns:eu-central-1:123:order-events.fifo",
+      "status": "confirmed",
+      "confidence": "high",
+      "origin": "deterministic"
+    }]
+  },
+  "flows": [],
+  "observations": [],
+  "evidence": []
+}`)
+	writeDiffMind protocolRun(t, consumerRun, `{
+  "schema": "diffmind.service.v1",
+  "service": {"id": "consumer", "name": "consumer"},
+  "objects": {
+    "queue_consumers": [{
+      "id": "queue.consume_order_events",
+      "kind": "queue_consumer",
+      "name": "Consume order events",
+      "platform": "sqs",
+      "queue": "https://sqs.eu-central-1.amazonaws.com/123/order_events.fifo",
+      "status": "confirmed",
+      "confidence": "high",
+      "origin": "deterministic"
+    }]
+  },
+  "flows": [],
+  "observations": [],
+  "evidence": []
+}`)
+
+	graph := buildArchitectureGraph("run-1", map[string]string{
+		"publisher": publisherRun,
+		"consumer":  consumerRun,
+	})
+	if len(graph.QueueNodes) != 1 {
+		t.Fatalf("expected one canonical queue node, got %+v", graph.QueueNodes)
+	}
+	queueID := "orderevents_fifo"
+	foundPublish := false
+	foundConsume := false
+	for _, edge := range graph.Edges {
+		if edge.Type == "queue_publish" && edge.From == "publisher" && edge.To == "queue:"+queueID {
+			foundPublish = true
+		}
+		if edge.Type == "queue_consume" && edge.From == "queue:"+queueID && edge.To == "consumer" {
+			foundConsume = true
+		}
+	}
+	if !foundPublish || !foundConsume {
+		t.Fatalf("expected publish and consume edges through %s, edges=%+v", queueID, graph.Edges)
+	}
+}
+
 func TestBuildArchitectureGraphRendersDiffMind protocolRPCCalls(t *testing.T) {
 	root := t.TempDir()
 	callerRun := filepath.Join(root, "game-service")

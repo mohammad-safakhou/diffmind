@@ -8,6 +8,7 @@ package archgraph
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -299,9 +300,13 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 			svc.QueueConsumers = append(svc.QueueConsumers, toSummary(item))
 			d := getDetails(item)
 			qName := firstNonEmpty(d["stream_arn"], d["event_source_arn"], d["source"], d["destination"], d["topic"], d["queue"], d["queue_name"], getString(item, "instance"), getString(item, "name"))
+			qDisplay, qKey := canonicalQueueName(qName)
+			if qKey == "" {
+				continue
+			}
 			kind := inferQueueKind(qName, d)
 			fifo := strings.Contains(strings.ToLower(qName), "fifo")
-			allQueueConsume[name] = append(allQueueConsume[name], queueRef{name: qName, kind: kind, fifo: fifo})
+			allQueueConsume[name] = append(allQueueConsume[name], queueRef{name: qDisplay, key: qKey, kind: kind, fifo: fifo})
 		}
 		for _, item := range exposures["scheduled_job"] {
 			svc.ScheduledJobs = append(svc.ScheduledJobs, toSummary(item))
@@ -347,9 +352,13 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 		for _, item := range dependencies["queue_publish"] {
 			d := getDetails(item)
 			qName := firstNonEmpty(d["stream_arn"], d["event_source_arn"], d["source"], d["destination"], d["topic"], d["queue"], d["queue_name"], getString(item, "instance"), getString(item, "name"))
+			qDisplay, qKey := canonicalQueueName(qName)
+			if qKey == "" {
+				continue
+			}
 			kind := inferQueueKind(qName, d)
 			fifo := strings.Contains(strings.ToLower(qName), "fifo")
-			allQueuePublish[name] = append(allQueuePublish[name], queueRef{name: qName, kind: kind, fifo: fifo})
+			allQueuePublish[name] = append(allQueuePublish[name], queueRef{name: qDisplay, key: qKey, kind: kind, fifo: fifo})
 		}
 		for _, item := range dependencies["db_operation"] {
 			d := getDetails(item)
@@ -518,7 +527,7 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 		pubs := allQueuePublish[svcName]
 		sortQueueRefs(pubs)
 		for _, q := range pubs {
-			qID := normalizeID(q.name)
+			qID := q.key
 			if _, ok := queueMap[qID]; !ok {
 				queueMap[qID] = &QueueNode{ID: qID, Name: q.name, Kind: q.kind, FIFO: q.fifo}
 				graphID := "queue:" + qID
@@ -536,7 +545,7 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 		cons := allQueueConsume[svcName]
 		sortQueueRefs(cons)
 		for _, q := range cons {
-			qID := normalizeID(q.name)
+			qID := q.key
 			if _, ok := queueMap[qID]; !ok {
 				queueMap[qID] = &QueueNode{ID: qID, Name: q.name, Kind: q.kind, FIFO: q.fifo}
 				graphID := "queue:" + qID
@@ -706,6 +715,7 @@ type outboundRef struct {
 
 type queueRef struct {
 	name string
+	key  string
 	kind string
 	fifo bool
 }
@@ -1467,6 +1477,53 @@ func normalizeID(s string) string {
 	return s
 }
 
+func canonicalQueueName(raw string) (display, key string) {
+	display = strings.ToLower(strings.TrimSpace(strings.Trim(raw, `"'`)))
+	if display == "" {
+		return "", ""
+	}
+	if strings.HasPrefix(display, "queue:") {
+		display = strings.TrimSpace(strings.TrimPrefix(display, "queue:"))
+	}
+	if strings.HasPrefix(display, "arn:") {
+		if idx := strings.LastIndex(display, ":"); idx >= 0 && idx+1 < len(display) {
+			display = display[idx+1:]
+		}
+	}
+	if strings.Contains(display, "://") {
+		if u, err := url.Parse(display); err == nil {
+			path := strings.Trim(strings.TrimSpace(u.Path), "/")
+			if idx := strings.LastIndex(path, "/"); idx >= 0 && idx+1 < len(path) {
+				path = path[idx+1:]
+			}
+			if path != "" {
+				display = path
+			}
+		}
+	}
+	fifo := strings.HasSuffix(display, ".fifo")
+	base := strings.TrimSuffix(display, ".fifo")
+	key = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r
+		case r >= '0' && r <= '9':
+			return r
+		case r == '-' || r == '_' || r == '.':
+			return -1
+		default:
+			return -1
+		}
+	}, base)
+	if fifo {
+		key += "_fifo"
+	}
+	if key == "" {
+		return "", ""
+	}
+	return display, key
+}
+
 func normalizeDBKind(raw string) string {
 	lower := strings.ToLower(raw)
 	switch {
@@ -1596,6 +1653,9 @@ func sortQueueRefs(items []queueRef) {
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].kind != items[j].kind {
 			return items[i].kind < items[j].kind
+		}
+		if items[i].key != items[j].key {
+			return items[i].key < items[j].key
 		}
 		return items[i].name < items[j].name
 	})
