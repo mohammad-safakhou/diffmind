@@ -87,3 +87,38 @@ func TestEntityFromFrameworkBindingResolvesQueuePlaceholder(t *testing.T) {
 		t.Fatalf("platform=%v", e.Details["platform"])
 	}
 }
+
+func TestEntityFromFrameworkBindingEmitsQueuePublisher(t *testing.T) {
+	idx := configIndex(map[string]string{"spring.kafka.template.default-topic": "campaign-events"})
+	obj := objectiveByType(t, "queue_publish")
+	e, ok := EntityFromFrameworkBinding(idx, obj, astpkg.FrameworkBinding{
+		Framework: "spring-kafka", Kind: "queue_publisher",
+		Symbol:  "com.example.Publisher.publish",
+		Trigger: "kafka: ${spring.kafka.template.default-topic}",
+		File:    "src/main/java/com/example/Publisher.java",
+		Range:   astpkg.Range{StartLine: 20, EndLine: 20},
+	})
+	if !ok {
+		t.Fatal("expected entity")
+	}
+	if e.Type != "queue_publish" || e.Name != "campaign-events" {
+		t.Fatalf("unexpected queue publisher: type=%q name=%q", e.Type, e.Name)
+	}
+	if e.Details["platform"] != "kafka" || e.Details["topic"] != "campaign-events" {
+		t.Fatalf("unexpected details: %+v", e.Details)
+	}
+}
+
+func TestEntityFromFrameworkBindingRejectsDynamicQueuePublisher(t *testing.T) {
+	obj := objectiveByType(t, "queue_publish")
+	_, ok := EntityFromFrameworkBinding(nil, obj, astpkg.FrameworkBinding{
+		Framework: "spring-kafka", Kind: "queue_publisher",
+		Symbol:  "com.example.Publisher.publish",
+		Trigger: `kafka: "campaign-" + suffix`,
+		File:    "src/main/java/com/example/Publisher.java",
+		Range:   astpkg.Range{StartLine: 20, EndLine: 20},
+	})
+	if ok {
+		t.Fatal("expected dynamic publisher destination to be rejected")
+	}
+}
