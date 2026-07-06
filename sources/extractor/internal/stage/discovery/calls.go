@@ -81,10 +81,7 @@ func DeterministicQueuePublish(idx *astpkg.ProjectIndex) []candidate {
 		if !ok {
 			return
 		}
-		dest := normalizeQueueOrTopicDestination(ResolveResourceName(idx, firstLiteralArg(cs.Arguments)), platform)
-		if dest == "" {
-			dest = awsQueueDestinationFromCall(idx, cs, platform)
-		}
+		dest := queuePublishDestinationFromCall(idx, cs, platform)
 		if dest == "" {
 			return // destination not statically resolvable; do not guess
 		}
@@ -113,6 +110,26 @@ func DeterministicQueuePublish(idx *astpkg.ProjectIndex) []candidate {
 		})
 	})
 	return out
+}
+
+func queuePublishDestinationFromCall(idx *astpkg.ProjectIndex, cs astpkg.CallSite, platform string) string {
+	if dest := normalizeQueueOrTopicDestination(ResolveResourceName(idx, firstLiteralArg(cs.Arguments)), platform); dest != "" {
+		return dest
+	}
+	fa := idx.Files[cs.File]
+	if fa != nil {
+		switch fa.Language {
+		case "python":
+			if dest := pythonQueuePublishDestination(cs, platform); dest != "" {
+				return normalizeQueueOrTopicDestination(ResolveResourceName(idx, dest), platform)
+			}
+		case "javascript", "jsx", "typescript", "tsx":
+			if dest := javascriptQueuePublishDestination(cs, platform); dest != "" {
+				return normalizeQueueOrTopicDestination(ResolveResourceName(idx, dest), platform)
+			}
+		}
+	}
+	return awsQueueDestinationFromCall(idx, cs, platform)
 }
 
 func DeterministicAWSQueueConsumers(idx *astpkg.ProjectIndex) []candidate {
@@ -1220,6 +1237,26 @@ func pythonSQSConsumerCall(cs astpkg.CallSite) (string, bool) {
 	return "", false
 }
 
+func pythonQueuePublishDestination(cs astpkg.CallSite, platform string) string {
+	_, callee := splitCall(cs)
+	c := strings.ToLower(strings.TrimSpace(callee))
+	switch platform {
+	case "sqs":
+		if c == "send_message" || c == "send_message_batch" {
+			return pythonKeywordOrFirstArg(cs.Arguments, "QueueUrl", "queue_url", "QueueName", "queue_name")
+		}
+	case "sns":
+		if c == "publish" {
+			return pythonKeywordOrFirstArg(cs.Arguments, "TopicArn", "topic_arn", "Topic", "topic")
+		}
+	case "kafka":
+		if c == "send" || c == "produce" {
+			return pythonKeywordOrFirstArg(cs.Arguments, "topic", "topic_name")
+		}
+	}
+	return ""
+}
+
 func pythonKeywordOrFirstArg(args []astpkg.ArgumentExpr, keys ...string) string {
 	for _, arg := range args {
 		src := strings.TrimSpace(arg.Source)
@@ -1257,6 +1294,65 @@ func pythonResourceValue(src string) string {
 		return last
 	}
 	return strings.Trim(src, "\"'`")
+}
+
+func javascriptQueuePublishDestination(cs astpkg.CallSite, platform string) string {
+	_, callee := splitCall(cs)
+	c := strings.ToLower(strings.TrimSpace(callee))
+	switch platform {
+	case "sqs":
+		if c == "sendmessage" || c == "sendmessagebatch" {
+			return javascriptObjectStringValue(firstArgSource(cs.Arguments), "QueueUrl", "QueueName")
+		}
+		if c == "send" {
+			return javascriptAWSCommandObjectValue(cs.Arguments, "SendMessageCommand", "QueueUrl", "QueueName")
+		}
+	case "sns":
+		if c == "publish" {
+			return javascriptObjectStringValue(firstArgSource(cs.Arguments), "TopicArn", "Topic")
+		}
+		if c == "send" {
+			return javascriptAWSCommandObjectValue(cs.Arguments, "PublishCommand", "TopicArn", "Topic")
+		}
+	case "kafka":
+		if c == "send" {
+			return javascriptObjectStringValue(firstArgSource(cs.Arguments), "topic")
+		}
+		if c == "produce" {
+			if value := firstLiteralArg(cs.Arguments); value != "" {
+				return value
+			}
+			return javascriptObjectStringValue(firstArgSource(cs.Arguments), "topic")
+		}
+	}
+	return ""
+}
+
+func javascriptAWSCommandObjectValue(args []astpkg.ArgumentExpr, command string, keys ...string) string {
+	for _, arg := range args {
+		src := strings.TrimSpace(arg.Source)
+		if src == "" || !strings.Contains(src, command) {
+			continue
+		}
+		if value := javascriptObjectStringValue(src, keys...); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func javascriptObjectStringValue(src string, keys ...string) string {
+	src = strings.TrimSpace(src)
+	if src == "" {
+		return ""
+	}
+	for _, key := range keys {
+		re := regexp.MustCompile(`(?s)(?:\b` + regexp.QuoteMeta(key) + `\b|["']` + regexp.QuoteMeta(key) + `["'])\s*:\s*["'` + "`" + `]([^"'` + "`" + `]+)["'` + "`" + `]`)
+		if m := re.FindStringSubmatch(src); len(m) > 1 {
+			return strings.TrimSpace(m[1])
+		}
+	}
+	return ""
 }
 
 func pythonURLTemplateFromArg(arg astpkg.ArgumentExpr) string {
@@ -1658,6 +1754,7 @@ func MatchCommandExec(cs astpkg.CallSite) bool {
 func MatchQueuePublish(cs astpkg.CallSite) (string, bool) {
 	rr, cc := splitCall(cs)
 	r := strings.ToLower(rr)
+	compactR := strings.ReplaceAll(r, "_", "")
 	c := strings.ToLower(cc)
 	type pat struct {
 		token    string
@@ -1674,11 +1771,24 @@ func MatchQueuePublish(cs astpkg.CallSite) (string, bool) {
 		{"amazonsqs", "sqs", []string{"sendmessage", "sendmessagebatch"}},
 		{"snsclient", "sns", []string{"publish"}},
 		{"amazonsns", "sns", []string{"publish"}},
+		{"kafkaproducer", "kafka", []string{"send", "produce"}},
 	}
 	for _, p := range pats {
-		if strings.Contains(r, p.token) && containsStr(p.callees, c) {
+		if (strings.Contains(r, p.token) || strings.Contains(compactR, p.token)) && containsStr(p.callees, c) {
 			return p.platform, true
 		}
+	}
+	switch {
+	case (r == "sqs" || strings.Contains(r, "sqs_client") || strings.Contains(r, "sqsclient")) && (c == "send_message" || c == "send_message_batch"):
+		return "sqs", true
+	case (r == "sns" || strings.Contains(r, "sns_client") || strings.Contains(r, "snsclient")) && c == "publish":
+		return "sns", true
+	case (strings.Contains(r, "kafka") || r == "producer") && (c == "send" || c == "produce") && queuePublishArgHasKey(cs.Arguments, "topic"):
+		return "kafka", true
+	case strings.Contains(r, "sqsclient") && c == "send" && queuePublishArgMentions(cs.Arguments, "SendMessageCommand"):
+		return "sqs", true
+	case strings.Contains(r, "snsclient") && c == "send" && queuePublishArgMentions(cs.Arguments, "PublishCommand"):
+		return "sns", true
 	}
 	return "", false
 }
@@ -1741,6 +1851,31 @@ func firstLiteralArg(args []astpkg.ArgumentExpr) string {
 		}
 	}
 	return ""
+}
+
+func firstArgSource(args []astpkg.ArgumentExpr) string {
+	if len(args) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(args[0].Source)
+}
+
+func queuePublishArgMentions(args []astpkg.ArgumentExpr, needle string) bool {
+	for _, arg := range args {
+		if strings.Contains(arg.Source, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func queuePublishArgHasKey(args []astpkg.ArgumentExpr, key string) bool {
+	for _, arg := range args {
+		if javascriptObjectStringValue(arg.Source, key) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func callLoc(cs astpkg.CallSite) candidateLocation {
