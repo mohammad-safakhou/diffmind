@@ -13,7 +13,7 @@ type detector struct{}
 func (d *detector) Name() string { return "java.queue.kafka" }
 
 func (d *detector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
-	return producer.Detect(idx, []producer.PlatformSpec{{
+	out := producer.Detect(idx, []producer.PlatformSpec{{
 		Framework: "spring",
 		Platform:  "kafka",
 		Types: []string{
@@ -24,4 +24,20 @@ func (d *detector) Detect(idx *ast.ProjectIndex) []ast.FrameworkBinding {
 		},
 		Methods: []string{"send", "sendDefault"},
 	}})
+	out = append(out, producer.SpringCloudStreamBindings(idx)...)
+	return dedupeBindings(out)
+}
+
+func dedupeBindings(in []ast.FrameworkBinding) []ast.FrameworkBinding {
+	seen := map[string]struct{}{}
+	out := in[:0]
+	for _, b := range in {
+		key := b.Kind + "\x00" + b.Trigger
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, b)
+	}
+	return out
 }

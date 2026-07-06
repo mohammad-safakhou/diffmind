@@ -107,7 +107,13 @@ func IDsForFrameworkBinding(framework, kind, trigger, reason string) []string {
 			if strings.Contains(trigger, "sqs:") || strings.Contains(trigger, "sns:") || strings.Contains(reason, "sqs") || strings.Contains(reason, "sns") || strings.Contains(reason, "aws") {
 				return []string{"java.queue.sqs"}
 			}
-			return []string{"java.queue.kafka", "java.queue.sqs"}
+			if strings.Contains(trigger, "rabbitmq:") || strings.Contains(trigger, "rabbit:") || strings.Contains(reason, "rabbit") || strings.Contains(reason, "amqp") {
+				return []string{"java.queue.rabbitmq"}
+			}
+			if strings.Contains(trigger, "jms:") || strings.Contains(reason, "jms") {
+				return []string{"java.queue.jms"}
+			}
+			return []string{"java.queue.kafka", "java.queue.sqs", "java.queue.rabbitmq", "java.queue.jms"}
 		case "scheduler", "event_listener", "activation", "async_dispatch":
 			return []string{"java.activation.spring"}
 		case "cache_operation":

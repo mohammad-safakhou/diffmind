@@ -47,6 +47,39 @@ func Detect(idx *ast.ProjectIndex, specs []PlatformSpec) []ast.FrameworkBinding 
 	return out
 }
 
+func SpringCloudStreamBindings(idx *ast.ProjectIndex) []ast.FrameworkBinding {
+	if idx == nil {
+		return nil
+	}
+	var out []ast.FrameworkBinding
+	for _, cf := range idx.Configs {
+		if cf == nil {
+			continue
+		}
+		for _, e := range cf.Entries {
+			key := strings.ToLower(strings.TrimSpace(e.Key))
+			if !strings.HasPrefix(key, "spring.cloud.stream.bindings.") || !strings.HasSuffix(key, "-out-0.destination") {
+				continue
+			}
+			dest := strings.TrimSpace(e.Value)
+			if dest == "" || dynamicDestination(dest) {
+				continue
+			}
+			out = append(out, ast.FrameworkBinding{
+				Framework:        "spring",
+				Kind:             "queue_publisher",
+				Direction:        "outbound",
+				Trigger:          "kafka: " + dest,
+				TriggerSource:    e.Key + "=" + e.Value,
+				File:             cf.Path,
+				Range:            ast.Range{StartLine: configLine(e.Line), EndLine: configLine(e.Line)},
+				ConfidenceReason: "spring_cloud_stream_output_binding",
+			})
+		}
+	}
+	return out
+}
+
 func destinationForCall(idx *ast.ProjectIndex, fa *ast.FileAST, call ast.CallSite, spec PlatformSpec) (string, bool) {
 	method := methodName(call)
 	if !containsFold(spec.Methods, method) {
@@ -134,6 +167,21 @@ func destinationFromArgs(idx *ast.ProjectIndex, args []ast.ArgumentExpr, method,
 		if v := builderValue(args, "topicArn", "topic", "targetArn"); v != "" {
 			return v
 		}
+		if len(args) > 0 {
+			return literalOrIdentifier(args[0].Source)
+		}
+	case "rabbitmq":
+		if len(args) >= 2 {
+			exchange := literalOrIdentifier(args[0].Source)
+			routingKey := literalOrIdentifier(args[1].Source)
+			if exchange != "" && routingKey != "" {
+				return exchange + "." + routingKey
+			}
+		}
+		if len(args) > 0 {
+			return literalOrIdentifier(args[0].Source)
+		}
+	case "jms":
 		if len(args) > 0 {
 			return literalOrIdentifier(args[0].Source)
 		}
@@ -318,4 +366,11 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+func configLine(line int) uint32 {
+	if line <= 0 {
+		return 0
+	}
+	return uint32(line - 1)
 }
