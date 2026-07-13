@@ -112,7 +112,8 @@ function GraphQualityBanner({ quality }) {
 }
 
 function GraphStats({ graph }) {
-  const stat = (n, l, c) => <div class="gstat"><div class="gstat-n" style={c ? `color:${c}` : ''}>{n}</div><div class="gstat-l">{l}</div></div>
+  const stat = (n, l, c, title) => <div class="gstat" title={title || ''}><div class="gstat-n" style={c ? `color:${c}` : ''}>{n}</div><div class="gstat-l">{l}</div></div>
+  const conn = graph.connectivity
   return (
     <div class="gstats">
       {stat((graph.services || []).length, 'services')}
@@ -120,6 +121,9 @@ function GraphStats({ graph }) {
       {stat((graph.queue_nodes || []).length, 'queues', '#22c997')}
       {stat((graph.database_nodes || []).length, 'databases', '#f5943a')}
       {stat((graph.edges || []).length, 'edges', '#3b9eff')}
+      {conn && stat(conn.service_to_service_edges, 'svc↔svc', '#3b9eff', 'direct service-to-service edges')}
+      {conn && stat(conn.async_chains, 'async chains', '#22c997', 'producer→queue→consumer service pairs')}
+      {conn && stat(`${Math.round((100 * conn.isolated_services) / Math.max(1, conn.services))}%`, 'isolated', conn.isolated_services > conn.services / 2 ? '#e5484d' : '#8593b3', 'services with no edges at all')}
     </div>
   )
 }

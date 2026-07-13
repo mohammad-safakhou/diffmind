@@ -107,4 +107,19 @@ export const getRunArchGraphFlow = (pid, rid, params = {}) => {
   const query = qs.toString()
   return api(`/api/projects/${pid}/runs/${rid}/archgraph/flow${query ? `?${query}` : ''}`)
 }
+export const getRunArchGraphImpact = (pid, rid, params = {}) => {
+  const qs = new URLSearchParams()
+  if (params.node) qs.set('node', params.node)
+  if (params.depth) qs.set('depth', params.depth)
+  if (params.max_nodes) qs.set('max_nodes', params.max_nodes)
+  const query = qs.toString()
+  return api(`/api/projects/${pid}/runs/${rid}/archgraph/impact${query ? `?${query}` : ''}`)
+}
+export const getRunArchGraphEntrypoints = (pid, rid, q = '', limit = 50) => {
+  const qs = new URLSearchParams()
+  if (q) qs.set('q', q)
+  if (limit) qs.set('limit', String(limit))
+  const query = qs.toString()
+  return api(`/api/projects/${pid}/runs/${rid}/archgraph/entrypoints${query ? `?${query}` : ''}`)
+}
 export const runEventsURL = (pid, rid) => `/api/projects/${pid}/runs/${rid}/events`

@@ -205,7 +205,20 @@ func (s *Server) latestWorkspaceGraph(pid string, repos []workspaceRepo) (*store
 }
 
 func (s *Server) persistedArchGraphForRun(pid, rid string) (*ArchGraph, error) {
-	data, err := os.ReadFile(filepath.Join(s.store.RunDir(pid, rid), "graph.json"))
+	path := filepath.Join(s.store.RunDir(pid, rid), "graph.json")
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	cacheKey := pid + "\x00" + rid
+	s.archGraphMu.Lock()
+	if entry, ok := s.archGraphCache[cacheKey]; ok && entry.modTime.Equal(info.ModTime()) && entry.size == info.Size() {
+		s.archGraphMu.Unlock()
+		return entry.graph, nil
+	}
+	s.archGraphMu.Unlock()
+
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -213,6 +226,9 @@ func (s *Server) persistedArchGraphForRun(pid, rid string) (*ArchGraph, error) {
 	if err := json.Unmarshal(data, &graph); err != nil {
 		return nil, err
 	}
+	s.archGraphMu.Lock()
+	s.archGraphCache[cacheKey] = archGraphCacheEntry{graph: &graph, modTime: info.ModTime(), size: info.Size()}
+	s.archGraphMu.Unlock()
 	return &graph, nil
 }
 

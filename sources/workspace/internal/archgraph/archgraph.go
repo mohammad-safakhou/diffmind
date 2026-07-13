@@ -21,15 +21,82 @@ import (
 
 // ArchGraph is the architecture graph for a single run.
 type ArchGraph struct {
-	RunID          string           `json:"run_id"`
-	Layout         *GraphLayout     `json:"layout,omitempty"`
-	Services       []*ServiceNode   `json:"services"`
-	ExternalNodes  []*ExternalNode  `json:"external_nodes"`
-	ResourceNodes  []*ResourceNode  `json:"resource_nodes,omitempty"`
-	QueueNodes     []*QueueNode     `json:"queue_nodes"`
-	DatabaseNodes  []*DatabaseNode  `json:"database_nodes"`
-	SchedulerNodes []*SchedulerNode `json:"scheduler_nodes"`
-	Edges          []*GraphEdge     `json:"edges"`
+	RunID          string             `json:"run_id"`
+	Layout         *GraphLayout       `json:"layout,omitempty"`
+	Services       []*ServiceNode     `json:"services"`
+	ExternalNodes  []*ExternalNode    `json:"external_nodes"`
+	ResourceNodes  []*ResourceNode    `json:"resource_nodes,omitempty"`
+	QueueNodes     []*QueueNode       `json:"queue_nodes"`
+	DatabaseNodes  []*DatabaseNode    `json:"database_nodes"`
+	SchedulerNodes []*SchedulerNode   `json:"scheduler_nodes"`
+	Edges          []*GraphEdge       `json:"edges"`
+	Connectivity   *ConnectivityStats `json:"connectivity,omitempty"`
+}
+
+// ConnectivityStats is the graph-quality scoreboard persisted with every run
+// so regressions in extraction or resolution are visible in the UI, not just
+// to whoever remembers to run the report script.
+type ConnectivityStats struct {
+	Services              int            `json:"services"`
+	ServiceToServiceEdges int            `json:"service_to_service_edges"`
+	IsolatedServices      int            `json:"isolated_services"`
+	AsyncChains           int            `json:"async_chains"`
+	EdgesByType           map[string]int `json:"edges_by_type"`
+}
+
+// computeConnectivity derives the scoreboard from a built graph. An async
+// chain is one producer→consumer service pair connected through a queue,
+// directly or across an SNS→SQS subscription hop.
+func computeConnectivity(g *ArchGraph) *ConnectivityStats {
+	stats := &ConnectivityStats{EdgesByType: map[string]int{}}
+	names := map[string]bool{}
+	for _, svc := range g.Services {
+		if svc != nil {
+			names[svc.Name] = true
+		}
+	}
+	stats.Services = len(names)
+	touched := map[string]bool{}
+	pub := map[string][]string{}
+	con := map[string][]string{}
+	sub := map[string][]string{}
+	for _, e := range g.Edges {
+		if e == nil {
+			continue
+		}
+		stats.EdgesByType[e.Type]++
+		touched[e.From], touched[e.To] = true, true
+		if names[e.From] && names[e.To] {
+			stats.ServiceToServiceEdges++
+		}
+		switch e.Type {
+		case "queue_publish":
+			pub[e.To] = append(pub[e.To], e.From)
+		case "queue_consume":
+			con[e.From] = append(con[e.From], e.To)
+		case "queue_subscription":
+			sub[e.From] = append(sub[e.From], e.To)
+		}
+	}
+	for name := range names {
+		if !touched[name] {
+			stats.IsolatedServices++
+		}
+	}
+	chains := map[string]bool{}
+	for topic, producers := range pub {
+		consumers := append([]string{}, con[topic]...)
+		for _, q := range sub[topic] {
+			consumers = append(consumers, con[q]...)
+		}
+		for _, p := range producers {
+			for _, c := range consumers {
+				chains[p+"\x00"+c] = true
+			}
+		}
+	}
+	stats.AsyncChains = len(chains)
+	return stats
 }
 
 type GraphLayout struct {
@@ -169,6 +236,7 @@ func Overview(g *ArchGraph) *ArchGraph {
 	out := &ArchGraph{
 		RunID:          g.RunID,
 		Layout:         g.Layout,
+		Connectivity:   g.Connectivity,
 		Services:       make([]*ServiceNode, 0, len(g.Services)),
 		ExternalNodes:  g.ExternalNodes,
 		ResourceNodes:  make([]*ResourceNode, 0, len(g.ResourceNodes)),
@@ -304,6 +372,7 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 			if qKey == "" {
 				continue
 			}
+			qKey = scopedQueueKey(qKey, name, d)
 			kind := inferQueueKind(qName, d)
 			fifo := strings.Contains(strings.ToLower(qName), "fifo")
 			allQueueConsume[name] = append(allQueueConsume[name], queueRef{name: qDisplay, key: qKey, kind: kind, fifo: fifo})
@@ -320,12 +389,10 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 
 		// Extract dependencies
 		for _, item := range dependencies["outbound_http"] {
-			target := graphServiceTarget(item)
-			if target == "" {
-				continue
-			}
+			// Keep refs without a resolvable target: they get a second chance
+			// via cross-service route matching once all services are loaded.
 			allOutboundHTTP[name] = append(allOutboundHTTP[name], outboundRef{
-				target:    target,
+				target:    graphServiceTarget(item),
 				endpoints: toSummary(item),
 			})
 		}
@@ -356,6 +423,7 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 			if qKey == "" {
 				continue
 			}
+			qKey = scopedQueueKey(qKey, name, d)
 			kind := inferQueueKind(qName, d)
 			fifo := strings.Contains(strings.ToLower(qName), "fifo")
 			allQueuePublish[name] = append(allQueuePublish[name], queueRef{name: qDisplay, key: qKey, kind: kind, fifo: fifo})
@@ -558,15 +626,82 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 		}
 	}
 
+	// Queue fan-out topology from infra repos: SNS topic → SQS queue
+	// subscriptions live in terraform, not in any service's code, and are the
+	// only thing that can connect a publisher's topic to consumer queues.
+	subscriptionEdges := map[string]bool{}
+	for _, svc := range g.Services {
+		if svc.RepoPath == "" {
+			continue
+		}
+		for _, sub := range ScanTerraformSubscriptions(svc.RepoPath) {
+			topicDisplay, topicKey := canonicalQueueName(sub.Topic)
+			queueDisplay, queueKey := canonicalQueueName(sub.Queue)
+			if topicKey == "" || queueKey == "" || topicKey == queueKey {
+				continue
+			}
+			// Only materialize links that touch a queue some service actually
+			// publishes to or consumes from; pure infra-only pairs would fill
+			// the graph with dangling nodes.
+			_, topicKnown := queueMap[topicKey]
+			_, queueKnown := queueMap[queueKey]
+			if !topicKnown && !queueKnown {
+				continue
+			}
+			ensureQueueNode := func(key, display, kind string) {
+				if _, ok := queueMap[key]; ok {
+					return
+				}
+				queueMap[key] = &QueueNode{ID: key, Name: display, Kind: kind}
+				graphID := "queue:" + key
+				resourceMap[graphID] = &ResourceNode{ID: key, GraphID: graphID, Name: display, Kind: "queue_topic_stream", Platform: kind}
+			}
+			ensureQueueNode(topicKey, topicDisplay, "sns")
+			ensureQueueNode(queueKey, queueDisplay, "sqs")
+			edgeKey := topicKey + "|" + queueKey
+			if subscriptionEdges[edgeKey] {
+				continue
+			}
+			subscriptionEdges[edgeKey] = true
+			g.Edges = append(g.Edges, &GraphEdge{
+				From: "queue:" + topicKey, To: "queue:" + queueKey, Type: "queue_subscription",
+				Label: "sns→sqs",
+				Details: []EntitySummary{{
+					Name:    sub.Topic + " → " + sub.Queue,
+					Details: map[string]any{"source": sub.Source, "match_basis": "terraform_subscription"},
+				}},
+			})
+		}
+	}
+
 	// Outbound HTTP
+	routeIndex := buildRouteIndex(g.Services)
 	for _, svcName := range sortedStringKeys(allOutboundHTTP) {
 		targets := allOutboundHTTP[svcName]
 		sortOutboundRefs(targets)
 		for _, t := range targets {
 			targetName := t.target
-			if canonical, ok := canonicalKnownService(knownServices, targetName); ok {
-				targetName = canonical
-			} else {
+			summary := t.endpoints
+			matched := false
+			if targetName != "" {
+				if canonical, ok := canonicalKnownService(knownServices, targetName); ok {
+					targetName = canonical
+					matched = true
+				}
+			}
+			if !matched {
+				// Second chance: the outbound call's METHOD+path uniquely
+				// identifies one known service's exposed route.
+				if owner, ok := matchRouteOwner(routeIndex, svcName, t.endpoints); ok {
+					targetName = owner.service
+					summary = withMatchDetails(summary, "route", owner.exposureID)
+					matched = true
+				}
+			}
+			if !matched {
+				if targetName == "" {
+					continue
+				}
 				if _, ok := externalSvcs[targetName]; !ok {
 					kind := "service"
 					lower := strings.ToLower(targetName)
@@ -578,7 +713,7 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 					externalSvcs[targetName] = &ExternalNode{Name: targetName, Kind: kind}
 				}
 			}
-			addTargetEdge(httpEdges, svcName, targetName, "http", "HTTP", t.endpoints)
+			addTargetEdge(httpEdges, svcName, targetName, "http", "HTTP", summary)
 		}
 	}
 	for _, key := range sortedStringKeys(httpEdges) {
@@ -702,6 +837,7 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 	sortServices(g.Services)
 	sortEdges(g.Edges)
 	g.Layout = buildLayout(g)
+	g.Connectivity = computeConnectivity(g)
 
 	return g
 }
@@ -874,6 +1010,98 @@ func getDetails(item map[string]any) map[string]string {
 		}
 	}
 	return out
+}
+
+type routeOwner struct {
+	service    string
+	exposureID string
+	method     string
+}
+
+// buildRouteIndex maps every known service's exposed HTTP routes by
+// normalized path so outbound calls without a resolvable host can still be
+// anchored to the one service exposing that route.
+func buildRouteIndex(services []*ServiceNode) map[string][]routeOwner {
+	idx := map[string][]routeOwner{}
+	for _, svc := range services {
+		if svc == nil || !svc.Known {
+			continue
+		}
+		for _, route := range svc.HTTPRoutes {
+			method, path := routeFromEntity(route)
+			norm := normalizeHTTPRoutePath(path)
+			if norm == "" || norm == "/" || genericRoutePath(norm) {
+				continue
+			}
+			idx[norm] = append(idx[norm], routeOwner{
+				service:    svc.Name,
+				exposureID: route.ID,
+				method:     strings.ToUpper(strings.TrimSpace(method)),
+			})
+		}
+	}
+	return idx
+}
+
+// matchRouteOwner resolves an outbound HTTP dependency to the single known
+// service exposing the same METHOD+path. Routes owned by more than one
+// service stay unmatched: a wrong deterministic edge is worse than a missing
+// one.
+func matchRouteOwner(idx map[string][]routeOwner, fromService string, dep EntitySummary) (routeOwner, bool) {
+	method, path := routeFromEntity(dep)
+	norm := normalizeHTTPRoutePath(path)
+	if norm == "" || norm == "/" {
+		return routeOwner{}, false
+	}
+	method = strings.ToUpper(strings.TrimSpace(method))
+	var match routeOwner
+	found := false
+	for _, owner := range idx[norm] {
+		if owner.service == fromService {
+			continue
+		}
+		if method != "" && owner.method != "" && owner.method != method {
+			continue
+		}
+		if !found {
+			match, found = owner, true
+			continue
+		}
+		if owner.service != match.service {
+			return routeOwner{}, false
+		}
+		if owner.exposureID != "" && (match.exposureID == "" || owner.exposureID < match.exposureID) {
+			match = owner
+		}
+	}
+	return match, found
+}
+
+// genericRoutePath reports whether a normalized path is a well-known generic
+// endpoint (auth, health, docs) that many services expose. Such paths cannot
+// safely identify a target service even when only one owner declared them.
+func genericRoutePath(norm string) bool {
+	switch norm {
+	case "/oauth/token", "/oauth/authorize", "/token", "/login", "/logout",
+		"/health", "/healthz", "/livez", "/readyz", "/status", "/info",
+		"/metrics", "/version", "/ping", "/api-docs", "/error":
+		return true
+	}
+	return strings.HasPrefix(norm, "/actuator") || strings.HasPrefix(norm, "/swagger") ||
+		strings.HasPrefix(norm, "/health/") || strings.HasPrefix(norm, "/.well-known")
+}
+
+func withMatchDetails(summary EntitySummary, basis, exposureID string) EntitySummary {
+	details := make(map[string]any, len(summary.Details)+2)
+	for k, v := range summary.Details {
+		details[k] = v
+	}
+	details["match_basis"] = basis
+	if exposureID != "" {
+		details["matched_exposure_id"] = exposureID
+	}
+	summary.Details = details
+	return summary
 }
 
 func graphServiceTarget(item map[string]any) string {
@@ -1475,6 +1703,35 @@ func normalizeID(s string) string {
 		return '_'
 	}, s)
 	return s
+}
+
+// scopedQueueKey prevents false cross-service joins on fallback queue names.
+// DiffMind marks each destination's provenance: real infrastructure names
+// (literal, resolved config, helm env value) are safe shared identities;
+// config-key fallbacks and generic tokens ("queue", "sqs", "queueurl") are
+// per-service display names that would otherwise merge unrelated services
+// onto one queue node.
+func scopedQueueKey(qKey, serviceName string, d map[string]string) string {
+	src := d["destination_source"]
+	if src == "config_key" || src == "raw" || genericQueueToken(qKey) {
+		scoped, _ := canonicalQueueName(serviceName)
+		if scoped == "" {
+			scoped = serviceName
+		}
+		return normalizeID(scoped) + ":" + qKey
+	}
+	return qKey
+}
+
+func genericQueueToken(qKey string) bool {
+	switch qKey {
+	case "sqs", "sns", "kafka", "queue", "queues", "topic", "topics",
+		"queueurl", "queuename", "queueurls", "requesturl", "responseurl",
+		"sqsevent", "sqsmessage", "sqsmessagebody", "message", "messages",
+		"event", "events", "stream", "input", "output", "source", "destination":
+		return true
+	}
+	return len(qKey) < 5
 }
 
 func canonicalQueueName(raw string) (display, key string) {

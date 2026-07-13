@@ -27,11 +27,23 @@ type Server struct {
 	log             *util.Logger
 	liveStatusMu    sync.Mutex
 	liveStatusCache map[string]liveStatusCacheEntry
+	archGraphMu     sync.Mutex
+	archGraphCache  map[string]archGraphCacheEntry
 }
 
 type liveStatusCacheEntry struct {
 	value     repoLive
 	expiresAt time.Time
+}
+
+// archGraphCacheEntry caches a parsed graph.json (tens of MB on large
+// projects) keyed by the file's mtime+size; the trace UI issues many
+// full-graph requests per interaction. Cached graphs are shared across
+// requests and must be treated as read-only by handlers.
+type archGraphCacheEntry struct {
+	graph   *ArchGraph
+	modTime time.Time
+	size    int64
 }
 
 // New constructs a Server backed by the given store and run manager.
@@ -45,7 +57,7 @@ func New(st *store.Store, runs *runmgr.Manager, diffmindRunsDir, host string, po
 	if log == nil {
 		log = util.NewLogger(util.LevelInfo)
 	}
-	return &Server{store: st, runs: runs, diffmindRunsDir: diffmindRunsDir, host: host, port: port, log: log, liveStatusCache: map[string]liveStatusCacheEntry{}}
+	return &Server{store: st, runs: runs, diffmindRunsDir: diffmindRunsDir, host: host, port: port, log: log, liveStatusCache: map[string]liveStatusCacheEntry{}, archGraphCache: map[string]archGraphCacheEntry{}}
 }
 
 // Addr returns "host:port".
@@ -110,6 +122,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/projects/{pid}/runs/{rid}/archgraph/resources/{resource}", s.handleRunArchGraphResource)
 	mux.HandleFunc("GET /api/projects/{pid}/runs/{rid}/archgraph/trace", s.handleRunArchGraphTrace)
 	mux.HandleFunc("GET /api/projects/{pid}/runs/{rid}/archgraph/flow", s.handleRunArchGraphFlow)
+	mux.HandleFunc("GET /api/projects/{pid}/runs/{rid}/archgraph/entrypoints", s.handleRunArchGraphEntrypoints)
+	mux.HandleFunc("GET /api/projects/{pid}/runs/{rid}/archgraph/impact", s.handleRunArchGraphImpact)
 	mux.HandleFunc("POST /api/projects/{pid}/runs/{rid}/cancel", s.handleCancelRun)
 	mux.HandleFunc("DELETE /api/projects/{pid}/runs/{rid}", s.handleDeleteRun)
 

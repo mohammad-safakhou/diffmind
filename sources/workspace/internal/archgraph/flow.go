@@ -8,6 +8,70 @@ import (
 	"strings"
 )
 
+// placeholderDefaultRe matches ${VAR:default} config placeholders, capturing
+// the default value (which may itself contain ':', e.g. a URL).
+var placeholderDefaultRe = regexp.MustCompile(`\$\{[^}:]+:([^}]*)\}`)
+
+// EntrypointRef is one selectable trace starting point.
+type EntrypointRef struct {
+	Service string `json:"service"`
+	Team    string `json:"team,omitempty"`
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	Name    string `json:"name"`
+}
+
+// SearchEntrypoints returns exposures across all known services whose name or
+// service matches the query (case-insensitive substring), capped at limit.
+// The full graph is too large to ship to the browser for client-side search.
+func SearchEntrypoints(g *ArchGraph, query string, limit int) []EntrypointRef {
+	if g == nil {
+		return nil
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	query = strings.ToLower(strings.TrimSpace(query))
+	var out []EntrypointRef
+	add := func(svc *ServiceNode, kind string, items []EntitySummary) bool {
+		for _, item := range items {
+			if item.ID == "" && item.Name == "" {
+				continue
+			}
+			if query != "" &&
+				!strings.Contains(strings.ToLower(item.Name), query) &&
+				!strings.Contains(strings.ToLower(svc.Name), query) {
+				continue
+			}
+			out = append(out, EntrypointRef{
+				Service: svc.Name,
+				Team:    svc.Team,
+				ID:      firstNonEmpty(item.ID, item.Name),
+				Kind:    kind,
+				Name:    firstNonEmpty(item.Name, item.ID),
+			})
+			if len(out) >= limit {
+				return true
+			}
+		}
+		return false
+	}
+	for _, svc := range g.Services {
+		if svc == nil || !svc.Known {
+			continue
+		}
+		if add(svc, "http_endpoint", svc.HTTPRoutes) ||
+			add(svc, "rpc_endpoint", svc.RPCEndpoints) ||
+			add(svc, "queue_consumer", svc.QueueConsumers) ||
+			add(svc, "scheduled_job", svc.ScheduledJobs) ||
+			add(svc, "webhook", svc.Webhooks) ||
+			add(svc, "cli_command", svc.CLICommands) {
+			break
+		}
+	}
+	return out
+}
+
 type FlowOptions struct {
 	Depth    int
 	MaxNodes int
@@ -22,7 +86,21 @@ type FlowView struct {
 	Services []FlowService `json:"services"`
 	Nodes    []FlowNode    `json:"nodes"`
 	Edges    []FlowEdge    `json:"edges"`
-	Stats    FlowStats     `json:"stats"`
+	// DataDependencies aggregates the field-level data dependencies of every
+	// connection the walk traversed (DTO field → entity field → DB column),
+	// keyed per service so the UI can attribute them.
+	DataDependencies []FlowDataDependency `json:"data_dependencies,omitempty"`
+	Stats            FlowStats            `json:"stats"`
+}
+
+// FlowDataDependency attributes one connection's data dependencies to the
+// service and flow they came from.
+type FlowDataDependency struct {
+	Service      string `json:"service"`
+	FlowID       string `json:"flow_id,omitempty"`
+	From         string `json:"from"`
+	To           string `json:"to"`
+	Dependencies any    `json:"dependencies"`
 }
 
 type FlowEntry struct {
@@ -79,6 +157,7 @@ type flowBuilder struct {
 	edges        map[string]FlowEdge
 	visited      map[string]bool
 	quality      []string
+	dataDeps     []FlowDataDependency
 	truncated    bool
 	cycles       int
 }
@@ -156,6 +235,15 @@ func (b *flowBuilder) walk(queue []flowVisit) {
 				MatchStatus:  "local_flow",
 			})
 			b.addEdge(FlowEdge{From: serviceNodeID, To: fromID, Kind: "entry", MatchStatus: "selected_entry"})
+			if conn.DataDependencies != nil {
+				b.dataDeps = append(b.dataDeps, FlowDataDependency{
+					Service:      svc.Name,
+					FlowID:       conn.FlowID,
+					From:         firstNonEmpty(conn.FromName, conn.FromID),
+					To:           firstNonEmpty(conn.ToName, conn.ToID),
+					Dependencies: conn.DataDependencies,
+				})
+			}
 		}
 		related := traceRelatedEdges(b.graph, svc.Name, matches)
 		if len(matches) == 0 && v.objectID == "" {
@@ -195,26 +283,48 @@ func (b *flowBuilder) expandGraphEdge(queue []flowVisit, v flowVisit, fromID str
 	}
 	b.addEdge(flowEdge)
 	if strings.HasPrefix(edge.To, "queue:") {
-		for _, consume := range b.edgesByFrom[edge.To] {
-			if target := b.services[consume.To]; target != nil {
-				consumerID, status := matchQueueConsumer(edge.To, target)
-				targetNodeID := b.addGraphTargetNode(target.Name, v.depth+1, status)
-				nextEdge := FlowEdge{
-					From:         toID,
-					To:           targetNodeID,
-					Kind:         consume.Type,
-					Async:        true,
-					CrossService: true,
-					MatchStatus:  status,
-				}
-				next := flowVisit{service: target.Name, objectID: consumerID, depth: v.depth + 1}
-				if b.markCycle(next) {
-					nextEdge.Cycle = true
-				} else if consumerID != "" && v.depth < b.opts.Depth {
-					queue = append(queue, next)
-				}
-				b.addEdge(nextEdge)
+		queue = b.expandQueueNode(queue, toID, edge.To, v.depth, 0)
+	}
+	return queue
+}
+
+// expandQueueNode follows a queue node's outgoing edges: queue_consume into
+// consumer services, and queue_subscription hops (SNS topic → subscribed SQS
+// queue, from infra topology) into the next queue node. subHops bounds the
+// subscription chain so a mis-extracted infra cycle cannot loop the walk.
+func (b *flowBuilder) expandQueueNode(queue []flowVisit, fromNodeID, queueGraphID string, depth, subHops int) []flowVisit {
+	for _, next := range b.edgesByFrom[queueGraphID] {
+		if target := b.services[next.To]; target != nil {
+			consumerID, status := matchQueueConsumer(queueGraphID, target)
+			targetNodeID := b.addGraphTargetNode(target.Name, depth+1, status)
+			nextEdge := FlowEdge{
+				From:         fromNodeID,
+				To:           targetNodeID,
+				Kind:         next.Type,
+				Async:        true,
+				CrossService: true,
+				MatchStatus:  status,
 			}
+			visit := flowVisit{service: target.Name, objectID: consumerID, depth: depth + 1}
+			if b.markCycle(visit) {
+				nextEdge.Cycle = true
+			} else if consumerID != "" && depth < b.opts.Depth {
+				queue = append(queue, visit)
+			}
+			b.addEdge(nextEdge)
+			continue
+		}
+		if next.Type == "queue_subscription" && strings.HasPrefix(next.To, "queue:") && subHops < 2 {
+			subNodeID := b.addGraphTargetNode(next.To, depth+1, "matched_graph_edge")
+			b.addEdge(FlowEdge{
+				From:         fromNodeID,
+				To:           subNodeID,
+				Kind:         next.Type,
+				Async:        true,
+				CrossService: false,
+				MatchStatus:  "matched_graph_edge",
+			})
+			queue = b.expandQueueNode(queue, subNodeID, next.To, depth, subHops+1)
 		}
 	}
 	return queue
@@ -351,13 +461,14 @@ func (b *flowBuilder) view(serviceName, objectID string) *FlowView {
 		status = "partial"
 	}
 	view := &FlowView{
-		RunID:    b.graph.RunID,
-		Entry:    FlowEntry{Service: serviceName, ObjectID: strings.TrimSpace(objectID)},
-		Status:   status,
-		Quality:  uniqueStrings(b.quality),
-		Services: services,
-		Nodes:    nodes,
-		Edges:    edges,
+		RunID:            b.graph.RunID,
+		Entry:            FlowEntry{Service: serviceName, ObjectID: strings.TrimSpace(objectID)},
+		Status:           status,
+		Quality:          uniqueStrings(b.quality),
+		Services:         services,
+		Nodes:            nodes,
+		Edges:            edges,
+		DataDependencies: b.dataDeps,
 		Stats: FlowStats{
 			ServiceCount: len(services),
 			NodeCount:    len(nodes),
@@ -415,6 +526,11 @@ func matchServiceEntrypoint(edge *GraphEdge, target *ServiceNode) (string, strin
 		return "", "unmatched"
 	}
 	if edge.Type == "http" {
+		for _, detail := range edge.Details {
+			if id := detailString(detail.Details, "matched_exposure_id"); id != "" {
+				return id, "exact_exposure"
+			}
+		}
 		method, path := routeFromEdge(edge)
 		if id := matchHTTPRoute(method, path, target.HTTPRoutes); id != "" {
 			return id, "exact_exposure"
@@ -522,10 +638,18 @@ func routePathOnly(raw string) string {
 	if raw == "" {
 		return ""
 	}
+	// Expand ${VAR:default} to the default so templates like
+	// ${API_URL:https://host}/path parse as a normal URL.
+	raw = placeholderDefaultRe.ReplaceAllString(raw, "$1")
 	if strings.Contains(raw, "://") {
 		parseable := regexp.MustCompile(`\$\{[^}]+\}`).ReplaceAllString(raw, "placeholder")
 		if u, err := url.Parse(parseable); err == nil && u.Path != "" {
 			raw = u.Path
+		}
+	} else if strings.HasPrefix(raw, "${") {
+		// ${VAR}/path with no default: keep the path part.
+		if idx := strings.Index(raw, "}/"); idx >= 0 {
+			raw = raw[idx+1:]
 		}
 	}
 	if idx := strings.Index(raw, "?"); idx >= 0 {

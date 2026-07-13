@@ -1585,3 +1585,74 @@ textarea { resize: vertical; }
     justify-content: center;
   }
 }
+
+/* ---- Flow trace ribbon ---- */
+.trace-controls { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.trace-controls select {
+  background: var(--bg-2); border: 1px solid var(--border); color: var(--text);
+  border-radius: 6px; padding: 4px 8px;
+}
+.trace-ribbon-wrap { position: relative; margin: 12px 16px; }
+.flow-ribbon-svg {
+  width: 100%; height: 520px; display: block;
+  background: var(--bg-1); border: 1px solid var(--border); border-radius: 12px;
+  cursor: grab;
+}
+.flow-ribbon-svg:active { cursor: grabbing; }
+.flow-hull rect { fill: rgba(79, 140, 255, 0.05); stroke: var(--border-strong); stroke-dasharray: 3 3; }
+.flow-hull text { fill: var(--text-muted); font-size: 12px; font-weight: 600; }
+.flow-node { cursor: pointer; }
+.flow-node rect { stroke-width: 1.4; transition: filter 120ms ease; }
+.flow-node:hover rect { filter: brightness(1.35); }
+.flow-node.selected rect { stroke-width: 2.6; filter: brightness(1.35); }
+.flow-node-kind { font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.9; }
+.flow-node-label { font-size: 12px; fill: var(--text); font-family: ui-monospace, monospace; }
+.flow-edge path { fill: none; stroke: #5a6d92; stroke-width: 1.5; }
+.flow-edge.cross path { stroke-width: 2.2; }
+.flow-edge.async path { stroke: #22c997; stroke-dasharray: 6 4; }
+.flow-edge.conditional path { stroke: #e0b341; stroke-dasharray: 3 4; }
+.flow-edge.cycle path { stroke: #e5484d; stroke-dasharray: 2 4; }
+.flow-edge-glyph { font-size: 12px; fill: #22c997; text-anchor: middle; }
+.flow-edge-label { font-size: 10px; fill: #e0b341; text-anchor: middle; }
+.trace-node-drawer {
+  position: absolute; top: 12px; right: 12px; width: 320px; max-height: 480px; overflow: auto;
+  background: var(--bg-2); border: 1px solid var(--border-strong); border-radius: 10px;
+  padding: 12px; box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+}
+.trace-node-drawer header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.trace-node-drawer h4 { margin: 4px 0 8px; font-family: ui-monospace, monospace; font-size: 13px; word-break: break-all; }
+.trace-node-details { margin: 8px 0; display: grid; gap: 4px; }
+.trace-node-details div { display: flex; gap: 8px; font-size: 12px; }
+.trace-node-details dt { color: var(--text-dim); min-width: 110px; }
+.trace-node-details dd { margin: 0; color: var(--text-muted); word-break: break-all; }
+.trace-node-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+/* ---- Trace entry picker ---- */
+.trace-picker-panel { max-width: 720px; margin: 24px auto; }
+.trace-picker-input {
+  width: 100%; box-sizing: border-box; margin: 10px 0 14px;
+  background: var(--bg-2); border: 1px solid var(--border-strong); color: var(--text);
+  border-radius: 8px; padding: 10px 14px; font-size: 14px;
+}
+.trace-picker-group h4 {
+  margin: 14px 0 6px; color: var(--text-dim); font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+.trace-picker-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  background: var(--bg-2); border: 1px solid var(--border); color: var(--text);
+  border-radius: 8px; padding: 8px 12px; margin-bottom: 6px; cursor: pointer;
+  font-family: ui-monospace, monospace; font-size: 12.5px;
+}
+.trace-picker-row:hover { border-color: var(--accent); background: var(--bg-3); }
+.trace-picker-row .muted { margin-left: auto; }
+.trace-picker-team {
+  font-size: 10px; color: var(--text-dim); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px;
+}
+.data-dep-row { flex-wrap: wrap; }
+.data-dep-fields { display: flex; gap: 6px; flex-wrap: wrap; width: 100%; margin-top: 4px; }
+.data-dep-fields code { background: var(--bg-3); border-radius: 4px; padding: 1px 6px; }
+.trace-mode-badge {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: #f5943a; border: 1px solid #f5943a; border-radius: 999px; padding: 2px 8px; margin-right: 8px;
+}

@@ -59,6 +59,7 @@ def endpoint(edge: dict[str, Any], key: str) -> str:
 def queue_async_chains(edges: list[dict[str, Any]]) -> tuple[int, list[dict[str, Any]]]:
     publishers: dict[str, set[str]] = defaultdict(set)
     consumers: dict[str, set[str]] = defaultdict(set)
+    subscriptions: dict[str, set[str]] = defaultdict(set)
     for edge in edges:
         typ = edge_type(edge)
         src = endpoint(edge, "from")
@@ -67,6 +68,12 @@ def queue_async_chains(edges: list[dict[str, Any]]) -> tuple[int, list[dict[str,
             publishers[dst].add(src)
         elif typ == "queue_consume" and src:
             consumers[src].add(dst)
+        elif typ == "queue_subscription" and src and dst:
+            subscriptions[src].add(dst)
+    # SNS fan-out: consumers of a subscribed queue are consumers of the topic.
+    for topic, queues in subscriptions.items():
+        for queue in queues:
+            consumers[topic] |= consumers.get(queue, set())
 
     chains: list[dict[str, Any]] = []
     total = 0

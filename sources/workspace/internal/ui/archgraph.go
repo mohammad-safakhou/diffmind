@@ -199,6 +199,39 @@ func (s *Server) handleRunArchGraphFlow(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, view)
 }
 
+func (s *Server) handleRunArchGraphImpact(w http.ResponseWriter, r *http.Request) {
+	pid, rid := r.PathValue("pid"), r.PathValue("rid")
+	graph, err := s.fullArchGraphForRun(pid, rid)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	target := firstNonEmpty(r.URL.Query().Get("node"), r.URL.Query().Get("service"))
+	view, ok := archgraph.BuildImpactView(graph, target, archgraph.FlowOptions{
+		Depth:    queryInt(r, "depth", 6),
+		MaxNodes: queryInt(r, "max_nodes", 500),
+	})
+	if !ok {
+		writeErr(w, http.StatusNotFound, errors.New("impact target not found in architecture graph"))
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) handleRunArchGraphEntrypoints(w http.ResponseWriter, r *http.Request) {
+	pid, rid := r.PathValue("pid"), r.PathValue("rid")
+	graph, err := s.fullArchGraphForRun(pid, rid)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	refs := archgraph.SearchEntrypoints(graph, r.URL.Query().Get("q"), queryInt(r, "limit", 50))
+	if refs == nil {
+		refs = []archgraph.EntrypointRef{}
+	}
+	writeJSON(w, http.StatusOK, refs)
+}
+
 func queryInt(r *http.Request, key string, fallback int) int {
 	raw := strings.TrimSpace(r.URL.Query().Get(key))
 	if raw == "" {
