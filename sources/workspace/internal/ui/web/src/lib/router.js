@@ -5,6 +5,7 @@
 // Routes:
 //   #/                              project index
 //   #/projects/{pid}                project home (tabs)
+//   #/projects/{pid}/pull-requests  live PR impact workspace
 //   #/projects/{pid}/runs/{rid}     graph viewer
 //   #/projects/{pid}/runs/{rid}/trace?service=&object_id=  flow trace
 import { useEffect, useState } from 'preact/hooks'
@@ -38,6 +39,8 @@ export function parseRoute(path) {
   if (m) return { name: 'trace', pid: decodeURIComponent(m[1]), rid: decodeURIComponent(m[2]), params }
   m = pathname.match(/^\/projects\/([^/]+)\/runs\/([^/]+)$/)
   if (m) return { name: 'run', pid: decodeURIComponent(m[1]), rid: decodeURIComponent(m[2]) }
+  m = pathname.match(/^\/projects\/([^/]+)\/pull-requests$/)
+  if (m) return { name: 'pull-requests', pid: decodeURIComponent(m[1]), params }
   m = pathname.match(/^\/projects\/([^/]+)$/)
   if (m) return { name: 'project', pid: decodeURIComponent(m[1]) }
   return { name: 'projects' }

@@ -54,6 +54,13 @@ export const startDiffMindBatch = (pid, body = {}) => api(`/api/projects/${pid}/
 export const getDiffMindConfigurationYaml = (pid, rid) => api(`/api/projects/${pid}/repos/${rid}/diffmind-configuration-yaml`)
 export const putDiffMindConfigurationYaml = (pid, rid, body) => api(`/api/projects/${pid}/repos/${rid}/diffmind-configuration-yaml`, { method: 'PUT', body: j({ body }) })
 export const getLiveStatus = (pid) => api(`/api/projects/${pid}/live-status`)
+export const getPullRequests = (pid) => api(`/api/projects/${pid}/pull-requests`)
+export const getPullRequestImpact = (pid, repoID, number, opts = {}) => {
+  const qs = new URLSearchParams()
+  if (opts.run_id) qs.set('run_id', opts.run_id)
+  const query = qs.toString()
+  return api(`/api/projects/${pid}/pull-requests/${encodeURIComponent(repoID)}/${number}/impact${query ? `?${query}` : ''}`)
+}
 
 // Blueprints
 export const listBlueprints = (pid) => api(`/api/projects/${pid}/blueprints`)

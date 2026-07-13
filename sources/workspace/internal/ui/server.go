@@ -99,6 +99,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/projects/{pid}/repo-suggestions", s.handleRepoSuggestions)
 	mux.HandleFunc("GET /api/projects/{pid}/workspace", s.handleWorkspace)
 	mux.HandleFunc("GET /api/projects/{pid}/live-status", s.handleLiveStatus)
+	mux.HandleFunc("GET /api/projects/{pid}/pull-requests", s.handlePullRequests)
+	mux.HandleFunc("GET /api/projects/{pid}/pull-requests/{repo_id}/{number}/impact", s.handlePullRequestImpact)
 
 	// Blueprints (G4).
 	mux.HandleFunc("GET /api/projects/{pid}/blueprints", s.handleListBlueprints)

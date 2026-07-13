@@ -750,11 +750,12 @@ func (s *Server) cachedLiveStatus(ctx context.Context, repo store.Repo) repoLive
 
 func githubLiveStatus(ctx context.Context, repo store.Repo) repoLive {
 	now := time.Now().UTC()
-	owner, name, ok := githubOwnerRepo(firstNonEmpty(repo.GitURL, repo.Path))
+	githubSource := githubSourceForRepo(ctx, repo)
+	owner, name, ok := githubOwnerRepo(githubSource)
 	if !ok {
 		return repoLive{Provider: firstNonEmpty(repo.GitProvider, "git"), Status: "unavailable", CheckedAt: now}
 	}
-	token := os.Getenv("GITHUB_TOKEN")
+	token := githubToken(ctx, githubSource)
 	client := &http.Client{Timeout: 8 * time.Second}
 	prs, prErr := githubCount(ctx, client, token, fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls?state=open&per_page=1", owner, name))
 	issues, issueErr := githubCount(ctx, client, token, fmt.Sprintf("https://api.github.com/repos/%s/%s/issues?state=open&per_page=1", owner, name))

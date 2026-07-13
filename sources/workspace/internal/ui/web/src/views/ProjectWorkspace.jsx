@@ -225,6 +225,9 @@ export function ProjectWorkspace({ pid }) {
           {workspace?.latest_run && <StatusBadge status={workspace.latest_run.status} />}
         </div>
         <div class="workspace-actions">
+          <button class="btn ghost" onClick={() => navigate(`/projects/${encodeURIComponent(pid)}/pull-requests`)}>
+            PR impact{sumOpenPRs(live) > 0 ? ` · ${sumOpenPRs(live)}` : ''}
+          </button>
           <button class="btn ghost" onClick={refresh}>Refresh</button>
           <button class="btn ghost" onClick={() => setImportOpen(true)}>Import repos</button>
           <button class="btn ghost" onClick={() => setAddOpen(true)}>Add repo</button>
@@ -332,6 +335,10 @@ function RepoButton({ repo, live, active, onClick }) {
       {status && <span class={'repo-run-status ' + status.kind}>{status.label}</span>}
     </button>
   )
+}
+
+function sumOpenPRs(live) {
+  return Object.values(live || {}).reduce((sum, item) => sum + (Number(item?.pull_requests) || 0), 0)
 }
 
 function DiffMindActivity({ repos }) {
