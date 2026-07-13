@@ -41,13 +41,13 @@ func TestConfigValueProfilePrecedence(t *testing.T) {
 			want: "orders", wantOK: true,
 		},
 		{
-			name: "unknown active profile + disagreeing override -> unresolved",
+			name: "unknown active profile + production override -> production wins",
 			files: map[string][]string{
 				"application.yml":      {"queue.name", "orders-local"},
 				"application-prod.yml": {"queue.name", "orders-prod"},
 			},
-			key:    "queue.name",
-			wantOK: false,
+			key:  "queue.name",
+			want: "orders-prod", wantOK: true,
 		},
 		{
 			name: "known active profile wins over base",
@@ -68,19 +68,36 @@ func TestConfigValueProfilePrecedence(t *testing.T) {
 			want: "orders", wantOK: true,
 		},
 		{
-			name: "placeholder active profile is unknown -> unresolved on disagreement",
+			name: "placeholder active profile -> production overlay is the architecture of record",
 			files: map[string][]string{
 				"application.yml":      {"queue.name", "orders-local", "spring.profiles.active", "${SPRING_PROFILES_ACTIVE:local}"},
 				"application-prod.yml": {"queue.name", "orders-prod"},
+			},
+			key:  "queue.name",
+			want: "orders-prod", wantOK: true,
+		},
+		{
+			name: "disagreeing profiles without base -> production wins",
+			files: map[string][]string{
+				"application-prod.yml":  {"queue.name", "orders-prod"},
+				"application-stage.yml": {"queue.name", "orders-stage"},
+			},
+			key:  "queue.name",
+			want: "orders-prod", wantOK: true,
+		},
+		{
+			name: "disagreeing non-production profiles stay unresolved",
+			files: map[string][]string{
+				"application-dev.yml":   {"queue.name", "orders-dev"},
+				"application-stage.yml": {"queue.name", "orders-stage"},
 			},
 			key:    "queue.name",
 			wantOK: false,
 		},
 		{
-			name: "profiles disagree among themselves without base -> unresolved",
+			name: "production disagreeing with itself stays unresolved",
 			files: map[string][]string{
-				"application-prod.yml":  {"queue.name", "orders-prod"},
-				"application-stage.yml": {"queue.name", "orders-stage"},
+				"application-prod.yml": {"queue.name", "orders-a", "queue.name", "orders-b"},
 			},
 			key:    "queue.name",
 			wantOK: false,
@@ -114,8 +131,8 @@ func TestConfigValueMultiDocProfileEntries(t *testing.T) {
 			{Key: "queue.name", Value: "orders-prod", Profile: "prod"},
 		}},
 	}}
-	if _, ok := ConfigValue(overlay, "queue.name"); ok {
-		t.Errorf("disagreeing in-file overlay with unknown active profile must be unresolved")
+	if got, ok := ConfigValue(overlay, "queue.name"); !ok || got != "orders-prod" {
+		t.Errorf("disagreeing in-file prod overlay is the architecture of record, got (%q,%v)", got, ok)
 	}
 
 	overlay.Configs["application.yml"].Entries = append(overlay.Configs["application.yml"].Entries,
@@ -142,14 +159,23 @@ func TestConfigProfile(t *testing.T) {
 	}
 }
 
-// The never-lose-data fallback chain must survive the stricter ConfigValue: an
-// unresolvable placeholder still yields a stable name from the key segment.
+// A production overlay resolves to the deployed queue URL's trailing segment;
+// a genuinely unresolvable placeholder still yields a stable name from the key
+// segment (the never-lose-data fallback).
 func TestResolveResourceNameUnresolvedFallsBackToKeySegment(t *testing.T) {
-	idx := &astpkg.ProjectIndex{Configs: map[string]*astpkg.ConfigFile{
+	prod := &astpkg.ProjectIndex{Configs: map[string]*astpkg.ConfigFile{
 		"application.yml":      cfg("application.yml", "services.aws.sqs.catalogue-target-response-sqs.url", "http://localhost/catalogue-local"),
 		"application-prod.yml": cfg("application-prod.yml", "services.aws.sqs.catalogue-target-response-sqs.url", "https://sqs.eu-west-1.amazonaws.com/1/catalogue-prod"),
 	}}
-	got := ResolveResourceName(idx, "${services.aws.sqs.catalogue-target-response-sqs.url}")
+	if got := ResolveResourceName(prod, "${services.aws.sqs.catalogue-target-response-sqs.url}"); got != "catalogue-prod" {
+		t.Errorf("production overlay should resolve to the deployed name, got %q", got)
+	}
+
+	unresolved := &astpkg.ProjectIndex{Configs: map[string]*astpkg.ConfigFile{
+		"application-dev.yml":   cfg("application-dev.yml", "services.aws.sqs.catalogue-target-response-sqs.url", "http://localhost/catalogue-dev"),
+		"application-stage.yml": cfg("application-stage.yml", "services.aws.sqs.catalogue-target-response-sqs.url", "http://localhost/catalogue-stage"),
+	}}
+	got := ResolveResourceName(unresolved, "${services.aws.sqs.catalogue-target-response-sqs.url}")
 	if got != "catalogue-target-response-sqs" {
 		t.Errorf("unresolved value should fall back to the key segment, got %q", got)
 	}
