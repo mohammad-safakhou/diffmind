@@ -492,7 +492,8 @@ func EntityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objecti
 		// Resolve ${...} property placeholders to the real queue name using the
 		// already-parsed config index, so the entity is named after the queue
 		// (e.g. catalogue-target-response-sqs) rather than the raw placeholder.
-		queue = normalizeQueueOrTopicDestination(ResolveResourceName(idx, queue), platform)
+		res := ResolveResourceNameDetailed(idx, queue)
+		queue = normalizeQueueOrTopicDestination(res.Name, platform)
 		if queue == "" {
 			return candidate{}, false
 		}
@@ -500,9 +501,11 @@ func EntityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objecti
 		e.Summary = fmt.Sprintf("%s queue consumer detected from framework binding", displayFramework(b.Framework))
 		e.Details["platform"] = platform
 		e.Details["queue"] = queue
+		addResolutionDetails(e.Details, res)
 	case "queue_publish":
 		platform, dest := parseQueueTrigger(trigger)
-		dest = normalizeQueueOrTopicDestination(ResolveResourceName(idx, dest), platform)
+		res := ResolveResourceNameDetailed(idx, dest)
+		dest = normalizeQueueOrTopicDestination(res.Name, platform)
 		if dest == "" {
 			return candidate{}, false
 		}
@@ -514,6 +517,7 @@ func EntityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objecti
 		} else {
 			e.Details["queue"] = dest
 		}
+		addResolutionDetails(e.Details, res)
 	case "scheduled_job":
 		schedule := parseScheduleTrigger(trigger)
 		if schedule == "" {

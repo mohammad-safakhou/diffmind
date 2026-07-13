@@ -81,7 +81,7 @@ func DeterministicQueuePublish(idx *astpkg.ProjectIndex) []candidate {
 		if !ok {
 			return
 		}
-		dest := queuePublishDestinationFromCall(idx, cs, platform)
+		dest, res := queuePublishDestinationFromCall(idx, cs, platform)
 		if dest == "" {
 			return // destination not statically resolvable; do not guess
 		}
@@ -94,42 +94,48 @@ func DeterministicQueuePublish(idx *astpkg.ProjectIndex) []candidate {
 			return
 		}
 		seen[key] = struct{}{}
+		details := map[string]any{
+			"platform":      platform,
+			"destination":   dest,
+			"discovered_by": "ast_publish_call",
+		}
+		addResolutionDetails(details, res)
 		out = append(out, candidate{
 			Type:       "queue_publish",
 			Name:       dest,
 			Summary:    fmt.Sprintf("AST-derived %s publish to %s", platform, dest),
 			Confidence: 1.0,
 			Tags:       []string{"deterministic", "messaging"},
-			Details: map[string]any{
-				"platform":      platform,
-				"destination":   dest,
-				"discovered_by": "ast_publish_call",
-			},
-			Locations: []candidateLocation{loc},
-			Evidence:  []candidateEvidence{callEvidence(cs)},
+			Details:    details,
+			Locations:  []candidateLocation{loc},
+			Evidence:   []candidateEvidence{callEvidence(cs)},
 		})
 	})
 	return out
 }
 
-func queuePublishDestinationFromCall(idx *astpkg.ProjectIndex, cs astpkg.CallSite, platform string) string {
-	if dest := normalizeQueueOrTopicDestination(ResolveResourceName(idx, firstLiteralArg(cs.Arguments)), platform); dest != "" {
-		return dest
+func queuePublishDestinationFromCall(idx *astpkg.ProjectIndex, cs astpkg.CallSite, platform string) (string, ResourceResolution) {
+	if raw := firstLiteralArg(cs.Arguments); raw != "" {
+		res := ResolveResourceNameDetailed(idx, raw)
+		if dest := normalizeQueueOrTopicDestination(res.Name, platform); dest != "" {
+			return dest, res
+		}
 	}
 	fa := idx.Files[cs.File]
 	if fa != nil {
+		var raw string
 		switch fa.Language {
 		case "python":
-			if dest := pythonQueuePublishDestination(cs, platform); dest != "" {
-				return normalizeQueueOrTopicDestination(ResolveResourceName(idx, dest), platform)
-			}
+			raw = pythonQueuePublishDestination(cs, platform)
 		case "javascript", "jsx", "typescript", "tsx":
-			if dest := javascriptQueuePublishDestination(cs, platform); dest != "" {
-				return normalizeQueueOrTopicDestination(ResolveResourceName(idx, dest), platform)
-			}
+			raw = javascriptQueuePublishDestination(cs, platform)
 		case "go":
-			if dest := goQueuePublishDestination(idx, cs, platform); dest != "" {
-				return normalizeQueueOrTopicDestination(ResolveResourceName(idx, dest), platform)
+			raw = goQueuePublishDestination(idx, cs, platform)
+		}
+		if raw != "" {
+			res := ResolveResourceNameDetailed(idx, raw)
+			if dest := normalizeQueueOrTopicDestination(res.Name, platform); dest != "" {
+				return dest, res
 			}
 		}
 	}
@@ -147,9 +153,14 @@ func DeterministicAWSQueueConsumers(idx *astpkg.ProjectIndex) []candidate {
 		if !ok {
 			return
 		}
-		dest := ResolveResourceName(idx, firstLiteralArg(cs.Arguments))
+		var res ResourceResolution
+		dest := ""
+		if raw := firstLiteralArg(cs.Arguments); raw != "" {
+			res = ResolveResourceNameDetailed(idx, raw)
+			dest = res.Name
+		}
 		if dest == "" {
-			dest = awsQueueDestinationFromCall(idx, cs, platform)
+			dest, res = awsQueueDestinationFromCall(idx, cs, platform)
 		}
 		dest = normalizeResourceToken(dest)
 		if dest == "" {
@@ -164,20 +175,22 @@ func DeterministicAWSQueueConsumers(idx *astpkg.ProjectIndex) []candidate {
 			return
 		}
 		seen[key] = struct{}{}
+		details := map[string]any{
+			"platform":      platform,
+			"queue":         dest,
+			"destination":   dest,
+			"discovered_by": "ast_aws_queue_receive_call",
+		}
+		addResolutionDetails(details, res)
 		out = append(out, candidate{
 			Type:       "queue_consumer",
 			Name:       dest,
 			Summary:    fmt.Sprintf("AST-derived %s queue consumer from AWS SDK receive call", platform),
 			Confidence: 1.0,
 			Tags:       []string{"deterministic", "aws-sdk", platform},
-			Details: map[string]any{
-				"platform":      platform,
-				"queue":         dest,
-				"destination":   dest,
-				"discovered_by": "ast_aws_queue_receive_call",
-			},
-			Locations: []candidateLocation{loc},
-			Evidence:  []candidateEvidence{callEvidence(cs)},
+			Details:    details,
+			Locations:  []candidateLocation{loc},
+			Evidence:   []candidateEvidence{callEvidence(cs)},
 		})
 	})
 	return out
@@ -201,8 +214,8 @@ func DeterministicPythonSQSConsumers(idx *astpkg.ProjectIndex) []candidate {
 		if !ok {
 			return
 		}
-		queue = ResolveResourceName(idx, queue)
-		queue = normalizeResourceToken(queue)
+		res := ResolveResourceNameDetailed(idx, queue)
+		queue = normalizeResourceToken(res.Name)
 		if queue == "" {
 			return
 		}
@@ -215,39 +228,108 @@ func DeterministicPythonSQSConsumers(idx *astpkg.ProjectIndex) []candidate {
 			return
 		}
 		seen[key] = struct{}{}
+		details := map[string]any{
+			"platform":      "sqs",
+			"queue":         queue,
+			"destination":   queue,
+			"discovered_by": "ast_python_sqs_consumer",
+		}
+		addResolutionDetails(details, res)
 		out = append(out, candidate{
 			Type:       "queue_consumer",
 			Name:       queue,
 			Summary:    "AST-derived Python SQS queue consumer",
 			Confidence: 1.0,
 			Tags:       []string{"deterministic", "python", "sqs"},
-			Details: map[string]any{
-				"platform":      "sqs",
-				"queue":         queue,
-				"destination":   queue,
-				"discovered_by": "ast_python_sqs_consumer",
-			},
-			Locations: []candidateLocation{loc},
-			Evidence:  []candidateEvidence{callEvidence(cs)},
+			Details:    details,
+			Locations:  []candidateLocation{loc},
+			Evidence:   []candidateEvidence{callEvidence(cs)},
 		})
 	})
 	return out
 }
 
-func awsQueueDestinationFromCall(idx *astpkg.ProjectIndex, cs astpkg.CallSite, platform string) string {
+func awsQueueDestinationFromCall(idx *astpkg.ProjectIndex, cs astpkg.CallSite, platform string) (string, ResourceResolution) {
 	window := callWindowSource(idx, cs, 10)
+	resolve := func(value string) (string, ResourceResolution) {
+		res := ResolveResourceNameDetailed(idx, value)
+		return normalizeQueueOrTopicDestination(res.Name, platform), res
+	}
 	for _, name := range []string{"queueUrl", "queueName", "queue", "topicArn", "topic"} {
 		if value := javaBuilderStringValue(window, name); value != "" {
-			return normalizeQueueOrTopicDestination(ResolveResourceName(idx, value), platform)
+			return resolve(value)
+		}
+		// The builder arg is a plain field/param (".topicArn(snsTopicArn)")
+		// whose value arrives via Spring injection: chase the @Value
+		// annotation on its declaration anywhere in the file.
+		if ident := javaBuilderIdentifier(window, name); ident != "" {
+			if placeholder := javaValueAnnotationPlaceholder(idx, cs.File, ident); placeholder != "" {
+				return resolve(placeholder)
+			}
 		}
 	}
 	if platform == "sns" {
 		if value := javaAssignedStringValue(window, "topicArn"); value != "" {
-			return normalizeQueueOrTopicDestination(ResolveResourceName(idx, value), platform)
+			return resolve(value)
 		}
 	}
 	if value := javaAssignedStringValue(window, "queueUrl"); value != "" {
-		return normalizeQueueOrTopicDestination(ResolveResourceName(idx, value), platform)
+		return resolve(value)
+	}
+	return "", ResourceResolution{}
+}
+
+// javaBuilderIdentifier extracts the bare identifier passed to a builder
+// method (".topicArn(snsTopicArn)" → "snsTopicArn"); "" when the arg is a
+// string literal or constant that javaBuilderStringValue already handles.
+func javaBuilderIdentifier(src, method string) string {
+	if src == "" || method == "" {
+		return ""
+	}
+	re := regexp.MustCompile(`(?s)\.` + regexp.QuoteMeta(method) + `\s*\(\s*([A-Za-z_][A-Za-z0-9_$.]*)\s*\)`)
+	m := re.FindStringSubmatch(src)
+	if len(m) < 2 {
+		return ""
+	}
+	ident := m[1]
+	if i := strings.LastIndex(ident, "."); i >= 0 {
+		ident = ident[i+1:]
+	}
+	if isJavaConstantName(ident) {
+		return "" // constants resolve via javaStringOrIdentValue
+	}
+	return ident
+}
+
+var javaValueAnnotationRe = regexp.MustCompile(`@Value\s*\(\s*"((?:[^"\\]|\\.)*)"\s*\)`)
+
+// javaValueAnnotationPlaceholder finds the @Value("${...}") declaration of a
+// field or constructor/method parameter named ident in the call's file and
+// returns the annotation's placeholder string.
+func javaValueAnnotationPlaceholder(idx *astpkg.ProjectIndex, file, ident string) string {
+	if idx == nil || idx.RepoRoot == "" || file == "" || ident == "" {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(idx.RepoRoot, file))
+	if err != nil {
+		return ""
+	}
+	src := string(b)
+	declRe := regexp.MustCompile(`(?s)^\s*(?:(?:private|protected|public|final|static|transient|val|var)\s+)*(?:[A-Za-z_][A-Za-z0-9_.<>\[\]]*\s+)?` + regexp.QuoteMeta(ident) + `\b`)
+	for _, m := range javaValueAnnotationRe.FindAllStringSubmatchIndex(src, -1) {
+		placeholder := src[m[2]:m[3]]
+		if !strings.Contains(placeholder, "${") {
+			continue
+		}
+		// The declaration the annotation applies to follows within a short
+		// span (same line for params, next line for fields).
+		tail := src[m[1]:]
+		if len(tail) > 200 {
+			tail = tail[:200]
+		}
+		if declRe.MatchString(tail) {
+			return placeholder
+		}
 	}
 	return ""
 }

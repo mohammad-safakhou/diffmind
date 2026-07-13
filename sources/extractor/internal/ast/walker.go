@@ -37,6 +37,12 @@ type WalkConfig struct {
 	MaxPathsTotal int
 	// MaxVisitedEdges caps total edge expansions (anti-runaway). Default 100000.
 	MaxVisitedEdges int
+	// MaxQueuedNodes caps the BFS frontier. Every queued node carries its own
+	// steps copy and visited set, and a wide call graph enqueues exponentially
+	// more nodes than MaxVisitedEdges ever sees dequeued — unbounded frontier
+	// growth, not edge count, is what exhausts memory on pathological repos.
+	// Default 50000.
+	MaxQueuedNodes int
 }
 
 func (c WalkConfig) withDefaults() WalkConfig {
@@ -51,6 +57,9 @@ func (c WalkConfig) withDefaults() WalkConfig {
 	}
 	if c.MaxVisitedEdges <= 0 {
 		c.MaxVisitedEdges = 100000
+	}
+	if c.MaxQueuedNodes <= 0 {
+		c.MaxQueuedNodes = 50000
 	}
 	if c.Context == nil {
 		c.Context = context.Background()
@@ -197,6 +206,10 @@ func (w *Walker) WalkVerbose(entrySymbol string, cfg WalkConfig) (paths []CallPa
 				}
 
 				// Only enqueue if we haven't exceeded the per-symbol path cap.
+				if len(queue) >= cfg.MaxQueuedNodes {
+					truncated = true
+					continue
+				}
 				newVisited := cloneVisited(n.visited, callee)
 				queue = append(queue, queueNode{
 					symbol:  callee,
