@@ -157,8 +157,8 @@ export function FlowRibbon({ flow, onSelect }) {
               onClick={() => pick(n)}
             >
               <rect width={n.width} height={n.height} rx="8" fill={colors.fill} stroke={colors.stroke} />
-              <text class="flow-node-kind" x="10" y="16" fill={colors.stroke}>{n.kind}</text>
-              <text class="flow-node-label" x="10" y="33">
+              <text class="flow-node-kind" x="10" y="16" fill={colors.stroke} stroke="none">{n.kind}</text>
+              <text class="flow-node-label" x="10" y="33" fill="#e5e7eb" stroke="none">
                 {(n.label || n.id).slice(0, 40)}
               </text>
             </g>
