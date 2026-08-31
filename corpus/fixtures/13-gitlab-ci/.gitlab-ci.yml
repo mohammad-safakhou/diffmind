@@ -1,3 +1,0 @@
-stages: [test]
-test:
-  script: echo test
