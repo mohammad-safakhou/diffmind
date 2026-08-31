@@ -1,0 +1,32 @@
+{
+  "fixture": "sqs-consumer",
+  "repo_path": "repo",
+  "service_name": "sqs-consumer",
+  "exposures": [
+    {
+      "type": "queue_consumer",
+      "name": "order-events",
+      "platform": "sqs",
+      "instance": "order-events",
+      "details": { "queue": "order-events", "platform": "sqs" },
+      "deterministic": true
+    }
+  ],
+  "dependencies": [
+    {
+      "type": "db_operation",
+      "name": "write order_projection",
+      "platform": "postgres",
+      "instance": "order_projections",
+      "details": { "table": "order_projection", "operation": "write" },
+      "deterministic": true
+    }
+  ],
+  "connections": [
+    {
+      "from": { "type": "queue_consumer", "platform": "sqs", "details": { "queue": "order-events" } },
+      "to": { "type": "db_operation", "platform": "postgres", "details": { "table": "order_projection", "operation": "write" } },
+      "deterministic": true
+    }
+  ]
+}

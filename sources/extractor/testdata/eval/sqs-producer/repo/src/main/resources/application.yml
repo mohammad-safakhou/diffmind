@@ -1,0 +1,5 @@
+services:
+  aws:
+    sqs:
+      order-events:
+        url: ${ORDER_EVENTS_SQS:http://localhost:4566/order-events}

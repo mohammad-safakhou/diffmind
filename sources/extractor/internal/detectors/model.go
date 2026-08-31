@@ -1,0 +1,42 @@
+// Package detectors defines the deterministic detector catalog. User-facing
+// detector IDs live here so configuration, tests, and detector implementations
+// share one contract.
+package detectors
+
+type Language string
+
+const (
+	LanguageDotnet     Language = "dotnet"
+	LanguageGo         Language = "golang"
+	LanguageJava       Language = "java"
+	LanguageJavaScript Language = "javascript"
+	LanguagePHP        Language = "php"
+	LanguagePython     Language = "python"
+	LanguageRuby       Language = "ruby"
+	LanguageTypeScript Language = "typescript"
+)
+
+type Category string
+
+const (
+	CategoryActivation Category = "activation"
+	CategoryAWS        Category = "aws"
+	CategoryCache      Category = "cache"
+	CategoryCLI        Category = "cli"
+	CategoryDB         Category = "db"
+	CategoryHTTP       Category = "http"
+	CategoryHTTPClient Category = "httpclient"
+	CategoryAI         Category = "ai"
+	CategoryDI         Category = "dependency_injection"
+	CategoryQueue      Category = "queue"
+	CategoryRPC        Category = "rpc"
+)
+
+type Descriptor struct {
+	ID          string
+	Language    Language
+	Category    Category
+	Tool        string
+	ObjectTypes []string
+	Description string
+}
