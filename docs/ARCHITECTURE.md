@@ -1,0 +1,32 @@
+# Architecture
+
+DiffMind has three internal layers behind one command and one persistent home.
+
+1. The extractor reads one source repository and emits a deterministic
+   `diffmind.service.v1` document with observations and evidence.
+2. The workspace owns projects and repositories, schedules extraction runs,
+   and resolves service documents into a cross-repository graph.
+3. The web UI exposes project setup, run progress, graph exploration, and
+   impact analysis through the workspace API.
+
+The protocol package is the boundary between extraction and graph assembly.
+It contains no I/O policy beyond document encoding, schema generation, and
+validation.
+
+## Local data
+
+```text
+~/.diffmind/
+├── config.json
+├── runs/
+└── projects/
+    └── <project-id>/
+        ├── project.json
+        ├── repos/
+        ├── blueprints/
+        └── runs/
+```
+
+Set `DIFFMIND_HOME` to relocate the entire tree. Repository analysis is
+deterministic by default; generated facts should always retain concrete source
+evidence.
