@@ -1,0 +1,49 @@
+{
+  "fixture": "go-stdlib",
+  "repo_path": "repo",
+  "service_name": "go-stdlib",
+  "exposures": [
+    {
+      "type": "http_route",
+      "name": "GET /orders/{id}",
+      "details": { "method": "GET", "path": "/orders/{id}" },
+      "deterministic": true
+    },
+    {
+      "type": "http_route",
+      "name": "POST /orders",
+      "details": { "method": "POST", "path": "/orders" },
+      "deterministic": true
+    }
+  ],
+  "dependencies": [
+    {
+      "type": "db_operation",
+      "name": "read orders",
+      "platform": "postgres",
+      "instance": "orders_db",
+      "details": { "table": "orders", "operation": "read" },
+      "deterministic": true
+    },
+    {
+      "type": "db_operation",
+      "name": "write orders",
+      "platform": "postgres",
+      "instance": "orders_db",
+      "details": { "table": "orders", "operation": "write" },
+      "deterministic": true
+    }
+  ],
+  "connections": [
+    {
+      "from": { "type": "http_route", "details": { "method": "GET", "path": "/orders/{id}" } },
+      "to": { "type": "db_operation", "platform": "postgres", "details": { "table": "orders", "operation": "read" } },
+      "deterministic": true
+    },
+    {
+      "from": { "type": "http_route", "details": { "method": "POST", "path": "/orders" } },
+      "to": { "type": "db_operation", "platform": "postgres", "details": { "table": "orders", "operation": "write" } },
+      "deterministic": true
+    }
+  ]
+}

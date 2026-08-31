@@ -1,0 +1,130 @@
+name: diffmind-indexer image
+
+# Builds and publishes the diffmind-indexer container image to GitHub
+# Container Registry (GHCR). This is the image that diffmind's `index`
+# pipeline stage shells into via the docker CLI on the host.
+#
+# TAGS produced
+#
+#   - sha-<short-sha>  on every push to main + every PR (for verification)
+#   - <semver>         on every `v*` git tag (release artefact)
+#   - latest           on pushes to main only
+#
+# All tags are immutable in GHCR by default (we don't enable retention
+# policies). Once published, the diffmind binary built at the same SHA
+# pins this exact image, so old runs remain reproducible forever.
+#
+# CACHING
+#
+# We use docker/build-push-action's built-in GitHub-Actions cache backend.
+# Each language toolchain is in its own builder stage, so changing one
+# indexer's pinned version (e.g. bumping scip-typescript) does NOT
+# invalidate the JDK or Go stages. Cold builds take ~25 minutes; warm
+# rebuilds for a single-indexer bump are under 3 minutes.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'Dockerfile.indexer'
+      - 'cmd/diffmind-index/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/indexer-image.yml'
+  pull_request:
+    paths:
+      - 'Dockerfile.indexer'
+      - 'cmd/diffmind-index/**'
+      - '.github/workflows/indexer-image.yml'
+  workflow_dispatch:
+    # Manual trigger lets maintainers rebuild without a commit, useful
+    # when an upstream indexer publishes a patch we want to absorb.
+
+permissions:
+  contents: read
+  packages: write
+  # id-token is needed for cosign provenance signing (planned, not in
+  # Sprint 1 — we'll wire it once the image stabilises).
+  id-token: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}-indexer
+  # Lowercased + slash-stripped so it's a valid OCI reference no matter
+  # what the repo is named. Computed once here so all jobs agree.
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # 90 minutes is generous; warm builds complete in well under 5.
+    # Cold builds (after a base-image bump) can hit 30+ minutes due to
+    # apt + npm install + Coursier + Go module resolution all running
+    # in series for some builder stages. We bound the upper limit so
+    # a hung runner doesn't pin a slot for hours.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Lower-case image name
+        # OCI reference syntax forbids upper-case characters in the path.
+        # GitHub repos can have any case in their names ("Anomalyco/DiffMind"),
+        # so we normalise here before any tag is built.
+        id: img
+        run: |
+          echo "name=$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        # QEMU lets us build arm64 alongside amd64. We're only publishing
+        # amd64 in Sprint 1 because the Apple-Silicon scip-java is still
+        # x86 via Rosetta; multi-arch is a follow-up.
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        # PRs from forks can't push to GHCR (no token); skip the login
+        # in that case so the PR still builds for verification.
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        # docker/metadata-action computes a sensible set of tags from the
+        # event (commit SHA, semver tag, branch, latest). We restrict to
+        # the cases we actually want: sha-<short>, semver, latest-on-main.
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.img.outputs.name }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Multi-language SCIP indexer used by DiffMind
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.indexer
+          # On PRs from forks: build but don't push (we have no creds).
+          # On push to main / tag pushes / PRs from the same repo: push.
+          push: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # provenance/sbom: turn on once we sign with cosign in a follow-up.
+          provenance: false
+          sbom: false
