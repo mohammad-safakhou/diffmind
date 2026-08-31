@@ -1,0 +1,14 @@
+[
+  {
+    "id": "exp_http_post_charge",
+    "type": "http_route",
+    "name": "POST /api/charge",
+    "service": "/repos/billing-service",
+    "summary": "Charges a customer for an order",
+    "source_locations": [{"file": "src/main/java/com/example/BillingController.java", "start_line": 15, "end_line": 30}],
+    "evidence": [{"location": {"file": "src/main/java/com/example/BillingController.java", "start_line": 15, "end_line": 15}, "snippet": "@PostMapping(\"/api/charge\")", "source": "opencode"}],
+    "confidence": 0.96,
+    "tags": ["http", "post", "charge", "billing"],
+    "details": {"method": "POST", "path": "/api/charge"}
+  }
+]

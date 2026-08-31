@@ -1,0 +1,21 @@
+{
+  "iamRole": "billing-service-prod",
+  "replicaCount": 3,
+  "image": {
+    "repository": "ecr.aws/example/billing-service",
+    "tag": "latest"
+  },
+  "ingress": {
+    "enabled": true,
+    "hosts": ["billing-service.example.global", "billing.internal"],
+    "paths": ["/api/charge", "/api/refund"]
+  },
+  "service": {
+    "port": 8080,
+    "targetPort": 8080
+  },
+  "env": {
+    "DATABASE_URL": "jdbc:postgresql://billing-db.rds.amazonaws.com:5432/payments",
+    "NOTIFICATION_SERVICE_URL": "https://notification-service.example.global"
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "repos": {
+    "service_repos": [
+      {
+        "name": "checkout-service",
+        "path": "/Users/developer/repos/example/checkout-service"
+      },
+      {
+        "name": "pricing-service",
+        "path": "/Users/developer/repos/example/pricing-service"
+      },
+      {
+        "name": "gateway-service",
+        "path": "/Users/developer/repos/example/gateway-service"
+      },
+      {
+        "name": "routing-service",
+        "path": "/Users/developer/repos/example/routing-service"
+      },
+      {
+        "name": "ranking-service",
+        "path": "/Users/developer/repos/example/ranking-service"
+      },
+      {
+        "name": "sync-service",
+        "path": "/Users/developer/repos/example/sync-service"
+      }
+    ],
+    "infra_repos": []
+  },
+  "blueprints": {
+    "dirs": ["blueprints"]
+  },
+  "artifacts": {
+    "base_dir": ".diffmind/runs"
+  }
+}

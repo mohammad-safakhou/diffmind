@@ -1,0 +1,15 @@
+[
+  {
+    "id": "conn_orders_to_billing",
+    "from_exposure_id": "exp_http_post_orders",
+    "to_dependency_id": "dep_http_billing",
+    "condition": {"kind": "always", "expression": "true", "explanation": "Always called when creating an order"},
+    "path_signature": "POST /api/orders → BillingClient.charge",
+    "summary": "Order creation triggers billing charge",
+    "source_locations": [{"file": "src/main/java/com/example/OrderService.java", "start_line": 30, "end_line": 40}],
+    "evidence": [],
+    "confidence": 0.95,
+    "from_type": "http_route",
+    "to_type": "outbound_http"
+  }
+]

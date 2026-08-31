@@ -1,0 +1,16 @@
+[
+  {
+    "id": "dep_http_notification",
+    "type": "outbound_http",
+    "name": "NotificationClient.sendReceipt",
+    "service": "/repos/billing-service",
+    "summary": "Calls notification service to send payment receipt",
+    "source_locations": [{"file": "src/main/java/com/example/NotificationClient.java", "start_line": 10, "end_line": 20}],
+    "evidence": [
+      {"location": {"file": "src/main/resources/application.yml", "start_line": 20, "end_line": 20}, "snippet": "url: ${NOTIFICATION_SERVICE_URL:https://notification-service.example.global}", "source": "opencode"}
+    ],
+    "confidence": 0.93,
+    "tags": ["feign", "http", "notification-service"],
+    "details": {"url": "https://notification-service.example.global/api/send"}
+  }
+]

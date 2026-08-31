@@ -1,0 +1,35 @@
+{
+  "name": "helm-values-identity",
+  "description": "Deterministic extraction of service identity from .example production Helm values",
+  "version": "v1",
+  "applies_to": {
+    "kind": "service_repo",
+    "match": {
+      "has_path": ".example"
+    }
+  },
+  "extractions": [
+    {
+      "name": "production_identity",
+      "description": "Extract IAM role from production Helm values",
+      "source": {
+        "glob": ".example/config/production/values.yaml"
+      },
+      "strategy": "field_path",
+      "extract": [
+        {"field": "iamRole", "maps_to": "iam_role"}
+      ]
+    },
+    {
+      "name": "production_ingress",
+      "description": "Extract ingress hosts from production Helm values",
+      "source": {
+        "glob": ".example/config/production/values.yaml"
+      },
+      "strategy": "field_path",
+      "extract": [
+        {"field": "ingress.hosts", "maps_to": "dns_aliases"}
+      ]
+    }
+  ]
+}
