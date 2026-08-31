@@ -1,0 +1,17 @@
+[
+  {
+    "id": "dep_http_billing",
+    "type": "outbound_http",
+    "name": "BillingClient.charge",
+    "service": "/repos/order-service",
+    "summary": "Calls billing service to charge the customer",
+    "source_locations": [{"file": "src/main/java/com/example/BillingClient.java", "start_line": 10, "end_line": 20}],
+    "evidence": [
+      {"location": {"file": "src/main/java/com/example/BillingClient.java", "start_line": 15, "end_line": 15}, "snippet": "url: ${BILLING_SERVICE_URL:https://billing-service.example.global}", "source": "opencode"},
+      {"location": {"file": "src/main/java/com/example/BillingClient.java", "start_line": 18, "end_line": 18}, "snippet": "@PostMapping(\"/api/charge\")", "source": "opencode"}
+    ],
+    "confidence": 0.97,
+    "tags": ["feign", "http", "post", "billing-service"],
+    "details": {"url": "https://billing-service.example.global/api/charge", "method": "POST"}
+  }
+]

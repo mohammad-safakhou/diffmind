@@ -1,0 +1,15 @@
+[
+  {
+    "id": "conn_charge_to_notification",
+    "from_exposure_id": "exp_http_post_charge",
+    "to_dependency_id": "dep_http_notification",
+    "condition": {"kind": "predicate", "expression": "paymentSuccessful", "explanation": "Only sends receipt if payment was successful"},
+    "path_signature": "POST /api/charge → NotificationClient.sendReceipt",
+    "summary": "Successful charge triggers receipt notification",
+    "source_locations": [{"file": "src/main/java/com/example/BillingService.java", "start_line": 35, "end_line": 45}],
+    "evidence": [],
+    "confidence": 0.90,
+    "from_type": "http_route",
+    "to_type": "outbound_http"
+  }
+]

@@ -1,0 +1,14 @@
+[
+  {
+    "id": "dep_db_payments",
+    "type": "db_operation",
+    "name": "PaymentRepository.save",
+    "service": "/repos/billing-service",
+    "summary": "Saves payment record to PostgreSQL",
+    "source_locations": [{"file": "src/main/java/com/example/PaymentRepository.java", "start_line": 5, "end_line": 10}],
+    "evidence": [{"location": {"file": "src/main/resources/application.yml", "start_line": 10, "end_line": 10}, "snippet": "url: jdbc:postgresql://billing-db:5432/payments", "source": "opencode"}],
+    "confidence": 0.95,
+    "tags": ["postgresql", "table:payments", "write"],
+    "details": {"database": "billing-db", "table": "payments"}
+  }
+]

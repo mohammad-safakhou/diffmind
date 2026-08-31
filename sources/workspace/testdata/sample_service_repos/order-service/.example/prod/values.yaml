@@ -1,0 +1,22 @@
+{
+  "iamRole": "order-service-prod",
+  "replicaCount": 2,
+  "image": {
+    "repository": "ecr.aws/example/order-service",
+    "tag": "latest"
+  },
+  "ingress": {
+    "enabled": true,
+    "hosts": ["order-service.example.global", "orders.internal"],
+    "paths": ["/api/orders"]
+  },
+  "service": {
+    "port": 8080,
+    "targetPort": 8080
+  },
+  "env": {
+    "DATABASE_URL": "jdbc:postgresql://orders-db.rds.amazonaws.com:5432/orders",
+    "BILLING_SERVICE_URL": "https://billing-service.example.global",
+    "SQS_QUEUE_URL": "https://sqs.eu-central-1.amazonaws.com/123456/order-events"
+  }
+}
