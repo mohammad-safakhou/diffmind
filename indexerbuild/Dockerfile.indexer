@@ -50,13 +50,14 @@
 # Pinned versions (single place to bump)
 # ---------------------------------------------------------------------
 ARG SCIP_VERSION=v0.7.1
+ARG SCIP_GO_VERSION=v0.2.7
 ARG SCIP_JAVA_VERSION=0.12.3
 ARG SCIP_TYPESCRIPT_VERSION=0.4.0
 ARG SCIP_PYTHON_VERSION=0.6.4
 ARG SCIP_RUBY_VERSION=0.4.1
 ARG SCIP_CLANG_VERSION=0.3.5
 ARG SCIP_DOTNET_VERSION=0.2.14
-ARG GO_VERSION=1.22.8
+ARG GO_VERSION=1.26.2
 ARG NODE_VERSION=20
 ARG PYTHON_VERSION=3.12
 ARG RUBY_VERSION=3.3
@@ -83,8 +84,9 @@ RUN git clone --depth=1 --branch=${SCIP_VERSION} https://github.com/scip-code/sc
 # Build scip-go from source. Pure Go, easy.
 # ---------------------------------------------------------------------
 FROM golang:${GO_VERSION}-bookworm AS scip-go-builder
+ARG SCIP_GO_VERSION
 WORKDIR /build
-RUN git clone --depth=1 https://github.com/sourcegraph/scip-go.git . \
+RUN git clone --depth=1 --branch=${SCIP_GO_VERSION} https://github.com/scip-code/scip-go.git . \
     && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/scip-go ./cmd/scip-go
 
 # ---------------------------------------------------------------------
