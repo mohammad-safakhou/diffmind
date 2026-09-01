@@ -98,10 +98,10 @@ ARG SCIP_JAVA_VERSION
 ARG COURSIER_VERSION
 WORKDIR /work
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && apt-get install -y --no-install-recommends curl ca-certificates gzip \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL -o coursier "https://github.com/coursier/coursier/releases/download/v${COURSIER_VERSION}/cs-x86_64-pc-linux.gz" \
-    && (file coursier | grep -q gzip && gunzip coursier || true) \
+    && curl -fsSL -o coursier.gz "https://github.com/coursier/coursier/releases/download/v${COURSIER_VERSION}/cs-x86_64-pc-linux.gz" \
+    && gunzip coursier.gz \
     && chmod +x coursier \
     && ./coursier bootstrap --standalone \
         -o /out/scip-java \
