@@ -1,4 +1,4 @@
-.PHONY: build test test-race test-packs test-integration ui-build run clean
+.PHONY: build install test test-race test-packs test-integration ui-build ui-test verify run clean
 
 GOCACHE_DIR := $(CURDIR)/.gocache
 
@@ -6,11 +6,14 @@ build:
 	mkdir -p bin
 	GOCACHE=$(GOCACHE_DIR) go build -o bin/diffmind ./cmd/diffmind
 
+install:
+	go install ./cmd/diffmind
+
 test:
 	GOCACHE=$(GOCACHE_DIR) go test ./...
 
 test-race:
-	GOCACHE=$(GOCACHE_DIR) go test -race ./internal/workspace/knowledge ./internal/workspace/orchestrator ./internal/workspace/resolver
+	GOCACHE=$(GOCACHE_DIR) go test -race ./...
 
 test-packs:
 	GOCACHE=$(GOCACHE_DIR) go run ./cmd/diffmind pack lint ./packs
@@ -24,6 +27,11 @@ ui-build:
 	npm --prefix internal/workspace/ui/web run build
 	npm --prefix internal/extractor/ui/web ci
 	npm --prefix internal/extractor/ui/web run build
+
+ui-test:
+	npm --prefix internal/extractor/ui/web test
+
+verify: test test-packs ui-build ui-test
 
 run:
 	GOCACHE=$(GOCACHE_DIR) go run ./cmd/diffmind

@@ -5,6 +5,7 @@ import { Modal, ConfirmDialog } from '../components/Modal.jsx'
 import { GraphCanvas } from './GraphCanvas.jsx'
 import { GraphDetailBody } from './GraphDetails.jsx'
 import { StatusBadge } from './tabs/RunsTab.jsx'
+import { PacksTab } from './tabs/PacksTab.jsx'
 
 export function ProjectWorkspace({ pid }) {
   const [workspace, setWorkspace] = useState(null)
@@ -25,6 +26,7 @@ export function ProjectWorkspace({ pid }) {
   const [yamlRepo, setYamlRepo] = useState(null)
   const [diffmindRepo, setDiffMindRepo] = useState(null)
   const [deleteTarget, setDeleteTarget] = useState(null)
+  const [packsOpen, setPacksOpen] = useState(false)
 
   const refresh = async () => {
     try {
@@ -225,6 +227,7 @@ export function ProjectWorkspace({ pid }) {
           {workspace?.latest_run && <StatusBadge status={workspace.latest_run.status} />}
         </div>
         <div class="workspace-actions">
+          <button class="btn ghost" onClick={() => setPacksOpen(true)}>Knowledge packs</button>
           <button class="btn ghost" onClick={() => navigate(`/projects/${encodeURIComponent(pid)}/pull-requests`)}>
             PR impact{sumOpenPRs(live) > 0 ? ` · ${sumOpenPRs(live)}` : ''}
           </button>
@@ -240,6 +243,12 @@ export function ProjectWorkspace({ pid }) {
       {graphError && <div class="workspace-error banner error">Graph load failed: {graphError}</div>}
       {currentGraphRun?.status === 'failed' && currentGraphRun.error && <div class="workspace-error banner error">Graph build failed: {currentGraphRun.error}</div>}
       {notice && <div class="workspace-notice banner ok">{notice}</div>}
+      {packsOpen && (
+        <Modal title="Knowledge packs" onClose={() => setPacksOpen(false)} wide>
+          <p class="muted">Teach DiffMind your organization’s repository conventions with deterministic, versioned extraction rules.</p>
+          <PacksTab pid={pid} />
+        </Modal>
+      )}
       <GraphQualityBanner quality={(currentGraphRun?.graph_quality || workspace?.latest_run?.graph_quality)} />
       {(hasRunningDiffMind || graphIsRunning) && (
         <div class="workspace-activity-stack">

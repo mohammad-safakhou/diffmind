@@ -33,6 +33,9 @@ Usage:
   diffmind list projects              List projects
   diffmind list runs --project <id>   List graph runs for a project
   diffmind pack <command>             Create, test, install, and manage knowledge packs
+  diffmind mcp [--project <id>]       Run the stdio MCP server for coding agents
+  diffmind doctor [--json]            Check local installation and graph readiness
+  diffmind version [--json]           Print build version information
   diffmind help                       Show this help
 
 Flags (ui):
@@ -50,7 +53,7 @@ func main() {
 		case "help", "--help", "-h":
 			fmt.Print(usage)
 			return
-		case "ui", "list", "graph", "run", "validate", "list-runs", "extractor-ui", "pack":
+		case "ui", "list", "graph", "run", "validate", "list-runs", "extractor-ui", "pack", "mcp", "doctor", "version":
 			cmd = args[0]
 			args = args[1:]
 		default:
@@ -75,6 +78,12 @@ func main() {
 		serveExtractorUI(args)
 	case "pack":
 		cmdPack(args)
+	case "mcp":
+		cmdMCP(args)
+	case "doctor":
+		cmdDoctor(args)
+	case "version":
+		cmdVersion(args)
 	default:
 		fmt.Print(usage)
 		os.Exit(1)

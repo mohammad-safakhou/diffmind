@@ -10,6 +10,9 @@ DiffMind has three internal layers behind one command and one persistent home.
    and resolves service documents into a cross-repository graph.
 4. The web UI exposes project setup, run progress, graph exploration, and
    impact analysis through the workspace API.
+5. A shared read-only query layer exposes persisted graphs through `/api/v1`
+   and the stdio MCP server, so browser, integrations, and coding agents use the
+   same graph semantics.
 
 The protocol package is the boundary between extraction and graph assembly.
 It contains no I/O policy beyond document encoding, schema generation, and
