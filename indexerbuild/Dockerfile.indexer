@@ -76,7 +76,8 @@ ARG COURSIER_VERSION=2.1.10
 FROM golang:${GO_VERSION}-bookworm AS scip-cli-builder
 ARG SCIP_VERSION
 WORKDIR /build
-RUN git clone --depth=1 --branch=${SCIP_VERSION} https://github.com/scip-code/scip.git . \
+RUN mkdir -p /out \
+    && git clone --depth=1 --branch=${SCIP_VERSION} https://github.com/scip-code/scip.git . \
     && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/scip ./cmd/scip
 
 # ---------------------------------------------------------------------
@@ -86,7 +87,8 @@ RUN git clone --depth=1 --branch=${SCIP_VERSION} https://github.com/scip-code/sc
 FROM golang:${GO_VERSION}-bookworm AS scip-go-builder
 ARG SCIP_GO_VERSION
 WORKDIR /build
-RUN git clone --depth=1 --branch=${SCIP_GO_VERSION} https://github.com/scip-code/scip-go.git . \
+RUN mkdir -p /out \
+    && git clone --depth=1 --branch=${SCIP_GO_VERSION} https://github.com/scip-code/scip-go.git . \
     && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/scip-go ./cmd/scip-go
 
 # ---------------------------------------------------------------------
@@ -105,6 +107,7 @@ RUN apt-get update \
     && curl -fsSL -o coursier.gz "https://github.com/coursier/coursier/releases/download/v${COURSIER_VERSION}/cs-x86_64-pc-linux.gz" \
     && gunzip coursier.gz \
     && chmod +x coursier \
+    && mkdir -p /out \
     && ./coursier bootstrap --standalone \
         -o /out/scip-java \
         "com.sourcegraph:scip-java_2.13:${SCIP_JAVA_VERSION}" \
@@ -158,8 +161,9 @@ RUN dotnet tool install --tool-path /out \
 FROM golang:${GO_VERSION}-bookworm AS wrapper-builder
 WORKDIR /src
 COPY wrapper ./wrapper
-RUN printf 'module diffmindindex\n\ngo 1.22\n' > go.mod && \
-    CGO_ENABLED=0 go build \
+RUN mkdir -p /out \
+    && printf 'module diffmindindex\n\ngo 1.22\n' > go.mod \
+    && CGO_ENABLED=0 go build \
         -trimpath \
         -ldflags='-s -w -X main.version=docker' \
         -o /out/diffmind-index \
