@@ -150,15 +150,14 @@ RUN dotnet tool install --tool-path /out \
 # Compile the in-image entrypoint binary from `wrapper/`.
 #
 # The wrapper is stdlib-only by design (see indexerbuild/embed.go for
-# why). We still drop a minimal go.mod into the build context at
-# extract time so `go build` works without pulling the rest of the
-# diffmind module graph.
+# why). The builder creates a minimal go.mod internally so every host
+# file copied by this Dockerfile is part of the embedded context.
 # ---------------------------------------------------------------------
 FROM golang:${GO_VERSION}-bookworm AS wrapper-builder
 WORKDIR /src
-COPY go.mod ./
 COPY wrapper ./wrapper
-RUN CGO_ENABLED=0 go build \
+RUN printf 'module diffmindindex\n\ngo 1.22\n' > go.mod && \
+    CGO_ENABLED=0 go build \
         -trimpath \
         -ldflags='-s -w -X main.version=docker' \
         -o /out/diffmind-index \

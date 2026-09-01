@@ -1,7 +1,10 @@
 package indexerbuild
 
 import (
+	"bufio"
+	"bytes"
 	"io/fs"
+	"strings"
 	"testing"
 )
 
@@ -29,6 +32,31 @@ func TestEmbedContainsDockerfile(t *testing.T) {
 func TestEmbedContainsWrapperMain(t *testing.T) {
 	if _, err := Context.ReadFile("wrapper/main.go"); err != nil {
 		t.Fatalf("wrapper/main.go missing from embed: %v", err)
+	}
+}
+
+// TestDockerfileLocalCopySourcesAreEmbedded keeps the checked-in image
+// workflow and the CLI's extracted build context equivalent. A local COPY
+// source that is not embedded would work in one path and fail in the other.
+func TestDockerfileLocalCopySourcesAreEmbedded(t *testing.T) {
+	dockerfile, err := Context.ReadFile(DockerfileName)
+	if err != nil {
+		t.Fatalf("read %s: %v", DockerfileName, err)
+	}
+
+	scanner := bufio.NewScanner(bytes.NewReader(dockerfile))
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 3 || !strings.EqualFold(fields[0], "COPY") || strings.HasPrefix(fields[1], "--from=") {
+			continue
+		}
+		source := strings.TrimPrefix(fields[1], "./")
+		if _, err := fs.Stat(Context, source); err != nil {
+			t.Errorf("Dockerfile COPY source %q is not embedded: %v", source, err)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan %s: %v", DockerfileName, err)
 	}
 }
 
