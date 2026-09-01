@@ -54,7 +54,7 @@ export function SettingsTab({ project, onChanged }) {
       {confirmDel && (
         <ConfirmDialog
           title="Delete project?"
-          message={`This permanently removes project “${project.name}” and all its repos, blueprints, and graph runs from disk. This cannot be undone.`}
+          message={`This permanently removes project “${project.name}” and all its repos, packs, and graph runs from disk. This cannot be undone.`}
           onConfirm={doDelete}
           onCancel={() => setConfirmDel(false)}
         />

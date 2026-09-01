@@ -29,7 +29,7 @@ type createRepoRequest struct {
 	GitURL        string   `json:"git_url"`
 	DefaultBranch string   `json:"default_branch"`
 	Team          string   `json:"team"`
-	BlueprintIDs  []string `json:"blueprint_ids"`
+	PackIDs       []string `json:"pack_ids"`
 	Instruction   string   `json:"instruction"`
 }
 
@@ -52,7 +52,7 @@ func (s *Server) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 		GitProvider:   inferGitProvider(req.GitURL),
 		DefaultBranch: req.DefaultBranch,
 		Team:          req.Team,
-		BlueprintIDs:  req.BlueprintIDs,
+		PackIDs:       req.PackIDs,
 		Instruction:   req.Instruction,
 	})
 	if err != nil {
@@ -79,7 +79,7 @@ type patchRepoRequest struct {
 	GitURL        *string   `json:"git_url"`
 	DefaultBranch *string   `json:"default_branch"`
 	Team          *string   `json:"team"`
-	BlueprintIDs  *[]string `json:"blueprint_ids"`
+	PackIDs       *[]string `json:"pack_ids"`
 	Instruction   *string   `json:"instruction"`
 }
 
@@ -112,8 +112,8 @@ func (s *Server) handlePatchRepo(w http.ResponseWriter, r *http.Request) {
 		if req.Team != nil {
 			rp.Team = *req.Team
 		}
-		if req.BlueprintIDs != nil {
-			rp.BlueprintIDs = *req.BlueprintIDs
+		if req.PackIDs != nil {
+			rp.PackIDs = *req.PackIDs
 		}
 		if req.Instruction != nil {
 			rp.Instruction = *req.Instruction

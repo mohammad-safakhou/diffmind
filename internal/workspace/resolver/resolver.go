@@ -1,7 +1,7 @@
 // Package resolver implements deterministic cross-service identity resolution.
 // It takes the service registry (with architecture + identity data) and matches
 // each service's outbound dependencies to known service identities using
-// blueprint-derived aliases and resource identifiers.
+// pack-derived aliases and resource identifiers.
 //
 // Resolution is intentionally deterministic only: there is no fallback or
 // external model dependency. The same inputs always produce the same graph.
@@ -11,9 +11,11 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/mohammad-safakhou/diffmind/internal/workspace/knowledge"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/model"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/registry"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/util"
@@ -23,11 +25,12 @@ import (
 type Resolver struct {
 	registry *registry.Registry
 	log      *util.Logger
+	rules    []knowledge.ResolutionRule
 }
 
 // New creates a new deterministic resolver.
-func New(reg *registry.Registry, log *util.Logger) *Resolver {
-	return &Resolver{registry: reg, log: log}
+func New(reg *registry.Registry, log *util.Logger, rules ...knowledge.ResolutionRule) *Resolver {
+	return &Resolver{registry: reg, log: log, rules: append([]knowledge.ResolutionRule(nil), rules...)}
 }
 
 // ResolvedMatch represents a single dependency → service match.
@@ -68,7 +71,10 @@ func (r *Resolver) Resolve() (*Resolution, error) {
 			continue
 		}
 		for _, dep := range entry.Architecture.Dependencies {
-			match := r.tryDeterministicMatch(entry.Name, &dep, identityIndex)
+			match, err := r.tryDeterministicMatch(entry.Name, &dep, identityIndex)
+			if err != nil {
+				return nil, err
+			}
 			if match != nil {
 				result.Matches = append(result.Matches, *match)
 			} else {
@@ -141,16 +147,19 @@ func (r *Resolver) buildIdentityIndex() []identityEntry {
 	return index
 }
 
-func (r *Resolver) tryDeterministicMatch(fromService string, dep *model.Dependency, index []identityEntry) *ResolvedMatch {
+func (r *Resolver) tryDeterministicMatch(fromService string, dep *model.Dependency, index []identityEntry) (*ResolvedMatch, error) {
 	targetRaw := extractTarget(dep)
 	target := strings.ToLower(targetRaw)
+	if match, err := r.tryKnowledgeRule(fromService, dep, targetRaw); match != nil || err != nil {
+		return match, err
+	}
 	if isHTTPDependency(dep.Type) {
 		if match := r.tryHTTPExposureMatch(fromService, dep); match != nil {
-			return match
+			return match, nil
 		}
 	}
 	if target == "" {
-		return nil
+		return nil, nil
 	}
 
 	if isQueuePublish(dep.Type) {
@@ -170,7 +179,7 @@ func (r *Resolver) tryDeterministicMatch(fromService string, dep *model.Dependen
 						MatchType:      "queue",
 						Confidence:     0.9,
 						Reasoning:      fmt.Sprintf("deterministic queue topic match: %q equals %q", topic, entry.Value),
-					}
+					}, nil
 				}
 			}
 		}
@@ -193,10 +202,66 @@ func (r *Resolver) tryDeterministicMatch(fromService string, dep *model.Dependen
 				MatchType:      classifyMatchType(dep.Type),
 				Confidence:     confidence,
 				Reasoning:      reason,
-			}
+			}, nil
 		}
 	}
-	return nil
+	return nil, nil
+}
+
+func (r *Resolver) tryKnowledgeRule(fromService string, dep *model.Dependency, target string) (*ResolvedMatch, error) {
+	type candidate struct {
+		rule    knowledge.ResolutionRule
+		service string
+	}
+	var candidates []candidate
+	for _, rule := range r.rules {
+		if rule.DependencyType != "" && rule.DependencyType != "*" {
+			matched, err := filepath.Match(rule.DependencyType, dep.Type)
+			if err != nil || !matched {
+				continue
+			}
+		}
+		pattern, err := regexp.Compile(rule.TargetPattern)
+		if err != nil {
+			return nil, fmt.Errorf("knowledge pack %s rule %s: %w", rule.PackID, rule.Name, err)
+		}
+		match := pattern.FindStringSubmatchIndex(target)
+		if match == nil {
+			continue
+		}
+		service := string(pattern.ExpandString(nil, rule.TargetService, target, match))
+		service = strings.TrimSpace(service)
+		if service == "" || service == fromService || r.registry.Get(service) == nil {
+			continue
+		}
+		candidates = append(candidates, candidate{rule: rule, service: service})
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	selected := candidates[0]
+	for _, candidate := range candidates[1:] {
+		if candidate.rule.PackPriority > selected.rule.PackPriority {
+			selected = candidate
+		}
+	}
+	highest := selected.rule.PackPriority
+	for _, candidate := range candidates {
+		if candidate.rule.PackPriority != highest {
+			continue
+		}
+		if candidate.service != selected.service {
+			return nil, fmt.Errorf("knowledge pack resolution conflict: %s/%s and %s/%s have priority %d but resolve %q to different services %q and %q",
+				selected.rule.PackID, selected.rule.Name, candidate.rule.PackID, candidate.rule.Name,
+				highest, target, selected.service, candidate.service)
+		}
+	}
+	return &ResolvedMatch{
+		FromService: fromService, DependencyID: dep.ID, DependencyName: dep.Name,
+		DependencyType: dep.Type, ToService: selected.service,
+		MatchType: classifyMatchType(dep.Type), Confidence: selected.rule.Confidence,
+		Reasoning: fmt.Sprintf("knowledge pack %s rule %s matched target %q", selected.rule.PackID, selected.rule.Name, target),
+	}, nil
 }
 
 func (r *Resolver) tryHTTPExposureMatch(fromService string, dep *model.Dependency) *ResolvedMatch {

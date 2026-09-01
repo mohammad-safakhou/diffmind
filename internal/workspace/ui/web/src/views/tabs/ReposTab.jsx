@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'preact/hooks'
-import { listRepos, createRepo, patchRepo, deleteRepo, repoSuggestions, listBlueprints } from '../../lib/api.js'
+import { listRepos, createRepo, patchRepo, deleteRepo, repoSuggestions, listPacks } from '../../lib/api.js'
 import { Modal, ConfirmDialog } from '../../components/Modal.jsx'
 
 // ReposTab: add/remove repos, autosuggest from search roots, and per-repo
-// blueprint/instruction overrides.
+// pack/instruction overrides.
 export function ReposTab({ pid }) {
   const [repos, setRepos] = useState([])
   const [error, setError] = useState('')
@@ -39,7 +39,7 @@ export function ReposTab({ pid }) {
               <td class="muted mono small" title={r.path}>{r.path}</td>
               <td>{r.kind}</td>
               <td class="muted small">
-                {(r.blueprint_ids && r.blueprint_ids.length) ? `${r.blueprint_ids.length} blueprint(s)` : ''}
+                {(r.pack_ids && r.pack_ids.length) ? `${r.pack_ids.length} pack(s)` : ''}
                 {r.instruction ? ' · instruction' : ''}
               </td>
               <td class="actions-col">
@@ -122,11 +122,11 @@ function AddRepo({ pid, onClose, onAdded }) {
 
 function EditRepo({ pid, repo, onClose, onSaved }) {
   const [instruction, setInstruction] = useState(repo.instruction || '')
-  const [selected, setSelected] = useState(new Set(repo.blueprint_ids || []))
-  const [blueprints, setBlueprints] = useState([])
+  const [selected, setSelected] = useState(new Set(repo.pack_ids || []))
+  const [packs, setPacks] = useState([])
   const [error, setError] = useState('')
 
-  useEffect(() => { listBlueprints(pid).then((r) => setBlueprints(r.blueprints || [])).catch(() => {}) }, [pid])
+  useEffect(() => { listPacks(pid).then((r) => setPacks(r.packs || [])).catch(() => {}) }, [pid])
 
   const toggle = (id) => {
     const next = new Set(selected)
@@ -136,7 +136,7 @@ function EditRepo({ pid, repo, onClose, onSaved }) {
 
   const submit = async () => {
     try {
-      await patchRepo(pid, repo.id, { instruction, blueprint_ids: [...selected] })
+      await patchRepo(pid, repo.id, { instruction, pack_ids: [...selected] })
       onSaved()
     } catch (e) { setError(e.message) }
   }
@@ -144,10 +144,10 @@ function EditRepo({ pid, repo, onClose, onSaved }) {
   return (
     <Modal title={`Edit ${repo.name}`} onClose={onClose}>
       <div class="field">
-        <label>Blueprint overrides (empty = use project matching)</label>
+        <label>Pack overrides (empty = use project matching)</label>
         <div class="check-list">
-          {blueprints.length === 0 && <p class="muted small">No project blueprints defined.</p>}
-          {blueprints.map((b) => (
+          {packs.length === 0 && <p class="muted small">No project packs defined.</p>}
+          {packs.map((b) => (
             <label class="check" key={b.id}>
               <input type="checkbox" checked={selected.has(b.id)} onChange={() => toggle(b.id)} /> {b.name}
             </label>

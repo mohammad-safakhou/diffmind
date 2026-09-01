@@ -142,6 +142,10 @@ func (m *Manager) finish(pid string, manifest store.RunManifest, ar *activeRun, 
 		if result != nil {
 			manifest.ServiceCount = result.ServiceCount
 			manifest.EdgeCount = result.EdgeCount
+			if manifest.Options == nil {
+				manifest.Options = map[string]any{}
+			}
+			manifest.Options["knowledge_pack_set_digest"] = result.PackSetDigest
 		}
 		graph, graphErr := m.persistArchitectureGraph(pid, manifest)
 		if graphErr != nil {
@@ -183,8 +187,8 @@ func (m *Manager) finish(pid string, manifest store.RunManifest, ar *activeRun, 
 func (m *Manager) buildConfig(pid string, manifest store.RunManifest) (*config.Config, []string, error) {
 	var warnings []string
 	cfg := &config.Config{
-		Blueprints: config.BlueprintsConfig{Dirs: []string{m.store.BlueprintsDir(pid)}},
-		Artifacts:  config.ArtifactsConfig{BaseDir: m.store.RunDir(pid, manifest.ID)},
+		Packs:     config.PacksConfig{Dirs: []string{m.store.PacksDir(pid)}},
+		Artifacts: config.ArtifactsConfig{BaseDir: m.store.RunDir(pid, manifest.ID)},
 	}
 
 	for _, ref := range manifest.Repos {
@@ -193,7 +197,7 @@ func (m *Manager) buildConfig(pid string, manifest store.RunManifest) (*config.C
 			warnings = append(warnings, fmt.Sprintf("repo %s not found; skipping", ref.RepoID))
 			continue
 		}
-		entry := config.RepoEntry{Name: repo.Name, Path: repo.Path}
+		entry := config.RepoEntry{Name: repo.Name, Path: repo.Path, PackIDs: append([]string(nil), repo.PackIDs...)}
 		if ref.DiffMindRunID != "" {
 			entry.DiffMindArtifacts = filepath.Join(m.diffmindRunsDir, ref.DiffMindRunID)
 		}

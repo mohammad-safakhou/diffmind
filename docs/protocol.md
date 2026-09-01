@@ -97,7 +97,7 @@ Line numbers belong in observations and evidence.
   "repository": {
     "provider": "github",
     "url": "git@github.com:company/orders-api.git",
-    "branch": "main",
+    "branch": "master",
     "commit": "abc123",
     "dirty": false
   },

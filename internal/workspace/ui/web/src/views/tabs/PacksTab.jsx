@@ -1,26 +1,31 @@
 import { useEffect, useState } from 'preact/hooks'
-import { listBlueprints, getBlueprint, createBlueprint, putBlueprint, deleteBlueprint } from '../../lib/api.js'
+import { listPacks, getPack, createPack, putPack, deletePack } from '../../lib/api.js'
 import { Modal, ConfirmDialog } from '../../components/Modal.jsx'
 
 const TEMPLATE = JSON.stringify({
-  name: 'new-blueprint',
-  description: '',
-  version: '1',
+  api_version: 'diffmind.dev/v1alpha1',
+  kind: 'KnowledgePack',
+  id: 'new-pack',
+  name: 'new-pack',
+  description: 'Describe the repository conventions this pack teaches DiffMind.',
+  version: '0.1.0',
+  license: 'Apache-2.0',
+  compatibility: '>=0.1.0',
   applies_to: { kind: 'service_repo', match: { has_file: '' } },
   extractions: [
-    { name: 'identity', source: { glob: '.example/config/production/values.yaml' }, strategy: 'field_path', extract: [{ field: 'iamRole', maps_to: 'iam_role' }] },
+    { name: 'identity', source: { glob: 'service.yaml' }, strategy: 'field_path', extract: [{ field: 'name', maps_to: 'service_name' }] },
   ],
 }, null, 2)
 
-// BlueprintsTab: list + textarea JSON editor with server-side validation.
-export function BlueprintsTab({ pid }) {
-  const [blueprints, setBlueprints] = useState([])
+// PacksTab: list + textarea JSON editor with server-side validation.
+export function PacksTab({ pid }) {
+  const [packs, setPacks] = useState([])
   const [error, setError] = useState('')
   const [editor, setEditor] = useState(null) // { id|null, body }
   const [confirmDel, setConfirmDel] = useState(null)
 
   const refresh = async () => {
-    try { setBlueprints((await listBlueprints(pid)).blueprints || []); setError('') }
+    try { setPacks((await listPacks(pid)).packs || []); setError('') }
     catch (e) { setError(e.message) }
   }
   useEffect(() => { refresh() }, [pid])
@@ -28,31 +33,33 @@ export function BlueprintsTab({ pid }) {
   const openNew = () => setEditor({ id: null, body: TEMPLATE })
   const openEdit = async (id) => {
     try {
-      const raw = await getBlueprint(pid, id)
+      const raw = await getPack(pid, id)
       setEditor({ id, body: JSON.stringify(raw, null, 2) })
     } catch (e) { setError(e.message) }
   }
 
   const doDelete = async (id) => {
-    try { await deleteBlueprint(pid, id) } catch (e) { setError(e.message) }
+    try { await deletePack(pid, id) } catch (e) { setError(e.message) }
     setConfirmDel(null); refresh()
   }
 
   return (
     <div>
       <div class="toolbar">
-        <h2>Blueprints</h2>
-        <button class="btn" onClick={openNew}>+ New Blueprint</button>
+        <h2>Packs</h2>
+        <button class="btn" onClick={openNew}>+ New Pack</button>
       </div>
       {error && <div class="banner error">{error}</div>}
-      {blueprints.length === 0 && <p class="muted">No blueprints yet.</p>}
+      {packs.length === 0 && <p class="muted">No packs yet.</p>}
       <table class="data-table">
-        <thead><tr><th>Name</th><th>ID</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>ID</th><th>Version</th><th>Priority</th><th></th></tr></thead>
         <tbody>
-          {blueprints.map((b) => (
+          {packs.map((b) => (
             <tr key={b.id}>
               <td>{b.name}</td>
               <td class="mono muted small">{b.id}</td>
+              <td class="mono">{b.version}</td>
+              <td class="mono">{b.priority || 0}</td>
               <td class="actions-col">
                 <button class="btn ghost tiny" onClick={() => openEdit(b.id)}>Edit</button>
                 <button class="btn danger tiny" onClick={() => setConfirmDel(b)}>Delete</button>
@@ -65,8 +72,8 @@ export function BlueprintsTab({ pid }) {
       {editor && <Editor pid={pid} editor={editor} onClose={() => setEditor(null)} onSaved={() => { setEditor(null); refresh() }} />}
       {confirmDel && (
         <ConfirmDialog
-          title="Delete blueprint?"
-          message={`This permanently removes blueprint “${confirmDel.name}” from the project.`}
+          title="Delete pack?"
+          message={`This permanently removes pack “${confirmDel.name}” from the project.`}
           onConfirm={() => doDelete(confirmDel.id)}
           onCancel={() => setConfirmDel(null)}
         />
@@ -86,8 +93,8 @@ function Editor({ pid, editor, onClose, onSaved }) {
     // Client-side JSON parse first for an instant message.
     try { JSON.parse(body) } catch (e) { setError('Invalid JSON: ' + e.message); setBusy(false); return }
     try {
-      if (editor.id) await putBlueprint(pid, editor.id, body)
-      else await createBlueprint(pid, body)
+      if (editor.id) await putPack(pid, editor.id, body)
+      else await createPack(pid, body)
       onSaved()
     } catch (e) {
       setError(e.message)
@@ -98,7 +105,7 @@ function Editor({ pid, editor, onClose, onSaved }) {
   }
 
   return (
-    <Modal title={editor.id ? `Edit blueprint: ${editor.id}` : 'New blueprint'} onClose={onClose} wide>
+    <Modal title={editor.id ? `Edit pack: ${editor.id}` : 'New pack'} onClose={onClose} wide>
       <textarea class="code-editor" rows="20" value={body} onInput={(e) => setBody(e.target.value)} spellcheck={false} />
       {error && <div class="banner error">{error}</div>}
       {verrs.length > 0 && (

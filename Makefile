@@ -1,4 +1,4 @@
-.PHONY: build test test-integration ui-build run clean
+.PHONY: build test test-race test-packs test-integration ui-build run clean
 
 GOCACHE_DIR := $(CURDIR)/.gocache
 
@@ -8,6 +8,13 @@ build:
 
 test:
 	GOCACHE=$(GOCACHE_DIR) go test ./...
+
+test-race:
+	GOCACHE=$(GOCACHE_DIR) go test -race ./internal/workspace/knowledge ./internal/workspace/orchestrator ./internal/workspace/resolver
+
+test-packs:
+	GOCACHE=$(GOCACHE_DIR) go run ./cmd/diffmind pack lint ./packs
+	GOCACHE=$(GOCACHE_DIR) go run ./cmd/diffmind pack test ./packs
 
 test-integration:
 	DIFFMIND_RUN_SCIP_INTEGRATION=1 GOCACHE=$(GOCACHE_DIR) go test ./internal/extractor/scip

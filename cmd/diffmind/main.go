@@ -1,6 +1,6 @@
 // DiffMind — Cross-service dependency graph builder.
 //
-// DiffMind owns projects, repositories, blueprints, and graph runs. With no
+// DiffMind owns projects, repositories, packs, and graph runs. With no
 // arguments it launches the web UI and run manager; a couple of read-only list
 // commands are kept for power users and scripts.
 package main
@@ -32,6 +32,7 @@ Usage:
   diffmind graph --project <id>       Build a project graph and exit
   diffmind list projects              List projects
   diffmind list runs --project <id>   List graph runs for a project
+  diffmind pack <command>             Create, test, install, and manage knowledge packs
   diffmind help                       Show this help
 
 Flags (ui):
@@ -49,7 +50,7 @@ func main() {
 		case "help", "--help", "-h":
 			fmt.Print(usage)
 			return
-		case "ui", "list", "graph", "run", "validate", "list-runs", "extractor-ui":
+		case "ui", "list", "graph", "run", "validate", "list-runs", "extractor-ui", "pack":
 			cmd = args[0]
 			args = args[1:]
 		default:
@@ -72,6 +73,8 @@ func main() {
 		listRuns(args)
 	case "extractor-ui":
 		serveExtractorUI(args)
+	case "pack":
+		cmdPack(args)
 	default:
 		fmt.Print(usage)
 		os.Exit(1)

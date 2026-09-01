@@ -17,6 +17,7 @@ import (
 
 // ErrNotFound is returned when an entity does not exist.
 var ErrNotFound = errors.New("not found")
+var ErrConflict = errors.New("already exists")
 
 // Store is the filesystem-backed persistence layer. All methods are safe for
 // concurrent use; a single mutex serialises mutations (the data volume is tiny
@@ -40,8 +41,8 @@ func New(home string) (*Store, error) {
 
 func (s *Store) projectsDir() string         { return filepath.Join(s.root, "projects") }
 func (s *Store) projectDir(id string) string { return filepath.Join(s.projectsDir(), id) }
-func (s *Store) blueprintsDir(pid string) string {
-	return filepath.Join(s.projectDir(pid), "blueprints")
+func (s *Store) packsDir(pid string) string {
+	return filepath.Join(s.projectDir(pid), "packs")
 }
 func (s *Store) reposDir(pid string) string { return filepath.Join(s.projectDir(pid), "repos") }
 func (s *Store) runsDir(pid string) string  { return filepath.Join(s.projectDir(pid), "runs") }
@@ -111,7 +112,7 @@ func (s *Store) CreateProject(p Project) (*Project, error) {
 	p.ID = id
 	p.CreatedAt = now
 	p.UpdatedAt = now
-	for _, sub := range []string{"blueprints", "repos", "runs", "worktrees"} {
+	for _, sub := range []string{"packs", "repos", "runs", "worktrees"} {
 		if err := os.MkdirAll(filepath.Join(s.projectDir(id), sub), 0o755); err != nil {
 			return nil, err
 		}
@@ -304,42 +305,48 @@ func (s *Store) DeleteRepo(pid, id string) error {
 }
 
 // ---------------------------------------------------------------------------
-// Blueprints
+// Packs
 // ---------------------------------------------------------------------------
 
-// BlueprintsDir exposes the project's blueprints directory for the pipeline,
-// which loads blueprints by scanning a directory of JSON files.
-func (s *Store) BlueprintsDir(pid string) string { return s.blueprintsDir(pid) }
+// PacksDir exposes the project's packs directory for the pipeline,
+// which loads packs by recursively scanning for pack manifests.
+func (s *Store) PacksDir(pid string) string { return s.packsDir(pid) }
 
-// ListBlueprints returns the metadata for every blueprint in a project.
-func (s *Store) ListBlueprints(pid string) ([]BlueprintMeta, error) {
+// ListPacks returns the metadata for every pack in a project.
+func (s *Store) ListPacks(pid string) ([]PackMeta, error) {
 	if _, err := s.GetProject(pid); err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(s.blueprintsDir(pid))
+	entries, err := os.ReadDir(s.packsDir(pid))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	out := make([]BlueprintMeta, 0, len(entries))
+	out := make([]PackMeta, 0, len(entries))
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+		if !e.IsDir() {
 			continue
 		}
-		id := strings.TrimSuffix(e.Name(), ".json")
-		meta := BlueprintMeta{ID: id, Name: id}
-		if info, err := e.Info(); err == nil {
+		id := e.Name()
+		meta := PackMeta{ID: id, Name: id}
+		if info, err := os.Stat(filepath.Join(s.packsDir(pid), id, "pack.json")); err == nil {
 			meta.UpdatedAt = info.ModTime().UTC()
 		}
-		// Best-effort: surface the blueprint's declared name.
-		if raw, err := s.GetBlueprint(pid, id); err == nil {
+		// Best-effort: surface the pack's declared name.
+		if raw, err := s.GetPack(pid, id); err == nil {
 			var probe struct {
-				Name string `json:"name"`
+				Name     string `json:"name"`
+				Version  string `json:"version"`
+				Priority int    `json:"priority"`
 			}
-			if json.Unmarshal(raw, &probe) == nil && probe.Name != "" {
-				meta.Name = probe.Name
+			if json.Unmarshal(raw, &probe) == nil {
+				if probe.Name != "" {
+					meta.Name = probe.Name
+				}
+				meta.Version = probe.Version
+				meta.Priority = probe.Priority
 			}
 		}
 		out = append(out, meta)
@@ -348,9 +355,9 @@ func (s *Store) ListBlueprints(pid string) ([]BlueprintMeta, error) {
 	return out, nil
 }
 
-// GetBlueprint returns the raw JSON body of a blueprint.
-func (s *Store) GetBlueprint(pid, id string) (json.RawMessage, error) {
-	data, err := os.ReadFile(filepath.Join(s.blueprintsDir(pid), id+".json"))
+// GetPack returns the raw JSON body of a pack.
+func (s *Store) GetPack(pid, id string) (json.RawMessage, error) {
+	data, err := os.ReadFile(filepath.Join(s.packsDir(pid), id, "pack.json"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, ErrNotFound
@@ -360,53 +367,59 @@ func (s *Store) GetBlueprint(pid, id string) (json.RawMessage, error) {
 	return json.RawMessage(data), nil
 }
 
-// PutBlueprint writes a blueprint body to a given id (create or replace). The
-// caller is responsible for validating the body first (see ValidateBlueprint).
-func (s *Store) PutBlueprint(pid, id string, body []byte) error {
+// PutPack writes a pack body to a given id (create or replace). The
+// caller is responsible for validating the body first (see ValidatePack).
+func (s *Store) PutPack(pid, id string, body []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, err := s.GetProject(pid); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(s.blueprintsDir(pid), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(s.packsDir(pid), id), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(s.blueprintsDir(pid), id+".json"), body, 0o644)
+	return os.WriteFile(filepath.Join(s.packsDir(pid), id, "pack.json"), body, 0o644)
 }
 
-// CreateBlueprint writes a new blueprint with a slug derived from its declared
-// name (or "blueprint"), returning the allocated id.
-func (s *Store) CreateBlueprint(pid, name string, body []byte) (string, error) {
+// CreatePack writes a new pack with a slug derived from its declared
+// name (or "pack"), returning the allocated id.
+func (s *Store) CreatePack(pid, name string, body []byte) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, err := s.GetProject(pid); err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(s.blueprintsDir(pid), 0o755); err != nil {
+	if err := os.MkdirAll(s.packsDir(pid), 0o755); err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(name) == "" {
-		name = "blueprint"
+		name = "pack"
 	}
-	id := s.uniqueBlueprintSlug(pid, name)
-	if err := os.WriteFile(filepath.Join(s.blueprintsDir(pid), id+".json"), body, 0o644); err != nil {
+	id := Slugify(name)
+	if dirExists(filepath.Join(s.packsDir(pid), id)) {
+		return "", ErrConflict
+	}
+	if err := os.MkdirAll(filepath.Join(s.packsDir(pid), id), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(s.packsDir(pid), id, "pack.json"), body, 0o644); err != nil {
 		return "", err
 	}
 	return id, nil
 }
 
-// DeleteBlueprint removes a blueprint file.
-func (s *Store) DeleteBlueprint(pid, id string) error {
+// DeletePack removes a pack file.
+func (s *Store) DeletePack(pid, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	path := filepath.Join(s.blueprintsDir(pid), id+".json")
+	path := filepath.Join(s.packsDir(pid), id)
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
 			return ErrNotFound
 		}
 		return err
 	}
-	return os.Remove(path)
+	return os.RemoveAll(path)
 }
 
 // ---------------------------------------------------------------------------
@@ -436,11 +449,11 @@ func (s *Store) uniqueSlug(parent, name string) string {
 	return candidate
 }
 
-// uniqueBlueprintSlug is like uniqueSlug but checks for a <slug>.json file.
-func (s *Store) uniqueBlueprintSlug(pid, name string) string {
+// uniquePackSlug allocates a unique pack directory.
+func (s *Store) uniquePackSlug(pid, name string) string {
 	base := Slugify(name)
 	candidate := base
-	for i := 2; fileExists(filepath.Join(s.blueprintsDir(pid), candidate+".json")); i++ {
+	for i := 2; dirExists(filepath.Join(s.packsDir(pid), candidate)); i++ {
 		candidate = fmt.Sprintf("%s-%d", base, i)
 	}
 	return candidate

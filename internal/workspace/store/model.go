@@ -1,12 +1,12 @@
 // Package store is the filesystem-backed persistence layer for DiffMind
-// projects, repositories, blueprints, and graph runs. Everything lives under
+// projects, repositories, packs, and graph runs. Everything lives under
 // the DiffMind home directory (see config.Home); the store owns the on-disk
 // layout and exposes CRUD operations the HTTP API and run manager build on.
 package store
 
 import "time"
 
-// Project is a top-level workspace grouping repositories, blueprints, and
+// Project is a top-level workspace grouping repositories, packs, and
 // graph runs. SearchRoots provide project-scoped repository discovery roots;
 // Instruction is the project-level default extraction instruction that repos may
 // override.
@@ -21,7 +21,7 @@ type Project struct {
 
 // Repo is a project-scoped repository reference. Path points at the source repo
 // on disk (DiffMind never mutates it). Kind is service_repo or infra_repo.
-// BlueprintIDs and Instruction are repo-level overrides of the project
+// PackIDs and Instruction are repo-level overrides of the project
 // defaults: a non-empty value wins over the project's.
 type Repo struct {
 	ID                string    `json:"id"`
@@ -41,18 +41,20 @@ type Repo struct {
 	Team              string    `json:"team,omitempty"`
 	LastDiffMindRunID string    `json:"last_diffmind_run_id,omitempty"`
 	DiffMindFreshness string    `json:"diffmind_freshness,omitempty"`
-	BlueprintIDs      []string  `json:"blueprint_ids,omitempty"`
+	PackIDs           []string  `json:"pack_ids,omitempty"`
 	Instruction       string    `json:"instruction,omitempty"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
-// BlueprintMeta is the listing projection of a stored blueprint. The full
-// blueprint body is the raw JSON file on disk; the store returns it verbatim so
+// PackMeta is the listing projection of a stored pack. The full
+// pack body is the raw JSON file on disk; the store returns it verbatim so
 // the in-UI editor round-trips exactly what the user typed.
-type BlueprintMeta struct {
+type PackMeta struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
+	Version   string    `json:"version"`
+	Priority  int       `json:"priority"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 

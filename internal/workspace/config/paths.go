@@ -7,14 +7,16 @@ import (
 )
 
 // Central storage layout. DiffMind keeps all project data under a single home
-// directory so projects, repos, blueprints, and graph runs are discoverable
+// directory so projects, repos, packs, and graph runs are discoverable
 // independent of the working directory.
 //
 //	~/.diffmind/
 //	  config.json                       (global defaults: search roots)
+//	  diffmind-packs.lock
+//	  packs/<pack_id>/<version>/pack.yaml
 //	  projects/<project_id>/
 //	    project.json
-//	    blueprints/<blueprint_id>.json
+//	    packs/<pack_id>/pack.json
 //	    repos/<repo_id>/repo.json
 //	    runs/<run_id>/{manifest.json,graph.json,events.jsonl,identities/}
 //

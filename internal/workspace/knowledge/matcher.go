@@ -1,13 +1,14 @@
-package blueprints
+package knowledge
 
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
-// Matches checks if a blueprint applies to a given repository.
-func Matches(bp *Blueprint, repoPath string, repoKind string) bool {
+// Matches checks if a pack applies to a given repository.
+func Matches(bp *Pack, repoPath string, repoKind string) bool {
 	// Check kind.
 	if bp.AppliesTo.Kind != "any" && bp.AppliesTo.Kind != repoKind {
 		return false
@@ -44,14 +45,20 @@ func Matches(bp *Blueprint, repoPath string, repoKind string) bool {
 	return true
 }
 
-// FindMatchingBlueprints returns all blueprints that apply to the given repo.
-func FindMatchingBlueprints(blueprints []*Blueprint, repoPath string, repoKind string) []*Blueprint {
-	var matched []*Blueprint
-	for _, bp := range blueprints {
+// FindMatchingPacks returns all packs that apply to the given repo.
+func FindMatchingPacks(packs []*Pack, repoPath string, repoKind string) []*Pack {
+	var matched []*Pack
+	for _, bp := range packs {
 		if Matches(bp, repoPath, repoKind) {
 			matched = append(matched, bp)
 		}
 	}
+	sort.SliceStable(matched, func(i, j int) bool {
+		if matched[i].Priority != matched[j].Priority {
+			return matched[i].Priority > matched[j].Priority
+		}
+		return matched[i].ID < matched[j].ID
+	})
 	return matched
 }
 
@@ -68,6 +75,7 @@ func ResolveGlob(repoPath, pattern string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	sort.Strings(matches)
 	return matches, nil
 }
 
@@ -110,5 +118,6 @@ func resolveDoubleStarGlob(root, pattern string) ([]string, error) {
 		}
 		return nil
 	})
+	sort.Strings(matches)
 	return matches, err
 }

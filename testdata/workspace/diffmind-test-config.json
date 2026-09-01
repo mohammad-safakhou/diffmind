@@ -22,8 +22,8 @@
       }
     ]
   },
-  "blueprints": {
-    "dirs": ["blueprints"]
+  "packs": {
+    "dirs": ["packs"]
   },
   "artifacts": {
     "base_dir": "testdata/output"

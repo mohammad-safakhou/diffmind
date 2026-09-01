@@ -11,8 +11,8 @@ func TestNewDefault(t *testing.T) {
 	if cfg.Artifacts.BaseDir != ".diffmind/runs" {
 		t.Errorf("expected default artifacts dir, got %s", cfg.Artifacts.BaseDir)
 	}
-	if len(cfg.Blueprints.Dirs) != 2 {
-		t.Errorf("expected 2 default blueprint dirs, got %d", len(cfg.Blueprints.Dirs))
+	if len(cfg.Packs.Dirs) != 2 {
+		t.Errorf("expected 2 default pack dirs, got %d", len(cfg.Packs.Dirs))
 	}
 }
 

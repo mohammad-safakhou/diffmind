@@ -1,0 +1,46 @@
+api_version: diffmind.dev/v1alpha1
+kind: KnowledgePack
+id: helm-values
+name: Helm values service identity
+description: Extracts service identity, ingress names, and owned queues from a conventional Helm values file.
+version: 1.0.0
+license: Apache-2.0
+compatibility: ">=0.1.0"
+priority: 0
+applies_to:
+  kind: service_repo
+  match:
+    has_file: deploy/values.yaml
+ignore:
+  - "**/vendor/**"
+extractions:
+  - name: service identity
+    source:
+      glob: deploy/values.yaml
+    strategy: field_path
+    extract:
+      - field: service.name
+        maps_to: service_name
+      - field: ingress.hosts
+        maps_to: dns_aliases
+      - field: service.port
+        maps_to: metadata.container_port
+      - field: queues.owned
+        maps_to: queue_identifiers
+tests:
+  - name: extracts a complete Helm identity
+    fixture: testdata/basic
+    repo_kind: service_repo
+    expected:
+      service_name: checkout-service
+      aliases:
+        - kind: dns
+          value: checkout.internal.example
+        - kind: dns
+          value: checkout.example.com
+      resources:
+        - kind: queue
+          identifier: order-events
+          role: owner
+      metadata:
+        container_port: "8080"

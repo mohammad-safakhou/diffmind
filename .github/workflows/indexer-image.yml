@@ -6,9 +6,9 @@ name: diffmind-indexer image
 #
 # TAGS produced
 #
-#   - sha-<short-sha>  on every push to main + every PR (for verification)
+#   - sha-<short-sha>  on every push to master + every PR (for verification)
 #   - <semver>         on every `v*` git tag (release artefact)
-#   - latest           on pushes to main only
+#   - latest           on pushes to master only
 #
 # All tags are immutable in GHCR by default (we don't enable retention
 # policies). Once published, the diffmind binary built at the same SHA
@@ -24,18 +24,16 @@ name: diffmind-indexer image
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     tags: ['v*']
     paths:
-      - 'Dockerfile.indexer'
-      - 'cmd/diffmind-index/**'
+      - 'indexerbuild/Dockerfile.indexer'
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/indexer-image.yml'
   pull_request:
     paths:
-      - 'Dockerfile.indexer'
-      - 'cmd/diffmind-index/**'
+      - 'indexerbuild/Dockerfile.indexer'
       - '.github/workflows/indexer-image.yml'
   workflow_dispatch:
     # Manual trigger lets maintainers rebuild without a commit, useful
@@ -98,7 +96,7 @@ jobs:
       - name: Extract metadata
         # docker/metadata-action computes a sensible set of tags from the
         # event (commit SHA, semver tag, branch, latest). We restrict to
-        # the cases we actually want: sha-<short>, semver, latest-on-main.
+        # the cases we actually want: sha-<short>, semver, latest-on-master.
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -117,9 +115,9 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.indexer
+          file: indexerbuild/Dockerfile.indexer
           # On PRs from forks: build but don't push (we have no creds).
-          # On push to main / tag pushes / PRs from the same repo: push.
+          # On push to master / tag pushes / PRs from the same repo: push.
           push: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

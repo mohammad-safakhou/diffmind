@@ -62,12 +62,12 @@ export const getPullRequestImpact = (pid, repoID, number, opts = {}) => {
   return api(`/api/projects/${pid}/pull-requests/${encodeURIComponent(repoID)}/${number}/impact${query ? `?${query}` : ''}`)
 }
 
-// Blueprints
-export const listBlueprints = (pid) => api(`/api/projects/${pid}/blueprints`)
-export const getBlueprint = (pid, bid) => api(`/api/projects/${pid}/blueprints/${bid}`)
-export const createBlueprint = (pid, body) => api(`/api/projects/${pid}/blueprints`, { method: 'POST', body, rawBody: true, headers: { 'Content-Type': 'application/json' } })
-export const putBlueprint = (pid, bid, body) => api(`/api/projects/${pid}/blueprints/${bid}`, { method: 'PUT', body, rawBody: true, headers: { 'Content-Type': 'application/json' } })
-export const deleteBlueprint = (pid, bid) => api(`/api/projects/${pid}/blueprints/${bid}`, { method: 'DELETE' })
+// Packs
+export const listPacks = (pid) => api(`/api/projects/${pid}/packs`)
+export const getPack = (pid, bid) => api(`/api/projects/${pid}/packs/${bid}`)
+export const createPack = (pid, body) => api(`/api/projects/${pid}/packs`, { method: 'POST', body, rawBody: true, headers: { 'Content-Type': 'application/json' } })
+export const putPack = (pid, bid, body) => api(`/api/projects/${pid}/packs/${bid}`, { method: 'PUT', body, rawBody: true, headers: { 'Content-Type': 'application/json' } })
+export const deletePack = (pid, bid) => api(`/api/projects/${pid}/packs/${bid}`, { method: 'DELETE' })
 
 // DiffMind run discovery
 export const diffmindRuns = (repoPath) => api('/api/diffmind-runs' + (repoPath ? `?repo_path=${encodeURIComponent(repoPath)}` : ''))

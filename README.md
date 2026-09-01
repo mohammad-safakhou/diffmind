@@ -45,6 +45,11 @@ diffmind graph --project <id>    Build a project graph
 diffmind list projects           List projects
 diffmind list runs --project ID  List project graph runs
 diffmind extractor-ui            Open the low-level analysis dashboard
+diffmind pack init <directory>   Scaffold a tested knowledge pack
+diffmind pack lint <path>        Validate pack manifests and rules
+diffmind pack test <path>        Execute synthetic pack fixtures
+diffmind pack install <source>   Install and lock a local or Git pack
+diffmind pack explain <path>     Explain what a pack derives from a repository
 ```
 
 DiffMind stores local state under `~/.diffmind` by default. Set
@@ -80,7 +85,7 @@ internal/extractor/        repository analysis engine
 internal/workspace/        projects, graph construction, API, and web UI
 protocol/                  shared service-document model and validation
 indexerbuild/              reproducible SCIP indexer image
-blueprints/                optional repository identity rules
+packs/                     official, tested knowledge packs
 testdata/                  public synthetic fixtures
 docs/                      design and configuration references
 ```
@@ -89,6 +94,8 @@ docs/                      design and configuration references
 
 ```bash
 make test
+make test-packs
+make test-race
 make ui-build
 make build
 ```
@@ -101,7 +108,7 @@ DIFFMIND_RUN_SCIP_INTEGRATION=1 go test ./internal/extractor/scip
 ```
 
 See [the architecture guide](docs/ARCHITECTURE.md) and
-[configuration reference](docs/extractor/docs/CONFIGURATION.md) for more.
+[knowledge-pack guide](docs/knowledge-packs.md) for more.
 
 ## Contributing
 

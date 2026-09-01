@@ -1,0 +1,10 @@
+service:
+  name: checkout-service
+  port: 8080
+ingress:
+  hosts:
+    - checkout.internal.example
+    - checkout.example.com
+queues:
+  owned:
+    - order-events

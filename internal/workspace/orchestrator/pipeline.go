@@ -1,5 +1,5 @@
 // Package orchestrator implements the 3-phase DiffMind pipeline:
-// Phase 1: Collection (DiffMind Protocol artifacts + deterministic blueprint extraction)
+// Phase 1: Collection (DiffMind Protocol artifacts + deterministic pack extraction)
 // Phase 2: Deterministic resolution
 // Phase 3: Graph construction
 package orchestrator
@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/artifacts"
-	"github.com/mohammad-safakhou/diffmind/internal/workspace/blueprints"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/config"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/graph"
+	"github.com/mohammad-safakhou/diffmind/internal/workspace/knowledge"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/model"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/registry"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/resolver"
@@ -33,7 +33,7 @@ type Pipeline struct {
 	cfg *config.Config
 	log *util.Logger
 	reg *registry.Registry
-	bps []*blueprints.Blueprint
+	bps []*knowledge.Pack
 
 	// Progress, when set, receives phase transitions for live streaming.
 	Progress func(ProgressEvent)
@@ -53,12 +53,13 @@ func NewPipeline(cfg *config.Config, log *util.Logger) *Pipeline {
 
 // RunResult holds the output of a full pipeline run.
 type RunResult struct {
-	Graph        *model.CrossServiceGraph
-	OutputDir    string
-	Duration     time.Duration
-	ServiceCount int
-	EdgeCount    int
-	Warnings     []string
+	Graph         *model.CrossServiceGraph
+	OutputDir     string
+	Duration      time.Duration
+	ServiceCount  int
+	EdgeCount     int
+	Warnings      []string
+	PackSetDigest string
 }
 
 // Run executes the full pipeline with a background context (CLI entry point).
@@ -85,13 +86,26 @@ func (p *Pipeline) warnf(msg string, kv ...string) {
 func (p *Pipeline) RunCtx(ctx context.Context) (*RunResult, error) {
 	start := time.Now()
 
-	// Load blueprints.
+	// Load repository/project packs and globally installed locked packs.
 	var err error
-	p.bps, err = blueprints.LoadBlueprintsFromDirs(p.cfg.Blueprints.Dirs)
+	p.bps, err = knowledge.LoadPacksFromDirs(p.cfg.Packs.Dirs)
 	if err != nil {
-		p.warnf("failed to load some blueprints", "error", err.Error())
+		return nil, fmt.Errorf("load knowledge packs: %w", err)
 	}
-	p.log.Info("loaded blueprints", "count", fmt.Sprintf("%d", len(p.bps)))
+	installed, err := knowledge.LoadEnabled(config.Home())
+	if err != nil {
+		return nil, fmt.Errorf("load installed knowledge packs: %w", err)
+	}
+	p.bps = append(p.bps, installed...)
+	p.bps = knowledge.WithBuiltIns(p.bps)
+	if validation := knowledge.ValidateSet(p.bps); len(validation) > 0 {
+		return nil, fmt.Errorf("load knowledge packs: %s", knowledge.FormatValidationErrors(validation))
+	}
+	packSetDigest, err := knowledge.ActiveSetDigest(p.bps)
+	if err != nil {
+		return nil, fmt.Errorf("digest knowledge packs: %w", err)
+	}
+	p.log.Info("loaded packs", "count", fmt.Sprintf("%d", len(p.bps)))
 
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -114,7 +128,7 @@ func (p *Pipeline) RunCtx(ctx context.Context) (*RunResult, error) {
 	// Phase 2: Resolution (deterministic only).
 	p.emit("resolution", "started", "Matching dependencies to service identities")
 	p.log.Info("=== Phase 2: Resolution ===")
-	resolution, err := resolver.New(p.reg, p.log).Resolve()
+	resolution, err := resolver.New(p.reg, p.log, knowledge.ResolutionRules(p.bps)...).Resolve()
 	if err != nil {
 		p.emit("resolution", "failed", err.Error())
 		return nil, fmt.Errorf("phase 2 (resolution) failed: %w", err)
@@ -154,16 +168,17 @@ func (p *Pipeline) RunCtx(ctx context.Context) (*RunResult, error) {
 	p.mu.Unlock()
 
 	return &RunResult{
-		Graph:        g,
-		OutputDir:    outputDir,
-		Duration:     duration,
-		ServiceCount: len(g.Services),
-		EdgeCount:    len(g.Edges),
-		Warnings:     warnings,
+		Graph:         g,
+		OutputDir:     outputDir,
+		Duration:      duration,
+		ServiceCount:  len(g.Services),
+		EdgeCount:     len(g.Edges),
+		Warnings:      warnings,
+		PackSetDigest: packSetDigest,
 	}, nil
 }
 
-// phaseCollection reads DiffMind artifacts and runs blueprints on all repos.
+// phaseCollection reads DiffMind artifacts and runs packs on all repos.
 func (p *Pipeline) phaseCollection(ctx context.Context) error {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -198,24 +213,32 @@ func (p *Pipeline) phaseCollection(ctx context.Context) error {
 				"exposures", fmt.Sprintf("%d", len(arch.Exposures)),
 				"dependencies", fmt.Sprintf("%d", len(arch.Dependencies)))
 
-			// Run blueprints for identity extraction.
-			matchedBPs := blueprints.FindMatchingBlueprints(p.bps, repo.Path, "service_repo")
-			if len(matchedBPs) > 0 {
-				engine := blueprints.NewEngine(p.log)
-				var allResults []blueprints.ExtractionResult
-				for _, bp := range matchedBPs {
-					results := engine.Run(bp, repo.Path)
-					allResults = append(allResults, results...)
-				}
-				if len(allResults) > 0 {
-					identity := blueprints.ToIdentity(repo.Name, repo.Path, allResults)
-					p.reg.AddIdentity(repo.Name, &identity)
-					p.log.Info("extracted identity",
-						"service", repo.Name,
-						"aliases", fmt.Sprintf("%d", len(identity.Aliases)),
-						"resources", fmt.Sprintf("%d", len(identity.Resources)))
-				}
+			// Run packs for identity extraction.
+			matchedBPs := knowledge.FindMatchingPacks(p.bps, repo.Path, "service_repo")
+			matchedBPs = filterPacks(matchedBPs, repo.PackIDs)
+			engine := knowledge.NewEngine(p.log)
+			var allResults []knowledge.ExtractionResult
+			for _, bp := range matchedBPs {
+				allResults = append(allResults, engine.Run(bp, repo.Path)...)
 			}
+			identity, identityErr := knowledge.ToIdentity(repo.Name, repo.Path, allResults)
+			if identityErr == nil {
+				var override *knowledge.ServiceOverride
+				override, identityErr = knowledge.LoadServiceOverride(repo.Path)
+				knowledge.ApplyServiceOverride(&identity, override)
+			}
+			if identityErr != nil {
+				mu.Lock()
+				errors = append(errors, fmt.Errorf("derive identity for %s: %w", repo.Name, identityErr))
+				mu.Unlock()
+				return
+			}
+			p.reg.AddIdentity(repo.Name, &identity)
+			p.log.Info("extracted identity",
+				"service", repo.Name,
+				"packs", fmt.Sprintf("%d", len(matchedBPs)),
+				"aliases", fmt.Sprintf("%d", len(identity.Aliases)),
+				"resources", fmt.Sprintf("%d", len(identity.Resources)))
 		}(repo)
 	}
 
@@ -227,17 +250,18 @@ func (p *Pipeline) phaseCollection(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return
 			}
-			matchedBPs := blueprints.FindMatchingBlueprints(p.bps, repo.Path, "infra_repo")
+			matchedBPs := knowledge.FindMatchingPacks(p.bps, repo.Path, "infra_repo")
+			matchedBPs = filterPacks(matchedBPs, repo.PackIDs)
 			if len(matchedBPs) == 0 {
-				p.log.Debug("no blueprints matched", "infra_repo", repo.Name)
+				p.log.Debug("no packs matched", "infra_repo", repo.Name)
 				return
 			}
-			engine := blueprints.NewEngine(p.log)
+			engine := knowledge.NewEngine(p.log)
 			for _, bp := range matchedBPs {
 				results := engine.Run(bp, repo.Path)
-				p.log.Info("infra blueprint executed",
+				p.log.Info("infra pack executed",
 					"repo", repo.Name,
-					"blueprint", bp.Name,
+					"pack", bp.Name,
 					"results", fmt.Sprintf("%d", len(results)))
 				// Infra results may contain cross-service mappings.
 				// These need special handling based on the maps_to type.
@@ -270,4 +294,21 @@ func (p *Pipeline) phaseCollection(ctx context.Context) error {
 		return errors[0]
 	}
 	return nil
+}
+
+func filterPacks(packs []*knowledge.Pack, selected []string) []*knowledge.Pack {
+	if len(selected) == 0 {
+		return packs
+	}
+	wanted := make(map[string]bool, len(selected))
+	for _, id := range selected {
+		wanted[id] = true
+	}
+	filtered := packs[:0]
+	for _, pack := range packs {
+		if wanted[pack.ID] {
+			filtered = append(filtered, pack)
+		}
+	}
+	return filtered
 }

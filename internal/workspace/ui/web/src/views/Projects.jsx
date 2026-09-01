@@ -84,7 +84,7 @@ export function Projects() {
       {confirmDel && (
         <ConfirmDialog
           title="Delete project?"
-          message={`This permanently removes project “${confirmDel.name}” and all its repos, blueprints, and graph runs from disk. This cannot be undone.`}
+          message={`This permanently removes project “${confirmDel.name}” and all its repos, packs, and graph runs from disk. This cannot be undone.`}
           onConfirm={() => doDelete(confirmDel.id)}
           onCancel={() => setConfirmDel(null)}
         />
