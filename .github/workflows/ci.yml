@@ -11,14 +11,14 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          go-version: '1.26.2'
+          go-version-file: go.mod
           cache: true
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
           cache: npm
           cache-dependency-path: |
             internal/workspace/ui/web/package-lock.json
@@ -31,7 +31,12 @@ jobs:
         working-directory: internal/extractor/ui/web
       - run: npm run build
         working-directory: internal/extractor/ui/web
+      - run: npm test
+        working-directory: internal/extractor/ui/web
       - run: go test ./...
+      - run: go test -race ./internal/workspace/query ./internal/workspace/mcpserver ./internal/workspace/ui
+      - run: go vet ./...
       - run: go run ./cmd/diffmind pack lint ./packs
       - run: go run ./cmd/diffmind pack test ./packs
+      - run: sh scripts/test-install.sh
       - run: go build ./cmd/diffmind

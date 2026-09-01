@@ -5,7 +5,7 @@ Protocol is the Diffmind Service Context Protocol.
 This repository contains the shared Go types, JSON/YAML serialization, JSON
 Schema generation, and validation logic for service-context documents.
 
-DiffMind writes Protocol. DiffMind reads Protocol.
+The extractor writes Protocol documents. The workspace reads them.
 
 ## Schema
 
@@ -40,27 +40,16 @@ protocol/
   schema.go      JSON Schema generation
 ```
 
-## Install And Test
+## Develop and test
 
 ```bash
-cd /path/to/eyes/protocol
+git clone https://github.com/mohammad-safakhou/diffmind.git
+cd diffmind
 go test ./...
 ```
 
-The local development setup expects sibling repositories:
-
-```text
-eyes/
-  protocol/
-  diffmind/
-  diffmind/
-```
-
-DiffMind and DiffMind currently use local module replacements:
-
-```text
-replace github.com/mohammad-safakhou/diffmind/protocol => ../protocol
-```
+The protocol package lives at `protocol/` and is imported directly by the
+extractor and workspace packages in this repository.
 
 ## Core Model
 
@@ -271,7 +260,7 @@ DiffMind:
 DiffMind:
 
 - imports this module,
-- reads Protocol documents from DiffMind run directories,
+- reads Protocol documents from extractor run directories,
 - builds the company graph from service objects, resources, calls, and flows.
 
 Protocol itself has no UI and does not scan repositories.

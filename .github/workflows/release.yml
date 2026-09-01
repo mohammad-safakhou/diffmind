@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            internal/workspace/ui/web/package-lock.json
+            internal/extractor/ui/web/package-lock.json
+      - run: npm ci && npm run build
+        working-directory: internal/workspace/ui/web
+      - run: npm ci && npm run build && npm test
+        working-directory: internal/extractor/ui/web
+      - run: git diff --exit-code -- internal/workspace/ui/web/dist internal/extractor/ui/web/dist
+      - run: go test ./...
+      - run: sh scripts/test-install.sh
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+          - runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+          - runner: macos-15
+            goos: darwin
+            goarch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build release archive
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist/package
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${version} -X main.commit=${GITHUB_SHA} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o dist/package/diffmind ./cmd/diffmind
+          cp LICENSE README.md dist/package/
+          tar -C dist/package -czf "dist/diffmind_${version}_${GOOS}_${GOARCH}.tar.gz" diffmind LICENSE README.md
+      - uses: actions/upload-artifact@v7
+        with:
+          name: diffmind-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.tar.gz
+          archive: false
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish checksummed GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          version="${GITHUB_REF_NAME#v}"
+          for platform in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+            cp "diffmind_${version}_${platform}.tar.gz" "diffmind_latest_${platform}.tar.gz"
+          done
+          sha256sum *.tar.gz > checksums.txt
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes *.tar.gz checksums.txt

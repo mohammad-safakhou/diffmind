@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/runmgr"
+	querysvc "github.com/mohammad-safakhou/diffmind/internal/workspace/query"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/store"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/util"
 )
@@ -20,6 +21,7 @@ import (
 // Server hosts the DiffMind dashboard API + SPA.
 type Server struct {
 	store           *store.Store
+	query           *querysvc.Service
 	runs            *runmgr.Manager
 	diffmindRunsDir string
 	host            string
@@ -57,7 +59,7 @@ func New(st *store.Store, runs *runmgr.Manager, diffmindRunsDir, host string, po
 	if log == nil {
 		log = util.NewLogger(util.LevelInfo)
 	}
-	return &Server{store: st, runs: runs, diffmindRunsDir: diffmindRunsDir, host: host, port: port, log: log, liveStatusCache: map[string]liveStatusCacheEntry{}, archGraphCache: map[string]archGraphCacheEntry{}}
+	return &Server{store: st, query: querysvc.New(st), runs: runs, diffmindRunsDir: diffmindRunsDir, host: host, port: port, log: log, liveStatusCache: map[string]liveStatusCacheEntry{}, archGraphCache: map[string]archGraphCacheEntry{}}
 }
 
 // Addr returns "host:port".
@@ -101,6 +103,15 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/projects/{pid}/live-status", s.handleLiveStatus)
 	mux.HandleFunc("GET /api/projects/{pid}/pull-requests", s.handlePullRequests)
 	mux.HandleFunc("GET /api/projects/{pid}/pull-requests/{repo_id}/{number}/impact", s.handlePullRequestImpact)
+
+	// Stable, read-only query API for integrations and company-wide clients.
+	mux.HandleFunc("GET /api/v1/projects", s.handleV1Projects)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/graph/summary", s.handleV1GraphSummary)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/services", s.handleV1Services)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/services/{service}", s.handleV1Service)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/dependencies", s.handleV1Dependencies)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/impact", s.handleV1Impact)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/search", s.handleV1Search)
 
 	// Packs (G4).
 	mux.HandleFunc("GET /api/projects/{pid}/packs", s.handleListPacks)

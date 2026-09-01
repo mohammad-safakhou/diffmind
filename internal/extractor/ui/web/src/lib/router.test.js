@@ -6,8 +6,8 @@ describe('parseRoute', () => {
     expect(parseRoute('/')).toEqual({ name: 'repos' })
   })
 
-  it('routes a repository detail by id', () => {
-    expect(parseRoute('/repos/abc123')).toEqual({ name: 'repo', repoID: 'abc123' })
+  it('keeps obsolete repository detail links on the overview', () => {
+    expect(parseRoute('/repos/abc123')).toEqual({ name: 'repos' })
   })
 
   it('routes run detail without a global runs surface', () => {

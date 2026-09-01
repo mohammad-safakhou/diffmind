@@ -9,7 +9,27 @@ Everything lives in this repository and ships through one `diffmind` command.
 
 ## Quick start
 
-Requirements:
+Release install on macOS or Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mohammad-safakhou/diffmind/master/install.sh | sh
+diffmind doctor
+diffmind
+```
+
+The installer verifies the release checksum before installing. Set
+`DIFFMIND_INSTALL_DIR` to choose a destination or `DIFFMIND_VERSION` to pin a
+version.
+
+Install with Go instead:
+
+```bash
+go install github.com/mohammad-safakhou/diffmind/cmd/diffmind@latest
+diffmind doctor
+diffmind
+```
+
+Build from source. Requirements:
 
 - Go 1.26.2 or newer
 - Node.js 20 or newer when rebuilding the web interfaces
@@ -25,13 +45,6 @@ make build
 
 Open `http://127.0.0.1:8090`, create a project, add repositories, run DiffMind,
 and build the project graph.
-
-Install directly with Go:
-
-```bash
-go install github.com/mohammad-safakhou/diffmind/cmd/diffmind@latest
-diffmind
-```
 
 ## Commands
 
@@ -50,10 +63,67 @@ diffmind pack lint <path>        Validate pack manifests and rules
 diffmind pack test <path>        Execute synthetic pack fixtures
 diffmind pack install <source>   Install and lock a local or Git pack
 diffmind pack explain <path>     Explain what a pack derives from a repository
+diffmind mcp [--project ID]      Run the read-only stdio MCP server
+diffmind doctor [--json]         Check installation and graph readiness
+diffmind version [--json]        Print release/build information
 ```
 
 DiffMind stores local state under `~/.diffmind` by default. Set
 `DIFFMIND_HOME` to use another location.
+
+## Connect your coding agent
+
+Build a graph in the web workspace first. Then register the stdio MCP server.
+If you have multiple DiffMind projects, add `--project <project-id>` after
+`diffmind mcp` in these examples.
+
+Codex:
+
+```bash
+codex mcp add diffmind -- diffmind mcp
+```
+
+Claude Code:
+
+```bash
+claude mcp add diffmind -- diffmind mcp
+```
+
+Cursor project configuration (`.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "diffmind": {
+      "command": "diffmind",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+The MCP server offers read-only tools to list projects and services, inspect a
+service and its evidence, search architecture objects, traverse dependencies,
+and calculate change impact. It returns structured JSON and works entirely from
+persisted deterministic graph artifacts—no model is used during analysis.
+
+## Query API
+
+While the web workspace is running, integrations can query the same graph core
+under `/api/v1`:
+
+```text
+GET /api/v1/projects
+GET /api/v1/projects/{project}/graph/summary
+GET /api/v1/projects/{project}/services
+GET /api/v1/projects/{project}/services/{service}
+GET /api/v1/projects/{project}/dependencies?service=...&direction=both
+GET /api/v1/projects/{project}/impact?target=...&depth=6
+GET /api/v1/projects/{project}/search?q=...&limit=50
+```
+
+Add `run=<completed-run-id>` to pin a historical graph; otherwise the latest
+completed graph is used.
 
 ## How it works
 
@@ -97,6 +167,7 @@ make test
 make test-packs
 make test-race
 make ui-build
+make ui-test
 make build
 ```
 

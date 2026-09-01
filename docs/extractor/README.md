@@ -1,8 +1,7 @@
 # DiffMind
 
-DiffMind is the deterministic service-context extractor. It scans one source
-repository and writes a Protocol service document that DiffMind can ingest into a
-company graph.
+The DiffMind extractor scans one source repository and writes a Protocol service
+document that the workspace resolves into a company graph.
 
 DiffMind is deterministic-only. It does not use OpenCode, LLM prompts, model
 providers, snapshots, retry prompts, or legacy `diffmind.yaml` ingestion.
@@ -35,28 +34,13 @@ objects, observations, evidence, and flows.
 - Docker is useful for SCIP/indexer paths used by some repositories.
 - A source repository to analyze.
 
-The local development checkout expects these repositories as siblings:
-
-```text
-eyes/
-  protocol/
-  diffmind/
-  diffmind/
-```
-
-`diffmind/go.mod` uses:
-
-```text
-replace github.com/mohammad-safakhou/diffmind/protocol => ../protocol
-```
-
-If your checkout layout is different, update the `replace` path or publish Protocol
-as a normal module dependency.
+The extractor, protocol, workspace, web interfaces, and knowledge packs all
+live in the same repository and build into the same `diffmind` command.
 
 ## Build And Test
 
 ```bash
-cd /path/to/eyes/diffmind
+cd /path/to/diffmind
 go test ./...
 go build -o ./bin/diffmind ./cmd/diffmind
 ```
@@ -64,7 +48,7 @@ go build -o ./bin/diffmind ./cmd/diffmind
 Optional UI bundle:
 
 ```bash
-cd /path/to/eyes/diffmind/internal/ui/web
+cd /path/to/diffmind/internal/extractor/ui/web
 npm install
 npm run build
 ```
@@ -72,7 +56,7 @@ npm run build
 ## Run DiffMind Directly
 
 ```bash
-cd /path/to/eyes/diffmind
+cd /path/to/diffmind
 go run ./cmd/diffmind run \
   --repo /absolute/path/to/service-repo \
   --workers 8 \
@@ -223,7 +207,9 @@ in `internal/detectors/register/register.go`.
 
 ## How DiffMind Fits With DiffMind
 
-Normally engineers do not run DiffMind one repository at a time. DiffMind starts
+DiffMind for repositories from the project workspace.
+Normally engineers do not run the extractor one repository at a time. The
+project workspace schedules it for selected repositories or a batch.
 DiffMind for selected repositories, tracks status, and builds the multi-service
 graph from the generated Protocol files.
 

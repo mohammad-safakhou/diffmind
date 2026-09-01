@@ -9,7 +9,9 @@ Before opening a pull request:
 3. Run `make test-packs` when changing knowledge packs or extraction rules.
 4. Run `make test-race` when changing the pack loader or graph pipeline.
 5. Run `make ui-build` when changing either web application.
-6. Do not commit repository contents, generated analysis runs, credentials, or
+6. Run `make ui-test` when changing the extractor dashboard or router.
+7. Run `diffmind doctor` when changing installation, storage, or onboarding.
+8. Do not commit repository contents, generated analysis runs, credentials, or
    organization-specific examples.
 
 Use synthetic names and data in fixtures. New detectors should prefer precise,
