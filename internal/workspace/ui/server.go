@@ -1,5 +1,5 @@
 // Package ui hosts the DiffMind HTTP API and the embedded web app. It exposes
-// CRUD endpoints for projects, repositories, blueprints, and graph runs, plus
+// CRUD endpoints for projects, repositories, packs, and graph runs, plus
 // SSE streams for live run progress, and serves the single-page UI built under
 // internal/ui/web.
 package ui
@@ -102,12 +102,12 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/projects/{pid}/pull-requests", s.handlePullRequests)
 	mux.HandleFunc("GET /api/projects/{pid}/pull-requests/{repo_id}/{number}/impact", s.handlePullRequestImpact)
 
-	// Blueprints (G4).
-	mux.HandleFunc("GET /api/projects/{pid}/blueprints", s.handleListBlueprints)
-	mux.HandleFunc("POST /api/projects/{pid}/blueprints", s.handleCreateBlueprint)
-	mux.HandleFunc("GET /api/projects/{pid}/blueprints/{bid}", s.handleGetBlueprint)
-	mux.HandleFunc("PUT /api/projects/{pid}/blueprints/{bid}", s.handlePutBlueprint)
-	mux.HandleFunc("DELETE /api/projects/{pid}/blueprints/{bid}", s.handleDeleteBlueprint)
+	// Packs (G4).
+	mux.HandleFunc("GET /api/projects/{pid}/packs", s.handleListPacks)
+	mux.HandleFunc("POST /api/projects/{pid}/packs", s.handleCreatePack)
+	mux.HandleFunc("GET /api/projects/{pid}/packs/{pack_id}", s.handleGetPack)
+	mux.HandleFunc("PUT /api/projects/{pid}/packs/{pack_id}", s.handlePutPack)
+	mux.HandleFunc("DELETE /api/projects/{pid}/packs/{pack_id}", s.handleDeletePack)
 
 	// DiffMind run discovery (G5).
 	mux.HandleFunc("GET /api/diffmind-runs", s.handleDiffMindRuns)

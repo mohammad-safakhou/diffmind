@@ -104,44 +104,44 @@ func TestRepoCRUDDoesNotTouchSource(t *testing.T) {
 	}
 }
 
-func TestBlueprintCRUD(t *testing.T) {
+func TestPackCRUD(t *testing.T) {
 	s := newTestStore(t)
 	p, _ := s.CreateProject(Project{Name: "p"})
 
 	body := []byte(`{"name":"Helm Identity","applies_to":{"kind":"service_repo"},"extractions":[]}`)
-	id, err := s.CreateBlueprint(p.ID, "Helm Identity", body)
+	id, err := s.CreatePack(p.ID, "Helm Identity", body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if id != "helm-identity" {
-		t.Fatalf("blueprint id = %q", id)
+		t.Fatalf("pack id = %q", id)
 	}
 
-	metas, _ := s.ListBlueprints(p.ID)
+	metas, _ := s.ListPacks(p.ID)
 	if len(metas) != 1 || metas[0].Name != "Helm Identity" {
-		t.Fatalf("list blueprints = %+v", metas)
+		t.Fatalf("list packs = %+v", metas)
 	}
 
-	raw, err := s.GetBlueprint(p.ID, id)
+	raw, err := s.GetPack(p.ID, id)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(raw) == 0 {
-		t.Fatal("empty blueprint body")
+		t.Fatal("empty pack body")
 	}
 
-	if err := s.PutBlueprint(p.ID, id, []byte(`{"name":"Updated"}`)); err != nil {
+	if err := s.PutPack(p.ID, id, []byte(`{"name":"Updated"}`)); err != nil {
 		t.Fatal(err)
 	}
-	metas, _ = s.ListBlueprints(p.ID)
+	metas, _ = s.ListPacks(p.ID)
 	if metas[0].Name != "Updated" {
-		t.Fatalf("blueprint name after update = %q", metas[0].Name)
+		t.Fatalf("pack name after update = %q", metas[0].Name)
 	}
 
-	if err := s.DeleteBlueprint(p.ID, id); err != nil {
+	if err := s.DeletePack(p.ID, id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.GetBlueprint(p.ID, id); err != ErrNotFound {
+	if _, err := s.GetPack(p.ID, id); err != ErrNotFound {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -184,7 +184,7 @@ func TestRunCRUD(t *testing.T) {
 func TestEffectivePrecedence(t *testing.T) {
 	proj := &Project{Instruction: "project-instr"}
 	repoNoOverride := &Repo{}
-	repoOverride := &Repo{Instruction: "repo-instr", BlueprintIDs: []string{"a", "b"}}
+	repoOverride := &Repo{Instruction: "repo-instr", PackIDs: []string{"a", "b"}}
 
 	if got := EffectiveInstruction(proj, repoNoOverride); got != "project-instr" {
 		t.Fatalf("fallback instruction = %q", got)
@@ -192,10 +192,10 @@ func TestEffectivePrecedence(t *testing.T) {
 	if got := EffectiveInstruction(proj, repoOverride); got != "repo-instr" {
 		t.Fatalf("override instruction = %q", got)
 	}
-	if got := EffectiveBlueprintIDs(proj, repoNoOverride); got != nil {
+	if got := EffectivePackIDs(proj, repoNoOverride); got != nil {
 		t.Fatalf("expected nil (project fallback), got %v", got)
 	}
-	if got := EffectiveBlueprintIDs(proj, repoOverride); len(got) != 2 {
-		t.Fatalf("override blueprint ids = %v", got)
+	if got := EffectivePackIDs(proj, repoOverride); len(got) != 2 {
+		t.Fatalf("override pack ids = %v", got)
 	}
 }

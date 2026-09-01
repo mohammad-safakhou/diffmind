@@ -1,12 +1,59 @@
 package resolver
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/mohammad-safakhou/diffmind/internal/workspace/knowledge"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/model"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/registry"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/util"
 )
+
+func TestKnowledgeRuleResolvesOrganizationTargetPattern(t *testing.T) {
+	reg := registry.New()
+	reg.AddArchitecture("caller", &model.ServiceArchitecture{
+		ServiceName: "caller",
+		Dependencies: []model.Dependency{{BaseEntity: model.BaseEntity{
+			ID: "dep", Type: "outbound_http", Name: "catalog call",
+			Details: map[string]any{"url": "mesh://catalog.svc.company/v1/items"},
+		}}},
+	})
+	reg.AddArchitecture("catalog-service", &model.ServiceArchitecture{ServiceName: "catalog-service"})
+	rule := knowledge.ResolutionRule{
+		Name: "company mesh", DependencyType: "outbound_*",
+		TargetPattern: `^mesh://([a-z]+)\.svc\.company`, TargetService: "$1-service",
+		Confidence: 0.99, PackID: "company.mesh", PackPriority: 20,
+	}
+	resolution, err := New(reg, util.NewLogger(util.LevelInfo), rule).Resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolution.Matches) != 1 || resolution.Matches[0].ToService != "catalog-service" ||
+		!strings.Contains(resolution.Matches[0].Reasoning, "company.mesh") {
+		t.Fatalf("rule did not resolve dependency: %+v", resolution)
+	}
+}
+
+func TestKnowledgeRuleEqualPriorityConflictFails(t *testing.T) {
+	reg := registry.New()
+	reg.AddArchitecture("caller", &model.ServiceArchitecture{
+		ServiceName: "caller",
+		Dependencies: []model.Dependency{{BaseEntity: model.BaseEntity{
+			ID: "dep", Type: "outbound_http", Name: "target",
+			Details: map[string]any{"target_service": "shared-target"},
+		}}},
+	})
+	reg.AddArchitecture("service-a", &model.ServiceArchitecture{ServiceName: "service-a"})
+	reg.AddArchitecture("service-b", &model.ServiceArchitecture{ServiceName: "service-b"})
+	rules := []knowledge.ResolutionRule{
+		{Name: "a", TargetPattern: "shared-target", TargetService: "service-a", PackID: "a", PackPriority: 10, Confidence: 1},
+		{Name: "b", TargetPattern: "shared-target", TargetService: "service-b", PackID: "b", PackPriority: 10, Confidence: 1},
+	}
+	if _, err := New(reg, util.NewLogger(util.LevelInfo), rules...).Resolve(); err == nil || !strings.Contains(err.Error(), "conflict") {
+		t.Fatalf("expected resolution conflict, got %v", err)
+	}
+}
 
 func setupTestRegistry() *registry.Registry {
 	reg := registry.New()

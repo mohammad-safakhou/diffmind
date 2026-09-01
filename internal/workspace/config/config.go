@@ -10,10 +10,10 @@ import (
 
 // Config is the top-level DiffMind configuration.
 type Config struct {
-	DiffMind   DiffMindConfig   `json:"diffmind"`
-	Repos      ReposConfig      `json:"repos"`
-	Blueprints BlueprintsConfig `json:"blueprints"`
-	Artifacts  ArtifactsConfig  `json:"artifacts"`
+	DiffMind  DiffMindConfig  `json:"diffmind"`
+	Repos     ReposConfig     `json:"repos"`
+	Packs     PacksConfig     `json:"packs"`
+	Artifacts ArtifactsConfig `json:"artifacts"`
 }
 
 // DiffMindConfig configures how DiffMind invokes DiffMind.
@@ -24,9 +24,10 @@ type DiffMindConfig struct {
 
 // RepoEntry describes a single repository.
 type RepoEntry struct {
-	Name              string `json:"name"`
-	Path              string `json:"path"`
-	DiffMindArtifacts string `json:"diffmind_artifacts,omitempty"` // direct path to artifacts
+	Name              string   `json:"name"`
+	Path              string   `json:"path"`
+	DiffMindArtifacts string   `json:"diffmind_artifacts,omitempty"` // direct path to artifacts
+	PackIDs           []string `json:"pack_ids,omitempty"`
 }
 
 // ReposConfig lists all known repositories.
@@ -35,8 +36,8 @@ type ReposConfig struct {
 	InfraRepos   []RepoEntry `json:"infra_repos"`
 }
 
-// BlueprintsConfig tells DiffMind where to find blueprints.
-type BlueprintsConfig struct {
+// PacksConfig tells DiffMind where to find knowledge.
+type PacksConfig struct {
 	Dirs []string `json:"dirs"`
 }
 
@@ -53,8 +54,8 @@ func (c *Config) Defaults() {
 	if c.Artifacts.BaseDir == "" {
 		c.Artifacts.BaseDir = ".diffmind/runs"
 	}
-	if len(c.Blueprints.Dirs) == 0 {
-		c.Blueprints.Dirs = []string{".diffmind/blueprints", "blueprints"}
+	if len(c.Packs.Dirs) == 0 {
+		c.Packs.Dirs = []string{".diffmind/packs", "packs"}
 	}
 }
 

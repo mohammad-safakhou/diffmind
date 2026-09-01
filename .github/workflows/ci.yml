@@ -32,4 +32,6 @@ jobs:
       - run: npm run build
         working-directory: internal/extractor/ui/web
       - run: go test ./...
+      - run: go run ./cmd/diffmind pack lint ./packs
+      - run: go run ./cmd/diffmind pack test ./packs
       - run: go build ./cmd/diffmind

@@ -199,7 +199,7 @@ type ServiceArchitecture struct {
 }
 
 // ServiceIdentity holds the extracted identity of a single service,
-// derived from running extraction blueprints against the repo.
+// derived from running extraction packs against the repo.
 type ServiceIdentity struct {
 	ServiceName string            `json:"service_name"`
 	RepoPath    string            `json:"repo_path"`

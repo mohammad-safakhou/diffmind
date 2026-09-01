@@ -91,17 +91,23 @@ func TestProjectsAPI(t *testing.T) {
 	}
 }
 
-func TestStarterBlueprintsSeeded(t *testing.T) {
+func TestStarterPacksSeeded(t *testing.T) {
 	srv, st := newTestServer(t)
 	defer srv.Close()
 
 	body := map[string]any{
 		"name": "p",
-		"starter_blueprints": []map[string]any{
+		"starter_packs": []map[string]any{
 			{"name": "Helm Identity", "body": map[string]any{
-				"name":        "Helm Identity",
-				"applies_to":  map[string]any{"kind": "service_repo"},
-				"extractions": []map[string]any{{"name": "x", "source": map[string]any{"glob": "v.yaml"}, "strategy": "field_path", "extract": []map[string]any{{"field": "a", "maps_to": "service_name"}}}},
+				"api_version":   "diffmind.dev/v1alpha1",
+				"kind":          "KnowledgePack",
+				"id":            "helm-identity",
+				"name":          "Helm Identity",
+				"version":       "1.0.0",
+				"license":       "Apache-2.0",
+				"compatibility": ">=0.1.0",
+				"applies_to":    map[string]any{"kind": "service_repo"},
+				"extractions":   []map[string]any{{"name": "x", "source": map[string]any{"glob": "v.yaml"}, "strategy": "field_path", "extract": []map[string]any{{"field": "a", "maps_to": "service_name"}}}},
 			}},
 		},
 	}
@@ -111,9 +117,9 @@ func TestStarterBlueprintsSeeded(t *testing.T) {
 	}
 	var p store.Project
 	json.Unmarshal(data, &p)
-	bps, _ := st.ListBlueprints(p.ID)
+	bps, _ := st.ListPacks(p.ID)
 	if len(bps) != 1 {
-		t.Fatalf("expected 1 starter blueprint, got %d", len(bps))
+		t.Fatalf("expected 1 starter pack, got %d", len(bps))
 	}
 }
 
@@ -146,13 +152,13 @@ func TestReposAndSuggestions(t *testing.T) {
 	}
 
 	// Create repo + override.
-	resp, data = doJSON(t, "POST", srv.URL+"/api/projects/"+p.ID+"/repos", map[string]any{"path": repoDir, "blueprint_ids": []string{"x"}, "instruction": "ovr"})
+	resp, data = doJSON(t, "POST", srv.URL+"/api/projects/"+p.ID+"/repos", map[string]any{"path": repoDir, "pack_ids": []string{"x"}, "instruction": "ovr"})
 	if resp.StatusCode != 201 {
 		t.Fatalf("create repo = %d: %s", resp.StatusCode, data)
 	}
 	var repo store.Repo
 	json.Unmarshal(data, &repo)
-	if len(repo.BlueprintIDs) != 1 || repo.Instruction != "ovr" {
+	if len(repo.PackIDs) != 1 || repo.Instruction != "ovr" {
 		t.Fatalf("overrides not persisted: %+v", repo)
 	}
 
@@ -164,7 +170,7 @@ func TestReposAndSuggestions(t *testing.T) {
 	}
 }
 
-func TestBlueprintValidationAPI(t *testing.T) {
+func TestPackValidationAPI(t *testing.T) {
 	srv, _ := newTestServer(t)
 	defer srv.Close()
 	_, data := doJSON(t, "POST", srv.URL+"/api/projects", map[string]any{"name": "p"})
@@ -172,20 +178,20 @@ func TestBlueprintValidationAPI(t *testing.T) {
 	json.Unmarshal(data, &p)
 
 	// Invalid JSON.
-	req, _ := http.NewRequest("POST", srv.URL+"/api/projects/"+p.ID+"/blueprints", bytes.NewReader([]byte("{not json")))
+	req, _ := http.NewRequest("POST", srv.URL+"/api/projects/"+p.ID+"/packs", bytes.NewReader([]byte("{not json")))
 	resp, _ := http.DefaultClient.Do(req)
 	if resp.StatusCode != 422 {
-		t.Fatalf("invalid json blueprint = %d, want 422", resp.StatusCode)
+		t.Fatalf("invalid json pack = %d, want 422", resp.StatusCode)
 	}
 	resp.Body.Close()
 
 	// Structurally invalid (missing extractions).
-	req, _ = http.NewRequest("POST", srv.URL+"/api/projects/"+p.ID+"/blueprints", bytes.NewReader([]byte(`{"name":"x","applies_to":{"kind":"bogus"}}`)))
+	req, _ = http.NewRequest("POST", srv.URL+"/api/projects/"+p.ID+"/packs", bytes.NewReader([]byte(`{"name":"x","applies_to":{"kind":"bogus"}}`)))
 	resp, _ = http.DefaultClient.Do(req)
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != 422 {
-		t.Fatalf("invalid blueprint = %d, want 422: %s", resp.StatusCode, bodyBytes)
+		t.Fatalf("invalid pack = %d, want 422: %s", resp.StatusCode, bodyBytes)
 	}
 	var verr struct {
 		Validation []map[string]any `json:"validation"`
@@ -196,30 +202,30 @@ func TestBlueprintValidationAPI(t *testing.T) {
 	}
 
 	// Valid.
-	valid := []byte(`{"name":"Good","applies_to":{"kind":"service_repo"},"extractions":[{"name":"e","source":{"glob":"v.yaml"},"strategy":"field_path","extract":[{"field":"a","maps_to":"service_name"}]}]}`)
-	req, _ = http.NewRequest("POST", srv.URL+"/api/projects/"+p.ID+"/blueprints", bytes.NewReader(valid))
+	valid := []byte(`{"api_version":"diffmind.dev/v1alpha1","kind":"KnowledgePack","id":"good","name":"Good","version":"1.0.0","license":"Apache-2.0","compatibility":">=0.1.0","applies_to":{"kind":"service_repo"},"extractions":[{"name":"e","source":{"glob":"v.yaml"},"strategy":"field_path","extract":[{"field":"a","maps_to":"service_name"}]}]}`)
+	req, _ = http.NewRequest("POST", srv.URL+"/api/projects/"+p.ID+"/packs", bytes.NewReader(valid))
 	resp, _ = http.DefaultClient.Do(req)
 	bodyBytes, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != 201 {
-		t.Fatalf("valid blueprint = %d: %s", resp.StatusCode, bodyBytes)
+		t.Fatalf("valid pack = %d: %s", resp.StatusCode, bodyBytes)
 	}
 	var created struct {
 		ID string `json:"id"`
 	}
 	json.Unmarshal(bodyBytes, &created)
 	if created.ID != "good" {
-		t.Fatalf("blueprint id = %q", created.ID)
+		t.Fatalf("pack id = %q", created.ID)
 	}
 
 	// Fetch raw + delete.
-	resp, _ = doJSON(t, "GET", srv.URL+"/api/projects/"+p.ID+"/blueprints/"+created.ID, nil)
+	resp, _ = doJSON(t, "GET", srv.URL+"/api/projects/"+p.ID+"/packs/"+created.ID, nil)
 	if resp.StatusCode != 200 {
-		t.Fatalf("get blueprint = %d", resp.StatusCode)
+		t.Fatalf("get pack = %d", resp.StatusCode)
 	}
-	resp, _ = doJSON(t, "DELETE", srv.URL+"/api/projects/"+p.ID+"/blueprints/"+created.ID, nil)
+	resp, _ = doJSON(t, "DELETE", srv.URL+"/api/projects/"+p.ID+"/packs/"+created.ID, nil)
 	if resp.StatusCode != 200 {
-		t.Fatalf("delete blueprint = %d", resp.StatusCode)
+		t.Fatalf("delete pack = %d", resp.StatusCode)
 	}
 }
 

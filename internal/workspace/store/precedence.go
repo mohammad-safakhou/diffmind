@@ -16,13 +16,13 @@ func EffectiveInstruction(p *Project, r *Repo) string {
 	return ""
 }
 
-// EffectiveBlueprintIDs returns the blueprint ids that apply to a repo: the
+// EffectivePackIDs returns the pack ids that apply to a repo: the
 // repo's explicit override list when non-empty, otherwise nil to signal
-// "fall back to project-level blueprint matching" (all project blueprints are
+// "fall back to project-level pack matching" (all project packs are
 // candidates, matched by their applies_to rules).
-func EffectiveBlueprintIDs(p *Project, r *Repo) []string {
-	if r != nil && len(r.BlueprintIDs) > 0 {
-		return append([]string(nil), r.BlueprintIDs...)
+func EffectivePackIDs(p *Project, r *Repo) []string {
+	if r != nil && len(r.PackIDs) > 0 {
+		return append([]string(nil), r.PackIDs...)
 	}
 	return nil
 }

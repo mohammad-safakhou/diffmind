@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/mohammad-safakhou/diffmind/internal/workspace/knowledge"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/store"
 )
 
@@ -21,12 +22,12 @@ type createProjectRequest struct {
 	Name        string   `json:"name"`
 	SearchRoots []string `json:"search_roots"`
 	Instruction string   `json:"instruction"`
-	// StarterBlueprints are blueprint bodies to seed the new project with
-	// (the SPA copies these from diffmind/blueprints/*.json templates).
-	StarterBlueprints []starterBlueprint `json:"starter_blueprints"`
+	// StarterPacks are pack bodies to seed the new project with
+	// (the SPA copies these from diffmind/packs/*.json templates).
+	StarterPacks []starterPack `json:"starter_packs"`
 }
 
-type starterBlueprint struct {
+type starterPack struct {
 	Name string `json:"name"`
 	Body any    `json:"body"`
 }
@@ -50,13 +51,17 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	// Seed starter blueprints (best effort; a bad one is skipped).
-	for _, sb := range req.StarterBlueprints {
+	// Seed starter packs (best effort; a bad one is skipped).
+	for _, sb := range req.StarterPacks {
 		body, err := marshalBody(sb.Body)
 		if err != nil {
 			continue
 		}
-		_, _ = s.store.CreateBlueprint(p.ID, sb.Name, body)
+		pack, validation := knowledge.ValidatePack(body, ".json")
+		if len(validation) > 0 {
+			continue
+		}
+		_, _ = s.store.CreatePack(p.ID, pack.ID, body)
 	}
 	writeJSON(w, http.StatusCreated, p)
 }
@@ -111,6 +116,10 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 func (s *Server) writeStoreErr(w http.ResponseWriter, err error) {
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if errors.Is(err, store.ErrConflict) {
+		writeErr(w, http.StatusConflict, err)
 		return
 	}
 	writeErr(w, http.StatusInternalServerError, err)
