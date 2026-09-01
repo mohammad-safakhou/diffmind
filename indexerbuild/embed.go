@@ -4,11 +4,8 @@
 // # WHY THIS PACKAGE EXISTS AT MODULE ROOT
 //
 // go:embed directives cannot reference parent directories. The
-// canonical sources we embed live at the module root
-// (Dockerfile.indexer, go.mod, go.sum) and in cmd/diffmind-index/
-// (a sibling of this package). We therefore put the embed file
-// at module root level — under a dedicated package whose only job
-// is to expose a single embed.FS.
+// canonical sources live together here in a dedicated package whose
+// only job is to expose a single embed.FS.
 //
 // DiffMind's indexer driver imports this package and extracts the FS
 // to a temp build-context directory on first run, then shells out to
@@ -20,10 +17,9 @@
 //
 //   - Dockerfile.indexer  the multi-stage Dockerfile (root of the tree)
 //   - wrapper/**          the Go sources of the in-image entrypoint
-//     binary. Has its own go.mod (stdlib-only) so
-//     it builds standalone inside the wrapper-builder
-//     container stage without depending on diffmind's
-//     own module graph.
+//     binary. The Dockerfile creates a minimal go.mod (stdlib-only)
+//     inside the wrapper-builder container stage, so it builds without
+//     depending on diffmind's own module graph.
 //
 // # SIZE
 //

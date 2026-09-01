@@ -13,8 +13,9 @@ import (
 )
 
 // prepareContextDir ensures the embedded build context is extracted to
-// <BuildContextRoot>/<digest>/ and synthesises the go.mod the
-// wrapper-builder Dockerfile stage expects. Idempotent.
+// <BuildContextRoot>/<digest>/. The Dockerfile creates the wrapper's
+// minimal module file inside its builder stage, so every required host
+// input is part of the embedded context. Idempotent.
 func (b *Builder) prepareContextDir(digest string) (string, error) {
 	root := b.contextRoot()
 	dir := filepath.Join(root, digest)
@@ -37,15 +38,6 @@ func (b *Builder) prepareContextDir(digest string) (string, error) {
 	}
 
 	if err := extractEmbed(indexerbuild.Context, dir); err != nil {
-		return "", err
-	}
-
-	// Synthesise the go.mod the wrapper-builder Dockerfile stage
-	// expects at the build-context root. Stdlib-only, no replace
-	// directives; the wrapper compiles standalone inside the
-	// container.
-	goMod := "module diffmindindex\n\ngo 1.22\n"
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0o644); err != nil {
 		return "", err
 	}
 
