@@ -158,6 +158,14 @@ func (s *Server) refreshAllProjects(ctx context.Context) ([]ProjectRefreshResult
 }
 
 func (s *Server) refreshOneProject(ctx context.Context, pid string) ProjectRefreshResult {
+	if !s.beginProjectOperation(pid) {
+		return ProjectRefreshResult{ProjectID: pid, Error: "project is already being processed"}
+	}
+	defer s.endProjectOperation(pid)
+	return s.runProjectRefresh(ctx, pid, s.refreshConcurrency(), orchestrator.DiffMindRunOptions{}, "fleet_refresh")
+}
+
+func (s *Server) runProjectRefresh(ctx context.Context, pid string, concurrency int, opts orchestrator.DiffMindRunOptions, trigger string) ProjectRefreshResult {
 	result := ProjectRefreshResult{ProjectID: pid}
 	var failures []string
 	repos, err := s.store.ListRepos(pid)
@@ -169,7 +177,6 @@ func (s *Server) refreshOneProject(ctx context.Context, pid string) ProjectRefre
 		return result
 	}
 
-	concurrency := s.refreshConcurrency()
 	gitRepos := make([]store.Repo, 0, len(repos))
 	for _, repo := range repos {
 		if strings.TrimSpace(repo.GitURL) != "" && repo.SyncStatus != "diffmind_running" {
@@ -202,7 +209,7 @@ func (s *Server) refreshOneProject(ctx context.Context, pid string) ProjectRefre
 			rp.SyncError = ""
 		})
 	}
-	s.runDiffMindBatch(pid, serviceRepos, orchestrator.DiffMindRunOptions{}, concurrency)
+	s.runDiffMindBatch(pid, serviceRepos, opts, concurrency)
 
 	repos, err = s.store.ListRepos(pid)
 	if err != nil {
@@ -226,7 +233,7 @@ func (s *Server) refreshOneProject(ctx context.Context, pid string) ProjectRefre
 	}
 	refs = s.validGraphRunRepos(pid, refs)
 	if len(refs) > 0 {
-		run, startErr := s.runs.Start(pid, refs, map[string]any{"trigger": "fleet_refresh"})
+		run, startErr := s.runs.Start(pid, refs, map[string]any{"trigger": trigger})
 		if startErr != nil {
 			failures = append(failures, "start graph: "+startErr.Error())
 		} else {
@@ -237,6 +244,22 @@ func (s *Server) refreshOneProject(ctx context.Context, pid string) ProjectRefre
 		result.Error = strings.Join(failures, "; ")
 	}
 	return result
+}
+
+func (s *Server) beginProjectOperation(pid string) bool {
+	s.projectOpsMu.Lock()
+	defer s.projectOpsMu.Unlock()
+	if s.projectOps[pid] {
+		return false
+	}
+	s.projectOps[pid] = true
+	return true
+}
+
+func (s *Server) endProjectOperation(pid string) {
+	s.projectOpsMu.Lock()
+	delete(s.projectOps, pid)
+	s.projectOpsMu.Unlock()
 }
 
 func (s *Server) refreshSyncRepos(ctx context.Context, pid string, repos []store.Repo, concurrency int) []error {

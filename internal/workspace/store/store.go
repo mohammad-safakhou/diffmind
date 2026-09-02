@@ -41,6 +41,9 @@ func New(home string) (*Store, error) {
 
 func (s *Store) projectsDir() string         { return filepath.Join(s.root, "projects") }
 func (s *Store) projectDir(id string) string { return filepath.Join(s.projectsDir(), id) }
+func (s *Store) ingestionPath(id string) string {
+	return filepath.Join(s.projectDir(id), "ingestion.json")
+}
 func (s *Store) packsDir(pid string) string {
 	return filepath.Join(s.projectDir(pid), "packs")
 }
@@ -61,6 +64,57 @@ func (s *Store) HomeDir() string { return s.root }
 // manager to write graph.json / events.jsonl / identities).
 func (s *Store) RunDir(pid, runID string) string {
 	return filepath.Join(s.runsDir(pid), runID)
+}
+
+// CreateIngestion starts and persists a new latest-ingestion projection.
+func (s *Store) CreateIngestion(pid string, ingestion Ingestion) (*Ingestion, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.GetProject(pid); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	ingestion.ID = now.Format("20060102T150405.000000000Z")
+	ingestion.ProjectID = pid
+	if ingestion.Status == "" {
+		ingestion.Status = IngestionRunning
+	}
+	if ingestion.Phase == "" {
+		ingestion.Phase = "starting"
+	}
+	ingestion.StartedAt = now
+	ingestion.UpdatedAt = now
+	if err := writeJSON(s.ingestionPath(pid), ingestion); err != nil {
+		return nil, err
+	}
+	return &ingestion, nil
+}
+
+// GetIngestion returns the latest project ingestion.
+func (s *Store) GetIngestion(pid string) (*Ingestion, error) {
+	if _, err := s.GetProject(pid); err != nil {
+		return nil, err
+	}
+	var ingestion Ingestion
+	if err := readJSON(s.ingestionPath(pid), &ingestion); err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &ingestion, nil
+}
+
+// SaveIngestion replaces the latest project ingestion atomically.
+func (s *Store) SaveIngestion(pid string, ingestion Ingestion) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.GetProject(pid); err != nil {
+		return err
+	}
+	ingestion.ProjectID = pid
+	ingestion.UpdatedAt = time.Now().UTC()
+	return writeJSON(s.ingestionPath(pid), ingestion)
 }
 
 // ---------------------------------------------------------------------------

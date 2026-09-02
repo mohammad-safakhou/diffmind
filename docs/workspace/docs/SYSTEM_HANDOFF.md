@@ -29,12 +29,11 @@ is set.
 
 1. Run `diffmind` and open `http://127.0.0.1:8090`.
 2. Create a project for a system, product area, or organization.
-3. Add one local repository, scan a directory of Git repositories, or import
-   repositories from GitHub.
-4. Run DiffMind for one repository to validate the result, then use the batch
-   action for the rest.
-5. Build the graph after repository analysis completes.
-6. Explore services, teams, entrypoints, data stores, queues, traces, and impact
+3. Choose **Import & build**, then scan a directory of Git repositories or
+   import a GitHub organization. DiffMind imports, syncs, analyzes, and builds
+   the graph as one durable operation. Reloading the page does not lose its
+   progress or errors.
+4. Explore services, teams, entrypoints, data stores, queues, traces, and impact
    from the project workspace.
 
 The analysis is deterministic. Company-specific conventions belong in a
@@ -110,8 +109,9 @@ serves both the web/API and remote MCP surfaces. Refresh status and manual
 triggering are available at `GET /api/v1/refresh/status` and
 `POST /api/v1/refresh`.
 
-The built-in token is deployment-wide, not per-user authorization. Put the
-service behind TLS and an organization-aware reverse proxy when individual
-identity, audit, or access policy matters. Back up the `/data` volume and inject
+The built-in token is a deployment-wide admin recovery credential. For normal
+company access, put the service behind TLS and a trusted identity proxy that
+sets DiffMind's `viewer`, `editor`, or `admin` role headers. State-changing
+requests are recorded in the audit log. Back up the `/data` volume and inject
 repository credentials as runtime secrets. See
 [company deployment](../../company-deployment.md).

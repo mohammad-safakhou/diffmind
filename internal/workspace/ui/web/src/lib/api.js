@@ -39,6 +39,8 @@ export const deleteProject = (id) => api(`/api/projects/${id}`, { method: 'DELET
 export const listRepos = (pid) => api(`/api/projects/${pid}/repos`)
 export const createRepo = (pid, r) => api(`/api/projects/${pid}/repos`, { method: 'POST', body: j(r) })
 export const importRepos = (pid, body) => api(`/api/projects/${pid}/repo-imports`, { method: 'POST', body: j(body) })
+export const getIngestion = (pid) => api(`/api/projects/${pid}/ingestion`)
+export const startIngestion = (pid, body = {}) => api(`/api/projects/${pid}/ingestion`, { method: 'POST', body: j(body) })
 export const patchRepo = (pid, rid, r) => api(`/api/projects/${pid}/repos/${rid}`, { method: 'PATCH', body: j(r) })
 export const deleteRepo = (pid, rid) => api(`/api/projects/${pid}/repos/${rid}`, { method: 'DELETE' })
 export const repoSuggestions = (pid) => api(`/api/projects/${pid}/repo-suggestions`)

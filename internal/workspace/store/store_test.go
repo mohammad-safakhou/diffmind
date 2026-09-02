@@ -2,6 +2,7 @@ package store
 
 import (
 	"testing"
+	"time"
 )
 
 func newTestStore(t *testing.T) *Store {
@@ -70,6 +71,36 @@ func TestProjectSlugCollision(t *testing.T) {
 	}
 	if b.ID != "my-project-2" {
 		t.Fatalf("second slug = %q, want my-project-2", b.ID)
+	}
+}
+
+func TestIngestionPersistence(t *testing.T) {
+	s := newTestStore(t)
+	project, err := s.CreateProject(Project{Name: "Company graph"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := s.CreateIngestion(project.ID, Ingestion{Provider: "github", Source: "example", Phase: "discovering"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == "" || created.Status != IngestionRunning || created.StartedAt.IsZero() {
+		t.Fatalf("created ingestion = %+v", created)
+	}
+	created.Status = IngestionCompleted
+	created.Phase = "complete"
+	created.Imported = 3
+	created.GraphRunID = "graph-1"
+	created.FinishedAt = time.Now().UTC()
+	if err := s.SaveIngestion(project.ID, *created); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetIngestion(project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != IngestionCompleted || got.Imported != 3 || got.GraphRunID != "graph-1" || got.UpdatedAt.IsZero() {
+		t.Fatalf("persisted ingestion = %+v", got)
 	}
 }
 

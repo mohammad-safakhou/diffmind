@@ -1144,7 +1144,8 @@ textarea { resize: vertical; }
   overflow: auto;
 }
 .diffmind-activity,
-.graph-activity {
+.graph-activity,
+.ingestion-activity {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1156,6 +1157,7 @@ textarea { resize: vertical; }
 }
 .diffmind-activity strong,
 .graph-activity strong,
+.ingestion-activity strong,
 .run-progress-card strong {
   display: block;
   color: #dbeafe;
@@ -1163,11 +1165,31 @@ textarea { resize: vertical; }
 }
 .diffmind-activity span,
 .graph-activity span,
+.ingestion-activity span,
 .run-progress-card span {
   display: block;
   color: #9aa6c0;
   font-size: 12px;
   margin-top: 2px;
+}
+.workspace-ingestion-result {
+  position: fixed;
+  z-index: 19;
+  top: 112px;
+  left: 310px;
+  right: 360px;
+  max-height: 180px;
+  overflow: auto;
+}
+.workspace-ingestion-result summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+}
+.workspace-ingestion-result ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
 }
 .activity-spinner {
   width: 15px;
@@ -1446,6 +1468,7 @@ textarea { resize: vertical; }
   }
   .workspace-error,
   .workspace-notice,
+  .workspace-ingestion-result,
   .workspace-activity-stack {
     left: 258px;
     right: 16px;
@@ -1546,6 +1569,11 @@ textarea { resize: vertical; }
     left: 10px;
     right: 10px;
     top: 74px;
+  }
+  .workspace-ingestion-result {
+    left: 10px;
+    right: 10px;
+    top: 122px;
   }
   .workspace-activity-stack {
     left: 10px;
