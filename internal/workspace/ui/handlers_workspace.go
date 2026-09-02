@@ -405,6 +405,15 @@ func (s *Server) syncGitRepo(ctx context.Context, pid string, repo store.Repo) (
 		if err := gitCommand(ctx, clonePath, repo.GitURL, "fetch", "--prune", "origin"); err != nil {
 			return s.markRepoSyncFailed(pid, repo.ID, err)
 		}
+		info := inspectLocalGit(ctx, clonePath, repo.DefaultBranch)
+		if info.Dirty {
+			return s.markRepoSyncFailed(pid, repo.ID, fmt.Errorf("managed checkout has local changes; refusing to overwrite them"))
+		}
+		if info.RemoteHead != "" && info.Head != info.RemoteHead {
+			if err := gitCommand(ctx, clonePath, repo.GitURL, "checkout", "--detach", "origin/"+info.Branch); err != nil {
+				return s.markRepoSyncFailed(pid, repo.ID, err)
+			}
+		}
 	}
 	info := inspectLocalGit(ctx, clonePath, repo.DefaultBranch)
 	return s.store.UpdateRepo(pid, repo.ID, func(rp *store.Repo) {

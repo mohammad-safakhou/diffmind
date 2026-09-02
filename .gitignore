@@ -4,6 +4,7 @@
 .gocache/
 .gomodcache/
 .diffmind/
+.env
 bin/
 coverage/
 node_modules/

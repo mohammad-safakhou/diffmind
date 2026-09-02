@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestVersionJSON(t *testing.T) {
@@ -47,5 +48,39 @@ func TestDoctorFreshInstall(t *testing.T) {
 func TestDoctorRejectsExtraArguments(t *testing.T) {
 	if _, err := runDoctor([]string{"unexpected"}, &bytes.Buffer{}); err == nil {
 		t.Fatal("expected usage error")
+	}
+}
+
+func TestValidateUIExposure(t *testing.T) {
+	for _, host := range []string{"", "localhost", "127.0.0.1", "::1", "[::1]"} {
+		if err := validateUIExposure(host, "", false); err != nil {
+			t.Errorf("loopback host %q rejected: %v", host, err)
+		}
+	}
+	if err := validateUIExposure("0.0.0.0", "", false); err == nil {
+		t.Fatal("expected unauthenticated public bind to be rejected")
+	}
+	if err := validateUIExposure("0.0.0.0", "token", false); err != nil {
+		t.Fatalf("authenticated public bind rejected: %v", err)
+	}
+	if err := validateUIExposure("10.0.0.2", "", true); err != nil {
+		t.Fatalf("explicit unauthenticated bind rejected: %v", err)
+	}
+}
+
+func TestSharedServerEnvironmentParsing(t *testing.T) {
+	t.Setenv("DIFFMIND_REFRESH_ON_START", "true")
+	t.Setenv("DIFFMIND_REFRESH_CONCURRENCY", "7")
+	if !envBool("DIFFMIND_REFRESH_ON_START") {
+		t.Fatal("expected true boolean environment value")
+	}
+	if got := envInt("DIFFMIND_REFRESH_CONCURRENCY", 4); got != 7 {
+		t.Fatalf("concurrency = %d, want 7", got)
+	}
+	if got, err := parseOptionalDuration("15m"); err != nil || got != 15*time.Minute {
+		t.Fatalf("duration = %v, %v", got, err)
+	}
+	if _, err := parseOptionalDuration("tomorrow"); err == nil {
+		t.Fatal("expected invalid duration to fail")
 	}
 }

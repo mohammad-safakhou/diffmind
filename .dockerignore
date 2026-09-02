@@ -1,0 +1,13 @@
+.git
+.github
+.gocache
+.gomodcache
+.diffmind
+.env
+bin
+coverage
+**/node_modules
+internal/workspace/ui/web/node_modules
+internal/extractor/ui/web/node_modules
+**/*.log
+**/*.tmp

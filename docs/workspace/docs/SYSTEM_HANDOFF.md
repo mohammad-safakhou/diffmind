@@ -51,8 +51,10 @@ The MCP server communicates over stdio and writes no logs to stdout:
 diffmind mcp --project <project-id>
 ```
 
-An MCP client should launch that command with no network transport. If there is
-only one DiffMind project, `--project` can be omitted. The server exposes:
+An MCP client can launch that command with no network transport. If there is
+only one DiffMind project, `--project` can be omitted. A shared deployment also
+serves streamable HTTP MCP at `/mcp`, protected by the server bearer token. The
+server exposes:
 
 - `list_projects`
 - `get_graph_summary`
@@ -101,9 +103,15 @@ or organization names.
 
 ## Company-wide operation
 
-The current milestone is local-first: a shared host can bind the HTTP server to
-an internal interface and place `DIFFMIND_HOME` on persistent storage, but
-authentication and scheduled refresh are not yet built in. Do not expose it to
-an untrusted network. A production multi-user deployment should add an auth
-proxy, repository credentials management, scheduled incremental refresh, and a
-backed-up persistent volume.
+Use `compose.yaml` for a shared installation. It requires an authentication
+token, stores all projects and run artifacts on a persistent volume, refreshes
+registered Git repositories on startup and at a configurable interval, and
+serves both the web/API and remote MCP surfaces. Refresh status and manual
+triggering are available at `GET /api/v1/refresh/status` and
+`POST /api/v1/refresh`.
+
+The built-in token is deployment-wide, not per-user authorization. Put the
+service behind TLS and an organization-aware reverse proxy when individual
+identity, audit, or access policy matters. Back up the `/data` volume and inject
+repository credentials as runtime secrets. See
+[company deployment](../../company-deployment.md).
