@@ -1,4 +1,4 @@
-.PHONY: build install test test-race test-packs test-integration ui-build ui-test verify run clean
+.PHONY: build install test test-race test-packs test-integration ui-build ui-test verify run container-build company-up company-down clean
 
 GOCACHE_DIR := $(CURDIR)/.gocache
 
@@ -35,6 +35,15 @@ verify: test test-packs ui-build ui-test
 
 run:
 	GOCACHE=$(GOCACHE_DIR) go run ./cmd/diffmind
+
+container-build:
+	docker build -t diffmind:dev .
+
+company-up:
+	docker compose up -d
+
+company-down:
+	docker compose down
 
 clean:
 	go clean -cache

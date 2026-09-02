@@ -9,10 +9,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/config"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/runmgr"
@@ -43,6 +46,11 @@ Flags (ui):
   --port        UI server port (default 8090)
   --log-level   Log level: info, debug, trace (default info)
   --no-spa-rebuild  Skip automatic SPA rebuild on startup
+  --auth-token  Require this token via Bearer, Basic password, or X-DiffMind-Token
+  --allow-unauthenticated  Allow a non-loopback bind without authentication
+  --refresh-interval  Refresh every duration such as 15m or 1h (disabled by default)
+  --refresh-on-start  Refresh all projects immediately after startup
+  --refresh-concurrency  Maximum concurrent repository operations (default 4)
 `
 
 func main() {
@@ -210,7 +218,16 @@ func cmdUI(args []string) {
 	port := fs.Int("port", 8090, "UI server port")
 	logLevel := fs.String("log-level", "info", "Log level: info, debug, trace")
 	noSPARebuild := fs.Bool("no-spa-rebuild", false, "skip automatic SPA rebuild on startup")
+	authToken := fs.String("auth-token", strings.TrimSpace(os.Getenv("DIFFMIND_AUTH_TOKEN")), "shared-server authentication token (prefer DIFFMIND_AUTH_TOKEN)")
+	allowUnauthenticated := fs.Bool("allow-unauthenticated", false, "allow a non-loopback bind without authentication")
+	refreshInterval := fs.String("refresh-interval", strings.TrimSpace(os.Getenv("DIFFMIND_REFRESH_INTERVAL")), "fleet refresh interval, for example 15m or 1h")
+	refreshOnStart := fs.Bool("refresh-on-start", envBool("DIFFMIND_REFRESH_ON_START"), "refresh every project immediately after startup")
+	refreshConcurrency := fs.Int("refresh-concurrency", envInt("DIFFMIND_REFRESH_CONCURRENCY", 4), "maximum concurrent repository refresh operations")
 	_ = fs.Parse(args)
+	if err := validateUIExposure(*host, *authToken, *allowUnauthenticated); err != nil {
+		fmt.Fprintf(os.Stderr, "UI server configuration error: %v\n", err)
+		os.Exit(2)
+	}
 
 	log := newLogger(*logLevel)
 
@@ -226,6 +243,17 @@ func cmdUI(args []string) {
 	}
 
 	srv := ui.New(st, mgr, config.DiffMindRunsDir(), *host, *port, log)
+	srv.SetVersion(version)
+	srv.SetAuthToken(*authToken)
+	interval, err := parseOptionalDuration(*refreshInterval)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "UI server configuration error: invalid refresh interval: %v\n", err)
+		os.Exit(2)
+	}
+	if err := srv.ConfigureRefresh(ui.RefreshConfig{Interval: interval, OnStart: *refreshOnStart, Concurrency: *refreshConcurrency}); err != nil {
+		fmt.Fprintf(os.Stderr, "UI server configuration error: %v\n", err)
+		os.Exit(2)
+	}
 	fmt.Printf("DiffMind dashboard: http://%s\n", srv.Addr())
 	fmt.Println("Press Ctrl+C to stop.")
 
@@ -235,6 +263,42 @@ func cmdUI(args []string) {
 		fmt.Fprintf(os.Stderr, "UI server error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func validateUIExposure(host, token string, allowUnauthenticated bool) error {
+	if allowUnauthenticated || strings.TrimSpace(token) != "" || isLoopbackHost(host) {
+		return nil
+	}
+	return fmt.Errorf("refusing unauthenticated non-loopback bind %q; set DIFFMIND_AUTH_TOKEN or pass --allow-unauthenticated", host)
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	if host == "" || strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func parseOptionalDuration(value string) (time.Duration, error) {
+	if strings.TrimSpace(value) == "" {
+		return 0, nil
+	}
+	return time.ParseDuration(value)
+}
+
+func envBool(name string) bool {
+	value, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(name)))
+	return err == nil && value
+}
+
+func envInt(name string, fallback int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name)))
+	if err != nil {
+		return fallback
+	}
+	return value
 }
 
 func cmdList(args []string) {

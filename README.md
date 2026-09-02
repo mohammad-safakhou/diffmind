@@ -107,6 +107,38 @@ service and its evidence, search architecture objects, traverse dependencies,
 and calculate change impact. It returns structured JSON and works entirely from
 persisted deterministic graph artifacts—no model is used during analysis.
 
+## Run it for a company
+
+The included Compose deployment runs the UI, query API, scheduled repository
+refresh, and streamable HTTP MCP endpoint as one rootless service with a
+persistent volume:
+
+```bash
+cp .env.example .env
+# Replace the placeholder token in .env; `openssl rand -hex 32` is suitable.
+docker compose up -d
+```
+
+Open `http://localhost:8090`. The browser's authentication dialog accepts any
+username and uses `DIFFMIND_AUTH_TOKEN` as the password. Put a TLS reverse proxy
+in front of DiffMind before exposing it beyond a trusted machine or network.
+
+Remote API clients send `Authorization: Bearer <token>`. Remote MCP clients use
+the `/mcp` endpoint. For example, Codex can connect directly to a shared host:
+
+```bash
+export DIFFMIND_AUTH_TOKEN='<the server token>'
+codex mcp add diffmind \
+  --url https://diffmind.example.com/mcp \
+  --bearer-token-env-var DIFFMIND_AUTH_TOKEN
+```
+
+By default the service refreshes every registered Git repository on startup and
+every 15 minutes, re-analyzes it, and publishes a new project graph. Set
+`GITHUB_TOKEN` for private GitHub repositories. See
+[company deployment](docs/company-deployment.md) for operations, security, and
+backup details.
+
 ## Query API
 
 While the web workspace is running, integrations can query the same graph core
@@ -124,6 +156,9 @@ GET /api/v1/projects/{project}/search?q=...&limit=50
 
 Add `run=<completed-run-id>` to pin a historical graph; otherwise the latest
 completed graph is used.
+
+On an authenticated shared server, add `Authorization: Bearer <token>` to every
+API request. `GET /healthz` remains unauthenticated for health checks.
 
 ## How it works
 

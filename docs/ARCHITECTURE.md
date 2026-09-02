@@ -10,9 +10,12 @@ DiffMind has three internal layers behind one command and one persistent home.
    and resolves service documents into a cross-repository graph.
 4. The web UI exposes project setup, run progress, graph exploration, and
    impact analysis through the workspace API.
-5. A shared read-only query layer exposes persisted graphs through `/api/v1`
-   and the stdio MCP server, so browser, integrations, and coding agents use the
-   same graph semantics.
+5. A shared read-only query layer exposes persisted graphs through `/api/v1`,
+   stdio MCP, and streamable HTTP MCP at `/mcp`, so browsers, integrations, and
+   coding agents use the same graph semantics.
+6. The company server periodically syncs registered Git repositories, runs the
+   extractor concurrently, and publishes a new graph. Overlapping fleet
+   refreshes are rejected so one deployment cannot race itself.
 
 The protocol package is the boundary between extraction and graph assembly.
 It contains no I/O policy beyond document encoding, schema generation, and
@@ -37,6 +40,19 @@ validation.
 Set `DIFFMIND_HOME` to relocate the entire tree. Repository analysis is
 deterministic by default; generated facts should always retain concrete source
 evidence.
+
+## Deployment boundaries
+
+The local default binds to loopback without authentication. Binding to a
+non-loopback address requires `DIFFMIND_AUTH_TOKEN`; bypassing that guard needs
+the explicit `--allow-unauthenticated` flag. The same middleware protects the
+SPA, mutation APIs, query API, event streams, and remote MCP transport, while
+`/healthz` is intentionally public.
+
+The application container runs without root privileges or Linux capabilities.
+Its only durable writable path is `/data`, which is the container's
+`DIFFMIND_HOME`. TLS and organization identity belong at the reverse-proxy or
+ingress boundary; the built-in token remains a simple deployment-level secret.
 
 ## Knowledge precedence
 

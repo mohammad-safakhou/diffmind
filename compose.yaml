@@ -1,0 +1,30 @@
+services:
+  diffmind:
+    image: ${DIFFMIND_IMAGE:-ghcr.io/mohammad-safakhou/diffmind:latest}
+    build:
+      context: .
+      args:
+        VERSION: ${DIFFMIND_VERSION:-dev}
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    ports:
+      - "${DIFFMIND_PORT:-8090}:8090"
+    environment:
+      DIFFMIND_AUTH_TOKEN: ${DIFFMIND_AUTH_TOKEN:?set DIFFMIND_AUTH_TOKEN in .env}
+      DIFFMIND_REFRESH_INTERVAL: ${DIFFMIND_REFRESH_INTERVAL:-15m}
+      DIFFMIND_REFRESH_ON_START: ${DIFFMIND_REFRESH_ON_START:-true}
+      DIFFMIND_REFRESH_CONCURRENCY: ${DIFFMIND_REFRESH_CONCURRENCY:-4}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GH_TOKEN: ${GH_TOKEN:-}
+    volumes:
+      - diffmind-data:/data
+
+volumes:
+  diffmind-data:

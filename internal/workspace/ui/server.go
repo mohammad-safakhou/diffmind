@@ -12,8 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mohammad-safakhou/diffmind/internal/workspace/runmgr"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/mohammad-safakhou/diffmind/internal/workspace/mcpserver"
 	querysvc "github.com/mohammad-safakhou/diffmind/internal/workspace/query"
+	"github.com/mohammad-safakhou/diffmind/internal/workspace/runmgr"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/store"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/util"
 )
@@ -27,10 +29,17 @@ type Server struct {
 	host            string
 	port            int
 	log             *util.Logger
+	version         string
+	authToken       string
 	liveStatusMu    sync.Mutex
 	liveStatusCache map[string]liveStatusCacheEntry
 	archGraphMu     sync.Mutex
 	archGraphCache  map[string]archGraphCacheEntry
+	refreshMu       sync.Mutex
+	refreshConfig   RefreshConfig
+	refreshStatus   RefreshStatus
+	refreshContext  context.Context
+	refreshProject  func(context.Context, string) ProjectRefreshResult
 }
 
 type liveStatusCacheEntry struct {
@@ -65,11 +74,18 @@ func New(st *store.Store, runs *runmgr.Manager, diffmindRunsDir, host string, po
 // Addr returns "host:port".
 func (s *Server) Addr() string { return fmt.Sprintf("%s:%d", s.host, s.port) }
 
+// SetVersion identifies this DiffMind build to MCP clients.
+func (s *Server) SetVersion(version string) {
+	if version != "" {
+		s.version = version
+	}
+}
+
 // Handler builds the HTTP handler (exposed for tests).
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	s.routes(mux)
-	return mux
+	return http.NewCrossOriginProtection().Handler(s.authenticated(mux))
 }
 
 func (s *Server) routes(mux *http.ServeMux) {
@@ -112,6 +128,13 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/projects/{pid}/dependencies", s.handleV1Dependencies)
 	mux.HandleFunc("GET /api/v1/projects/{pid}/impact", s.handleV1Impact)
 	mux.HandleFunc("GET /api/v1/projects/{pid}/search", s.handleV1Search)
+	mux.HandleFunc("GET /api/v1/refresh/status", s.handleRefreshStatus)
+	mux.HandleFunc("POST /api/v1/refresh", s.handleRefreshNow)
+
+	// Remote Model Context Protocol endpoint for company-wide coding agents.
+	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		return mcpserver.New(s.query, "", s.version).MCPServer()
+	}, &mcp.StreamableHTTPOptions{SessionTimeout: 30 * time.Minute}))
 
 	// Packs (G4).
 	mux.HandleFunc("GET /api/projects/{pid}/packs", s.handleListPacks)
@@ -146,6 +169,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 // Start runs the HTTP server until ctx is cancelled.
 func (s *Server) Start(ctx context.Context) error {
+	s.refreshMu.Lock()
+	s.refreshContext = ctx
+	s.refreshMu.Unlock()
+	s.startRefreshLoop(ctx)
 	srv := &http.Server{Addr: s.Addr(), Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	errCh := make(chan error, 1)
 	go func() {
