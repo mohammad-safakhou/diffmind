@@ -219,12 +219,13 @@ func cmdUI(args []string) {
 	logLevel := fs.String("log-level", "info", "Log level: info, debug, trace")
 	noSPARebuild := fs.Bool("no-spa-rebuild", false, "skip automatic SPA rebuild on startup")
 	authToken := fs.String("auth-token", strings.TrimSpace(os.Getenv("DIFFMIND_AUTH_TOKEN")), "shared-server authentication token (prefer DIFFMIND_AUTH_TOKEN)")
+	trustedProxySecret := fs.String("trusted-proxy-secret", strings.TrimSpace(os.Getenv("DIFFMIND_TRUSTED_PROXY_SECRET")), "secret used to trust per-user identity headers from an OIDC proxy")
 	allowUnauthenticated := fs.Bool("allow-unauthenticated", false, "allow a non-loopback bind without authentication")
 	refreshInterval := fs.String("refresh-interval", strings.TrimSpace(os.Getenv("DIFFMIND_REFRESH_INTERVAL")), "fleet refresh interval, for example 15m or 1h")
 	refreshOnStart := fs.Bool("refresh-on-start", envBool("DIFFMIND_REFRESH_ON_START"), "refresh every project immediately after startup")
 	refreshConcurrency := fs.Int("refresh-concurrency", envInt("DIFFMIND_REFRESH_CONCURRENCY", 4), "maximum concurrent repository refresh operations")
 	_ = fs.Parse(args)
-	if err := validateUIExposure(*host, *authToken, *allowUnauthenticated); err != nil {
+	if err := validateUIExposure(*host, *authToken, *trustedProxySecret, *allowUnauthenticated); err != nil {
 		fmt.Fprintf(os.Stderr, "UI server configuration error: %v\n", err)
 		os.Exit(2)
 	}
@@ -245,6 +246,7 @@ func cmdUI(args []string) {
 	srv := ui.New(st, mgr, config.DiffMindRunsDir(), *host, *port, log)
 	srv.SetVersion(version)
 	srv.SetAuthToken(*authToken)
+	srv.SetTrustedProxySecret(*trustedProxySecret)
 	interval, err := parseOptionalDuration(*refreshInterval)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "UI server configuration error: invalid refresh interval: %v\n", err)
@@ -265,11 +267,11 @@ func cmdUI(args []string) {
 	}
 }
 
-func validateUIExposure(host, token string, allowUnauthenticated bool) error {
-	if allowUnauthenticated || strings.TrimSpace(token) != "" || isLoopbackHost(host) {
+func validateUIExposure(host, token, trustedProxySecret string, allowUnauthenticated bool) error {
+	if allowUnauthenticated || strings.TrimSpace(token) != "" || strings.TrimSpace(trustedProxySecret) != "" || isLoopbackHost(host) {
 		return nil
 	}
-	return fmt.Errorf("refusing unauthenticated non-loopback bind %q; set DIFFMIND_AUTH_TOKEN or pass --allow-unauthenticated", host)
+	return fmt.Errorf("refusing unauthenticated non-loopback bind %q; set DIFFMIND_AUTH_TOKEN or DIFFMIND_TRUSTED_PROXY_SECRET, or pass --allow-unauthenticated", host)
 }
 
 func isLoopbackHost(host string) bool {

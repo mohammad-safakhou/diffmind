@@ -1,6 +1,6 @@
 module github.com/mohammad-safakhou/diffmind
 
-go 1.26.2
+go 1.26.6
 
 require (
 	github.com/modelcontextprotocol/go-sdk v1.6.1

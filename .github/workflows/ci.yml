@@ -25,9 +25,13 @@ jobs:
             internal/extractor/ui/web/package-lock.json
       - run: npm ci
         working-directory: internal/workspace/ui/web
+      - run: npm audit --audit-level=low
+        working-directory: internal/workspace/ui/web
       - run: npm run build
         working-directory: internal/workspace/ui/web
       - run: npm ci
+        working-directory: internal/extractor/ui/web
+      - run: npm audit --audit-level=low
         working-directory: internal/extractor/ui/web
       - run: npm run build
         working-directory: internal/extractor/ui/web
@@ -36,6 +40,7 @@ jobs:
       - run: go test ./...
       - run: go test -race ./internal/workspace/query ./internal/workspace/mcpserver ./internal/workspace/ui
       - run: go vet ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
       - run: go run ./cmd/diffmind pack lint ./packs
       - run: go run ./cmd/diffmind pack test ./packs
       - run: sh scripts/test-install.sh

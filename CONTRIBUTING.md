@@ -10,8 +10,11 @@ Before opening a pull request:
 4. Run `make test-race` when changing the pack loader or graph pipeline.
 5. Run `make ui-build` when changing either web application.
 6. Run `make ui-test` when changing the extractor dashboard or router.
-7. Run `diffmind doctor` when changing installation, storage, or onboarding.
-8. Do not commit repository contents, generated analysis runs, credentials, or
+7. Run `make ui-audit` when changing frontend dependencies and `make vulncheck`
+   when changing Go dependencies; the accepted reachable vulnerability count
+   is zero.
+8. Run `diffmind doctor` when changing installation, storage, or onboarding.
+9. Do not commit repository contents, generated analysis runs, credentials, or
    organization-specific examples.
 
 Use synthetic names and data in fixtures. New detectors should prefer precise,

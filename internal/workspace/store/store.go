@@ -54,6 +54,9 @@ func (s *Store) WorktreeDir(pid, repoID string) string {
 	return filepath.Join(s.worktreesDir(pid), repoID)
 }
 
+// HomeDir returns the root directory used for DiffMind's persistent state.
+func (s *Store) HomeDir() string { return s.root }
+
 // RunDir exposes the on-disk directory for a graph run (used by the run
 // manager to write graph.json / events.jsonl / identities).
 func (s *Store) RunDir(pid, runID string) string {

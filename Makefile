@@ -1,4 +1,4 @@
-.PHONY: build install test test-race test-packs test-integration ui-build ui-test verify run container-build company-up company-down clean
+.PHONY: build install test test-race test-packs test-integration ui-build ui-test ui-audit vulncheck verify run container-build company-up company-down clean
 
 GOCACHE_DIR := $(CURDIR)/.gocache
 
@@ -31,7 +31,14 @@ ui-build:
 ui-test:
 	npm --prefix internal/extractor/ui/web test
 
-verify: test test-packs ui-build ui-test
+ui-audit:
+	npm --prefix internal/workspace/ui/web audit --audit-level=low
+	npm --prefix internal/extractor/ui/web audit --audit-level=low
+
+vulncheck:
+	GOCACHE=$(GOCACHE_DIR) go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+
+verify: test test-packs ui-build ui-test ui-audit vulncheck
 
 run:
 	GOCACHE=$(GOCACHE_DIR) go run ./cmd/diffmind

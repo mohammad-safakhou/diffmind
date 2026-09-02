@@ -10,20 +10,23 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-type bearerRoundTripper struct {
-	token string
-	base  http.RoundTripper
+type headerRoundTripper struct {
+	headers map[string]string
+	base    http.RoundTripper
 }
 
-func (t bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+func (t headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	clone := req.Clone(req.Context())
-	clone.Header.Set("Authorization", "Bearer "+t.token)
+	for name, value := range t.headers {
+		clone.Header.Set(name, value)
+	}
 	return t.base.RoundTrip(clone)
 }
 
 func TestRemoteMCPProtocolRequiresAuthAndListsTools(t *testing.T) {
 	srv := newAuthTestServer(t)
 	srv.SetAuthToken("company-secret")
+	srv.SetTrustedProxySecret("proxy-secret")
 	srv.SetVersion("test-version")
 	httpServer := httptest.NewServer(srv.Handler())
 	defer httpServer.Close()
@@ -41,8 +44,12 @@ func TestRemoteMCPProtocolRequiresAuthAndListsTools(t *testing.T) {
 	defer cancel()
 	client := mcp.NewClient(&mcp.Implementation{Name: "diffmind-http-test", Version: "1"}, nil)
 	transport := &mcp.StreamableClientTransport{
-		Endpoint:             httpServer.URL + "/mcp",
-		HTTPClient:           &http.Client{Transport: bearerRoundTripper{token: "company-secret", base: http.DefaultTransport}},
+		Endpoint: httpServer.URL + "/mcp",
+		HTTPClient: &http.Client{Transport: headerRoundTripper{headers: map[string]string{
+			proxySecretHeader: "proxy-secret",
+			proxyUserHeader:   "viewer@example.test",
+			proxyRoleHeader:   "viewer",
+		}, base: http.DefaultTransport}},
 		DisableStandaloneSSE: true,
 	}
 	session, err := client.Connect(ctx, transport, nil)
