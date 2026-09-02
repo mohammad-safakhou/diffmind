@@ -43,8 +43,11 @@ make build
 ./bin/diffmind
 ```
 
-Open `http://127.0.0.1:8090`, create a project, add repositories, run DiffMind,
-and build the project graph.
+Open `http://127.0.0.1:8090`, create a project, then choose **Import & build**.
+Point DiffMind at a GitHub organization or a directory containing local Git
+repositories. One durable operation imports and syncs the repositories, runs
+deterministic analysis, and builds the project graph. Its progress survives page
+reloads and failures remain visible with actionable error details.
 
 ## Commands
 

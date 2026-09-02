@@ -43,6 +43,10 @@ type Server struct {
 	refreshStatus   RefreshStatus
 	refreshContext  context.Context
 	refreshProject  func(context.Context, string) ProjectRefreshResult
+	ingestionMu     sync.Mutex
+	ingestionActive map[string]bool
+	projectOpsMu    sync.Mutex
+	projectOps      map[string]bool
 }
 
 type liveStatusCacheEntry struct {
@@ -71,7 +75,9 @@ func New(st *store.Store, runs *runmgr.Manager, diffmindRunsDir, host string, po
 	if log == nil {
 		log = util.NewLogger(util.LevelInfo)
 	}
-	return &Server{store: st, query: querysvc.New(st), runs: runs, diffmindRunsDir: diffmindRunsDir, host: host, port: port, log: log, auditLogPath: filepath.Join(st.HomeDir(), "audit", "http.jsonl"), liveStatusCache: map[string]liveStatusCacheEntry{}, archGraphCache: map[string]archGraphCacheEntry{}}
+	server := &Server{store: st, query: querysvc.New(st), runs: runs, diffmindRunsDir: diffmindRunsDir, host: host, port: port, log: log, auditLogPath: filepath.Join(st.HomeDir(), "audit", "http.jsonl"), liveStatusCache: map[string]liveStatusCacheEntry{}, archGraphCache: map[string]archGraphCacheEntry{}, ingestionActive: map[string]bool{}, projectOps: map[string]bool{}}
+	server.recoverInterruptedIngestions()
+	return server
 }
 
 // Addr returns "host:port".
@@ -102,21 +108,23 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/projects", s.handleListProjects)
 	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
 	mux.HandleFunc("GET /api/projects/{pid}", s.handleGetProject)
-	mux.HandleFunc("PATCH /api/projects/{pid}", s.handlePatchProject)
-	mux.HandleFunc("DELETE /api/projects/{pid}", s.handleDeleteProject)
+	mux.HandleFunc("PATCH /api/projects/{pid}", s.requireProjectIdle(s.handlePatchProject))
+	mux.HandleFunc("DELETE /api/projects/{pid}", s.requireProjectIdle(s.handleDeleteProject))
 
 	// Repos (G3).
 	mux.HandleFunc("GET /api/projects/{pid}/repos", s.handleListRepos)
-	mux.HandleFunc("POST /api/projects/{pid}/repos", s.handleCreateRepo)
-	mux.HandleFunc("POST /api/projects/{pid}/repo-imports", s.handleImportRepos)
+	mux.HandleFunc("POST /api/projects/{pid}/repos", s.requireProjectIdle(s.handleCreateRepo))
+	mux.HandleFunc("POST /api/projects/{pid}/repo-imports", s.requireProjectIdle(s.handleImportRepos))
+	mux.HandleFunc("GET /api/projects/{pid}/ingestion", s.handleGetIngestion)
+	mux.HandleFunc("POST /api/projects/{pid}/ingestion", s.handleStartIngestion)
 	mux.HandleFunc("GET /api/projects/{pid}/repos/{rid}", s.handleGetRepo)
-	mux.HandleFunc("PATCH /api/projects/{pid}/repos/{rid}", s.handlePatchRepo)
-	mux.HandleFunc("DELETE /api/projects/{pid}/repos/{rid}", s.handleDeleteRepo)
-	mux.HandleFunc("POST /api/projects/{pid}/repos/{rid}/sync", s.handleSyncRepo)
-	mux.HandleFunc("POST /api/projects/{pid}/repos/{rid}/diffmind-runs", s.handleStartDiffMindRepoRun)
-	mux.HandleFunc("POST /api/projects/{pid}/diffmind-runs/batch", s.handleStartDiffMindBatchRun)
+	mux.HandleFunc("PATCH /api/projects/{pid}/repos/{rid}", s.requireProjectIdle(s.handlePatchRepo))
+	mux.HandleFunc("DELETE /api/projects/{pid}/repos/{rid}", s.requireProjectIdle(s.handleDeleteRepo))
+	mux.HandleFunc("POST /api/projects/{pid}/repos/{rid}/sync", s.requireProjectIdle(s.handleSyncRepo))
+	mux.HandleFunc("POST /api/projects/{pid}/repos/{rid}/diffmind-runs", s.requireProjectIdle(s.handleStartDiffMindRepoRun))
+	mux.HandleFunc("POST /api/projects/{pid}/diffmind-runs/batch", s.requireProjectIdle(s.handleStartDiffMindBatchRun))
 	mux.HandleFunc("GET /api/projects/{pid}/repos/{rid}/diffmind-configuration-yaml", s.handleGetDiffMindConfigurationYAML)
-	mux.HandleFunc("PUT /api/projects/{pid}/repos/{rid}/diffmind-configuration-yaml", s.handlePutDiffMindConfigurationYAML)
+	mux.HandleFunc("PUT /api/projects/{pid}/repos/{rid}/diffmind-configuration-yaml", s.requireProjectIdle(s.handlePutDiffMindConfigurationYAML))
 	mux.HandleFunc("GET /api/projects/{pid}/repo-suggestions", s.handleRepoSuggestions)
 	mux.HandleFunc("GET /api/projects/{pid}/workspace", s.handleWorkspace)
 	mux.HandleFunc("GET /api/projects/{pid}/live-status", s.handleLiveStatus)
@@ -142,17 +150,17 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 	// Packs (G4).
 	mux.HandleFunc("GET /api/projects/{pid}/packs", s.handleListPacks)
-	mux.HandleFunc("POST /api/projects/{pid}/packs", s.handleCreatePack)
+	mux.HandleFunc("POST /api/projects/{pid}/packs", s.requireProjectIdle(s.handleCreatePack))
 	mux.HandleFunc("GET /api/projects/{pid}/packs/{pack_id}", s.handleGetPack)
-	mux.HandleFunc("PUT /api/projects/{pid}/packs/{pack_id}", s.handlePutPack)
-	mux.HandleFunc("DELETE /api/projects/{pid}/packs/{pack_id}", s.handleDeletePack)
+	mux.HandleFunc("PUT /api/projects/{pid}/packs/{pack_id}", s.requireProjectIdle(s.handlePutPack))
+	mux.HandleFunc("DELETE /api/projects/{pid}/packs/{pack_id}", s.requireProjectIdle(s.handleDeletePack))
 
 	// DiffMind run discovery (G5).
 	mux.HandleFunc("GET /api/diffmind-runs", s.handleDiffMindRuns)
 
 	// Graph runs (G6).
 	mux.HandleFunc("GET /api/projects/{pid}/runs", s.handleListRuns)
-	mux.HandleFunc("POST /api/projects/{pid}/runs", s.handleCreateRun)
+	mux.HandleFunc("POST /api/projects/{pid}/runs", s.requireProjectIdle(s.handleCreateRun))
 	mux.HandleFunc("GET /api/projects/{pid}/runs/{rid}", s.handleGetRun)
 	mux.HandleFunc("GET /api/projects/{pid}/runs/{rid}/events", s.handleRunEvents)
 	mux.HandleFunc("GET /api/projects/{pid}/runs/{rid}/graph", s.handleRunGraph)

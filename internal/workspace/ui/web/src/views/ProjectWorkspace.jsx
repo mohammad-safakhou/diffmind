@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
 import { navigate } from '../lib/router.js'
-import { createRepo, createRun, deleteRepo, getDiffMindConfigurationYaml, getRunArchGraph, getRunArchGraphResource, getRunArchGraphService, getRunArchGraphTrace, getWorkspace, importRepos, putDiffMindConfigurationYaml, startDiffMindBatch, startRepoDiffMind, syncRepo } from '../lib/api.js'
+import { createRepo, createRun, deleteRepo, getDiffMindConfigurationYaml, getIngestion, getRunArchGraph, getRunArchGraphResource, getRunArchGraphService, getRunArchGraphTrace, getWorkspace, importRepos, putDiffMindConfigurationYaml, startDiffMindBatch, startIngestion, startRepoDiffMind, syncRepo } from '../lib/api.js'
 import { Modal, ConfirmDialog } from '../components/Modal.jsx'
 import { GraphCanvas } from './GraphCanvas.jsx'
 import { GraphDetailBody } from './GraphDetails.jsx'
@@ -9,6 +9,7 @@ import { PacksTab } from './tabs/PacksTab.jsx'
 
 export function ProjectWorkspace({ pid }) {
   const [workspace, setWorkspace] = useState(null)
+  const [ingestion, setIngestion] = useState(null)
   const [selected, setSelected] = useState(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -30,8 +31,12 @@ export function ProjectWorkspace({ pid }) {
 
   const refresh = async () => {
     try {
-      const next = await getWorkspace(pid, { graph: false })
+      const [next, nextIngestion] = await Promise.all([
+        getWorkspace(pid, { graph: false }),
+        getIngestion(pid),
+      ])
       setWorkspace(next)
+      setIngestion(nextIngestion)
       setSelected((cur) => {
         if (cur?.kind === 'repo') {
           const repo = (next.repos || []).find((r) => r.id === cur.data.id)
@@ -104,10 +109,11 @@ export function ProjectWorkspace({ pid }) {
   const currentGraphRun = workspace?.current_run || null
   const activeGraphRun = isGraphRunActive(currentGraphRun) ? currentGraphRun : pendingGraphRun
   const graphIsRunning = Boolean(activeGraphRun)
+  const ingestionIsRunning = ingestion?.status === 'running'
   useEffect(() => {
-    const t = setInterval(refresh, hasRunningDiffMind || graphIsRunning ? 2000 : 10000)
+    const t = setInterval(refresh, hasRunningDiffMind || graphIsRunning || ingestionIsRunning ? 2000 : 10000)
     return () => clearInterval(t)
-  }, [pid, hasRunningDiffMind, graphIsRunning])
+  }, [pid, hasRunningDiffMind, graphIsRunning, ingestionIsRunning])
 
   const graph = graphData || workspace?.graph
   const selectedRepo = selected?.kind === 'repo' ? selected.data : null
@@ -201,9 +207,17 @@ export function ProjectWorkspace({ pid }) {
   })
   const doDelete = async (repo) => runAction('delete:' + repo.id, async () => { await deleteRepo(pid, repo.id); setDeleteTarget(null); await refresh() })
   const doImport = async (body) => runAction('import', async () => {
-    const res = await importRepos(pid, body)
+    const { run_pipeline: runPipeline, ...importRequest } = body
+    const res = runPipeline && !importRequest.dry_run
+      ? await startIngestion(pid, { import: importRequest, concurrency: importRequest.concurrency || 4 })
+      : await importRepos(pid, importRequest)
     setImportOpen(false)
-    setNotice(`Repository import processed ${res.count || 0} repositories.`)
+    if (runPipeline && !importRequest.dry_run) {
+      setIngestion(res)
+      setNotice('Repository ingestion started. DiffMind will import, sync, analyze, and build the graph automatically.')
+    } else {
+      setNotice(`Repository import processed ${res.count || 0} repositories.`)
+    }
     await refresh()
   })
   const doBatchDiffMind = async (body) => runAction('batch-diffmind', async () => {
@@ -227,15 +241,15 @@ export function ProjectWorkspace({ pid }) {
           {workspace?.latest_run && <StatusBadge status={workspace.latest_run.status} />}
         </div>
         <div class="workspace-actions">
-          <button class="btn ghost" onClick={() => setPacksOpen(true)}>Knowledge packs</button>
+          <button class="btn ghost" disabled={ingestionIsRunning} onClick={() => setPacksOpen(true)}>Knowledge packs</button>
           <button class="btn ghost" onClick={() => navigate(`/projects/${encodeURIComponent(pid)}/pull-requests`)}>
             PR impact{sumOpenPRs(live) > 0 ? ` · ${sumOpenPRs(live)}` : ''}
           </button>
           <button class="btn ghost" onClick={refresh}>Refresh</button>
-          <button class="btn ghost" onClick={() => setImportOpen(true)}>Import repos</button>
-          <button class="btn ghost" onClick={() => setAddOpen(true)}>Add repo</button>
-          <button class="btn ghost" disabled={!repos.length || hasRunningDiffMind || busy === 'batch-diffmind'} onClick={() => setBatchOpen(true)}>{busy === 'batch-diffmind' ? 'Starting batch...' : 'Run DiffMind all'}</button>
-          <button class="btn" disabled={busy === 'graph' || graphIsRunning} onClick={graphRun}>{graphIsRunning ? 'Building graph...' : busy === 'graph' ? 'Starting...' : 'Build graph'}</button>
+          <button class="btn" disabled={ingestionIsRunning} onClick={() => setImportOpen(true)}>{ingestionIsRunning ? 'Importing & building...' : 'Import & build'}</button>
+          <button class="btn ghost" disabled={ingestionIsRunning} onClick={() => setAddOpen(true)}>Add repo</button>
+          <button class="btn ghost" disabled={!repos.length || hasRunningDiffMind || ingestionIsRunning || busy === 'batch-diffmind'} onClick={() => setBatchOpen(true)}>{busy === 'batch-diffmind' ? 'Starting batch...' : 'Run DiffMind all'}</button>
+          <button class="btn ghost" disabled={busy === 'graph' || graphIsRunning || ingestionIsRunning} onClick={graphRun}>{graphIsRunning ? 'Building graph...' : busy === 'graph' ? 'Starting...' : 'Build graph'}</button>
         </div>
       </header>
 
@@ -243,6 +257,7 @@ export function ProjectWorkspace({ pid }) {
       {graphError && <div class="workspace-error banner error">Graph load failed: {graphError}</div>}
       {currentGraphRun?.status === 'failed' && currentGraphRun.error && <div class="workspace-error banner error">Graph build failed: {currentGraphRun.error}</div>}
       {notice && <div class="workspace-notice banner ok">{notice}</div>}
+      {ingestion && ['partial', 'failed'].includes(ingestion.status) && <IngestionResult ingestion={ingestion} />}
       {packsOpen && (
         <Modal title="Knowledge packs" onClose={() => setPacksOpen(false)} wide>
           <p class="muted">Teach DiffMind your organization’s repository conventions with deterministic, versioned extraction rules.</p>
@@ -250,10 +265,11 @@ export function ProjectWorkspace({ pid }) {
         </Modal>
       )}
       <GraphQualityBanner quality={(currentGraphRun?.graph_quality || workspace?.latest_run?.graph_quality)} />
-      {(hasRunningDiffMind || graphIsRunning) && (
+      {(ingestionIsRunning || (!ingestionIsRunning && (hasRunningDiffMind || graphIsRunning))) && (
         <div class="workspace-activity-stack">
-          {hasRunningDiffMind && <DiffMindActivity repos={repos} />}
-          {graphIsRunning && <GraphActivity run={activeGraphRun} />}
+          {ingestionIsRunning
+            ? <IngestionActivity ingestion={ingestion} />
+            : <>{hasRunningDiffMind && <DiffMindActivity repos={repos} />}{graphIsRunning && <GraphActivity run={activeGraphRun} />}</>}
         </div>
       )}
 
@@ -277,7 +293,7 @@ export function ProjectWorkspace({ pid }) {
           ? <GraphCanvas graph={graph} onSelect={handleGraphSelect} detailLoaded={graphDetailLoaded} onRequestFullDetail={loadFullGraph} />
           : graphLoading
             ? <GraphLoading run={workspace?.latest_run} />
-            : <EmptyBoard repos={repos} onAdd={() => setAddOpen(true)} />}
+            : <EmptyBoard repos={repos} busy={ingestionIsRunning} onImport={() => setImportOpen(true)} onAdd={() => setAddOpen(true)} />}
       </main>
 
       <aside class="workspace-right">
@@ -289,6 +305,7 @@ export function ProjectWorkspace({ pid }) {
           onYaml={selectedRepo ? () => setYamlRepo(selectedRepo) : null}
           onDelete={selectedRepo ? () => setDeleteTarget(selectedRepo) : null}
           busy={busy}
+          locked={ingestionIsRunning}
         />
       </aside>
 
@@ -297,6 +314,7 @@ export function ProjectWorkspace({ pid }) {
         <span>{(workspace?.teams || []).length} teams</span>
         <span>{graph ? `${(graph.services || []).length} services` : 'no graph yet'}</span>
         <span>{currentGraphRun ? `graph ${currentGraphRun.status}` : 'graph idle'}</span>
+        <span>{ingestion?.status && ingestion.status !== 'not_started' ? `ingestion ${ingestion.status}` : 'ingestion idle'}</span>
         <span>{repos.filter((r) => r.freshness === 'stale').length} stale</span>
       </footer>
 
@@ -375,6 +393,44 @@ function GraphActivity({ run }) {
   )
 }
 
+function IngestionActivity({ ingestion }) {
+  const processed = ingestion.analyzed || ingestion.synced || 0
+  const total = ingestion.repositories || ingestion.discovered || 0
+  return (
+    <div class="ingestion-activity" role="status" aria-live="polite">
+      <div class="activity-spinner" />
+      <div>
+        <strong>{ingestionPhaseLabel(ingestion.phase)}</strong>
+        <span>{total ? `${processed} of ${total} repositories processed` : 'Discovering repositories'}{ingestion.source ? ` · ${ingestion.source}` : ''}</span>
+      </div>
+    </div>
+  )
+}
+
+function IngestionResult({ ingestion }) {
+  const errors = ingestion.errors || []
+  const failed = ingestion.status === 'failed'
+  return (
+    <details class={'workspace-ingestion-result banner ' + (failed ? 'error' : ingestion.status === 'partial' ? 'warn' : 'ok')}>
+      <summary>
+        <strong>Last ingestion {ingestion.status}</strong>
+        <span>{ingestion.analyzed || 0}/{ingestion.repositories || 0} analyzed · {ingestion.graph_run_id ? 'graph built' : 'no graph'}</span>
+      </summary>
+      {errors.length > 0 && <ul>{errors.map((message, index) => <li key={index}>{message}</li>)}</ul>}
+    </details>
+  )
+}
+
+function ingestionPhaseLabel(phase) {
+  switch (phase) {
+    case 'discovering': return 'Discovering repositories'
+    case 'importing': return 'Importing repositories'
+    case 'processing_repositories': return 'Syncing and analyzing repositories'
+    case 'building_graph': return 'Building the system graph'
+    default: return 'Starting repository ingestion'
+  }
+}
+
 function diffmindRunID(repo) {
   return repo?.latest_diffmind_run?.run_id || repo?.last_diffmind_run_id || ''
 }
@@ -383,12 +439,15 @@ function isGraphRunActive(run) {
   return run?.status === 'running' || run?.status === 'cancelling'
 }
 
-function EmptyBoard({ repos, onAdd }) {
+function EmptyBoard({ repos, busy, onImport, onAdd }) {
   return (
     <div class="workspace-empty">
       <h2>Graph workspace</h2>
-      <p>{repos.length ? 'Run DiffMind, then build a graph from the latest repository facts.' : 'Add repositories to start building the company graph.'}</p>
-      <button class="btn" onClick={onAdd}>Add repository</button>
+      <p>{repos.length ? 'Import more repositories and rebuild everything in one operation, or use the manual controls above.' : 'Import your organization or a local repository directory to build the first graph.'}</p>
+      <div class="actions">
+        <button class="btn" disabled={busy} onClick={onImport}>{busy ? 'Building graph...' : 'Import repositories and build graph'}</button>
+        <button class="btn ghost" disabled={busy} onClick={onAdd}>Add one repository</button>
+      </div>
     </div>
   )
 }
@@ -404,7 +463,7 @@ function GraphLoading({ run }) {
   )
 }
 
-function Inspector({ selection, live, onSync, onDiffMind, onYaml, onDelete, busy }) {
+function Inspector({ selection, live, onSync, onDiffMind, onYaml, onDelete, busy, locked }) {
   if (!selection) return <div class="inspector-empty">Select a repo, service, resource, or edge.</div>
   if (selection.kind === 'repo') {
     const repo = selection.data
@@ -420,10 +479,10 @@ function Inspector({ selection, live, onSync, onDiffMind, onYaml, onDelete, busy
           {repo.sync_status && <span class={'run-state ' + repo.sync_status}>{repo.sync_status}</span>}
         </div>
         <div class="inspector-actions">
-          <button class="btn ghost" disabled={busy === 'sync:' + repo.id || isRunning} onClick={onSync}>Sync git</button>
-          <button class="btn" disabled={busy === 'diffmind:' + repo.id || isRunning} onClick={onDiffMind}>{isRunning ? 'DiffMind running...' : 'Configure run'}</button>
-          <button class="btn ghost" onClick={onYaml}>Configuration</button>
-          <button class="btn danger" onClick={onDelete}>Remove</button>
+          <button class="btn ghost" disabled={locked || busy === 'sync:' + repo.id || isRunning} onClick={onSync}>Sync git</button>
+          <button class="btn" disabled={locked || busy === 'diffmind:' + repo.id || isRunning} onClick={onDiffMind}>{isRunning ? 'DiffMind running...' : 'Configure run'}</button>
+          <button class="btn ghost" disabled={locked} onClick={onYaml}>Configuration</button>
+          <button class="btn danger" disabled={locked} onClick={onDelete}>Remove</button>
         </div>
         {isRunning && (
           <div class="run-progress-card">
@@ -546,6 +605,7 @@ function ImportOrgModal({ busy, onClose, onImport }) {
   const [recursive, setRecursive] = useState(false)
   const [maxDepth, setMaxDepth] = useState('2')
   const [dryRun, setDryRun] = useState(false)
+  const [runPipeline, setRunPipeline] = useState(true)
   const [error, setError] = useState('')
   const submit = async () => {
     setError('')
@@ -559,12 +619,13 @@ function ImportOrgModal({ busy, onClose, onImport }) {
         exclude,
         team,
         limit: limit === '' ? 0 : Number(limit),
-        clone,
+        clone: runPipeline && !dryRun ? true : clone,
         clone_transport: cloneTransport,
         concurrency: concurrency === '' ? 4 : Number(concurrency),
         recursive,
         max_depth: maxDepth === '' ? 2 : Number(maxDepth),
         dry_run: dryRun,
+        run_pipeline: runPipeline,
       })
     } catch (e) { setError(e.message) }
   }
@@ -593,9 +654,10 @@ function ImportOrgModal({ busy, onClose, onImport }) {
         <NumberField label="Limit" value={limit} onInput={setLimit} placeholder="0 = all" min="0" />
       </div>
       <div class="check-grid">
-        {provider === 'github' && <Check label="Clone after import" checked={clone} onInput={setClone} />}
+        {provider === 'github' && <Check label="Clone repositories" checked={runPipeline && !dryRun ? true : clone} disabled={runPipeline && !dryRun} onInput={setClone} />}
         {provider === 'local' && <Check label="Recursive scan" checked={recursive} onInput={setRecursive} />}
         <Check label="Dry run only" checked={dryRun} onInput={setDryRun} />
+        <Check label="Sync, analyze, and build graph" checked={runPipeline && !dryRun} disabled={dryRun} onInput={setRunPipeline} />
       </div>
       {provider === 'github' && (
         <div class="option-grid">
@@ -617,7 +679,7 @@ function ImportOrgModal({ busy, onClose, onImport }) {
       </p>
       {error && <div class="banner error">{error}</div>}
       <div class="actions">
-        <button class="btn" disabled={busy || (provider === 'github' ? !org.trim() : !root.trim())} onClick={submit}>{busy ? 'Importing...' : dryRun ? 'Preview import' : 'Import repositories'}</button>
+        <button class="btn" disabled={busy || (provider === 'github' ? !org.trim() : !root.trim())} onClick={submit}>{busy ? 'Starting...' : dryRun ? 'Preview import' : runPipeline ? 'Import and build graph' : 'Import repositories'}</button>
         <button class="btn ghost" disabled={busy} onClick={onClose}>Cancel</button>
       </div>
     </Modal>

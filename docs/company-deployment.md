@@ -89,6 +89,13 @@ The service refuses to overwrite a dirty managed checkout. A failed sync is
 recorded in refresh status and the existing checkout remains available for
 inspection.
 
+For initial onboarding, create a project in the UI and choose **Import & build**.
+That operation imports a GitHub organization or local repository tree, performs
+the first sync and deterministic analysis, and builds the initial graph. Its
+latest state is stored in the project as `ingestion.json`; an interrupted server
+process is reported as a failed ingestion after restart instead of appearing to
+run forever. Editors can start ingestion, while read-only viewers can monitor it.
+
 ## Continuous refresh
 
 These environment variables control fleet refresh:

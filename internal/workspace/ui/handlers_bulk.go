@@ -57,15 +57,12 @@ func (s *Server) handleImportRepos(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if strings.TrimSpace(req.Provider) == "" {
-		req.Provider = "github"
+	if err := validateImportReposRequest(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
 	}
 	switch req.Provider {
 	case "github":
-		if strings.TrimSpace(req.Org) == "" {
-			writeErr(w, http.StatusBadRequest, fmt.Errorf("org is required"))
-			return
-		}
 		repos, err := githubOrgRepos(r.Context(), req)
 		if err != nil {
 			writeErr(w, http.StatusBadGateway, err)
@@ -74,10 +71,6 @@ func (s *Server) handleImportRepos(w http.ResponseWriter, r *http.Request) {
 		results := s.importGitHubRepos(pid, req, repos)
 		writeJSON(w, http.StatusOK, map[string]any{"results": results, "count": len(results)})
 	case "local":
-		if strings.TrimSpace(req.Root) == "" {
-			writeErr(w, http.StatusBadRequest, fmt.Errorf("root is required"))
-			return
-		}
 		repos, err := localRepos(req)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err)
@@ -88,6 +81,43 @@ func (s *Server) handleImportRepos(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("provider %q is not supported yet", req.Provider))
 	}
+}
+
+func validateImportReposRequest(req *importReposRequest) error {
+	req.Provider = strings.ToLower(strings.TrimSpace(req.Provider))
+	if req.Provider == "" {
+		req.Provider = "github"
+	}
+	switch req.Provider {
+	case "github":
+		if strings.TrimSpace(req.Org) == "" {
+			return fmt.Errorf("org is required")
+		}
+	case "local":
+		if strings.TrimSpace(req.Root) == "" {
+			return fmt.Errorf("root is required")
+		}
+	default:
+		return fmt.Errorf("provider %q is not supported yet", req.Provider)
+	}
+	for name, pattern := range map[string]string{"include": req.Include, "exclude": req.Exclude} {
+		if strings.TrimSpace(pattern) == "" {
+			continue
+		}
+		if _, err := regexp.Compile(pattern); err != nil {
+			return fmt.Errorf("invalid %s regex: %w", name, err)
+		}
+	}
+	if req.Concurrency < 0 || req.Concurrency > 16 {
+		return fmt.Errorf("concurrency must be between 0 and 16")
+	}
+	if req.Limit < 0 {
+		return fmt.Errorf("limit cannot be negative")
+	}
+	if req.MaxDepth < 0 || req.MaxDepth > 8 {
+		return fmt.Errorf("max_depth must be between 0 and 8")
+	}
+	return nil
 }
 
 type githubRepo struct {

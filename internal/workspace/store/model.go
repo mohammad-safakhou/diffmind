@@ -19,6 +19,36 @@ type Project struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+const (
+	IngestionRunning   = "running"
+	IngestionCompleted = "completed"
+	IngestionPartial   = "partial"
+	IngestionFailed    = "failed"
+)
+
+// Ingestion is the durable projection of the latest project bootstrap or
+// refresh initiated from the UI. Repository-level detail remains on Repo;
+// this record makes the whole import-to-graph operation observable.
+type Ingestion struct {
+	ID           string    `json:"id"`
+	ProjectID    string    `json:"project_id"`
+	Status       string    `json:"status"`
+	Phase        string    `json:"phase"`
+	Provider     string    `json:"provider,omitempty"`
+	Source       string    `json:"source,omitempty"`
+	Discovered   int       `json:"discovered"`
+	Imported     int       `json:"imported"`
+	Skipped      int       `json:"skipped"`
+	Repositories int       `json:"repositories"`
+	Synced       int       `json:"synced"`
+	Analyzed     int       `json:"analyzed"`
+	GraphRunID   string    `json:"graph_run_id,omitempty"`
+	Errors       []string  `json:"errors,omitempty"`
+	StartedAt    time.Time `json:"started_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	FinishedAt   time.Time `json:"finished_at,omitempty"`
+}
+
 // Repo is a project-scoped repository reference. Path points at the source repo
 // on disk (DiffMind never mutates it). Kind is service_repo or infra_repo.
 // PackIDs and Instruction are repo-level overrides of the project

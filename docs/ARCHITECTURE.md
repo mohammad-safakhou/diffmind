@@ -6,8 +6,9 @@ DiffMind has three internal layers behind one command and one persistent home.
    `diffmind.service.v1` document with observations and evidence.
 2. Deterministic knowledge packs translate organization-specific file
    conventions into service identities and resolution aliases.
-3. The workspace owns projects and repositories, schedules extraction runs,
-   and resolves service documents into a cross-repository graph.
+3. The workspace owns projects and repositories. Its ingestion coordinator
+   serializes discovery, sync, extraction, and graph publication into one
+   observable operation; the same pipeline also powers scheduled refresh.
 4. The web UI exposes project setup, run progress, graph exploration, and
    impact analysis through the workspace API.
 5. A shared read-only query layer exposes persisted graphs through `/api/v1`,
@@ -15,7 +16,8 @@ DiffMind has three internal layers behind one command and one persistent home.
    coding agents use the same graph semantics.
 6. The company server periodically syncs registered Git repositories, runs the
    extractor concurrently, and publishes a new graph. Overlapping fleet
-   refreshes are rejected so one deployment cannot race itself.
+   refreshes and project mutations are rejected so one deployment cannot race
+   itself.
 
 The protocol package is the boundary between extraction and graph assembly.
 It contains no I/O policy beyond document encoding, schema generation, and
@@ -32,6 +34,7 @@ validation.
 └── projects/
     └── <project-id>/
         ├── project.json
+        ├── ingestion.json
         ├── repos/
         ├── packs/
         └── runs/
