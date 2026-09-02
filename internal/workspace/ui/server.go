@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -31,6 +32,8 @@ type Server struct {
 	log             *util.Logger
 	version         string
 	authToken       string
+	proxySecret     string
+	auditLogPath    string
 	liveStatusMu    sync.Mutex
 	liveStatusCache map[string]liveStatusCacheEntry
 	archGraphMu     sync.Mutex
@@ -68,7 +71,7 @@ func New(st *store.Store, runs *runmgr.Manager, diffmindRunsDir, host string, po
 	if log == nil {
 		log = util.NewLogger(util.LevelInfo)
 	}
-	return &Server{store: st, query: querysvc.New(st), runs: runs, diffmindRunsDir: diffmindRunsDir, host: host, port: port, log: log, liveStatusCache: map[string]liveStatusCacheEntry{}, archGraphCache: map[string]archGraphCacheEntry{}}
+	return &Server{store: st, query: querysvc.New(st), runs: runs, diffmindRunsDir: diffmindRunsDir, host: host, port: port, log: log, auditLogPath: filepath.Join(st.HomeDir(), "audit", "http.jsonl"), liveStatusCache: map[string]liveStatusCacheEntry{}, archGraphCache: map[string]archGraphCacheEntry{}}
 }
 
 // Addr returns "host:port".
@@ -85,7 +88,7 @@ func (s *Server) SetVersion(version string) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	s.routes(mux)
-	return http.NewCrossOriginProtection().Handler(s.authenticated(mux))
+	return s.accessControlled(http.NewCrossOriginProtection().Handler(mux))
 }
 
 func (s *Server) routes(mux *http.ServeMux) {
@@ -122,6 +125,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 	// Stable, read-only query API for integrations and company-wide clients.
 	mux.HandleFunc("GET /api/v1/projects", s.handleV1Projects)
+	mux.HandleFunc("GET /api/v1/session", s.handleSession)
 	mux.HandleFunc("GET /api/v1/projects/{pid}/graph/summary", s.handleV1GraphSummary)
 	mux.HandleFunc("GET /api/v1/projects/{pid}/services", s.handleV1Services)
 	mux.HandleFunc("GET /api/v1/projects/{pid}/services/{service}", s.handleV1Service)

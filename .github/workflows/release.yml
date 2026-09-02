@@ -22,12 +22,13 @@ jobs:
           cache-dependency-path: |
             internal/workspace/ui/web/package-lock.json
             internal/extractor/ui/web/package-lock.json
-      - run: npm ci && npm run build
+      - run: npm ci && npm audit --audit-level=low && npm run build
         working-directory: internal/workspace/ui/web
-      - run: npm ci && npm run build && npm test
+      - run: npm ci && npm audit --audit-level=low && npm run build && npm test
         working-directory: internal/extractor/ui/web
       - run: git diff --exit-code -- internal/workspace/ui/web/dist internal/extractor/ui/web/dist
       - run: go test ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
       - run: sh scripts/test-install.sh
 
   build:

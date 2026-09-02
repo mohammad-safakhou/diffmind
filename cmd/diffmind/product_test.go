@@ -53,17 +53,20 @@ func TestDoctorRejectsExtraArguments(t *testing.T) {
 
 func TestValidateUIExposure(t *testing.T) {
 	for _, host := range []string{"", "localhost", "127.0.0.1", "::1", "[::1]"} {
-		if err := validateUIExposure(host, "", false); err != nil {
+		if err := validateUIExposure(host, "", "", false); err != nil {
 			t.Errorf("loopback host %q rejected: %v", host, err)
 		}
 	}
-	if err := validateUIExposure("0.0.0.0", "", false); err == nil {
+	if err := validateUIExposure("0.0.0.0", "", "", false); err == nil {
 		t.Fatal("expected unauthenticated public bind to be rejected")
 	}
-	if err := validateUIExposure("0.0.0.0", "token", false); err != nil {
+	if err := validateUIExposure("0.0.0.0", "token", "", false); err != nil {
 		t.Fatalf("authenticated public bind rejected: %v", err)
 	}
-	if err := validateUIExposure("10.0.0.2", "", true); err != nil {
+	if err := validateUIExposure("0.0.0.0", "", "proxy-secret", false); err != nil {
+		t.Fatalf("trusted-proxy public bind rejected: %v", err)
+	}
+	if err := validateUIExposure("10.0.0.2", "", "", true); err != nil {
 		t.Fatalf("explicit unauthenticated bind rejected: %v", err)
 	}
 }

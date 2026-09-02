@@ -27,7 +27,7 @@ registrations, managed Git clones, extraction artifacts, knowledge packs, and
 graph history. Back up that volume using the storage mechanism for your Docker
 host before upgrades and restore it as a unit.
 
-## Authentication and TLS
+## Authentication, roles, and TLS
 
 `DIFFMIND_AUTH_TOKEN` is mandatory in the Compose deployment. It protects the
 UI, APIs, server-sent events, and `/mcp`. Only `/healthz` is public.
@@ -36,11 +36,47 @@ UI, APIs, server-sent events, and `/mcp`. Only `/healthz` is public.
 - API and MCP clients use `Authorization: Bearer <token>`.
 - `X-DiffMind-Token` is also accepted for simple internal integrations.
 
-The built-in server does not terminate TLS and the token represents the whole
-deployment. For anything beyond localhost, place DiffMind behind HTTPS. Use an
-identity-aware proxy or ingress as well when the organization needs per-user
-access control and audit logs. Never put the token in a repository, image, URL,
-or command history.
+The shared token receives the `admin` role and is useful as a recovery credential.
+For normal company access, put DiffMind behind an OIDC-capable reverse proxy or
+ingress and set a separate `DIFFMIND_TRUSTED_PROXY_SECRET`. After authenticating
+the user, the proxy must strip any client-supplied `X-DiffMind-*` headers and set:
+
+| Header | Value |
+| --- | --- |
+| `X-DiffMind-Proxy-Secret` | Exact `DIFFMIND_TRUSTED_PROXY_SECRET` value. |
+| `X-DiffMind-User` | Stable user ID or company email from the identity provider. |
+| `X-DiffMind-Role` | `viewer`, `editor`, or `admin`; omitted means `viewer`. |
+
+The proxy secret is what makes the identity headers trustworthy. Keep the
+application port unreachable except through that proxy, use HTTPS between every
+untrusted network boundary, and never reuse the shared admin token as the proxy
+secret. A request with identity headers but without the correct proxy secret is
+rejected.
+
+Roles are deliberately small:
+
+| Role | Access |
+| --- | --- |
+| `viewer` | UI, query API, event streams, and read-only MCP tools. |
+| `editor` | Viewer access plus project, repository, pack, configuration, sync, and run mutations. |
+| `admin` | Editor access plus deletes and fleet-wide refresh. |
+
+`GET /api/v1/session` returns the authenticated user, role, and authentication
+method. The built-in server does not terminate TLS. Never put either secret in a
+repository, image, URL, or command history.
+
+## Audit log
+
+Every state-changing HTTP request is appended to
+`$DIFFMIND_HOME/audit/http.jsonl` (`/data/audit/http.jsonl` in Compose), including
+successful changes, authorization failures, and authentication failures. Each
+event contains a UTC timestamp, request ID, actor, role, authentication method,
+HTTP method, path, status, and client IP. Query strings, request bodies, and
+credentials are never recorded. Read requests are intentionally omitted to keep
+high-volume graph and MCP access from overwhelming the log.
+
+Back up and ship this file with the rest of DiffMind state. Access logs at the
+identity proxy remain the source for read-request auditing.
 
 ## Repository credentials
 
@@ -107,6 +143,6 @@ DIFFMIND_REFRESH_INTERVAL=15m \
 diffmind ui --host 0.0.0.0 --port 8090
 ```
 
-A non-loopback bind without a token fails closed. The escape hatch
-`--allow-unauthenticated` exists only for a trusted external authentication
-proxy that makes the application listener unreachable directly.
+A non-loopback bind without a shared token or trusted-proxy secret fails closed.
+The escape hatch `--allow-unauthenticated` is intended only for isolated test
+environments; it assigns every caller the local `admin` identity.

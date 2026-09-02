@@ -122,6 +122,9 @@ docker compose up -d
 Open `http://localhost:8090`. The browser's authentication dialog accepts any
 username and uses `DIFFMIND_AUTH_TOKEN` as the password. Put a TLS reverse proxy
 in front of DiffMind before exposing it beyond a trusted machine or network.
+Company deployments can pass authenticated users from an OIDC proxy with
+viewer/editor/admin roles; DiffMind records all mutation attempts in a JSONL
+audit log under its data directory.
 
 Remote API clients send `Authorization: Bearer <token>`. Remote MCP clients use
 the `/mcp` endpoint. For example, Codex can connect directly to a shared host:

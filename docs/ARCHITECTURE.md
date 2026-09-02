@@ -44,15 +44,18 @@ evidence.
 ## Deployment boundaries
 
 The local default binds to loopback without authentication. Binding to a
-non-loopback address requires `DIFFMIND_AUTH_TOKEN`; bypassing that guard needs
-the explicit `--allow-unauthenticated` flag. The same middleware protects the
-SPA, mutation APIs, query API, event streams, and remote MCP transport, while
-`/healthz` is intentionally public.
+non-loopback address requires `DIFFMIND_AUTH_TOKEN` or
+`DIFFMIND_TRUSTED_PROXY_SECRET`; bypassing that guard needs the explicit
+`--allow-unauthenticated` flag. The same middleware protects the SPA, mutation
+APIs, query API, event streams, and remote MCP transport, while `/healthz` is
+intentionally public. Trusted-proxy identities carry viewer, editor, or admin
+roles, and non-read requests are persisted to the HTTP audit log.
 
 The application container runs without root privileges or Linux capabilities.
 Its only durable writable path is `/data`, which is the container's
-`DIFFMIND_HOME`. TLS and organization identity belong at the reverse-proxy or
-ingress boundary; the built-in token remains a simple deployment-level secret.
+`DIFFMIND_HOME`. TLS and OIDC login belong at the reverse-proxy or ingress
+boundary; DiffMind validates the proxy secret, enforces roles, and records the
+resulting stable user identity.
 
 ## Knowledge precedence
 

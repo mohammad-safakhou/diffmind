@@ -1,0 +1,41 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go-dependencies:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /internal/workspace/ui/web
+    schedule:
+      interval: weekly
+    groups:
+      workspace-ui-dependencies:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /internal/extractor/ui/web
+    schedule:
+      interval: weekly
+    groups:
+      extractor-ui-dependencies:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      container-images:
+        patterns: ["*"]
