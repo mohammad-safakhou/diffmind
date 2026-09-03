@@ -153,6 +153,13 @@ func (r *Resolver) tryDeterministicMatch(fromService string, dep *model.Dependen
 	if match, err := r.tryKnowledgeRule(fromService, dep, targetRaw); match != nil || err != nil {
 		return match, err
 	}
+	// Database/cache operations and workflow framework usage are local resource
+	// facts, not service addresses. Let graph construction model those resources
+	// directly. A knowledge rule above may still explicitly connect an
+	// organization-specific workflow or shared resource to a known service.
+	if !serviceAddressDependency(dep.Type) {
+		return nil, nil
+	}
 	if isHTTPDependency(dep.Type) {
 		if match := r.tryHTTPExposureMatch(fromService, dep); match != nil {
 			return match, nil
@@ -214,6 +221,12 @@ func (r *Resolver) tryDeterministicMatch(fromService string, dep *model.Dependen
 		return nil, fmt.Errorf("ambiguous service identity for dependency %s in %s: multiple services match %q equally; add an explicit resolution rule", dep.ID, fromService, targetRaw)
 	}
 	return best, nil
+}
+
+func serviceAddressDependency(depType string) bool {
+	depType = strings.ToLower(depType)
+	return isHTTPDependency(depType) || strings.Contains(depType, "rpc") || strings.Contains(depType, "grpc") ||
+		strings.Contains(depType, "queue") || strings.Contains(depType, "publish")
 }
 
 func (r *Resolver) tryKnowledgeRule(fromService string, dep *model.Dependency, target string) (*ResolvedMatch, error) {
