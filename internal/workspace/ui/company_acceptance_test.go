@@ -81,6 +81,10 @@ func testCompanyAcceptance(t *testing.T, sqlite bool) {
 	}
 	s.refreshContext = ctx
 	p, _ := st.CreateProject(store.Project{Name: "Synthetic company"})
+	limitsBefore, err := s.putProjectLimits(p.ID, 0, 2, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	sources := t.TempDir()
 	fixture := filepath.Join(root, "testdata", "company")
 	var expected struct {
@@ -338,6 +342,10 @@ func testCompanyAcceptance(t *testing.T, sqlite bool) {
 		t.Fatalf("project grants, revision, or timestamp changed: %+v %v", accessAfter, err)
 	}
 	tokensAfter, err := restored.ListProjectTokens(p.ID)
+	limitsAfter, limitsErr := restored.GetProjectLimits(p.ID)
+	if limitsErr != nil || !reflect.DeepEqual(limitsBefore, limitsAfter) {
+		t.Fatalf("project limits, revision, or timestamp changed: %+v %v", limitsAfter, limitsErr)
+	}
 	if err != nil || !reflect.DeepEqual(tokensBefore, tokensAfter) {
 		t.Fatalf("token history/dates changed on restore: %v", err)
 	}

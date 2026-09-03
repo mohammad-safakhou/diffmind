@@ -13,6 +13,11 @@ Current CLI servers enforce a local singleton lock before recovery. For large
 retained job histories, opt into [SQLite queue storage](queue-storage.md) using
 the offline migration. This does not enable multiple replicas or remote workers.
 
+Global admins can set each project's pending-job and repository-operation caps
+from **Operations → Project resource limits**. Existing projects inherit the
+server's global budgets. [Project limits](operations.md#per-project-resource-limits)
+take effect without restart; reductions drain active work and preserve history.
+
 ## Start the service
 
 Requirements are Docker Engine with Compose and enough disk for repository
@@ -70,7 +75,7 @@ By default (`DIFFMIND_PROJECT_ACCESS=legacy`), roles apply globally:
 | --- | --- |
 | `viewer` | UI, query API, event streams, and read-only MCP tools. |
 | `editor` | Viewer access plus project, repository, pack, configuration, sync, and run mutations. |
-| `admin` | Editor access plus deletes and fleet-wide refresh. |
+| `admin` | Editor access plus deletes, fleet-wide refresh, access/token administration, and project resource limits. |
 
 For explicit project memberships, opt into `DIFFMIND_PROJECT_ACCESS=scoped`.
 Admins manage viewer/editor grants in **Project access**, the proxy role remains

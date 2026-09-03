@@ -50,7 +50,7 @@ See [the roadmap](ROADMAP.md) for completed and remaining work.
 `diffmind-packs.lock`, installed `packs/`, repository analysis `runs/`, and
 `projects/<id>/`. Each project contains `project.json`, latest `ingestion.json`,
 `ingestions/<id>/attempt-*.json`, optional `access.json` memberships and
-`tokens.json` credential verifiers/history, `repos/`, project `packs/`, and versioned graph
+`tokens.json` credential verifiers/history, `limits.json` resource caps, `repos/`, project `packs/`, and versioned graph
 `runs/`. Root-level `jobs/` stores JSON refresh jobs and their attempt history;
 after explicit offline migration, `queue/queue.sqlite` becomes the authoritative
 job store and the original JSON is retained only as historical input. Store
@@ -67,6 +67,14 @@ keeps JSON and SQLite behavior aligned. CLI servers acquire a local singleton
 lock before recovery; analyzers/MCP retain shared maintenance access. Queue
 transactions do not include external processes or graph files. See
 [queue migration and limits](queue-storage.md); distributed workers remain future work.
+
+Project limits bound queued/running refresh admission and simultaneous repository
+sync/analyzer work. Queue policy checks share the store's admission lock/transaction.
+The server admits repository operations against global and project counters
+together, and a change notification wakes waiting work after releases or policy
+updates. Reductions drain without rewriting accepted jobs. Policies use atomic
+revision-checked files, remain admin-only in either access mode, and are not OS
+resource isolation. See [resource limits](operations.md#per-project-resource-limits).
 
 ## Deployment boundaries
 

@@ -29,7 +29,10 @@ type Server struct {
 	operationsStop      context.CancelFunc
 	operationsWG        sync.WaitGroup
 	operationsError     error
-	repositorySlots     chan struct{}
+	repositoryMu        sync.Mutex
+	repositoryActive    map[string]int
+	repositoryTotal     int
+	repositoryChanged   chan struct{}
 	store               *store.Store
 	query               *querysvc.Service
 	runs                *runmgr.Manager
@@ -88,7 +91,8 @@ func New(st *store.Store, runs *runmgr.Manager, diffmindRunsDir, host string, po
 	server.recoverInterruptedIngestions()
 	server.ingestionCancel = map[string]context.CancelCauseFunc{}
 	server.operationsConfig = OperationsConfig{Workers: 2, Capacity: 256, RepositoryWorkers: 4}
-	server.repositorySlots = make(chan struct{}, 4)
+	server.repositoryActive = map[string]int{}
+	server.repositoryChanged = make(chan struct{})
 	return server
 }
 
@@ -159,6 +163,8 @@ func (s *Server) routes(raw *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/projects/{pid}/capabilities", s.handleCapabilities)
 	mux.HandleFunc("GET /api/v1/projects/{pid}/access", s.handleGetAccess)
 	mux.HandleFunc("PUT /api/v1/projects/{pid}/access", s.handlePutAccess)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/limits", s.handleGetLimits)
+	mux.HandleFunc("PUT /api/v1/projects/{pid}/limits", s.handlePutLimits)
 	mux.HandleFunc("GET /api/v1/projects/{pid}/tokens", s.handleListTokens)
 	mux.HandleFunc("POST /api/v1/projects/{pid}/tokens", s.handleIssueToken)
 	mux.HandleFunc("POST /api/v1/projects/{pid}/tokens/{tid}/revoke", s.handleRevokeToken)

@@ -153,15 +153,15 @@ func (s *Store) EnqueueJob(pid, trigger, delivery, digest string, capacity int) 
 		}
 		id = "refresh-" + hex.EncodeToString(bytes[:])
 	}
-	pending, duplicate, err := s.jobAdmission(pid, trigger)
+	pending, projectPending, duplicate, err := s.jobAdmission(pid, trigger)
 	if err != nil {
 		return nil, false, err
 	}
 	if delivery == "" && duplicate != nil {
 		return duplicate, true, nil
 	}
-	if capacity < 1 || pending >= capacity {
-		return nil, false, ErrQueueFull
+	if err := s.checkJobCapacity(pid, pending, projectPending, capacity); err != nil {
+		return nil, false, err
 	}
 	now := time.Now().UTC()
 	job := RefreshJob{ID: id, ProjectID: pid, Trigger: trigger, Status: "queued", PayloadDigest: digest, CreatedAt: now, UpdatedAt: now, NotBefore: now, MaxAttempts: 3, Attempts: []JobAttempt{}}
@@ -266,12 +266,12 @@ func (s *Store) RetryJob(id string, capacity int) (*RefreshJob, error) {
 	if len(j.Attempts) >= 100 {
 		return nil, fmt.Errorf("%w: job attempt limit reached; enqueue a new refresh", ErrConflict)
 	}
-	pending, _, err := s.jobAdmission("", "")
+	pending, projectPending, _, err := s.jobAdmission(j.ProjectID, "")
 	if err != nil {
 		return nil, err
 	}
-	if pending >= capacity {
-		return nil, ErrQueueFull
+	if err := s.checkJobCapacity(j.ProjectID, pending, projectPending, capacity); err != nil {
+		return nil, err
 	}
 	j.Status = "queued"
 	j.CancelRequested = false
