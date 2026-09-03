@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mohammad-safakhou/diffmind/internal/workspace/archgraph"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/config"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/orchestrator"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/store"
@@ -147,7 +148,11 @@ func (m *Manager) finish(pid string, manifest store.RunManifest, ar *activeRun, 
 			}
 			manifest.Options["knowledge_pack_set_digest"] = result.PackSetDigest
 		}
-		graph, graphErr := m.persistArchitectureGraph(pid, manifest)
+		var supplements map[string]archgraph.Supplement
+		if result != nil {
+			supplements = result.Supplements
+		}
+		graph, graphErr := m.persistArchitectureGraph(pid, manifest, supplements)
 		if graphErr != nil {
 			manifest.Status = store.RunFailed
 			manifest.Error = "persist architecture graph: " + graphErr.Error()

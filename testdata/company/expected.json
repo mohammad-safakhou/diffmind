@@ -1,0 +1,5 @@
+{
+  "services": ["billing", "catalog", "gateway"],
+  "service_edges": ["gateway -> billing", "gateway -> catalog"],
+  "external_services": ["status-example-test"]
+}

@@ -18,7 +18,7 @@ const TEMPLATE = JSON.stringify({
 }, null, 2)
 
 // PacksTab: list + textarea JSON editor with server-side validation.
-export function PacksTab({ pid }) {
+export function PacksTab({ pid, capabilities }) {
   const [packs, setPacks] = useState([])
   const [error, setError] = useState('')
   const [editor, setEditor] = useState(null) // { id|null, body }
@@ -47,7 +47,7 @@ export function PacksTab({ pid }) {
     <div>
       <div class="toolbar">
         <h2>Packs</h2>
-        <button class="btn" onClick={openNew}>+ New Pack</button>
+        <button class="btn" disabled={!capabilities?.can_configure} onClick={openNew}>+ New Pack</button>
       </div>
       {error && <div class="banner error">{error}</div>}
       {packs.length === 0 && <p class="muted">No packs yet.</p>}
@@ -61,15 +61,15 @@ export function PacksTab({ pid }) {
               <td class="mono">{b.version}</td>
               <td class="mono">{b.priority || 0}</td>
               <td class="actions-col">
-                <button class="btn ghost tiny" onClick={() => openEdit(b.id)}>Edit</button>
-                <button class="btn danger tiny" onClick={() => setConfirmDel(b)}>Delete</button>
+                <button class="btn ghost tiny" onClick={() => openEdit(b.id)}>{capabilities?.can_configure ? 'Edit' : 'View'}</button>
+                <button class="btn danger tiny" disabled={!capabilities?.can_delete} onClick={() => setConfirmDel(b)}>Delete</button>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
 
-      {editor && <Editor pid={pid} editor={editor} onClose={() => setEditor(null)} onSaved={() => { setEditor(null); refresh() }} />}
+      {editor && <Editor pid={pid} editor={editor} readOnly={!capabilities?.can_configure} onClose={() => setEditor(null)} onSaved={() => { setEditor(null); refresh() }} />}
       {confirmDel && (
         <ConfirmDialog
           title="Delete pack?"
@@ -82,7 +82,7 @@ export function PacksTab({ pid }) {
   )
 }
 
-function Editor({ pid, editor, onClose, onSaved }) {
+function Editor({ pid, editor, readOnly, onClose, onSaved }) {
   const [body, setBody] = useState(editor.body)
   const [error, setError] = useState('')
   const [verrs, setVerrs] = useState([])
@@ -106,7 +106,7 @@ function Editor({ pid, editor, onClose, onSaved }) {
 
   return (
     <Modal title={editor.id ? `Edit pack: ${editor.id}` : 'New pack'} onClose={onClose} wide>
-      <textarea class="code-editor" rows="20" value={body} onInput={(e) => setBody(e.target.value)} spellcheck={false} />
+      <textarea class="code-editor" rows="20" value={body} readOnly={readOnly} onInput={(e) => setBody(e.target.value)} spellcheck={false} />
       {error && <div class="banner error">{error}</div>}
       {verrs.length > 0 && (
         <ul class="validation-list">
@@ -114,7 +114,7 @@ function Editor({ pid, editor, onClose, onSaved }) {
         </ul>
       )}
       <div class="actions">
-        <button class="btn" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save'}</button>
+        <button class="btn" disabled={busy || readOnly} onClick={save}>{busy ? 'Saving…' : 'Save'}</button>
         <button class="btn ghost" onClick={onClose}>Cancel</button>
       </div>
     </Modal>

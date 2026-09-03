@@ -9,6 +9,7 @@ import (
 	_ "github.com/mohammad-safakhou/diffmind/internal/extractor/detectors/languages/golang/http/fiber"
 	_ "github.com/mohammad-safakhou/diffmind/internal/extractor/detectors/languages/golang/http/gin"
 	_ "github.com/mohammad-safakhou/diffmind/internal/extractor/detectors/languages/golang/http/nethttp"
+	_ "github.com/mohammad-safakhou/diffmind/internal/extractor/detectors/languages/golang/httpclient/nethttp"
 	_ "github.com/mohammad-safakhou/diffmind/internal/extractor/detectors/languages/golang/rpc/grpc"
 	_ "github.com/mohammad-safakhou/diffmind/internal/extractor/detectors/languages/java/http/spring"
 	_ "github.com/mohammad-safakhou/diffmind/internal/extractor/detectors/languages/java/httpclient/feign"

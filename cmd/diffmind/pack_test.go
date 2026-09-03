@@ -28,6 +28,9 @@ func TestPackCLIEndToEnd(t *testing.T) {
 	if err := runPack([]string{"test", packDir}, &stdout, &stderr); err != nil || !strings.Contains(stdout.String(), "extracts service name") {
 		t.Fatalf("test: output=%q err=%v", stdout.String(), err)
 	}
+	if !strings.Contains(stdout.String(), "resolves a declared client") {
+		t.Fatalf("scaffold graph test was not executed: %s", stdout.String())
+	}
 	stdout.Reset()
 	fixture := filepath.Join(packDir, "testdata", "basic")
 	if err := runPack([]string{"explain", filepath.Join(packDir, "pack.yaml"), "--repo", fixture}, &stdout, &stderr); err != nil {
@@ -35,6 +38,9 @@ func TestPackCLIEndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"service_name": "example-service"`) {
 		t.Fatalf("explain output: %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"pack_id": "company.conventions"`) || !strings.Contains(stdout.String(), `"start_line": 3`) {
+		t.Fatalf("explain lost detector evidence: %s", stdout.String())
 	}
 	stdout.Reset()
 	if err := runPack([]string{"install", packDir}, &stdout, &stderr); err != nil {

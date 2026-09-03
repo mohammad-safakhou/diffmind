@@ -1,8 +1,8 @@
 package knowledge
 
 import (
+	"context"
 	"fmt"
-	"path/filepath"
 	"reflect"
 	"sort"
 
@@ -11,21 +11,26 @@ import (
 )
 
 type TestResult struct {
-	Name     string                `json:"name"`
-	Passed   bool                  `json:"passed"`
-	Error    string                `json:"error,omitempty"`
-	Actual   model.ServiceIdentity `json:"actual,omitempty"`
-	Evidence []ExtractionResult    `json:"evidence,omitempty"`
+	Name       string                `json:"name"`
+	Passed     bool                  `json:"passed"`
+	Error      string                `json:"error,omitempty"`
+	Actual     model.ServiceIdentity `json:"actual,omitempty"`
+	Evidence   []ExtractionResult    `json:"evidence,omitempty"`
+	Detections DetectionResult       `json:"detections,omitempty"`
 }
 
 // RunTests executes every fixture declared by a pack.
 func RunTests(pack *Pack) []TestResult {
 	results := make([]TestResult, 0, len(pack.Tests))
-	root := filepath.Dir(pack.SourcePath)
 	engine := NewEngine(util.NewLogger(util.LevelInfo))
 	for _, test := range pack.Tests {
 		result := TestResult{Name: test.Name}
-		fixture := filepath.Join(root, filepath.FromSlash(test.Fixture))
+		fixture, err := FixturePath(pack, test.Fixture)
+		if err != nil {
+			result.Error = err.Error()
+			results = append(results, result)
+			continue
+		}
 		kind := test.RepoKind
 		if kind == "" {
 			kind = "service_repo"
@@ -55,11 +60,50 @@ func RunTests(pack *Pack) []TestResult {
 		if !reflect.DeepEqual(actual, expected) {
 			result.Error = fmt.Sprintf("identity mismatch: expected %+v, got %+v", expected, actual)
 		} else {
-			result.Passed = true
+			result.Detections, err = Detect(context.Background(), pack, fixture, actual.ServiceName)
+			if err != nil {
+				result.Error = err.Error()
+			} else {
+				var deps, exps []ExpectedDetection
+				for _, dep := range result.Detections.Dependencies {
+					deps = append(deps, expectedDetection(dep.BaseEntity))
+				}
+				for _, exp := range result.Detections.Exposures {
+					exps = append(exps, expectedDetection(exp.BaseEntity))
+				}
+				if !sameDetections(deps, test.Dependencies) || !sameDetections(exps, test.Exposures) {
+					result.Error = fmt.Sprintf("detection mismatch: dependencies want %+v got %+v; exposures want %+v got %+v", test.Dependencies, deps, test.Exposures, exps)
+				} else {
+					result.Passed = true
+				}
+			}
 		}
 		results = append(results, result)
 	}
 	return results
+}
+
+func expectedDetection(entity model.BaseEntity) ExpectedDetection {
+	return ExpectedDetection{Type: entity.Type, Target: fmt.Sprint(entity.Details["target"]), File: entity.Locations[0].File, Line: entity.Locations[0].StartLine}
+}
+
+func sameDetections(actual, expected []ExpectedDetection) bool {
+	if len(actual) != len(expected) {
+		return false
+	}
+	counts := map[ExpectedDetection]int{}
+	for _, item := range actual {
+		counts[item]++
+	}
+	for _, item := range expected {
+		counts[item]--
+	}
+	for _, count := range counts {
+		if count != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeIdentity(identity *model.ServiceIdentity) {

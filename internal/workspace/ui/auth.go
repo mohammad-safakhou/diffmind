@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+
+	"github.com/mohammad-safakhou/diffmind/internal/workspace/store"
 )
 
 // Role is the authorization level attached to an authenticated identity.
@@ -27,9 +29,11 @@ type identityContextKey struct{}
 
 // Identity describes the caller available to handlers and the audit log.
 type Identity struct {
-	User       string `json:"user"`
-	Role       Role   `json:"role"`
-	AuthMethod string `json:"auth_method"`
+	User         string `json:"user"`
+	Role         Role   `json:"role"`
+	AuthMethod   string `json:"auth_method"`
+	TokenID      string `json:"token_id,omitempty"`
+	TokenProject string `json:"token_project,omitempty"`
 }
 
 // SetAuthToken enables HTTP authentication for the dashboard and every API
@@ -62,8 +66,17 @@ func (s *Server) accessControlled(next http.Handler) http.Handler {
 			defer func() { s.writeAudit(r, requestID, identity, recorder.statusCode()) }()
 		}
 
+		if isGitHubWebhook(r) {
+			identity = Identity{User: "github-webhook", Role: RoleEditor, AuthMethod: "webhook-signature"}
+			next.ServeHTTP(recorder, r)
+			return
+		}
 		resolved, err := s.authenticate(r)
 		if err != nil {
+			if errors.Is(err, errProjectAccessUnavailable) {
+				writeErr(recorder, http.StatusServiceUnavailable, errProjectAccessUnavailable)
+				return
+			}
 			if s.authToken != "" {
 				w.Header().Set("WWW-Authenticate", `Basic realm="DiffMind", charset="UTF-8"`)
 			}
@@ -80,10 +93,26 @@ func (s *Server) accessControlled(next http.Handler) http.Handler {
 }
 
 func (s *Server) authenticate(r *http.Request) (Identity, error) {
+	// Recognized project credentials never fall through to a stronger proxy,
+	// shared-token or unauthenticated local identity, even when invalid.
+	value := requestToken(r)
+	if store.IsProjectToken(value) {
+		if !s.projectAccessScoped {
+			return Identity{}, store.ErrInvalidToken
+		}
+		token, err := s.store.AuthenticateProjectToken(value)
+		if errors.Is(err, store.ErrInvalidToken) {
+			return Identity{}, store.ErrInvalidToken
+		}
+		if err != nil {
+			return Identity{}, errProjectAccessUnavailable
+		}
+		return Identity{User: "project-token:" + token.ProjectID + ":" + token.ID, Role: Role(token.Role), AuthMethod: "project_token", TokenID: token.ID, TokenProject: token.ProjectID}, nil
+	}
 	if s.authToken == "" && s.proxySecret == "" {
 		return Identity{User: "local", Role: RoleAdmin, AuthMethod: "local"}, nil
 	}
-	if secureTokenEqual(requestToken(r), s.authToken) {
+	if secureTokenEqual(value, s.authToken) {
 		return Identity{User: "shared-token", Role: RoleAdmin, AuthMethod: "token"}, nil
 	}
 	if secureTokenEqual(strings.TrimSpace(r.Header.Get(proxySecretHeader)), s.proxySecret) {
@@ -132,7 +161,14 @@ func identityFromContext(ctx context.Context) Identity {
 }
 
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, identityFromContext(r.Context()))
+	mode := "legacy"
+	if s.projectAccessScoped {
+		mode = "scoped"
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Identity
+		ProjectAccess string `json:"project_access"`
+	}{identityFromContext(r.Context()), mode})
 }
 
 func requestToken(r *http.Request) string {

@@ -23,10 +23,37 @@ var (
 )
 
 type Service struct {
-	store *store.Store
+	store  *store.Store
+	access func(string) error
 }
 
 func New(st *store.Store) *Service { return &Service{store: st} }
+
+// NewWithAccess filters discovery before reading project contents and checks
+// explicit/default project selection. A nil policy is trusted local access.
+func NewWithAccess(st *store.Store, access func(string) error) *Service {
+	return &Service{store: st, access: access}
+}
+
+func (s *Service) visibleProjects() ([]store.Project, error) {
+	projects, err := s.store.ListProjects()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.Project, 0, len(projects))
+	for _, p := range projects {
+		if s.access != nil {
+			if err := s.access(p.ID); err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					continue
+				}
+				return nil, err
+			}
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
 
 type Project struct {
 	ID              string `json:"id"`
@@ -88,13 +115,21 @@ type SearchResponse struct {
 func (s *Service) ResolveProject(requested string) (*store.Project, error) {
 	requested = strings.TrimSpace(requested)
 	if requested != "" {
+		if !store.ValidID(requested) {
+			return nil, store.ErrNotFound
+		}
+		if s.access != nil {
+			if err := s.access(requested); err != nil {
+				return nil, err
+			}
+		}
 		p, err := s.store.GetProject(requested)
 		if err != nil {
 			return nil, fmt.Errorf("project %q: %w", requested, err)
 		}
 		return p, nil
 	}
-	projects, err := s.store.ListProjects()
+	projects, err := s.visibleProjects()
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +148,7 @@ func (s *Service) ResolveProject(requested string) (*store.Project, error) {
 }
 
 func (s *Service) Projects() ([]Project, error) {
-	projects, err := s.store.ListProjects()
+	projects, err := s.visibleProjects()
 	if err != nil {
 		return nil, err
 	}
@@ -142,6 +177,9 @@ func (s *Service) Load(projectID, runID string) (*store.RunManifest, *archgraph.
 }
 
 func (s *Service) loadGraph(projectID, runID string) (*store.RunManifest, *archgraph.ArchGraph, error) {
+	if !store.ValidID(projectID) || (runID != "" && !store.ValidID(runID)) {
+		return nil, nil, store.ErrNotFound
+	}
 	var run *store.RunManifest
 	if strings.TrimSpace(runID) != "" {
 		var err error
@@ -178,11 +216,18 @@ func (s *Service) loadGraph(projectID, runID string) (*store.RunManifest, *archg
 		}
 		return nil, nil, err
 	}
-	var graph archgraph.ArchGraph
+	var graph *archgraph.ArchGraph
 	if err := json.Unmarshal(data, &graph); err != nil {
 		return nil, nil, fmt.Errorf("decode graph for run %s: %w", run.ID, err)
 	}
-	return run, &graph, nil
+	if graph == nil {
+		return nil, nil, fmt.Errorf("graph for run %s is null", run.ID)
+	}
+	if graph.RunID != "" && graph.RunID != run.ID {
+		return nil, nil, fmt.Errorf("graph run ID %q does not match requested run %q", graph.RunID, run.ID)
+	}
+	graph.RunID = run.ID
+	return run, graph, nil
 }
 
 func (s *Service) Summary(projectID, runID string) (*GraphSummary, error) {

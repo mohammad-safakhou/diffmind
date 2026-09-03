@@ -4,7 +4,10 @@
 // layout and exposes CRUD operations the HTTP API and run manager build on.
 package store
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Project is a top-level workspace grouping repositories, packs, and
 // graph runs. SearchRoots provide project-scoped repository discovery roots;
@@ -20,33 +23,52 @@ type Project struct {
 }
 
 const (
-	IngestionRunning   = "running"
-	IngestionCompleted = "completed"
-	IngestionPartial   = "partial"
-	IngestionFailed    = "failed"
+	IngestionRunning     = "running"
+	IngestionCompleted   = "completed"
+	IngestionPartial     = "partial"
+	IngestionFailed      = "failed"
+	IngestionCancelled   = "cancelled"
+	IngestionInterrupted = "interrupted"
 )
 
 // Ingestion is the durable projection of the latest project bootstrap or
 // refresh initiated from the UI. Repository-level detail remains on Repo;
 // this record makes the whole import-to-graph operation observable.
 type Ingestion struct {
-	ID           string    `json:"id"`
-	ProjectID    string    `json:"project_id"`
-	Status       string    `json:"status"`
-	Phase        string    `json:"phase"`
-	Provider     string    `json:"provider,omitempty"`
-	Source       string    `json:"source,omitempty"`
-	Discovered   int       `json:"discovered"`
-	Imported     int       `json:"imported"`
-	Skipped      int       `json:"skipped"`
-	Repositories int       `json:"repositories"`
-	Synced       int       `json:"synced"`
-	Analyzed     int       `json:"analyzed"`
-	GraphRunID   string    `json:"graph_run_id,omitempty"`
-	Errors       []string  `json:"errors,omitempty"`
-	StartedAt    time.Time `json:"started_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
-	FinishedAt   time.Time `json:"finished_at,omitempty"`
+	JobID            string          `json:"job_id,omitempty"`
+	AttemptStartedAt time.Time       `json:"attempt_started_at,omitempty"`
+	ID               string          `json:"id"`
+	ProjectID        string          `json:"project_id"`
+	Status           string          `json:"status"`
+	Phase            string          `json:"phase"`
+	Provider         string          `json:"provider,omitempty"`
+	Source           string          `json:"source,omitempty"`
+	Discovered       int             `json:"discovered"`
+	Imported         int             `json:"imported"`
+	Skipped          int             `json:"skipped"`
+	Repositories     int             `json:"repositories"`
+	Synced           int             `json:"synced"`
+	Analyzed         int             `json:"analyzed"`
+	Reused           int             `json:"reused"`
+	Request          json.RawMessage `json:"request,omitempty"`
+	ImportComplete   bool            `json:"import_complete,omitempty"`
+	Attempt          int             `json:"attempt"`
+	CancelRequested  bool            `json:"cancel_requested,omitempty"`
+	RepoProgress     []IngestionRepo `json:"repo_progress,omitempty"`
+	GraphRunID       string          `json:"graph_run_id,omitempty"`
+	Errors           []string        `json:"errors,omitempty"`
+	StartedAt        time.Time       `json:"started_at"`
+	UpdatedAt        time.Time       `json:"updated_at"`
+	FinishedAt       time.Time       `json:"finished_at,omitempty"`
+}
+
+// IngestionRepo is a persisted checkpoint, not a promise that inputs stay fresh.
+// Resume revalidates the repository fingerprint before reusing its artifacts.
+type IngestionRepo struct {
+	RepoID string `json:"repo_id"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+	RunID  string `json:"run_id,omitempty"`
 }
 
 // Repo is a project-scoped repository reference. Path points at the source repo
@@ -54,27 +76,29 @@ type Ingestion struct {
 // PackIDs and Instruction are repo-level overrides of the project
 // defaults: a non-empty value wins over the project's.
 type Repo struct {
-	ID                string    `json:"id"`
-	Name              string    `json:"name"`
-	Path              string    `json:"path"`
-	Kind              string    `json:"kind"` // service_repo | infra_repo
-	SourceType        string    `json:"source_type,omitempty"`
-	GitURL            string    `json:"git_url,omitempty"`
-	GitProvider       string    `json:"git_provider,omitempty"`
-	ClonePath         string    `json:"clone_path,omitempty"`
-	DefaultBranch     string    `json:"default_branch,omitempty"`
-	HeadSHA           string    `json:"head_sha,omitempty"`
-	RemoteHeadSHA     string    `json:"remote_head_sha,omitempty"`
-	SyncStatus        string    `json:"sync_status,omitempty"`
-	SyncError         string    `json:"sync_error,omitempty"`
-	LastSyncedAt      time.Time `json:"last_synced_at,omitempty"`
-	Team              string    `json:"team,omitempty"`
-	LastDiffMindRunID string    `json:"last_diffmind_run_id,omitempty"`
-	DiffMindFreshness string    `json:"diffmind_freshness,omitempty"`
-	PackIDs           []string  `json:"pack_ids,omitempty"`
-	Instruction       string    `json:"instruction,omitempty"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ID                     string    `json:"id"`
+	Name                   string    `json:"name"`
+	Path                   string    `json:"path"`
+	Kind                   string    `json:"kind"` // service_repo | infra_repo
+	SourceType             string    `json:"source_type,omitempty"`
+	GitURL                 string    `json:"git_url,omitempty"`
+	GitProvider            string    `json:"git_provider,omitempty"`
+	ClonePath              string    `json:"clone_path,omitempty"`
+	DefaultBranch          string    `json:"default_branch,omitempty"`
+	HeadSHA                string    `json:"head_sha,omitempty"`
+	RemoteHeadSHA          string    `json:"remote_head_sha,omitempty"`
+	SyncStatus             string    `json:"sync_status,omitempty"`
+	SyncError              string    `json:"sync_error,omitempty"`
+	LastSyncedAt           time.Time `json:"last_synced_at,omitempty"`
+	Team                   string    `json:"team,omitempty"`
+	LastDiffMindRunID      string    `json:"last_diffmind_run_id,omitempty"`
+	AnalysisFingerprint    string    `json:"analysis_fingerprint,omitempty"`
+	AnalysisArtifactDigest string    `json:"analysis_artifact_digest,omitempty"`
+	DiffMindFreshness      string    `json:"diffmind_freshness,omitempty"`
+	PackIDs                []string  `json:"pack_ids,omitempty"`
+	Instruction            string    `json:"instruction,omitempty"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
 }
 
 // PackMeta is the listing projection of a stored pack. The full

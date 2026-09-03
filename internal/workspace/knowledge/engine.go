@@ -152,8 +152,13 @@ func matchesGlob(path, pattern string) bool {
 		switch pattern[i] {
 		case '*':
 			if i+1 < len(pattern) && pattern[i+1] == '*' {
-				expression.WriteString(".*")
-				i += 2
+				if i+2 < len(pattern) && pattern[i+2] == '/' {
+					expression.WriteString("(?:.*/)?")
+					i += 3
+				} else {
+					expression.WriteString(".*")
+					i += 2
+				}
 			} else {
 				expression.WriteString("[^/]*")
 				i++

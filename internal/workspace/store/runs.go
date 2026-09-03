@@ -36,6 +36,9 @@ func (s *Store) ListRuns(pid string) ([]RunManifest, error) {
 
 // GetRun reads a single run manifest.
 func (s *Store) GetRun(pid, runID string) (*RunManifest, error) {
+	if !validID(pid) || !validID(runID) {
+		return nil, ErrNotFound
+	}
 	var m RunManifest
 	if err := readJSON(filepath.Join(s.RunDir(pid, runID), "manifest.json"), &m); err != nil {
 		if os.IsNotExist(err) {

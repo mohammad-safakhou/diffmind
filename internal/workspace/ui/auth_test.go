@@ -56,7 +56,9 @@ func newAuthTestServer(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	mgr := runmgr.New(st, util.NewLogger(util.LevelInfo), t.TempDir())
-	return New(st, mgr, t.TempDir(), "127.0.0.1", 8090, util.NewLogger(util.LevelInfo))
+	s := New(st, mgr, t.TempDir(), "127.0.0.1", 8090, util.NewLogger(util.LevelInfo))
+	t.Cleanup(s.StopOperations)
+	return s
 }
 
 func TestHTTPAuthenticationDisabledByDefault(t *testing.T) {

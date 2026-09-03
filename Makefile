@@ -1,4 +1,4 @@
-.PHONY: build install test test-race test-packs test-integration ui-build ui-test ui-audit vulncheck verify run container-build company-up company-down clean
+.PHONY: build install test test-race test-packs test-integration test-distribution test-acceptance ui-build ui-test ui-audit vulncheck verify run container-build company-up company-down clean
 
 GOCACHE_DIR := $(CURDIR)/.gocache
 
@@ -22,6 +22,15 @@ test-packs:
 test-integration:
 	DIFFMIND_RUN_SCIP_INTEGRATION=1 GOCACHE=$(GOCACHE_DIR) go test ./internal/extractor/scip
 
+test-distribution:
+	sh scripts/test-install.sh
+	sh scripts/test-demo.sh
+	GOCACHE=$(GOCACHE_DIR) go test ./scripts/release-formula
+	ruby -c Formula/diffmind.rb
+
+test-acceptance:
+	GOCACHE=$(GOCACHE_DIR) go test ./internal/workspace/ui -run TestCompanyAcceptance -count=1 -v
+
 ui-build:
 	npm --prefix internal/workspace/ui/web ci
 	npm --prefix internal/workspace/ui/web run build
@@ -29,6 +38,7 @@ ui-build:
 	npm --prefix internal/extractor/ui/web run build
 
 ui-test:
+	npm --prefix internal/workspace/ui/web test
 	npm --prefix internal/extractor/ui/web test
 
 ui-audit:
@@ -38,7 +48,7 @@ ui-audit:
 vulncheck:
 	GOCACHE=$(GOCACHE_DIR) go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 
-verify: test test-packs ui-build ui-test ui-audit vulncheck
+verify: test test-race test-packs test-distribution ui-build ui-test ui-audit vulncheck
 
 run:
 	GOCACHE=$(GOCACHE_DIR) go run ./cmd/diffmind

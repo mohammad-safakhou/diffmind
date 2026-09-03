@@ -24,6 +24,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *store.Store) {
 	beRuns := t.TempDir()
 	mgr := runmgr.New(st, util.NewLogger(util.LevelInfo), beRuns)
 	srv := New(st, mgr, beRuns, "127.0.0.1", 0, util.NewLogger(util.LevelInfo))
+	t.Cleanup(srv.StopOperations)
 	return httptest.NewServer(srv.Handler()), st
 }
 

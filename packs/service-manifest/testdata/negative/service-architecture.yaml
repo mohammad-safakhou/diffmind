@@ -1,0 +1,12 @@
+service:
+  name: negative
+dependencies:
+  http:
+    - "${CATALOG_URL}"
+    - https://user:synthetic-password@example.test
+    - https://example.test?token=synthetic-token
+    - /not-a-service
+    - null
+  rpc: []
+queues:
+  publish: []

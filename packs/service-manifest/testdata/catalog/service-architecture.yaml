@@ -1,0 +1,5 @@
+service:
+  name: catalog
+  aliases: [catalog.internal.example]
+queues:
+  consume: [order-events]

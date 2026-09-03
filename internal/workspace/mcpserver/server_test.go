@@ -69,7 +69,7 @@ func TestMCPProtocolListsAndCallsTools(t *testing.T) {
 		}
 	}
 	sort.Strings(names)
-	want := []string{"get_dependencies", "get_graph_summary", "get_impact", "get_service", "list_projects", "list_services", "search_architecture"}
+	want := []string{"compare_graphs", "find_dependency_path", "get_dependencies", "get_graph_summary", "get_impact", "get_object_trace", "get_service", "list_graph_runs", "list_projects", "list_services", "search_architecture"}
 	if len(names) != len(want) {
 		t.Fatalf("tools=%v", names)
 	}

@@ -105,8 +105,8 @@ func validateStructure(pack *Pack) []ValidationError {
 			errs = append(errs, ValidationError{Field: field, Message: "must be a safe relative path"})
 		}
 	}
-	if len(pack.Extractions) == 0 {
-		errs = append(errs, ValidationError{Field: "extractions", Message: "at least one extraction is required"})
+	if len(pack.Extractions) == 0 && len(pack.Detectors) == 0 {
+		errs = append(errs, ValidationError{Field: "extractions", Message: "at least one extraction or detector is required"})
 	}
 	names := map[string]bool{}
 	for i, extraction := range pack.Extractions {
@@ -162,7 +162,13 @@ func validateStructure(pack *Pack) []ValidationError {
 		if test.RepoKind != "" && !knownKinds[test.RepoKind] {
 			errs = append(errs, ValidationError{Field: base + ".repo_kind", Message: "unknown repository kind"})
 		}
+		for _, detection := range append(append([]ExpectedDetection(nil), test.Dependencies...), test.Exposures...) {
+			if !detectorTypes[detection.Type] || detection.Target == "" || !safeRelativePath(detection.File) || detection.File == "" || detection.Line < 1 {
+				errs = append(errs, ValidationError{Field: base, Message: "detections require a supported type, target, safe file, and positive line"})
+			}
+		}
 	}
+	errs = append(errs, validateDetectors(pack)...)
 	ruleNames := map[string]bool{}
 	for i, rule := range pack.ResolutionRules {
 		base := fmt.Sprintf("resolution_rules[%d]", i)
@@ -217,8 +223,13 @@ func ResolutionRules(packs []*Pack) []ResolutionRule {
 }
 
 func safeRelativePath(path string) bool {
-	if filepath.IsAbs(path) {
+	if path == "" || filepath.IsAbs(path) || strings.Contains(path, "\\") || strings.Contains(path, ":") {
 		return false
+	}
+	for _, part := range strings.Split(path, "/") {
+		if part == ".." {
+			return false
+		}
 	}
 	clean := filepath.Clean(filepath.FromSlash(path))
 	return clean != ".." && !strings.HasPrefix(clean, ".."+string(filepath.Separator))

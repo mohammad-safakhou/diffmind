@@ -34,7 +34,11 @@ func (m *Manager) architectureStats(pid string, manifest store.RunManifest) arch
 	stats := architectureRunStats{}
 	serviceRepoDirs := m.architectureServiceRepoDirs(pid, manifest)
 	if len(serviceRepoDirs) > 0 {
-		graph := archgraph.Build(manifest.ID, serviceRepoDirs)
+		var graph archgraph.ArchGraph
+		data, err := os.ReadFile(filepath.Join(m.store.RunDir(pid, manifest.ID), "graph.json"))
+		if err != nil || json.Unmarshal(data, &graph) != nil || graph.RunID != manifest.ID {
+			graph = *archgraph.Build(manifest.ID, serviceRepoDirs)
+		}
 		stats.serviceCount = len(graph.Services)
 		stats.edgeCount = len(graph.Edges)
 	}
@@ -80,12 +84,12 @@ func (m *Manager) architectureStats(pid string, manifest store.RunManifest) arch
 	return stats
 }
 
-func (m *Manager) persistArchitectureGraph(pid string, manifest store.RunManifest) (*archgraph.ArchGraph, error) {
+func (m *Manager) persistArchitectureGraph(pid string, manifest store.RunManifest, supplements map[string]archgraph.Supplement) (*archgraph.ArchGraph, error) {
 	serviceRepoDirs := m.architectureServiceRepoDirs(pid, manifest)
 	if len(serviceRepoDirs) == 0 {
 		return nil, nil
 	}
-	graph := archgraph.Build(manifest.ID, serviceRepoDirs)
+	graph := archgraph.BuildWithSupplements(manifest.ID, serviceRepoDirs, supplements)
 	data, err := json.MarshalIndent(graph, "", "  ")
 	if err != nil {
 		return nil, err

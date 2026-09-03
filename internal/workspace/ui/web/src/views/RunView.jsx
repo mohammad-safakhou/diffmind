@@ -4,11 +4,13 @@ import { navigate } from '../lib/router.js'
 import { StatusBadge } from './tabs/RunsTab.jsx'
 import { GraphCanvas } from './GraphCanvas.jsx'
 import { GraphDetailBody, graphDetailTitle } from './GraphDetails.jsx'
+import { useProjectCapabilities } from '../lib/access.js'
 
 // RunView shows a single graph run full-screen: the architecture graph fills the
 // viewport, live progress events live in a collapsible drawer, and clicking a
 // node or edge opens a details panel.
 export function RunView({ pid, rid }) {
+  const { data: caps, error: accessError } = useProjectCapabilities(pid)
   const [run, setRun] = useState(null)
   const [events, setEvents] = useState([])
   const [graph, setGraph] = useState(null)
@@ -41,9 +43,12 @@ export function RunView({ pid, rid }) {
     return () => { try { es.close() } catch {} }
   }, [pid, rid])
 
+  useEffect(() => { if (accessError) esRef.current?.close() }, [accessError])
+
   const doCancel = async () => { try { await cancelRun(pid, rid); loadRun() } catch (e) { setError(e.message) } }
   const active = run && (run.status === 'running' || run.status === 'cancelling')
 
+  if (accessError) return <div class="page"><button class="btn ghost" onClick={() => navigate('/')}>Projects</button><p class="banner error">{accessError}</p></div>
   return (
     <div class="run-full">
       <header class="run-topbar">
@@ -52,7 +57,8 @@ export function RunView({ pid, rid }) {
         {run && <StatusBadge status={run.status} />}
         {graph && <GraphStats graph={graph} />}
         <div class="run-topbar-actions">
-          {active && <button class="btn ghost tiny" onClick={doCancel}>Cancel</button>}
+          {graph && <button class="btn ghost tiny" onClick={() => navigate(`/projects/${encodeURIComponent(pid)}/compare?${new URLSearchParams({ to: rid })}`)}>Compare</button>}
+          {active && caps?.can_refresh && <button class="btn ghost tiny" onClick={doCancel}>Cancel</button>}
           <button class="btn ghost tiny" onClick={() => setShowProgress((v) => !v)}>
             {showProgress ? 'Hide' : 'Progress'} ({events.length})
           </button>

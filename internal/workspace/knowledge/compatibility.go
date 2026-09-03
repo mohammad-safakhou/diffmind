@@ -8,7 +8,7 @@ import (
 
 // RuntimeVersion is the knowledge-pack API version implemented by this
 // release. It is intentionally separate from a marketing/build version.
-const RuntimeVersion = "0.1.0"
+const RuntimeVersion = "0.2.0"
 
 type semanticVersion struct{ major, minor, patch int }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/config"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/knowledge"
+	"github.com/mohammad-safakhou/diffmind/internal/workspace/packtest"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/util"
 )
 
@@ -102,16 +104,21 @@ func packInit(args []string, stdout io.Writer) error {
 	pack := &knowledge.Pack{
 		APIVersion: knowledge.APIVersion, Kind: knowledge.Kind, ID: *id,
 		Name: *id, Description: "Describe the repository conventions this pack teaches DiffMind.",
-		Version: "0.1.0", License: "Apache-2.0", Compatibility: ">=0.1.0",
+		Version: "0.1.0", License: "Apache-2.0", Compatibility: ">=0.2.0",
 		AppliesTo: knowledge.AppliesTo{Kind: "service_repo", Match: knowledge.MatchConfig{HasFile: "service.yaml"}},
 		Extractions: []knowledge.Extraction{{
 			Name: "service identity", Source: knowledge.ExtractionSource{Glob: "service.yaml"},
 			Strategy: "field_path", Extract: []knowledge.ExtractField{{Field: "name", MapsTo: "service_name"}},
 		}},
+		Detectors: []knowledge.Detector{{Name: "declared HTTP clients", Type: "outbound_http", Source: knowledge.ExtractionSource{Glob: "service.yaml"}, Field: "dependencies.http"}},
 		Tests: []knowledge.TestCase{{
 			Name: "extracts service name", Fixture: "testdata/basic", RepoKind: "service_repo",
-			Expected: knowledge.ExpectedIdentity{ServiceName: "example-service"},
+			Expected:     knowledge.ExpectedIdentity{ServiceName: "example-service"},
+			Dependencies: []knowledge.ExpectedDetection{{Type: "outbound_http", Target: "https://billing/invoices", File: "service.yaml", Line: 3}},
 		}},
+		GraphTests: []knowledge.GraphTest{{Name: "resolves a declared client", Repositories: []knowledge.GraphTestRepository{
+			{Name: "example-service", Fixture: "testdata/basic"}, {Name: "billing", Fixture: "testdata/billing"},
+		}, Edges: []knowledge.ExpectedEdge{{From: "example-service", To: "billing", Type: "http"}}}},
 	}
 	body, err := knowledge.MarshalYAML(pack)
 	if err != nil {
@@ -126,7 +133,13 @@ func packInit(args []string, stdout io.Writer) error {
 	if err := os.WriteFile(manifest, body, 0o644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "testdata", "basic", "service.yaml"), []byte("name: example-service\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "testdata", "basic", "service.yaml"), []byte("name: example-service\ndependencies:\n  http: [https://billing/invoices]\n"), 0o644); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "testdata", "billing"), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "testdata", "billing", "service.yaml"), []byte("name: billing\n"), 0o644); err != nil {
 		return err
 	}
 	fmt.Fprintln(stdout, manifest)
@@ -163,11 +176,11 @@ func packTest(args []string, stdout io.Writer) error {
 	}
 	var failures []string
 	for _, pack := range packs {
-		if len(pack.Tests) == 0 {
+		if len(pack.Tests)+len(pack.GraphTests) == 0 {
 			failures = append(failures, pack.ID+": no tests declared")
 			continue
 		}
-		for _, result := range knowledge.RunTests(pack) {
+		for _, result := range packtest.RunTests(pack) {
 			if result.Passed {
 				fmt.Fprintf(stdout, "ok\t%s\t%s\n", pack.ID, result.Name)
 			} else {
@@ -198,10 +211,11 @@ func packExplain(args []string, stdout io.Writer) error {
 		return err
 	}
 	type explanation struct {
-		Pack     string                       `json:"pack"`
-		Matched  bool                         `json:"matched"`
-		Evidence []knowledge.ExtractionResult `json:"evidence,omitempty"`
-		Identity any                          `json:"identity,omitempty"`
+		Pack       string                       `json:"pack"`
+		Matched    bool                         `json:"matched"`
+		Evidence   []knowledge.ExtractionResult `json:"evidence,omitempty"`
+		Identity   any                          `json:"identity,omitempty"`
+		Detections knowledge.DetectionResult    `json:"detections"`
 	}
 	var output []explanation
 	engine := knowledge.NewEngine(util.NewLogger(util.LevelInfo))
@@ -214,6 +228,10 @@ func packExplain(args []string, stdout io.Writer) error {
 				return err
 			}
 			item.Identity = identity
+			item.Detections, err = knowledge.Detect(context.Background(), pack, *repo, identity.ServiceName)
+			if err != nil {
+				return err
+			}
 		}
 		output = append(output, item)
 	}

@@ -190,7 +190,7 @@ func TestProjectIngestionFailsWhenGraphBuildFails(t *testing.T) {
 	}
 }
 
-func TestServerMarksInterruptedIngestionFailed(t *testing.T) {
+func TestServerMarksInterruptedIngestionRecoverable(t *testing.T) {
 	s := newAuthTestServer(t)
 	project, err := s.store.CreateProject(store.Project{Name: "Interrupted graph"})
 	if err != nil {
@@ -209,7 +209,7 @@ func TestServerMarksInterruptedIngestionFailed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != store.IngestionFailed || got.FinishedAt.IsZero() || !strings.Contains(strings.Join(got.Errors, " "), "server restart") {
+	if got.Status != store.IngestionInterrupted || got.FinishedAt.IsZero() || !strings.Contains(strings.Join(got.Errors, " "), "server restart") {
 		t.Fatalf("recovered ingestion = %+v", got)
 	}
 	recoveredRepo, err := s.store.GetRepo(project.ID, repo.ID)

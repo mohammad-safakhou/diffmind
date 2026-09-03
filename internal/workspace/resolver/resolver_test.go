@@ -55,6 +55,25 @@ func TestKnowledgeRuleEqualPriorityConflictFails(t *testing.T) {
 	}
 }
 
+func TestAmbiguousAliasesFailRegardlessOfRegistrationOrder(t *testing.T) {
+	for _, names := range [][]string{{"first", "second"}, {"second", "first"}} {
+		reg := registry.New()
+		reg.AddArchitecture("caller", &model.ServiceArchitecture{Dependencies: []model.Dependency{{BaseEntity: model.BaseEntity{ID: "dep", Type: "outbound_http", Details: map[string]any{"target_service": "shared.example.test"}}}}})
+		for _, name := range names {
+			reg.AddArchitecture(name, &model.ServiceArchitecture{})
+			reg.AddIdentity(name, &model.ServiceIdentity{ServiceName: name, Aliases: []model.IdentityAlias{{Kind: "dns", Value: "shared.example.test"}}})
+		}
+		if _, err := New(reg, util.NewLogger(util.LevelInfo)).Resolve(); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+			t.Fatalf("ambiguous aliases not rejected: %v", err)
+		}
+		rule := knowledge.ResolutionRule{Name: "explicit", TargetPattern: "^shared[.]example[.]test$", TargetService: "first", Confidence: 1}
+		got, err := New(reg, util.NewLogger(util.LevelInfo), rule).Resolve()
+		if err != nil || len(got.Matches) != 1 || got.Matches[0].ToService != "first" {
+			t.Fatalf("explicit rule not honored: %+v %v", got, err)
+		}
+	}
+}
+
 func setupTestRegistry() *registry.Registry {
 	reg := registry.New()
 

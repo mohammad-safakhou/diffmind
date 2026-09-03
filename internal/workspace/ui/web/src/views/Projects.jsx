@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
-import { listProjects, createProject, deleteProject } from '../lib/api.js'
+import { listProjects, createProject, deleteProject, getSession } from '../lib/api.js'
+import { canCreateProject } from '../lib/access.js'
 import { navigate } from '../lib/router.js'
 import { Modal, ConfirmDialog } from '../components/Modal.jsx'
 
@@ -10,10 +11,13 @@ export function Projects() {
   const [error, setError] = useState('')
   const [showCreate, setShowCreate] = useState(false)
   const [confirmDel, setConfirmDel] = useState(null)
+  const [session, setSession] = useState(null)
+  const canCreate = canCreateProject(session)
 
   const refresh = async () => {
     try {
-      const r = await listProjects()
+      const [r, identity] = await Promise.all([listProjects(), getSession()])
+      setSession(identity)
       setProjects(r.projects || [])
       setError('')
     } catch (e) {
@@ -25,8 +29,8 @@ export function Projects() {
 
   // Force creation when empty.
   useEffect(() => {
-    if (projects && projects.length === 0) setShowCreate(true)
-  }, [projects])
+    if (canCreate && projects && projects.length === 0) setShowCreate(true)
+  }, [projects, canCreate])
 
   const onCreated = (p) => {
     setShowCreate(false)
@@ -46,7 +50,7 @@ export function Projects() {
           <h1>DiffMind</h1>
           <p class="sub">Cross-service dependency graphs</p>
         </div>
-        <button class="btn" onClick={() => setShowCreate(true)}>+ New Project</button>
+        {canCreate && <button class="btn" onClick={() => setShowCreate(true)}>+ New Project</button>}
       </header>
 
       {error && <div class="banner error">{error}</div>}
@@ -54,7 +58,7 @@ export function Projects() {
       <div class="content">
         {projects === null && <p class="muted">Loading…</p>}
         {projects && projects.length === 0 && !showCreate && (
-          <p class="muted">No projects yet.</p>
+          <p class="muted">{canCreate ? 'No projects yet.' : 'No accessible projects. Ask an administrator to grant your user access.'}</p>
         )}
         <div class="card-grid">
           {(projects || []).map((p) => (
@@ -66,7 +70,7 @@ export function Projects() {
               </div>
               <div class="card-actions">
                 <button class="btn ghost tiny" onClick={() => navigate(`/projects/${p.id}`)}>Open</button>
-                <button class="btn danger tiny" onClick={() => setConfirmDel(p)}>Delete</button>
+                {session?.role === 'admin' && <button class="btn danger tiny" onClick={() => setConfirmDel(p)}>Delete</button>}
               </div>
             </div>
           ))}

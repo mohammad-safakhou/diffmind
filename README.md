@@ -29,12 +29,17 @@ diffmind doctor
 diffmind
 ```
 
+Homebrew recipes are included in this same repository. See
+[distribution](docs/distribution.md) for development tap setup and pinned release
+generation/availability; no second hosted repository is required.
+
 Build from source. Requirements:
 
-- Go 1.26.2 or newer
-- Node.js 20 or newer when rebuilding the web interfaces
+- Go 1.26.6 or newer (see `go.mod`)
+- Node.js 24 when rebuilding the web interfaces (the CI version)
 - Git
-- Docker for containerized SCIP indexing
+- A C compiler for tree-sitter/CGO (also required by `go install`)
+- Docker only for optional containerized SCIP indexing or shared deployment
 
 ```bash
 git clone https://github.com/mohammad-safakhou/diffmind.git
@@ -48,6 +53,14 @@ Point DiffMind at a GitHub organization or a directory containing local Git
 repositories. One durable operation imports and syncs the repositories, runs
 deterministic analysis, and builds the project graph. Its progress survives page
 reloads and failures remain visible with actionable error details.
+
+Use **Update graph** for incremental refresh, **Cancel ingestion** to stop work,
+and **Resume / retry** to recover failed or cancelled jobs. Interrupted jobs
+resume on server startup; unchanged successful analyses are reused after their
+inputs and artifacts are verified. See [ingestion operations](docs/ingestion.md).
+
+Start with the [current architecture](docs/ARCHITECTURE.md) and
+[product roadmap](docs/ROADMAP.md) when contributing or evaluating the platform.
 
 ## Commands
 
@@ -69,10 +82,15 @@ diffmind pack explain <path>     Explain what a pack derives from a repository
 diffmind mcp [--project ID]      Run the read-only stdio MCP server
 diffmind doctor [--json]         Check installation and graph readiness
 diffmind version [--json]        Print release/build information
+diffmind backup create --offline --output FILE  Save an offline snapshot
+diffmind backup verify --archive FILE           Verify without extracting
+diffmind backup restore --offline --archive FILE --destination NEW_DIR
 ```
 
 DiffMind stores local state under `~/.diffmind` by default. Set
 `DIFFMIND_HOME` to use another location.
+See [backup/recovery](docs/backup-recovery.md) before restoring data and the
+[synthetic quickstart](docs/contributor-quickstart.md) for a first contribution.
 
 ## Connect your coding agent
 
@@ -107,7 +125,9 @@ Cursor project configuration (`.cursor/mcp.json`):
 
 The MCP server offers read-only tools to list projects and services, inspect a
 service and its evidence, search architecture objects, traverse dependencies,
-and calculate change impact. It returns structured JSON and works entirely from
+calculate change impact, compare saved graph versions, and inspect exact-ID local
+flows. See [graph history and tracing](docs/graph-history.md) for examples and
+limits. It returns structured JSON and works entirely from
 persisted deterministic graph artifacts—no model is used during analysis.
 
 ## Run it for a company
@@ -129,8 +149,20 @@ Company deployments can pass authenticated users from an OIDC proxy with
 viewer/editor/admin roles; DiffMind records all mutation attempts in a JSONL
 audit log under its data directory.
 
+Enable `DIFFMIND_PROJECT_ACCESS=scoped` to limit users to explicit project
+memberships across UI, HTTP and remote MCP. Admins manage grants in **Project
+access**; editors can refresh assigned projects. See [project permissions](docs/project-access.md)
+for setup, recovery, and the distinction between per-user identities and the
+shared **global-admin** token. The default `legacy` mode retains global roles.
+
+For restricted agent access without proxy-issued credentials, admins can issue
+an expiring **viewer token for one project** in **Project access → Agent tokens**.
+Use it as a bearer credential for `/mcp` or the query API. See
+[agent token setup, rotation, and revocation](docs/agent-tokens.md).
+
 Remote API clients send `Authorization: Bearer <token>`. Remote MCP clients use
-the `/mcp` endpoint. For example, Codex can connect directly to a shared host:
+the `/mcp` endpoint. The following is an **admin connection**, not a scoped user
+connection; restricted agents must authenticate through the identity proxy:
 
 ```bash
 export DIFFMIND_AUTH_TOKEN='<the server token>'
@@ -145,6 +177,16 @@ every 15 minutes, re-analyzes it, and publishes a new project graph. Set
 [company deployment](docs/company-deployment.md) for operations, security, and
 backup details.
 
+Projects also have an **Operations** screen for queued refreshes, cancellation,
+retry, and durable job/ingestion history. Opt-in signed GitHub push webhooks,
+bounded workers, and authenticated metrics are described in
+[continuous operations](docs/operations.md).
+
+For large job histories, [migrate the refresh queue to indexed SQLite](docs/queue-storage.md).
+The offline migration preserves original job records, attempts and timestamps;
+no external database service is needed. This still runs as one server, not a
+distributed worker deployment.
+
 ## Query API
 
 While the web workspace is running, integrations can query the same graph core
@@ -153,6 +195,10 @@ under `/api/v1`:
 ```text
 GET /api/v1/projects
 GET /api/v1/projects/{project}/graph/summary
+GET /api/v1/projects/{project}/graph/runs?offset=0&limit=100
+GET /api/v1/projects/{project}/graph/compare?from=RUN_A&to=RUN_B
+GET /api/v1/projects/{project}/graph/path?from=SERVICE_A&to=SERVICE_B&depth=6
+GET /api/v1/projects/{project}/graph/trace?service=SERVICE&object_id=OBJECT_ID
 GET /api/v1/projects/{project}/services
 GET /api/v1/projects/{project}/services/{service}
 GET /api/v1/projects/{project}/dependencies?service=...&direction=both
@@ -160,8 +206,10 @@ GET /api/v1/projects/{project}/impact?target=...&depth=6
 GET /api/v1/projects/{project}/search?q=...&limit=50
 ```
 
-Add `run=<completed-run-id>` to pin a historical graph; otherwise the latest
-completed graph is used.
+Single-graph queries accept `run=<completed-run-id>` to pin a historical graph;
+otherwise the latest completed graph is used. Comparisons require explicit
+`from` and `to` run IDs. In the project workspace, select **Compare graphs** to
+browse before/after facts and their evidence.
 
 On an authenticated shared server, add `Authorization: Bearer <token>` to every
 API request. `GET /healthz` remains unauthenticated for health checks.
@@ -221,6 +269,13 @@ DIFFMIND_RUN_SCIP_INTEGRATION=1 go test ./internal/extractor/scip
 
 See [the architecture guide](docs/ARCHITECTURE.md) and
 [knowledge-pack guide](docs/knowledge-packs.md) for more.
+
+Teach configuration conventions without an LLM using evidence-backed HTTP/RPC
+and queue rules. `diffmind pack init` scaffolds exact multi-repository graph tests;
+the opt-in [service-manifest](packs/service-manifest/README.md) and
+[OpenFeign configuration](packs/spring-openfeign-config/README.md) packs provide
+working examples. Check the [tested support matrix](docs/supported-patterns.md)
+for coverage and limits.
 
 ## Contributing
 

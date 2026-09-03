@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,7 @@ type ProjectRefreshResult struct {
 	ProjectID  string `json:"project_id"`
 	Synced     int    `json:"synced"`
 	Analyzed   int    `json:"analyzed"`
+	Reused     int    `json:"reused"`
 	GraphRunID string `json:"graph_run_id,omitempty"`
 	Error      string `json:"error,omitempty"`
 }
@@ -130,25 +132,64 @@ func (s *Server) triggerRefresh(ctx context.Context, trigger string) bool {
 }
 
 func (s *Server) refreshAllProjects(ctx context.Context) ([]ProjectRefreshResult, error) {
+	if err := s.StartOperations(ctx); err != nil {
+		return nil, err
+	}
 	projects, err := s.store.ListProjects()
 	if err != nil {
 		return nil, err
 	}
 	results := make([]ProjectRefreshResult, 0, len(projects))
 	var failures []string
+	var jobs []*store.RefreshJob
 	for _, project := range projects {
 		if err := ctx.Err(); err != nil {
 			return results, err
 		}
-		var result ProjectRefreshResult
-		if s.refreshProject != nil {
-			result = s.refreshProject(ctx, project.ID)
-		} else {
-			result = s.refreshOneProject(ctx, project.ID)
+		job, _, err := s.enqueueRefresh(project.ID, "fleet_refresh", "", "")
+		if err != nil {
+			failures = append(failures, project.ID+": "+err.Error())
+			continue
 		}
-		results = append(results, result)
-		if result.Error != "" {
-			failures = append(failures, project.ID+": "+result.Error)
+		jobs = append(jobs, job)
+	}
+	for _, job := range jobs {
+		for {
+			s.operationsMu.Lock()
+			schedulerErr := s.operationsError
+			s.operationsMu.Unlock()
+			if schedulerErr != nil {
+				return results, schedulerErr
+			}
+			if ctx.Err() != nil {
+				return results, ctx.Err()
+			}
+			current, err := s.store.GetJob(job.ID)
+			if err != nil {
+				return results, err
+			}
+			if current.Status != "queued" && current.Status != "running" {
+				result := ProjectRefreshResult{ProjectID: job.ProjectID}
+				if len(current.Attempts) > 0 {
+					last := current.Attempts[len(current.Attempts)-1]
+					result.GraphRunID = last.GraphRunID
+					result.Synced = last.Synced
+					result.Analyzed = last.Analyzed
+					result.Reused = last.Reused
+					result.Error = last.Error
+				}
+				if current.Status != "succeeded" {
+					result.Error = firstNonEmpty(result.Error, current.Status)
+					failures = append(failures, job.ProjectID+": "+result.Error)
+				}
+				results = append(results, result)
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return results, ctx.Err()
+			case <-time.After(20 * time.Millisecond):
+			}
 		}
 	}
 	if len(failures) > 0 {
@@ -162,10 +203,23 @@ func (s *Server) refreshOneProject(ctx context.Context, pid string) ProjectRefre
 		return ProjectRefreshResult{ProjectID: pid, Error: "project is already being processed"}
 	}
 	defer s.endProjectOperation(pid)
-	return s.runProjectRefresh(ctx, pid, s.refreshConcurrency(), orchestrator.DiffMindRunOptions{}, "fleet_refresh")
+	if active, err := s.projectHasActiveWork(pid); err != nil || active {
+		return ProjectRefreshResult{ProjectID: pid, Error: "project has active repository or graph work"}
+	}
+	result := s.runProjectRefresh(ctx, pid, s.refreshConcurrency(), orchestrator.DiffMindRunOptions{}, "fleet_refresh")
+	if result.GraphRunID != "" {
+		if err := s.waitForGraph(ctx, pid, result.GraphRunID); err != nil {
+			result.Error = strings.TrimSpace(result.Error + " " + err.Error())
+		}
+	}
+	return result
 }
 
 func (s *Server) runProjectRefresh(ctx context.Context, pid string, concurrency int, opts orchestrator.DiffMindRunOptions, trigger string) ProjectRefreshResult {
+	return s.runProjectRefreshWithControl(ctx, pid, concurrency, opts, trigger, false, nil)
+}
+
+func (s *Server) runProjectRefreshWithControl(ctx context.Context, pid string, concurrency int, opts orchestrator.DiffMindRunOptions, trigger string, force bool, progress func(store.IngestionRepo)) ProjectRefreshResult {
 	result := ProjectRefreshResult{ProjectID: pid}
 	var failures []string
 	repos, err := s.store.ListRepos(pid)
@@ -177,39 +231,127 @@ func (s *Server) runProjectRefresh(ctx context.Context, pid string, concurrency 
 		return result
 	}
 
-	gitRepos := make([]store.Repo, 0, len(repos))
+	analyzer, _ := orchestrator.AnalyzerIdentity(firstNonEmpty(os.Getenv("DIFFMIND_BINARY"), "diffmind"))
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	process := func(repo store.Repo) {
+		report := func(status, message, runID string) {
+			if progress != nil {
+				progress(store.IngestionRepo{RepoID: repo.ID, Status: status, Error: message, RunID: runID})
+			}
+		}
+		fail := func(err error) {
+			_, _ = s.store.UpdateRepo(pid, repo.ID, func(r *store.Repo) {
+				r.SyncStatus = "diffmind_failed"
+				r.SyncError = err.Error()
+				r.DiffMindFreshness = "unknown"
+			})
+			mu.Lock()
+			failures = append(failures, fmt.Sprintf("analyze %s: %s", repo.ID, err))
+			mu.Unlock()
+			status := "failed"
+			if ctx.Err() != nil {
+				status = "cancelled"
+			}
+			report(status, err.Error(), "")
+		}
+		if ctx.Err() != nil {
+			report("cancelled", ctx.Err().Error(), "")
+			return
+		}
+		if strings.TrimSpace(repo.GitURL) != "" {
+			report("syncing", "", "")
+			updated, err := s.syncGitRepo(ctx, pid, repo)
+			if err != nil {
+				fail(fmt.Errorf("sync: %w", err))
+				return
+			}
+			repo = *updated
+			mu.Lock()
+			result.Synced++
+			mu.Unlock()
+		}
+		if repo.Kind == "infra_repo" {
+			report("skipped", "infrastructure-only repository", "")
+			return
+		}
+		fingerprint, _ := s.analysisFingerprint(ctx, pid, repo, opts, analyzer)
+		if !force && s.reusableAnalysis(repo, fingerprint) {
+			_, err := s.store.UpdateRepo(pid, repo.ID, func(r *store.Repo) { r.SyncStatus = "diffmind_completed"; r.SyncError = "" })
+			if err != nil {
+				fail(err)
+				return
+			}
+			mu.Lock()
+			result.Reused++
+			mu.Unlock()
+			report("reused", "", repo.LastDiffMindRunID)
+			return
+		}
+		_, err := s.store.UpdateRepo(pid, repo.ID, func(r *store.Repo) {
+			r.SyncStatus = "diffmind_running"
+			r.SyncError = ""
+			r.AnalysisFingerprint = ""
+			r.AnalysisArtifactDigest = ""
+		})
+		if err != nil {
+			fail(err)
+			return
+		}
+		report("analyzing", "", "")
+		s.runDiffMindForRepoContext(ctx, pid, repo.ID, repo, opts)
+		updated, err := s.store.GetRepo(pid, repo.ID)
+		if err != nil {
+			fail(err)
+			return
+		}
+		if updated.SyncStatus != "diffmind_completed" {
+			fail(errors.New(firstNonEmpty(updated.SyncError, "analysis did not complete")))
+			return
+		}
+		digest, err := s.analysisArtifactDigest(*updated)
+		if err != nil {
+			fail(fmt.Errorf("analysis artifacts: %w", err))
+			return
+		}
+		after, _ := s.analysisFingerprint(ctx, pid, *updated, opts, analyzer)
+		if after != fingerprint {
+			fingerprint = ""
+		}
+		_, err = s.store.UpdateRepo(pid, repo.ID, func(r *store.Repo) { r.AnalysisFingerprint = fingerprint; r.AnalysisArtifactDigest = digest })
+		if err != nil {
+			fail(err)
+			return
+		}
+		mu.Lock()
+		result.Analyzed++
+		mu.Unlock()
+		report("completed", "", updated.LastDiffMindRunID)
+	}
+	work := make(chan store.Repo)
+	for i := 0; i < min(importCloneConcurrency(concurrency), len(repos)); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for repo := range work {
+				process(repo)
+			}
+		}()
+	}
+dispatch:
 	for _, repo := range repos {
-		if strings.TrimSpace(repo.GitURL) != "" && repo.SyncStatus != "diffmind_running" {
-			gitRepos = append(gitRepos, repo)
+		select {
+		case work <- repo:
+		case <-ctx.Done():
+			break dispatch
 		}
 	}
-	syncErrors := s.refreshSyncRepos(ctx, pid, gitRepos, concurrency)
-	result.Synced = len(gitRepos) - len(syncErrors)
-	for _, syncErr := range syncErrors {
-		failures = append(failures, syncErr.Error())
-	}
-
-	repos, err = s.store.ListRepos(pid)
-	if err != nil {
-		failures = append(failures, err.Error())
-		result.Error = strings.Join(failures, "; ")
+	close(work)
+	wg.Wait()
+	if ctx.Err() != nil {
+		result.Error = ctx.Err().Error()
 		return result
 	}
-	serviceRepos := make([]store.Repo, 0, len(repos))
-	attempted := make(map[string]struct{}, len(repos))
-	for _, repo := range repos {
-		if (repo.Kind == "" || repo.Kind == "service_repo") && repo.SyncStatus != "diffmind_running" {
-			serviceRepos = append(serviceRepos, repo)
-			attempted[repo.ID] = struct{}{}
-		}
-	}
-	for _, repo := range serviceRepos {
-		_, _ = s.store.UpdateRepo(pid, repo.ID, func(rp *store.Repo) {
-			rp.SyncStatus = "diffmind_running"
-			rp.SyncError = ""
-		})
-	}
-	s.runDiffMindBatch(pid, serviceRepos, opts, concurrency)
 
 	repos, err = s.store.ListRepos(pid)
 	if err != nil {
@@ -219,14 +361,6 @@ func (s *Server) runProjectRefresh(ctx context.Context, pid string, concurrency 
 	}
 	refs := make([]store.RunRepoRef, 0, len(repos))
 	for _, repo := range repos {
-		if _, ok := attempted[repo.ID]; ok {
-			if repo.SyncStatus == "diffmind_completed" {
-				result.Analyzed++
-			} else {
-				failure := firstNonEmpty(repo.SyncError, "analysis did not complete")
-				failures = append(failures, fmt.Sprintf("analyze %s: %s", repo.ID, failure))
-			}
-		}
 		if repo.LastDiffMindRunID != "" {
 			refs = append(refs, store.RunRepoRef{RepoID: repo.ID, DiffMindRunID: repo.LastDiffMindRunID})
 		}
@@ -260,36 +394,6 @@ func (s *Server) endProjectOperation(pid string) {
 	s.projectOpsMu.Lock()
 	delete(s.projectOps, pid)
 	s.projectOpsMu.Unlock()
-}
-
-func (s *Server) refreshSyncRepos(ctx context.Context, pid string, repos []store.Repo, concurrency int) []error {
-	sem := make(chan struct{}, concurrency)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var failures []error
-	for _, repo := range repos {
-		repo := repo
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				mu.Lock()
-				failures = append(failures, ctx.Err())
-				mu.Unlock()
-				return
-			}
-			if _, err := s.syncGitRepo(ctx, pid, repo); err != nil {
-				mu.Lock()
-				failures = append(failures, fmt.Errorf("sync %s: %w", repo.ID, err))
-				mu.Unlock()
-			}
-		}()
-	}
-	wg.Wait()
-	return failures
 }
 
 func (s *Server) refreshConcurrency() int {

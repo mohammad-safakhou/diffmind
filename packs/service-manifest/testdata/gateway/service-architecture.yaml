@@ -1,0 +1,10 @@
+service:
+  name: gateway
+dependencies:
+  http:
+    - https://catalog.internal.example/products
+    - https://status.example.test/health
+  rpc:
+    - billing.rpc.example
+queues:
+  publish: [order-events]

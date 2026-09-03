@@ -1,10 +1,12 @@
 package orchestrator
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/util"
 )
@@ -23,14 +25,24 @@ type DiffMindRunOptions struct {
 
 // RunDiffMind triggers a DiffMind run against a repository.
 func RunDiffMind(binaryPath, repoPath string, opts DiffMindRunOptions, log *util.Logger) error {
+	return RunDiffMindContext(context.Background(), binaryPath, repoPath, opts, log)
+}
+
+// RunDiffMindContext stops the analyzer and its child processes on cancellation.
+func RunDiffMindContext(ctx context.Context, binaryPath, repoPath string, opts DiffMindRunOptions, log *util.Logger) error {
 	args := opts.Args(repoPath)
 	log.Info("running DiffMind", "binary", binaryPath, "repo", repoPath)
 	cmdName, cmdArgs, cmdDir := diffmindCommand(binaryPath, args)
-	cmd := exec.Command(cmdName, cmdArgs...)
+	cmd := exec.CommandContext(ctx, cmdName, cmdArgs...)
+	configureAnalyzerCancellation(cmd)
+	cmd.WaitDelay = 2 * time.Second
 	if cmdDir != "" {
 		cmd.Dir = cmdDir
 	}
 	output, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if err != nil {
 		return fmt.Errorf("diffmind run failed: %w\noutput: %s", err, string(output))
 	}

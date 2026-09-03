@@ -33,6 +33,10 @@ is set.
    import a GitHub organization. DiffMind imports, syncs, analyzes, and builds
    the graph as one durable operation. Reloading the page does not lose its
    progress or errors.
+   Subsequent **Update graph** operations reuse unchanged successful analyses.
+   **Cancel ingestion** stops work; **Resume / retry** preserves completed
+   checkpoints. Interrupted jobs resume when the server starts. See
+   [ingestion operations](../../ingestion.md) for cache rules and HTTP controls.
 4. Explore services, teams, entrypoints, data stores, queues, traces, and impact
    from the project workspace.
 
@@ -115,3 +119,5 @@ sets DiffMind's `viewer`, `editor`, or `admin` role headers. State-changing
 requests are recorded in the audit log. Back up the `/data` volume and inject
 repository credentials as runtime secrets. See
 [company deployment](../../company-deployment.md).
+
+The current implementation checklist is [the product roadmap](../../ROADMAP.md).

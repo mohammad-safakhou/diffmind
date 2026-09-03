@@ -37,7 +37,9 @@ type Pack struct {
 	Ignore          []string         `json:"ignore,omitempty" yaml:"ignore,omitempty"`
 	Extractions     []Extraction     `json:"extractions" yaml:"extractions"`
 	ResolutionRules []ResolutionRule `json:"resolution_rules,omitempty" yaml:"resolution_rules,omitempty"`
+	Detectors       []Detector       `json:"detectors,omitempty" yaml:"detectors,omitempty"`
 	Tests           []TestCase       `json:"tests,omitempty" yaml:"tests,omitempty"`
+	GraphTests      []GraphTest      `json:"graph_tests,omitempty" yaml:"graph_tests,omitempty"`
 	SourcePath      string           `json:"-" yaml:"-"`
 }
 
@@ -84,10 +86,50 @@ type ResolutionRule struct {
 
 // TestCase points at a synthetic repository fixture and its expected identity.
 type TestCase struct {
+	Name         string              `json:"name" yaml:"name"`
+	Fixture      string              `json:"fixture" yaml:"fixture"`
+	RepoKind     string              `json:"repo_kind,omitempty" yaml:"repo_kind,omitempty"`
+	Expected     ExpectedIdentity    `json:"expected" yaml:"expected"`
+	Dependencies []ExpectedDetection `json:"dependencies,omitempty" yaml:"dependencies,omitempty"`
+	Exposures    []ExpectedDetection `json:"exposures,omitempty" yaml:"exposures,omitempty"`
+}
+
+// Detector emits one evidence-backed relationship per scalar field or regex
+// match. It never executes repository code or substitutes environment variables.
+type Detector struct {
 	Name     string           `json:"name" yaml:"name"`
-	Fixture  string           `json:"fixture" yaml:"fixture"`
-	RepoKind string           `json:"repo_kind,omitempty" yaml:"repo_kind,omitempty"`
-	Expected ExpectedIdentity `json:"expected" yaml:"expected"`
+	Type     string           `json:"type" yaml:"type"`
+	Source   ExtractionSource `json:"source" yaml:"source"`
+	Strategy string           `json:"strategy,omitempty" yaml:"strategy,omitempty"`
+	Field    string           `json:"field,omitempty" yaml:"field,omitempty"`
+	Pattern  string           `json:"pattern,omitempty" yaml:"pattern,omitempty"`
+	Platform string           `json:"platform,omitempty" yaml:"platform,omitempty"`
+}
+
+type ExpectedDetection struct {
+	Type   string `json:"type" yaml:"type"`
+	Target string `json:"target" yaml:"target"`
+	File   string `json:"file" yaml:"file"`
+	Line   int    `json:"line" yaml:"line"`
+}
+
+// GraphTest uses several synthetic repositories and asserts the complete edge
+// set, including external/resource edges (not merely a subset of matches).
+type GraphTest struct {
+	Name         string                `json:"name" yaml:"name"`
+	Repositories []GraphTestRepository `json:"repositories" yaml:"repositories"`
+	Edges        []ExpectedEdge        `json:"edges" yaml:"edges"`
+}
+
+type GraphTestRepository struct {
+	Name    string `json:"name" yaml:"name"`
+	Fixture string `json:"fixture" yaml:"fixture"`
+}
+
+type ExpectedEdge struct {
+	From string `json:"from" yaml:"from"`
+	To   string `json:"to" yaml:"to"`
+	Type string `json:"type" yaml:"type"`
 }
 
 type ExpectedIdentity struct {

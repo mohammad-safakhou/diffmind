@@ -1,8 +1,8 @@
 # DiffMind Core Engine Plan
 
-> **Historical document.** This plan predates the June 2026 removal of the
-> infrastructure and detail stages. Use `docs/PLATFORM.md` for the current
-> architecture and `docs/DISCOVERY_ROADMAP.md` for active accuracy work.
+> **Historical document.** This plan describes the removed LLM/OpenCode design.
+> Use [current architecture](../../ARCHITECTURE.md) and the
+> [product roadmap](../../ROADMAP.md), not the older extractor roadmaps.
 
 ## Summary
 DiffMind is a Go-based extraction engine that analyses a target codebase and emits structured JSON artifacts for:

@@ -1,0 +1,10 @@
+spring:
+  cloud:
+    openfeign:
+      client:
+        config:
+          catalog:
+            connectTimeout: 5000
+            url: https://catalog/products
+          dynamic:
+            url: "${BILLING_URL}"
