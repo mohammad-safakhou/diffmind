@@ -422,7 +422,11 @@ func matchIdentityTier(target, targetNorm, targetHost string, entry identityEntr
 			return 0.9, fmt.Sprintf("deterministic hostname match: target host %q equals identity host %q (%s)", targetHost, entryHost, entry.Kind), true
 		}
 	}
-	if tokenBoundaryContains(target, entry.Value) || tokenBoundaryContains(entry.Value, target) {
+	// A target may contain a registered identity (for example, a URL contains
+	// its service hostname), but a short target contained by a longer identity
+	// is under-specified and unsafe to resolve ("camunda" must not choose one
+	// of several *-camunda services).
+	if tokenBoundaryContains(target, entry.Value) {
 		return 0.75, fmt.Sprintf("deterministic token-boundary match: target %q matches identity %q (%s)", target, entry.Value, entry.Kind), true
 	}
 	return 0, "", false
