@@ -3,22 +3,72 @@
 DiffMind turns your source repositories into an explorable architecture graph
 for you and your coding agent. Inspect services, endpoints, dependencies, queues
 and data stores; follow source evidence; compare saved graphs; and ask questions
-through a read-only MCP server. Analysis is deterministic: no LLM or model API
+through MCP. Your agent can also install, configure and operate the workspace.
+Analysis is deterministic: no LLM or model API
 key is needed to build the graph.
 
 One repository, one `diffmind` command. Run it privately on your laptop or as a
 continuously refreshed, single-server workspace for a team.
 
 **Release status:** the current implementation is available from source. A
-public binary release has not yet been published. Use the source installation
-below for now; future release downloads and pinned Homebrew installation are
+public binary release has not yet been published. Your agent can install the
+source checkout now; future release downloads and pinned Homebrew installation are
 covered in [distribution](docs/distribution.md).
 
-[Install](#install-and-first-use) · [Agent setup](#connect-your-agent) ·
+[Agent-first setup](#start-with-your-agent) · [Manual setup](#manual-installation-alternative) ·
 [Knowledge packs](#teach-your-conventions) · [Team deployment](#team-deployment) ·
 [Contribute](#contribute) · [Documentation](#documentation)
 
-## Install and first use
+## Start with your agent
+
+You do not need to run a terminal command, start a server, create a project or
+add repositories in the UI. Give your host coding agent this request:
+
+> Set up DiffMind for me using AGENT_SETUP.md in this repository. Install and
+> register its full-management MCP connection, create or reuse my work project,
+> preview and import these repositories: REPOSITORIES_OR_ORG. Build the graph,
+> wait for completion, and verify known dependencies with source evidence.
+> Perform the setup yourself; do not give me commands or UI chores.
+
+[AGENT_SETUP.md](AGENT_SETUP.md) is the executable playbook for the host agent.
+It runs the source installer, receives machine-readable MCP configuration, and
+registers it with the user's client. The client launches `diffmind agent`, which
+starts its own backend on an available loopback port. No project needs to exist.
+The dashboard remains optional; the agent can return its URL when requested.
+
+The full-management connection exposes:
+
+- **describe_management**, **inspect_workspace**, **manage_workspace**: discover
+  operations, create/configure projects, import repositories, build/refresh graphs,
+  monitor/cancel/retry jobs, edit packs/configuration, and administer access,
+  tokens and quotas. It reuses the API's validation, permissions and audit log.
+- **agent_runtime**: inspect/start/stop/restart the owned backend and persist its
+  refresh schedule and worker settings.
+- **agent_command**: scaffold/lint/test/explain/install packs, run doctor, and
+  perform backups or queue maintenance. It drains/restarts the backend around
+  commands; it is a bounded DiffMind command interface, not an arbitrary shell.
+- The existing **11 graph tools** for services, evidence, dependencies, impact,
+  search, history and tracing.
+
+You authorize repository access and any client/system installation permissions;
+the agent does the operational work. An MCP server cannot grant itself initial
+permission inside its host client or obtain company credentials on your behalf.
+The bootstrap requires a host agent with authorized shell/configuration access.
+
+Local agent mode has full workspace authority. It stops its backend when the
+owning agent disconnects or crashes; work/history persist and reconnect starts
+it again. One lifecycle owner is allowed per home. Additional agents can connect
+to that backend's HTTP `/mcp`, or use an always-on
+[shared deployment](docs/company-deployment.md). Remote agents have the rights
+of their authenticated identity; viewer tokens remain read-only.
+
+See [agent operations](docs/agent-operations.md) for tool inputs, lifecycle,
+recovery, teaching patterns and the tested end-to-end workflow.
+
+## Manual installation (alternative)
+
+The following is optional for people who prefer operating DiffMind themselves.
+It is not required by the agent-first workflow above.
 
 Source builds require **Go 1.26.6 or newer**, **Git**, and a **C compiler** for
 tree-sitter/CGO. Supported targets are macOS and Linux, on Intel/AMD64 and ARM64;
@@ -83,7 +133,10 @@ Want to test without company data? Follow the
 [synthetic three-service quickstart](docs/contributor-quickstart.md): a Go gateway
 calls Python catalog and Java billing services.
 
-## Connect your agent
+## Manual read-only agent connection
+
+For full management use the agent-first setup above (`diffmind agent`). The
+following keeps the original read-only `diffmind mcp` integration available.
 
 Build the graph first, then find its project ID:
 
@@ -205,6 +258,7 @@ diffmind validate --run ID         Validate an analysis run
 diffmind list-runs                 List analysis runs
 diffmind graph --project ID        Build a graph from existing analysis
 diffmind mcp [--project ID]        Start read-only stdio MCP
+diffmind agent [--project ID]      Agent-owned backend and full-management MCP
 diffmind pack                      Knowledge-pack command help
 diffmind backup                    Offline backup/restore/rotation help
 diffmind storage                   Queue migration/verification help
@@ -262,6 +316,7 @@ docs/                  setup, operations, architecture and design references
 
 ## Documentation
 
+- [Host-agent setup playbook](AGENT_SETUP.md) and [agent operations](docs/agent-operations.md)
 - [Personal installation and work trial](docs/personal-setup.md)
 - [Import, incremental refresh and recovery](docs/ingestion.md)
 - [Graph history, evidence and tracing](docs/graph-history.md)

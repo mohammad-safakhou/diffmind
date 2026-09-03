@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/mohammad-safakhou/diffmind/internal/workspace/agentapi"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/query"
 )
 
@@ -14,6 +15,13 @@ type Server struct {
 	query          *query.Service
 	defaultProject string
 	version        string
+	management     agentapi.Invoke
+}
+
+// WithManagement opts into the management contract; ordinary stdio mcp stays read-only.
+func (s *Server) WithManagement(invoke agentapi.Invoke) *Server {
+	s.management = invoke
+	return s
 }
 
 func New(q *query.Service, defaultProject, version string) *Server {
@@ -119,6 +127,9 @@ func (s *Server) MCPServer() *mcp.Server {
 			return nil, out, err
 		})
 	s.addHistoryTools(server)
+	if s.management != nil {
+		agentapi.AddTools(server, s.management)
+	}
 	return server
 }
 

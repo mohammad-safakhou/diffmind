@@ -2,6 +2,11 @@
 
 Thank you for improving DiffMind.
 
+Agent-first operation is a product requirement. New management behavior must be
+accessible through the discoverable MCP contract, not just the UI or a CLI flag.
+Preserve read-only viewer behavior and cover authorization and failure recovery.
+See [agent operations](docs/agent-operations.md) and `TestAgentAcceptance`.
+
 Start with the [reproducible contributor quickstart](docs/contributor-quickstart.md)
 to explore a synthetic three-service workspace without company access.
 Release maintainers should also read [distribution](docs/distribution.md).

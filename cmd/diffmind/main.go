@@ -9,6 +9,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -37,7 +38,8 @@ Usage:
   diffmind list projects              List projects
   diffmind list runs --project <id>   List graph runs for a project
   diffmind pack <command>             Create, test, install, and manage knowledge packs
-  diffmind mcp [--project <id>]       Run the stdio MCP server for coding agents
+  diffmind mcp [--project <id>]       Run the original read-only stdio MCP server
+  diffmind agent [--project <id>]     Agent-managed workspace, lifecycle and full MCP control
   diffmind doctor [--json]            Check local installation and graph readiness
   diffmind version [--json]           Print build version information
   diffmind backup <command>          Create, rotate, list, verify, and restore snapshots
@@ -68,7 +70,7 @@ func main() {
 		case "help", "--help", "-h":
 			fmt.Print(usage)
 			return
-		case "ui", "list", "graph", "run", "validate", "list-runs", "extractor-ui", "pack", "mcp", "doctor", "version", "backup", "storage":
+		case "ui", "list", "graph", "run", "validate", "list-runs", "extractor-ui", "pack", "mcp", "agent", "agent-service", "doctor", "version", "backup", "storage":
 			cmd = args[0]
 			args = args[1:]
 		default:
@@ -78,7 +80,7 @@ func main() {
 
 	// All data-using CLI commands participate, including analyzer subprocesses.
 	// Backup owns its exclusive lease; version/help need no workspace access.
-	if cmd != "version" && cmd != "backup" && cmd != "storage" {
+	if cmd != "version" && cmd != "backup" && cmd != "storage" && cmd != "agent" {
 		release, err := homelock.Acquire(config.Home(), false)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -87,6 +89,19 @@ func main() {
 		defer release()
 	}
 	switch cmd {
+	case "agent":
+		if err := runAgent(args); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	case "agent-service":
+		listener, err := inheritedAgentListener()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		defer listener.Close()
+		cmdUIListener(args, listener)
 	case "storage":
 		if err := runStorage(args, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -247,6 +262,10 @@ func newLogger(level string) *util.Logger {
 }
 
 func cmdUI(args []string) {
+	cmdUIListener(args, nil)
+}
+
+func cmdUIListener(args []string, listener net.Listener) {
 	fs := flag.NewFlagSet("ui", flag.ExitOnError)
 	host := fs.String("host", "127.0.0.1", "UI server host")
 	port := fs.Int("port", 8090, "UI server port")
@@ -313,7 +332,23 @@ func cmdUI(args []string) {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := srv.Start(ctx); err != nil {
+	if listener != nil {
+		// EOF handles a killed/crashed controller as well as normal disconnect.
+		lifetime := os.NewFile(4, "agent-owner-lifetime")
+		if lifetime == nil {
+			fmt.Fprintln(os.Stderr, "missing agent owner pipe")
+			return
+		}
+		defer lifetime.Close()
+		go func() { _, _ = io.Copy(io.Discard, lifetime); stop() }()
+	}
+	var serveErr error
+	if listener != nil {
+		serveErr = srv.StartListener(ctx, listener)
+	} else {
+		serveErr = srv.Start(ctx)
+	}
+	if err := serveErr; err != nil {
 		fmt.Fprintf(os.Stderr, "UI server error: %v\n", err)
 		os.Exit(1)
 	}

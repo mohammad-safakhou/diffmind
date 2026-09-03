@@ -27,8 +27,9 @@ type Manager struct {
 	log             *util.Logger
 	diffmindRunsDir string
 
-	mu   sync.Mutex
-	runs map[string]*activeRun // key = pid/runID
+	mu       sync.Mutex
+	runs     map[string]*activeRun // key = pid/runID
+	stopping bool
 }
 
 // activeRun holds the live state of one run.
@@ -60,6 +61,11 @@ func key(pid, runID string) string { return pid + "/" + runID }
 // Start creates a graph run, persists it, and launches the pipeline in the
 // background. It returns the created run manifest immediately.
 func (m *Manager) Start(pid string, repos []store.RunRepoRef, options map[string]any) (*store.RunManifest, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.stopping {
+		return nil, fmt.Errorf("graph manager is shutting down")
+	}
 	if len(repos) == 0 {
 		return nil, fmt.Errorf("at least one repo is required")
 	}
@@ -82,12 +88,26 @@ func (m *Manager) Start(pid string, repos []store.RunRepoRef, options map[string
 		cancel: cancel,
 		doneCh: make(chan struct{}),
 	}
-	m.mu.Lock()
 	m.runs[key(pid, manifest.ID)] = ar
-	m.mu.Unlock()
 
 	go m.execute(ctx, pid, *manifest, ar)
 	return manifest, nil
+}
+
+// Shutdown closes admission, cancels graph work and waits for durable terminal
+// state before an agent can take an offline snapshot or restart its backend.
+func (m *Manager) Shutdown() {
+	m.mu.Lock()
+	m.stopping = true
+	active := make([]*activeRun, 0, len(m.runs))
+	for _, run := range m.runs {
+		run.cancel()
+		active = append(active, run)
+	}
+	m.mu.Unlock()
+	for _, run := range active {
+		<-run.doneCh
+	}
 }
 
 // execute runs the pipeline and records terminal state.

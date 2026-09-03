@@ -1,4 +1,4 @@
-.PHONY: build install test test-race test-packs test-integration test-distribution test-acceptance test-release-native ui-build ui-test ui-audit vulncheck verify run container-build company-up company-down clean
+.PHONY: build install test test-race test-packs test-integration test-distribution test-acceptance test-agent test-release-native ui-build ui-test ui-audit vulncheck verify run container-build company-up company-down clean
 
 GOCACHE_DIR := $(CURDIR)/.gocache
 
@@ -27,6 +27,7 @@ test-distribution:
 	sh scripts/test-demo.sh
 	GOCACHE=$(GOCACHE_DIR) go test ./scripts/release-formula
 	GOCACHE=$(GOCACHE_DIR) go test ./scripts/release-check ./scripts/backup-maintenance
+	GOCACHE=$(GOCACHE_DIR) go test ./scripts/agent-setup
 	ruby -c Formula/diffmind.rb
 
 # Pass an already-built native archive and its explicit version; never publishes.
@@ -36,6 +37,11 @@ test-release-native:
 
 test-acceptance:
 	GOCACHE=$(GOCACHE_DIR) go test ./internal/workspace/ui -run TestCompanyAcceptance -count=1 -v
+
+test-agent:
+	GOCACHE=$(GOCACHE_DIR) go test ./cmd/diffmind -run TestAgentAcceptance -count=1 -v
+	GOCACHE=$(GOCACHE_DIR) go test ./internal/workspace/agentapi ./internal/workspace/agenthost ./scripts/agent-setup
+	GOCACHE=$(GOCACHE_DIR) go test ./internal/workspace/ui -run 'TestAgent|TestManagement|TestAllAgent' -count=1
 
 ui-build:
 	npm --prefix internal/workspace/ui/web ci

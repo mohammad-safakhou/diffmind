@@ -88,6 +88,9 @@ func (s *Server) handleStartIngestion(w http.ResponseWriter, r *http.Request) {
 func (s *Server) launchIngestion(parent context.Context, pid string, req ingestionRequest, ingestion store.Ingestion, resume bool) (*store.Ingestion, error) {
 	s.ingestionMu.Lock()
 	defer s.ingestionMu.Unlock()
+	if s.ingestionClosing || parent.Err() != nil {
+		return nil, context.Canceled
+	}
 	if s.ingestionActive[pid] || !s.beginProjectOperation(pid) {
 		return nil, store.ErrConflict
 	}
@@ -130,7 +133,8 @@ func (s *Server) launchIngestion(parent context.Context, pid string, req ingesti
 	ctx, cancel := context.WithCancelCause(parent)
 	s.ingestionActive[pid] = true
 	s.ingestionCancel[pid] = cancel
-	go s.executeIngestion(ctx, pid, req, *created)
+	s.ingestionWG.Add(1)
+	go func() { defer s.ingestionWG.Done(); s.executeIngestion(ctx, pid, req, *created) }()
 	return created, nil
 }
 

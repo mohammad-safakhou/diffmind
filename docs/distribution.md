@@ -108,6 +108,11 @@ exercise real Go/Python/Java extraction, HTTP/MCP queries, incremental reuse,
 cancellation/retry history and managed backup rotation/restore on both queue
 backends. This environment override is for trusted test binaries only.
 
+The same installed artifact also runs `TestAgentAcceptance`: empty-workspace
+stdio onboarding, management, real graph queries, packs, backup/storage,
+schedule/token administration, reconnect and crash cleanup. This prevents
+shipping a query-only binary when the agent-first workflow is advertised.
+
 To validate an already-built archive on its **matching native host**:
 
 ```bash

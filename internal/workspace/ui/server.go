@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"path/filepath"
 	"sync"
@@ -55,6 +56,8 @@ type Server struct {
 	refreshContext      context.Context
 	refreshProject      func(context.Context, string) ProjectRefreshResult
 	ingestionMu         sync.Mutex
+	ingestionWG         sync.WaitGroup
+	ingestionClosing    bool
 	ingestionActive     map[string]bool
 	ingestionCancel     map[string]context.CancelCauseFunc
 	projectOpsMu        sync.Mutex
@@ -183,7 +186,11 @@ func (s *Server) routes(raw *http.ServeMux) {
 
 	// Remote Model Context Protocol endpoint for company-wide coding agents.
 	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
-		return mcpserver.New(s.queryFor(r), "", s.version).MCPServer()
+		server := mcpserver.New(s.queryFor(r), "", s.version)
+		if identityFromContext(r.Context()).Role != RoleViewer {
+			server.WithManagement(s.invokeAgentOperation)
+		}
+		return server.MCPServer()
 	}, &mcp.StreamableHTTPOptions{SessionTimeout: 30 * time.Minute, Stateless: s.projectAccessScoped, JSONResponse: s.projectAccessScoped}))
 
 	// Packs (G4).
@@ -219,10 +226,41 @@ func (s *Server) routes(raw *http.ServeMux) {
 
 // Start runs the HTTP server until ctx is cancelled.
 func (s *Server) Start(ctx context.Context) error {
+	listener, err := net.Listen("tcp", s.Addr())
+	if err != nil {
+		return err
+	}
+	return s.StartListener(ctx, listener)
+}
+
+// StartListener lets an agent reserve an ephemeral loopback socket before
+// starting its managed backend; there is no free-port race or fixed-port setup.
+func (s *Server) StartListener(ctx context.Context, listener net.Listener) error {
+	defer listener.Close()
+	ctx, cancelWork := context.WithCancel(ctx)
+	defer func() {
+		cancelWork()
+		s.ingestionMu.Lock()
+		s.ingestionClosing = true
+		s.ingestionMu.Unlock()
+		s.StopOperations()
+		s.ingestionWG.Wait()
+		s.runs.Shutdown()
+		// Direct repository actions share this budget and the server context.
+		// Drain their cancelled subprocesses before relinquishing CLI leases.
+		for {
+			s.repositoryMu.Lock()
+			active, changed := s.repositoryTotal, s.repositoryChanged
+			s.repositoryMu.Unlock()
+			if active == 0 {
+				break
+			}
+			<-changed
+		}
+	}()
 	if err := s.StartOperations(ctx); err != nil {
 		return err
 	}
-	defer s.StopOperations()
 	s.refreshMu.Lock()
 	s.refreshContext = ctx
 	s.refreshMu.Unlock()
@@ -232,7 +270,7 @@ func (s *Server) Start(ctx context.Context) error {
 	errCh := make(chan error, 1)
 	go func() {
 		s.log.Info("diffmind dashboard listening", "addr", s.Addr())
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 			return
 		}

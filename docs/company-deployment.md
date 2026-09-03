@@ -190,11 +190,15 @@ codex mcp add diffmind \
   --bearer-token-env-var DIFFMIND_AUTH_TOKEN
 ```
 
-The exposed tools are read-only: project and service discovery, graph summary,
+The graph tools are read-only: project and service discovery, graph summary,
 dependency traversal, architecture search, deterministic impact analysis,
 snapshot comparison, and exact-ID local object tracing. Viewers can use all
 these tools. See [graph history and tracing](graph-history.md).
-The refresh and mutation APIs are deliberately not MCP tools.
+Editors and administrators also receive [management MCP tools](agent-operations.md)
+for the API operations permitted by their role. Scoped editors retain restricted
+refresh controls; administrators can create/configure projects and import
+repositories entirely through MCP. The agent does not require browser onboarding.
+Local lifecycle/maintenance tools belong to `diffmind agent`, not remote MCP.
 
 For scoped agents, prefer a viewer [project token](agent-tokens.md), passed as a
 bearer header to `/mcp`; keep the shared admin credential out of agent settings.

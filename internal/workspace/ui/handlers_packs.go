@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 
@@ -61,10 +62,25 @@ func (s *Server) handlePutPack(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "pack validation failed", "validation": verrs})
 		return
 	}
-	if pack.ID != r.PathValue("pack_id") {
+	// The storage key returned by CreatePack is a slug, not necessarily the
+	// manifest ID (example.conventions is stored as example-conventions).
+	// Compare to the existing manifest so updates preserve both identities.
+	raw, err := s.store.GetPack(r.PathValue("pid"), r.PathValue("pack_id"))
+	if err != nil {
+		s.writeStoreErr(w, err)
+		return
+	}
+	var existing struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &existing); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if pack.ID != existing.ID {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 			"error":      "pack id is immutable",
-			"validation": []knowledge.ValidationError{{Field: "id", Message: "must match " + r.PathValue("pack_id")}},
+			"validation": []knowledge.ValidationError{{Field: "id", Message: "must match " + existing.ID}},
 		})
 		return
 	}

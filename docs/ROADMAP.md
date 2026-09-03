@@ -18,9 +18,10 @@ local checkpoint, including native-platform and deployment checks still pending.
 
 ## Goal
 
-A developer installs Diffmind, connects company repositories, views an
-evidence-backed architecture graph, and lets an agent query that same graph over
-MCP. Teams run the same deterministic core on a shared server. No LLM is required
+A developer gives an agent repository scope and access. The agent installs and
+operates Diffmind, creates/configures projects, imports repositories, builds and
+maintains an evidence-backed graph, and queries it over MCP. Manual CLI/UI paths
+remain alternatives, not requirements. Teams run the same core on a shared server. No LLM is required
 for extraction; conventions are supplied through tested configuration and packs.
 
 ## Delivered foundation
@@ -33,6 +34,23 @@ for extraction; conventions are supplied through tested configuration and packs.
   identity overrides, and configuration-based relationship resolution.
 - [x] Shared Compose deployment, scheduled refresh, trusted-proxy roles, audit
   logging, and CI/security checks.
+
+## Agent-first management batch
+
+- [x] Agent-executed source bootstrap with isolated installation verification and
+  machine-readable full-management MCP registration; no user CLI/UI chores.
+- [x] `diffmind agent` owns automatic backend startup, stop/restart, persisted
+  refresh/worker settings, maintenance coordination, and crash cleanup.
+- [x] Discoverable management catalog covers browser mutations, preserving API
+  validation, permissions, quotas and mutation auditing; viewer access stays read-only.
+- [x] Agent pack authoring/validation/install and offline backup/storage commands
+  execute through a bounded local interface, not an arbitrary shell.
+- [x] Real-binary stdio acceptance from an empty home through graph, incremental
+  refresh, packs, backup, SQLite, scheduling, reconnect and owner-crash cleanup.
+
+Host-client registration/installation approvals and company credentials still
+require the user's authority. Agent-owned local lifecycle is not an always-on
+system service; company instances use the shared deployment model.
 
 ## Real-company readiness batch
 
