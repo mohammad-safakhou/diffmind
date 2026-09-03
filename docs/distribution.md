@@ -2,6 +2,29 @@
 
 Packaging stays in this repository; no second hosted tap is required. These
 recipes are ready for the next release. Adding them does not publish anything.
+No public binary release has been published yet; use the
+[source installation](personal-setup.md#install-the-current-checkout) now.
+
+## Binary installer (after release publication)
+
+Once a release with matching platform assets exists, install without Go, Node or
+a compiler (Git is still needed for repositories):
+
+```bash
+diffmind_install_tmp=$(mktemp -d)
+curl -fsSL https://raw.githubusercontent.com/mohammad-safakhou/diffmind/master/install.sh \
+  -o "$diffmind_install_tmp/install.sh"
+# Review the downloaded script before running it.
+DIFFMIND_INSTALL_DIR="$HOME/.local/bin" sh "$diffmind_install_tmp/install.sh"
+export PATH="$HOME/.local/bin:$PATH"
+diffmind version --json
+diffmind doctor
+```
+
+The installer checks the published archive checksum. Set `DIFFMIND_VERSION` to
+an actual published version to pin it; an unset version selects latest. Until
+assets exist, this command fails to download them. It does not install unpushed
+local commits. Do not run the script with sudo; choose a user-writable directory.
 
 ## Homebrew development build
 

@@ -1,288 +1,275 @@
 # DiffMind
 
-DiffMind turns a collection of source repositories into an explorable software
-architecture map. It deterministically extracts endpoints, dependencies,
-queues, data stores, scheduled work, and source-level flows, then connects the
-results across services in a local web workspace.
+DiffMind turns your source repositories into an explorable architecture graph
+for you and your coding agent. Inspect services, endpoints, dependencies, queues
+and data stores; follow source evidence; compare saved graphs; and ask questions
+through a read-only MCP server. Analysis is deterministic: no LLM or model API
+key is needed to build the graph.
 
-Everything lives in this repository and ships through one `diffmind` command.
+One repository, one `diffmind` command. Run it privately on your laptop or as a
+continuously refreshed, single-server workspace for a team.
 
-## Quick start
+**Release status:** the current implementation is available from source. A
+public binary release has not yet been published. Use the source installation
+below for now; future release downloads and pinned Homebrew installation are
+covered in [distribution](docs/distribution.md).
 
-Release install on macOS or Linux:
+[Install](#install-and-first-use) · [Agent setup](#connect-your-agent) ·
+[Knowledge packs](#teach-your-conventions) · [Team deployment](#team-deployment) ·
+[Contribute](#contribute) · [Documentation](#documentation)
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/mohammad-safakhou/diffmind/master/install.sh | sh
-diffmind doctor
-diffmind
-```
+## Install and first use
 
-The installer verifies the release checksum before installing. Set
-`DIFFMIND_INSTALL_DIR` to choose a destination or `DIFFMIND_VERSION` to pin a
-version.
+Source builds require **Go 1.26.6 or newer**, **Git**, and a **C compiler** for
+tree-sitter/CGO. Supported targets are macOS and Linux, on Intel/AMD64 and ARM64;
+Windows binaries are not provided. On macOS, the Xcode Command Line Tools supply
+Git and the compiler (`xcode-select --install` if missing). On Linux, install
+your distribution's Git and C build tools. Use the Go version in [go.mod](go.mod),
+rather than assuming the OS package is recent enough.
 
-Install with Go instead:
-
-```bash
-go install github.com/mohammad-safakhou/diffmind/cmd/diffmind@latest
-diffmind doctor
-diffmind
-```
-
-Homebrew recipes are included in this same repository. See
-[distribution](docs/distribution.md) for development tap setup and pinned release
-generation/availability; no second hosted repository is required.
-
-Build from source. Requirements:
-
-- Go 1.26.6 or newer (see `go.mod`)
-- Node.js 24 when rebuilding the web interfaces (the CI version)
-- Git
-- A C compiler for tree-sitter/CGO (also required by `go install`)
-- Docker only for optional containerized SCIP indexing or shared deployment
+Node.js and Docker are **not needed for normal local use**. Both web interfaces
+are embedded. Node.js 24 is needed only to rebuild them; Docker is optional for
+containerized indexing or shared deployment.
 
 ```bash
 git clone https://github.com/mohammad-safakhou/diffmind.git
 cd diffmind
-make build
-./bin/diffmind
+git switch master
+# Already have this checkout? Install its committed implementation from here.
+mkdir -p "$HOME/.local/bin"
+GOBIN="$HOME/.local/bin" go install ./cmd/diffmind
+export PATH="$HOME/.local/bin:$PATH"
+diffmind version --json
 ```
 
-Open `http://127.0.0.1:8090`, create a project, then choose **Import & build**.
-Point DiffMind at a GitHub organization or a directory containing local Git
-repositories. One durable operation imports and syncs the repositories, runs
-deterministic analysis, and builds the project graph. Its progress survives page
-reloads and failures remain visible with actionable error details.
+Keep that PATH setting in your shell configuration for new terminals. A source
+build may report `dev`/`unknown` version fields; that is not an installation
+failure. To run without installing, use `make build` and `./bin/diffmind` instead.
 
-Use **Update graph** for incremental refresh, **Cancel ingestion** to stop work,
-and **Resume / retry** to recover failed or cancelled jobs. Interrupted jobs
-resume on server startup; unchanged successful analyses are reused after their
-inputs and artifacts are verified. See [ingestion operations](docs/ingestion.md).
-
-Start with the [current architecture](docs/ARCHITECTURE.md) and
-[product roadmap](docs/ROADMAP.md) when contributing or evaluating the platform.
-
-## Commands
-
-```text
-diffmind                         Open the web workspace
-diffmind ui                      Open the web workspace
-diffmind run --repo <path>       Analyze one repository
-diffmind validate --run <id>     Validate an analysis run
-diffmind list-runs               List analysis runs
-diffmind graph --project <id>    Build a project graph
-diffmind list projects           List projects
-diffmind list runs --project ID  List project graph runs
-diffmind extractor-ui            Open the low-level analysis dashboard
-diffmind pack init <directory>   Scaffold a tested knowledge pack
-diffmind pack lint <path>        Validate pack manifests and rules
-diffmind pack test <path>        Execute synthetic pack fixtures
-diffmind pack install <source>   Install and lock a local or Git pack
-diffmind pack explain <path>     Explain what a pack derives from a repository
-diffmind mcp [--project ID]      Run the read-only stdio MCP server
-diffmind doctor [--json]         Check installation and graph readiness
-diffmind version [--json]        Print release/build information
-diffmind backup create --offline --output FILE  Save an offline snapshot
-diffmind backup verify --archive FILE           Verify without extracting
-diffmind backup rotate --offline --directory DIR --keep-last 7
-diffmind backup list --directory DIR --json      Verify/list managed snapshots
-diffmind backup restore --offline --archive FILE --destination NEW_DIR
-```
-
-DiffMind stores local state under `~/.diffmind` by default. Set
-`DIFFMIND_HOME` to use another location.
-See [backup/recovery](docs/backup-recovery.md) before restoring data and the
-[synthetic quickstart](docs/contributor-quickstart.md) for a first contribution.
-
-## Connect your coding agent
-
-Build a graph in the web workspace first. Then register the stdio MCP server.
-If you have multiple DiffMind projects, add `--project <project-id>` after
-`diffmind mcp` in these examples.
-
-Codex:
+Create a separate workspace for your work trial, outside any source repository:
 
 ```bash
-codex mcp add diffmind -- diffmind mcp
+export DIFFMIND_HOME="$HOME/.diffmind-work"
+mkdir -p "$DIFFMIND_HOME"
+chmod 700 "$DIFFMIND_HOME"
+diffmind doctor
+diffmind ui --no-spa-rebuild
 ```
 
-Claude Code:
+Open **http://127.0.0.1:8090**. The server stays in the foreground; Ctrl+C stops
+it. Warnings about no projects/graphs on first use are expected. The
+`--no-spa-rebuild` flag uses the embedded UI without looking for Node in a source
+checkout. Keep the same `DIFFMIND_HOME` whenever you restart or connect an agent.
+
+1. Create a project, then choose **Import & build**.
+2. Choose **Local directory** and a folder containing your Git repositories, or
+   **GitHub org** and your organization name. Start with a few related services.
+   Use **Include regex** and **Dry run only** to preview the selection.
+3. Disable **Dry run only** and start **Import and build graph**. Wait for
+   completion, review repository errors, then inspect services, edges and their
+   source evidence. A partial result can contain older analysis: check freshness.
+4. Use **Update graph** after changes. Unchanged, verified analysis is reused;
+   **Operations** shows history, cancellation and retries. **Compare graphs**
+   compares saved versions.
+
+Local imports use existing paths, not copies; they are not automatically pulled
+from Git remotes. GitHub imports create managed clones and sync their configured
+branches. For private GitHub access, supply a read-only `GITHUB_TOKEN` to the
+server using approved secret handling. Do not paste it into source files or
+agent settings. See [personal setup](docs/personal-setup.md) for exact credential,
+daily refresh, backup and troubleshooting steps.
+
+Want to test without company data? Follow the
+[synthetic three-service quickstart](docs/contributor-quickstart.md): a Go gateway
+calls Python catalog and Java billing services.
+
+## Connect your agent
+
+Build the graph first, then find its project ID:
 
 ```bash
-claude mcp add diffmind -- diffmind mcp
+export DIFFMIND_HOME="$HOME/.diffmind-work"
+diffmind list projects
 ```
 
-Cursor project configuration (`.cursor/mcp.json`):
+For Codex, replace `PROJECT_ID` with that ID:
 
-```json
-{
-  "mcpServers": {
-    "diffmind": {
-      "command": "diffmind",
-      "args": ["mcp"]
-    }
-  }
-}
+```bash
+codex mcp add diffmind-work --env DIFFMIND_HOME="$DIFFMIND_HOME" -- \
+  "$HOME/.local/bin/diffmind" mcp --project PROJECT_ID
 ```
 
-The MCP server offers read-only tools to list projects and services, inspect a
-service and its evidence, search architecture objects, traverse dependencies,
-calculate change impact, compare saved graph versions, and inspect exact-ID local
-flows. See [graph history and tracing](docs/graph-history.md) for examples and
-limits. It returns structured JSON and works entirely from
-persisted deterministic graph artifacts—no model is used during analysis.
+The client starts MCP itself; do not run `diffmind mcp` in another terminal.
+The UI can be stopped when querying saved graphs, but must run for UI actions
+or scheduled refresh. Absolute paths and an explicit home avoid accidentally
+opening a different workspace from a GUI-launched agent.
 
-## Run it for a company
+Ask your agent:
 
-The included Compose deployment runs the UI, query API, scheduled repository
-refresh, and streamable HTTP MCP endpoint as one rootless service with a
-persistent volume:
+> Use DiffMind to list this project's services. Explain what depends on
+> SERVICE_NAME, cite source evidence, and report graph freshness and unresolved
+> dependencies. Do not infer missing relationships as facts.
+
+The same stdio server works with Claude Code, Cursor and other MCP clients.
+[Agent setup examples](docs/personal-setup.md#connect-an-agent) include their
+configuration and connection checks. MCP offers service discovery, search,
+dependency traversal, change impact, graph comparison and exact-ID local tracing.
+It reads persisted artifacts; it does not refresh repositories or modify code.
+
+Local stdio is trusted workspace access. `--project` chooses a default,
+**not an authorization boundary**. For restricted shared access, use HTTP MCP
+with a [project-scoped viewer token](docs/agent-tokens.md).
+
+## Privacy and current limits
+
+- Analysis and graph storage run on your machine, without an LLM. Git imports
+  contact your Git provider; optional developer/indexer tooling may use the
+  network. This is not a sandbox for untrusted repositories.
+- Graphs can contain internal names, URLs, paths and source evidence. MCP results
+  enter your agent's context and may reach its model provider. Use only
+  company-approved agents and data policies.
+- `DIFFMIND_HOME` defaults to `~/.diffmind`. Keep company workspaces and backups
+  private, outside Git and public file-sharing folders. Backups are not encrypted.
+- Static analysis is not a runtime inventory or a guarantee of full coverage.
+  Dynamic URLs, wrappers and unsupported conventions can leave gaps. Check the
+  [tested support matrix](docs/supported-patterns.md) and validate known
+  relationships before relying on the graph at work.
+- One server writes each workspace. Distributed workers, automatic SSO group
+  provisioning and automatic workspace-path relocation are not implemented.
+  See the [roadmap](docs/ROADMAP.md) and
+  [verification record](docs/readiness-verification.md) for scope and evidence.
+
+## Teach your conventions
+
+Knowledge packs add service identities, configuration mappings, HTTP/RPC
+relationships and queue conventions without an LLM or executable plugin.
+
+```bash
+diffmind pack init ./my-pack --id example.conventions
+# Adapt the rules and synthetic positive/negative fixtures first.
+diffmind pack lint ./my-pack
+diffmind pack test ./my-pack
+diffmind pack explain ./my-pack --repo /absolute/path/to/a/service
+diffmind pack install ./my-pack
+```
+
+Use **Update graph** in the same workspace after installation. Packs are
+versioned and integrity-checked. Keep proprietary packs private; contribute only
+sanitized rules and synthetic fixtures. Language semantics belong in AST
+detectors, not broad source regexes. See [pack authoring](docs/knowledge-packs.md),
+[service manifests](packs/service-manifest/README.md), and
+[OpenFeign configuration](packs/spring-openfeign-config/README.md).
+
+## Team deployment
+
+Follow [company deployment](docs/company-deployment.md). From a source checkout
+with Docker Engine and Compose, create `.env` only if it does not already exist:
 
 ```bash
 cp .env.example .env
-# Replace the placeholder token in .env; `openssl rand -hex 32` is suitable.
-docker compose up -d
+chmod 600 .env
+# Edit .env: set DIFFMIND_AUTH_TOKEN to a secret from `openssl rand -hex 32`.
+docker compose up -d --build
+docker compose ps
 ```
 
-Open `http://localhost:8090`. The browser's authentication dialog accepts any
-username and uses `DIFFMIND_AUTH_TOKEN` as the password. Put a TLS reverse proxy
-in front of DiffMind before exposing it beyond a trusted machine or network.
-Company deployments can pass authenticated users from an OIDC proxy with
-viewer/editor/admin roles; DiffMind records all mutation attempts in a JSONL
-audit log under its data directory.
+Compose publishes port 8090 on the host; restrict network access before starting
+it. Browser authentication accepts any
+username and uses the shared token as the password. That token grants global
+admin access: keep it out of developers' agent settings. Before team access,
+configure TLS and authenticated ingress, restrict direct backend access, and use
+[project permissions](docs/project-access.md) and
+[expiring viewer tokens](docs/agent-tokens.md) for agents at `/mcp`.
 
-Enable `DIFFMIND_PROJECT_ACCESS=scoped` to limit users to explicit project
-memberships across UI, HTTP and remote MCP. Admins manage grants in **Project
-access**; editors can refresh assigned projects. See [project permissions](docs/project-access.md)
-for setup, recovery, and the distinction between per-user identities and the
-shared **global-admin** token. The default `legacy` mode retains global roles.
+Compose persists data in `diffmind-data` and enables refresh on startup and every
+15 minutes. The local binary does **not** schedule refresh by default. Host
+source paths are not automatically available in containers; use managed clones
+or deliberate mounts. `docker compose down -v` deletes the workspace volume.
 
-For restricted agent access without proxy-issued credentials, admins can issue
-an expiring **viewer token for one project** in **Project access → Agent tokens**.
-Use it as a bearer credential for `/mcp` or the query API. See
-[agent token setup, rotation, and revocation](docs/agent-tokens.md).
+[Operations](docs/operations.md) covers signed GitHub webhooks, bounded queues,
+workers, project quotas and metrics. [SQLite queue storage](docs/queue-storage.md)
+is optional for larger histories. [Backup/recovery](docs/backup-recovery.md) and
+[backup automation](docs/backup-automation.md) cover offline snapshots, rotation,
+restoration and the opt-in systemd timer, not live/distributed backups.
 
-Remote API clients send `Authorization: Bearer <token>`. Remote MCP clients use
-the `/mcp` endpoint. The following is an **admin connection**, not a scoped user
-connection; restricted agents must authenticate through the identity proxy:
+## Commands and API
 
-```bash
-export DIFFMIND_AUTH_TOKEN='<the server token>'
-codex mcp add diffmind \
-  --url https://diffmind.example.com/mcp \
-  --bearer-token-env-var DIFFMIND_AUTH_TOKEN
+```text
+diffmind ui                       Start the workspace (also: diffmind)
+diffmind doctor [--json]           Check installation and graph readiness
+diffmind version [--json]          Show build information
+diffmind list projects            List project IDs
+diffmind list runs --project ID    List saved project graphs
+diffmind run --repo PATH           Analyze one repository
+diffmind validate --run ID         Validate an analysis run
+diffmind list-runs                 List analysis runs
+diffmind graph --project ID        Build a graph from existing analysis
+diffmind mcp [--project ID]        Start read-only stdio MCP
+diffmind pack                      Knowledge-pack command help
+diffmind backup                    Offline backup/restore/rotation help
+diffmind storage                   Queue migration/verification help
+diffmind extractor-ui              Low-level analysis dashboard
 ```
 
-By default the service refreshes every registered Git repository on startup and
-every 15 minutes, re-analyzes it, and publishes a new project graph. Set
-`GITHUB_TOKEN` for private GitHub repositories. See
-[company deployment](docs/company-deployment.md) for operations, security, and
-backup details.
-
-Projects also have an **Operations** screen for queued refreshes, cancellation,
-retry, and durable job/ingestion history. Opt-in signed GitHub push webhooks,
-bounded workers, and authenticated metrics are described in
-[continuous operations](docs/operations.md).
-
-For large job histories, [migrate the refresh queue to indexed SQLite](docs/queue-storage.md).
-The offline migration preserves original job records, attempts and timestamps;
-no external database service is needed. This still runs as one server, not a
-distributed worker deployment.
-
-## Query API
-
-While the web workspace is running, integrations can query the same graph core
-under `/api/v1`:
+The running UI serves read-only graph queries, including:
 
 ```text
 GET /api/v1/projects
-GET /api/v1/projects/{project}/graph/summary
-GET /api/v1/projects/{project}/graph/runs?offset=0&limit=100
-GET /api/v1/projects/{project}/graph/compare?from=RUN_A&to=RUN_B
-GET /api/v1/projects/{project}/graph/path?from=SERVICE_A&to=SERVICE_B&depth=6
-GET /api/v1/projects/{project}/graph/trace?service=SERVICE&object_id=OBJECT_ID
-GET /api/v1/projects/{project}/services
-GET /api/v1/projects/{project}/services/{service}
-GET /api/v1/projects/{project}/dependencies?service=...&direction=both
-GET /api/v1/projects/{project}/impact?target=...&depth=6
-GET /api/v1/projects/{project}/search?q=...&limit=50
+GET /api/v1/projects/{id}/graph/summary
+GET /api/v1/projects/{id}/services
+GET /api/v1/projects/{id}/dependencies?service=NAME&direction=both
+GET /api/v1/projects/{id}/impact?target=NAME&depth=6
+GET /api/v1/projects/{id}/search?q=QUERY&limit=50
 ```
 
-Single-graph queries accept `run=<completed-run-id>` to pin a historical graph;
-otherwise the latest completed graph is used. Comparisons require explicit
-`from` and `to` run IDs. In the project workspace, select **Compare graphs** to
-browse before/after facts and their evidence.
+Single-graph queries accept
+`run=<completed-run-id>`; comparisons require explicit `from` and `to` IDs.
+[Graph history and tracing](docs/graph-history.md) documents routes and parameters.
+Shared-server requests require authentication; only `/healthz` is public.
 
-On an authenticated shared server, add `Authorization: Bearer <token>` to every
-API request. `GET /healthz` remains unauthenticated for health checks.
+## Contribute
 
-## How it works
-
-```text
-source repositories
-        │
-        ▼
-deterministic extraction
-        │
-        ▼
-DiffMind service documents
-        │
-        ▼
-cross-service resolution and graph
-        │
-        ▼
-local web workspace
-```
-
-The canonical service document is written to
-`.diffmind/context/service.json` inside each run. Its schema identifier is
-`diffmind.service.v1`.
-
-## Repository layout
-
-```text
-cmd/diffmind/              unified command
-internal/extractor/        repository analysis engine
-internal/workspace/        projects, graph construction, API, and web UI
-protocol/                  shared service-document model and validation
-indexerbuild/              reproducible SCIP indexer image
-packs/                     official, tested knowledge packs
-testdata/                  public synthetic fixtures
-docs/                      design and configuration references
-```
-
-## Development
+Start with [CONTRIBUTING](CONTRIBUTING.md) and the
+[synthetic contributor quickstart](docs/contributor-quickstart.md). Pull requests
+target `master`. Keep company code, internal URLs, tokens and workspace artifacts
+out of issues and contributions. Report vulnerabilities privately using
+[SECURITY.md](SECURITY.md).
 
 ```bash
-make test
-make test-packs
-make test-race
-make ui-build
-make ui-test
+make test                 # Go tests, including real CLI company acceptance
+make test-packs           # Official pack fixtures and graph assertions
+make test-race            # Go race detector
+make ui-build             # npm ci + build both interfaces (Node 24)
+make ui-test              # Frontend helpers and component tests
 make build
+# Complete local verification (also needs Ruby and network access):
+make verify
 ```
 
-External SCIP integration tests are opt-in because they require language
-indexers and their toolchains:
+External SCIP integrations need additional language toolchains/indexers:
+`make test-integration` opts into them. Native release and container validation
+are separate; local tests do not certify every platform or company's patterns.
 
-```bash
-DIFFMIND_RUN_SCIP_INTEGRATION=1 go test ./internal/extractor/scip
+```text
+cmd/diffmind/          unified CLI
+internal/extractor/    deterministic repository analysis
+internal/workspace/    projects, graph, query API, MCP and web UI
+protocol/              shared service-document model and validation
+packs/                 official tested knowledge packs
+testdata/              public synthetic fixtures
+docs/                  setup, operations, architecture and design references
 ```
 
-See [the architecture guide](docs/ARCHITECTURE.md) and
-[knowledge-pack guide](docs/knowledge-packs.md) for more.
+## Documentation
 
-Teach configuration conventions without an LLM using evidence-backed HTTP/RPC
-and queue rules. `diffmind pack init` scaffolds exact multi-repository graph tests;
-the opt-in [service-manifest](packs/service-manifest/README.md) and
-[OpenFeign configuration](packs/spring-openfeign-config/README.md) packs provide
-working examples. Check the [tested support matrix](docs/supported-patterns.md)
-for coverage and limits.
-
-## Contributing
-
-Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md)
-and [SECURITY.md](SECURITY.md).
+- [Personal installation and work trial](docs/personal-setup.md)
+- [Import, incremental refresh and recovery](docs/ingestion.md)
+- [Graph history, evidence and tracing](docs/graph-history.md)
+- [Supported patterns](docs/supported-patterns.md) and [pack authoring](docs/knowledge-packs.md)
+- [Company deployment](docs/company-deployment.md), [permissions](docs/project-access.md) and [agent tokens](docs/agent-tokens.md)
+- [Operations](docs/operations.md), [queue storage](docs/queue-storage.md) and [backup/recovery](docs/backup-recovery.md)
+- [Architecture](docs/ARCHITECTURE.md), [roadmap](docs/ROADMAP.md) and [readiness evidence](docs/readiness-verification.md)
+- [Distribution and release maintenance](docs/distribution.md)
 
 ## License
 

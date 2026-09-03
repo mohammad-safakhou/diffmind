@@ -82,5 +82,7 @@ fixtures, dependency audits, and vulnerability checks.
 The [operations queue](operations.md) adds signed webhooks, durable refresh
 attempts, bounded retries, and a global repository-operation budget. Direct
 ingestion remains immediately started and rejects same-project overlap; queued
-refreshes wait for busy projects. Distributed execution, project-scoped roles,
-and automatic backup/migration tooling remain future work.
+refreshes wait for busy projects. [Project-scoped permissions](project-access.md),
+[offline backups](backup-recovery.md), [managed rotation](backup-automation.md)
+and [SQLite queue migration](queue-storage.md) are available. Distributed execution,
+automatic application-schema migration and workspace-path relocation remain future work.
