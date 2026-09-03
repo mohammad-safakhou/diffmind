@@ -52,7 +52,8 @@ own local tap. Follow Homebrew's formula-trust prompts.
    the runner's libc requirements and are not universal static binaries.
 2. Commit embedded UI assets and ensure the tree/CI is clean.
 3. A maintainer chooses and pushes a `vMAJOR.MINOR.PATCH` tag. CI verifies, builds,
-   and publishes archives, checksums, and the pinned formula.
+   installs and tests each native archive, then publishes archives, checksums,
+   and the pinned formula only after all platform gates pass.
 4. Independently verify/download/install the assets on target platforms before
    promoting the formula or announcing the release.
 5. Document backup compatibility and known limitations in release notes.
@@ -61,6 +62,45 @@ own local tap. Follow Homebrew's formula-trust prompts.
 generation, and Ruby syntax. It does not publish or test all architectures.
 Formula `test` blocks check version, doctor, and isolated backup/verify when a
 maintainer runs `brew test`. Windows releases remain unsupported.
+
+## Native installation gate
+
+Every pull request/push runs native candidate checks on Linux amd64/arm64 and
+macOS amd64/arm64. The release workflow runs the same check on its actual archive
+before uploading it for publication. The native verifier serves release files
+through a local `file://` source to the public installer, with a fresh private
+workspace/install directory; no admin token, GitHub token or existing Diffmind
+configuration is inherited. It checks the archive shape and executable version/
+OS/architecture, installation doctor, SQLite migration and embedded UI assets.
+
+CI uses the verifier's `--package-binary PATH` option to create a non-overwriting
+archive first. The package contains exactly three regular files with neutral
+numeric ownership and timestamps; it excludes macOS resource forks, xattrs and
+local usernames/group names. Git commits and historical workspace timestamps are
+not modified. The binary's embedded version/commit/build date supply provenance.
+
+It then invokes both real-company acceptance tests with
+`DIFFMIND_ACCEPTANCE_BINARY` pointing to that installed binary. These tests
+exercise real Go/Python/Java extraction, HTTP/MCP queries, incremental reuse,
+cancellation/retry history and managed backup rotation/restore on both queue
+backends. This environment override is for trusted test binaries only.
+
+To validate an already-built archive on its **matching native host**:
+
+```bash
+go run ./scripts/release-check \
+  --archive /path/to/diffmind_1.2.3_darwin_arm64.tar.gz --version 1.2.3
+# Or: make test-release-native ARCHIVE=/path/to/archive VERSION=1.2.3
+```
+
+The version/path above is illustrative; the file must be real and match the host.
+The checker needs Go and the source checkout for its acceptance harness; users
+installing the tested binary do not. It deletes only its own temporary check
+directory on exit and never publishes or promotes a formula. A successful local
+macOS check does not certify Linux or Intel; review all four CI job results.
+This gate does not test Homebrew itself, distribution download availability,
+code signing/notarization or all older Linux libc versions. Keep the independent
+download/installation and formula-promotion checklist above.
 
 Recipes follow the upstream [Formula Cookbook](https://docs.brew.sh/Formula-Cookbook)
 and [tap structure](https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap).

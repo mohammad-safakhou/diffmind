@@ -230,8 +230,9 @@ One server process must own the data directory; current CLI servers enforce a
 local server lock. JSON scans filesystem job records; SQLite uses indexes for
 polling/pagination and record aggregates for metrics. History and delivery receipts are
 retained without automatic pruning. Distributed leases, metadata database indexing,
-and automated retention
-remain future work. Use [offline backup/restore](backup-recovery.md) for a stopped
+and live-workspace history pruning remain future work. Verified backup-archive
+retention and Linux maintenance scheduling are available via
+[managed backups](backup-automation.md). Use [offline backup/restore](backup-recovery.md) for a stopped
 workspace; do not share it between writers. See [distribution](distribution.md)
 for package-manager recipes and release limits.
 

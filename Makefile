@@ -1,4 +1,4 @@
-.PHONY: build install test test-race test-packs test-integration test-distribution test-acceptance ui-build ui-test ui-audit vulncheck verify run container-build company-up company-down clean
+.PHONY: build install test test-race test-packs test-integration test-distribution test-acceptance test-release-native ui-build ui-test ui-audit vulncheck verify run container-build company-up company-down clean
 
 GOCACHE_DIR := $(CURDIR)/.gocache
 
@@ -26,7 +26,13 @@ test-distribution:
 	sh scripts/test-install.sh
 	sh scripts/test-demo.sh
 	GOCACHE=$(GOCACHE_DIR) go test ./scripts/release-formula
+	GOCACHE=$(GOCACHE_DIR) go test ./scripts/release-check ./scripts/backup-maintenance
 	ruby -c Formula/diffmind.rb
+
+# Pass an already-built native archive and its explicit version; never publishes.
+test-release-native:
+	test -n "$(ARCHIVE)" && test -n "$(VERSION)"
+	GOCACHE=$(GOCACHE_DIR) go run ./scripts/release-check --archive "$(ARCHIVE)" --version "$(VERSION)"
 
 test-acceptance:
 	GOCACHE=$(GOCACHE_DIR) go test ./internal/workspace/ui -run TestCompanyAcceptance -count=1 -v

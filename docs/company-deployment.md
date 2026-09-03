@@ -43,6 +43,12 @@ host before upgrades and restore it as a unit. Versioned offline
 [backup/verify/restore commands](backup-recovery.md) are also available; that guide
 covers credentials, maintenance locks, recovery drills, and volume-mount limits.
 
+[Managed backup automation](backup-automation.md) adds verified keep-last
+retention and an opt-in Linux systemd maintenance timer. It schedules offline
+backups of a systemd-managed server; Compose still needs an external scheduler
+and a deployment-specific stop/one-shot-backup/restart workflow. No timer is
+installed automatically and no live-snapshot guarantee is implied.
+
 ## Authentication, roles, and TLS
 
 `DIFFMIND_AUTH_TOKEN` is mandatory in the Compose deployment. It protects the

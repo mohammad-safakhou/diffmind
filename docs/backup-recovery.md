@@ -2,7 +2,8 @@
 
 Diffmind can create, verify, and restore versioned snapshots on macOS and Linux.
 This is disaster recovery for workspace files (including a migrated SQLite queue), not live snapshots, schema
-migration, or automatic retention.
+migration. For verified keep-last rotation and operator-installed scheduled
+maintenance, see [managed backup automation](backup-automation.md).
 
 ## Create and verify
 

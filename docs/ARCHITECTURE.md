@@ -60,6 +60,13 @@ leases coordinate the CLI with backup; restore validates in private staging and
 never replaces an existing destination. These are not distributed writer locks
 or schema migrations. See [recovery](backup-recovery.md).
 
+Managed backup catalogs live outside the workspace and bind receipts to a
+canonical home plus random catalog identity. Rotation verifies the old catalog
+and a new archive, publishes a complete snapshot atomically, then removes only
+expired catalog-owned archives. No live record history is pruned. Linux systemd
+maintenance scheduling is operator-installed and preserves the target service's
+prior running state. See [backup automation](backup-automation.md).
+
 The SQLite queue uses transactional admission/claims, a per-project active-job
 constraint, indexed page queries and attempt aggregates. A private staging
 database is verified before atomic no-replace activation. Shared lifecycle code

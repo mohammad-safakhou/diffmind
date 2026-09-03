@@ -3,6 +3,19 @@
 This is the current product checklist. Earlier plans under `docs/extractor/docs`
 are historical and do not define the current architecture or backlog.
 
+## Readiness checkpoint — 2026-09-03
+
+The implemented product is a **single-server developer/team platform**. The
+completed batches below cover installation, deterministic extraction, teachable
+patterns, graph/UI/MCP queries, shared access, continuous refresh, resource caps,
+and offline recovery with managed backup rotation. Every completed implementation
+batch is committed; a completed local check is not a claim of a published release.
+
+This roadmap is not entirely complete. The remaining items below are explicit
+engineering projects or deployment/release gates, not silently dropped features.
+See [verification evidence and limits](readiness-verification.md) for the latest
+local checkpoint, including native-platform and deployment checks still pending.
+
 ## Goal
 
 A developer installs Diffmind, connects company repositories, views an
@@ -38,17 +51,33 @@ The automated fixture is a baseline, **not universal architecture accuracy**.
 An actual company pilot still needs a developer to compare discovered edges
 against known relationships and contribute synthetic reproductions of gaps.
 
-## Next batches (not yet delivered)
+## Remaining engineering and release gates
 
-1. Organization-scale metadata persistence/distributed workers. Indexed queue
-   persistence and project permissions are delivered below; deployment still
-   uses one process. Scoped agent/service tokens are delivered below; group
-   synchronization remains a future extension. Project resource limits are
-   delivered below.
-2. Application-schema migration/relocation, automated backup scheduling/retention,
-   and storage-provider integration. Offline recovery is delivered below.
-3. Publish and target-platform validate the next release, then promote its pinned
-   Homebrew formula. Windows/additional package ecosystems remain unimplemented.
+- [ ] Organization-scale metadata storage and distributed workers: execution
+  fencing/leases, worker RPC, shared artifact storage, multi-replica authorization,
+  upgrade/recovery compatibility and fault/load tests. SQLite queue indexing is
+  delivered; it does not supply this distributed architecture.
+- [ ] Identity-provider group synchronization and user-bound personal tokens:
+  explicit provider/group mapping, revocation/provisioning semantics and tests.
+  Current explicit memberships and independent agent tokens remain supported.
+- [ ] Application-schema migration and path relocation, with typed migration
+  plans, dry-run reports, rollback and byte/timestamp preservation tests. Current
+  recovery restores original paths; queue migration is the only schema migration.
+- [ ] Storage-provider integration: select the provider and implement encrypted
+  off-host copies, credential handling, lifecycle/immutability and restore drills.
+  Local managed retention/systemd scheduling are delivered below; cloud storage,
+  zero-downtime backups and Compose/launchd scheduler adapters are not.
+- [ ] Execute the four native CI release checks on the committed candidate,
+  choose a release version, publish its tag/assets, verify downloads and promote
+  the generated pinned Homebrew formula. Local macOS ARM64 validation is not
+  evidence for the other platforms or for a published release.
+- [ ] Run a real-company accuracy/operations pilot against known relationships;
+  contribute sanitized pattern gaps. Synthetic tests cannot certify every stack.
+
+Windows and additional package ecosystems remain unsupported extensions, not
+partially working advertised installation paths. No remote release/tag push,
+timer installation, live company integration or infrastructure provisioning is
+performed implicitly by completing local repository work.
 
 ## Teachable-pattern batch
 
@@ -177,8 +206,8 @@ shared artifact storage and multi-replica deployment remain future work.
 
 See [agent tokens](agent-tokens.md). Tokens are independent service identities,
 not personal tokens or SSO/group provisioning. Project resource limits are
-delivered below; distributed workers, automated backup lifecycle and release
-publication remain open.
+delivered below, as is managed backup rotation. Distributed workers, cloud backup
+integration and release publication remain open.
 
 ## Per-project resource limit batch
 
@@ -196,3 +225,37 @@ publication remain open.
 See [project resource limits](operations.md#per-project-resource-limits). These
 are single-server admission/concurrency caps, not distributed scheduling,
 reserved throughput, OS isolation, CPU/memory quotas or automatic retention.
+
+## Managed backup lifecycle batch
+
+- [x] Explicit `backup rotate --offline --directory ... --keep-last N` and verified
+  catalog listing; private, workspace-bound, versioned catalog/receipts.
+- [x] Independent archive verification before atomic publication and pruning;
+  keep-last retention removes only catalog-owned backup snapshots, never live
+  records or Git history. Corruption and concurrency fail safely.
+- [x] Operator-installed Linux systemd timer and maintenance helper: bounded
+  stop/backup/restart, prior-state preservation, interruption and post-stop
+  recovery intent, with explicit deployment/monitoring guidance.
+- [x] Store/CLI/maintenance lifecycle tests, corruption/symlink/concurrency cases,
+  and real Go/Python/Java graph/token/quota/queue recovery on JSON and SQLite.
+
+See [backup automation](backup-automation.md). Scheduling creates a maintenance
+window. The timer is not enabled automatically; actual host integration and
+off-host/encrypted backup storage remain deployment responsibilities.
+
+## Native release validation batch
+
+- [x] Reusable native archive verifier: private installer environment, exact
+  version/platform, embedded dashboard assets, SQLite startup, and the full
+  graph/HTTP/MCP/incremental/managed-recovery acceptance suite against the
+  **installed release binary**, not a substitute analyzer build.
+- [x] Native macOS/Linux amd64/arm64 CI candidate matrix and mandatory per-platform
+  checks before release artifacts reach the publication job.
+- [x] Neutral, reproducible archive packaging without local ownership metadata,
+  macOS resource forks or xattrs; unsafe/non-neutral archives fail validation.
+- [x] Archive-shape and environment-isolation regression tests; local macOS ARM64
+  candidate installation/acceptance check.
+
+See [release maintenance](distribution.md). CI configuration is delivered;
+executing the other three platform checks, publication and pinned-formula
+promotion are still unchecked release gates above.

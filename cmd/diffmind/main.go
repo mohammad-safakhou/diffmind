@@ -40,7 +40,7 @@ Usage:
   diffmind mcp [--project <id>]       Run the stdio MCP server for coding agents
   diffmind doctor [--json]            Check local installation and graph readiness
   diffmind version [--json]           Print build version information
-  diffmind backup <command>          Create, verify, and restore offline snapshots
+  diffmind backup <command>          Create, rotate, list, verify, and restore snapshots
   diffmind storage <command>         Migrate or verify refresh queue storage
   diffmind help                       Show this help
 
