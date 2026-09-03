@@ -34,8 +34,9 @@ pool, not one goroutine per repository.
 
 Open **Operations** in a project. Viewers see refresh jobs and ingestion attempts;
 editors/admins can queue, cancel, and retry. The screen polls every three seconds,
-has separate history pagination, and links saved graph artifacts. The new
-operations are intentionally not agent MCP tools: MCP remains read-only.
+has separate history pagination, and links saved graph artifacts. Agents can
+perform the same authorized operations through [management MCP tools](agent-operations.md);
+viewer connections remain read-only.
 
 ## Per-project resource limits
 

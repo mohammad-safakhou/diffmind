@@ -1,7 +1,8 @@
 # Current architecture
 
 Diffmind is a deterministic architecture knowledge platform. The default product
-surface is the project workspace, not the legacy single-repository catalog.
+workflow is agent-operated installation, onboarding and management. The project
+workspace UI and manual CLI remain optional views/controls over the same core.
 
 ```text
 Local Git repositories / GitHub organization
@@ -23,6 +24,21 @@ connection analysis, and emits Protocol documents with source evidence.
 `protocol` defines that interchange contract. `internal/workspace` owns project
 storage, repository synchronization, packs, graph assembly, queries, and MCP.
 `cmd/diffmind` ships both through one executable.
+
+`diffmind agent` is the local full-management stdio entry point. Its
+`internal/workspace/agenthost` controller starts a backend on an inherited,
+reserved loopback socket and supervises its lifetime through an owner pipe.
+The controller serializes backend management with offline CLI maintenance,
+while the backend retains the existing server/maintenance leases. Settings
+persist in `agent-settings.json`; the controller owns a separate lifecycle lock
+under `agent-controller/`. Normal disconnect or owner crash stops the backend.
+
+`internal/workspace/agentapi` supplies the finite operation catalog and MCP
+management tools. Remote calls re-enter the same HTTP authorization, validation,
+quota and audit middleware using the current request credentials. Viewer MCP
+and the original `diffmind mcp` remain query-only. Local runtime/maintenance tools
+are not exposed remotely. See [agent operations](agent-operations.md) and
+[bootstrap](../AGENT_SETUP.md).
 
 Knowledge packs are declarative data, not arbitrary executable plugins. They
 teach service identity, configuration/resource naming, relationship resolution,

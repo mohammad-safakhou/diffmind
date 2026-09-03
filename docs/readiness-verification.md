@@ -31,6 +31,38 @@ system `tar`. The replacement package writer emits only the three approved
 regular files with neutral owner/timestamp metadata. Reproducibility, no-overwrite,
 metadata rejection, unsafe archive entries and environment isolation have tests.
 
+## Agent-first management checkpoint
+
+The agent-first batch adds these locally verified checks on the same host:
+
+- Source bootstrap installs into isolated state and emits a full-management
+  launch configuration; conflicting/non-private/symlink targets fail safely.
+- Real stdio `TestAgentAcceptance` starts from an empty home and performs project
+  creation, repository preview/import, real graph analysis/query, incremental
+  reuse, pack installation, backup, SQLite migration, runtime configuration,
+  token issuance/revocation, reconnect and controller-crash cleanup.
+- Every browser mutation (excluding signed webhook delivery) has management
+  catalog coverage. All catalog mutations deny viewers; remote identity changes
+  cannot inherit an earlier administrator's rights. Active ingestion drains to
+  durable terminal state before backend shutdown.
+- Project pack creation/read/update/deletion works through real HTTP MCP in
+  both access modes, including dotted manifest IDs, immutable identity checks,
+  and rejection of updates to deleted packs.
+- Full Go suite, full race suite and vet pass after the lifecycle changes.
+  An existing analyzer-start deadline test initially timed out while two full
+  suites ran simultaneously; three isolated repetitions and subsequent full
+  normal/race runs passed. No cancellation assertion was removed or weakened.
+- Pack/distribution/bootstrap checks, all 39 frontend tests, both npm audits,
+  workflow YAML validation and govulncheck pass (no reported vulnerabilities).
+- The neutral `0.0.0-agent` macOS ARM64 archive was installed into temporary
+  storage and passed agent acceptance plus both company acceptance backends
+  through the native release verifier.
+
+No real client configuration, company repository or user workspace was changed
+by these tests. Initial host-client approval/reconnection is still a client
+boundary, not something DiffMind can grant itself. Other native platforms and
+actual company deployments remain subject to the checks below.
+
 ## Not certified by this checkpoint
 
 - Linux amd64/arm64 and macOS Intel native gates: configured in CI, not executed

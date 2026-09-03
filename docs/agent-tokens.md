@@ -17,7 +17,8 @@ secret store or an environment variable.
 2. As an administrator, open a project, then **Project access → Agent tokens**.
    Choose a descriptive owner/purpose name, **Viewer**, and an expiry. The UI
    defaults to 30 days. Use **Editor** only for an integration that must queue,
-   retry or cancel refresh work over HTTP; MCP tools are always read-only.
+   retry or cancel refresh work over HTTP or management MCP. Viewer MCP remains
+   read-only; editor tokens cannot configure/import repositories or administer access.
 3. Save the displayed secret in the client's protected configuration, then hide
    it. The secret is returned once; reloading the page cannot recover it.
 4. Configure the client with your server's HTTPS `/mcp` URL and

@@ -1,5 +1,10 @@
 # Personal installation and work trial
 
+This is the **optional manual workflow**. To have your agent install and manage
+everything, use [the host-agent setup playbook](../AGENT_SETUP.md) and
+[agent operations](agent-operations.md). No manual project creation, repository
+import or server startup is required for that path.
+
 Start with one local workspace and a few services whose relationships you know.
 Validate their evidence before expanding to the whole organization. You do not
 need Docker, a server deployment, or a model API key for this workflow.

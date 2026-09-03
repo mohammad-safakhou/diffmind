@@ -275,6 +275,9 @@ func run(archive, version, repo string) error {
 	// Reuse the exact Go/Python/Java graph, MCP, incremental/retry and managed
 	// backup recovery tests with the installed artifact, not a rebuilt analyzer.
 	acceptanceEnv := isolatedEnv("DIFFMIND_ACCEPTANCE_BINARY=" + binary)
+	if _, err := command(ctx, repo, acceptanceEnv, "go", "test", "./cmd/diffmind", "-run", "^TestAgentAcceptance$", "-count=1", "-timeout=5m"); err != nil {
+		return fmt.Errorf("installed agent acceptance: %w", err)
+	}
 	if _, err := command(ctx, repo, acceptanceEnv, "go", "test", "./internal/workspace/ui", "-run", "^TestCompanyAcceptance(SQLite)?$", "-count=1", "-timeout=5m"); err != nil {
 		return err
 	}

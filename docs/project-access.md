@@ -113,8 +113,10 @@ per-user grants. Never give the proxy secret to clients.
 
 Scoped `/mcp` is stateless Streamable HTTP: a fresh scoped query service is
 created for each request, so a previous MCP session cannot retain another
-identity's access. Legacy mode keeps its existing stateful transport. All MCP
-tools remain read-only. HTTP/MCP requests recheck current memberships, and live
+identity's access. Legacy mode keeps its existing stateful transport. Viewer MCP
+connections remain read-only. Editors/admins also discover management tools;
+their mutations re-authenticate the current tool request and pass the same API
+permission checks. HTTP/MCP requests recheck current memberships, and live
 run event streams check before each event and at one-second intervals when idle.
 The workspace polls capabilities and hides its data after it observes revocation.
 

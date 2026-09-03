@@ -147,7 +147,7 @@ func (s *Server) scopeControlled(next http.Handler) http.Handler {
 					writeErr(w, 403, errors.New("administrator required"))
 					return
 				}
-			case "/mcp": // read-only tools, scoped by queryFor on each HTTP request
+			case "/mcp": // Graph reads use queryFor; management re-enters full HTTP authorization.
 			default:
 				if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/metrics" {
 					writeErr(w, 403, errors.New("administrator required"))

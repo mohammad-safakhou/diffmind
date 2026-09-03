@@ -67,10 +67,15 @@ server exposes:
 - `search_architecture`
 - `get_impact`
 
-All tools are read-only and return both structured JSON and text-compatible MCP
+These graph tools are read-only and return structured JSON and text-compatible MCP
 content. Agents can therefore answer questions such as “what calls catalog?”,
 “which services are affected by changing this queue?”, and “where is this
 endpoint implemented?” without re-reading every repository.
+
+For agent-owned installation, project creation, imports, graph operations and
+maintenance, use [the current agent playbook](../../../AGENT_SETUP.md) and
+[management contract](../../agent-operations.md). The `mcp` command above is
+the optional read-only path, not the full agent-first workflow.
 
 ## Query without MCP
 
