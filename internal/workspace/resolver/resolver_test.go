@@ -111,6 +111,26 @@ func TestRPCDependencyDoesNotGuessFromServiceNameSubstring(t *testing.T) {
 	}
 }
 
+func TestHTTPDependencyDoesNotGuessFromUnderSpecifiedTarget(t *testing.T) {
+	reg := registry.New()
+	reg.AddArchitecture("caller", &model.ServiceArchitecture{Dependencies: []model.Dependency{{BaseEntity: model.BaseEntity{
+		ID:      "httpcall.get_camunda_task_variables",
+		Type:    "outbound_http",
+		Name:    "GET camunda /task/{id}/variables",
+		Details: map[string]any{"target_service": "camunda"},
+	}}}})
+	reg.AddArchitecture("first-camunda", &model.ServiceArchitecture{})
+	reg.AddArchitecture("second-camunda", &model.ServiceArchitecture{})
+
+	got, err := New(reg, util.NewLogger(util.LevelInfo)).Resolve()
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	if len(got.Matches) != 0 || len(got.Unresolved) != 1 {
+		t.Fatalf("under-specified HTTP target should remain unresolved: %+v", got)
+	}
+}
+
 func TestKnowledgeRuleCanExplicitlyResolveWorkflowService(t *testing.T) {
 	reg := registry.New()
 	reg.AddArchitecture("caller", &model.ServiceArchitecture{Dependencies: []model.Dependency{{BaseEntity: model.BaseEntity{
