@@ -74,6 +74,38 @@ func TestAmbiguousAliasesFailRegardlessOfRegistrationOrder(t *testing.T) {
 	}
 }
 
+func TestLocalResourceFactsDoNotResolveAsServices(t *testing.T) {
+	for _, depType := range []string{"db_operation", "cache_operation", "workflow_orchestration"} {
+		t.Run(depType, func(t *testing.T) {
+			reg := registry.New()
+			reg.AddArchitecture("caller", &model.ServiceArchitecture{Dependencies: []model.Dependency{{BaseEntity: model.BaseEntity{
+				ID: "local-resource", Type: depType, Instance: "camunda",
+			}}}})
+			reg.AddArchitecture("first-camunda", &model.ServiceArchitecture{})
+			reg.AddArchitecture("second-camunda", &model.ServiceArchitecture{})
+
+			got, err := New(reg, util.NewLogger(util.LevelInfo)).Resolve()
+			if err != nil || len(got.Matches) != 0 || len(got.Unresolved) != 1 {
+				t.Fatalf("local resource was treated as a service address: %+v %v", got, err)
+			}
+		})
+	}
+}
+
+func TestKnowledgeRuleCanExplicitlyResolveWorkflowService(t *testing.T) {
+	reg := registry.New()
+	reg.AddArchitecture("caller", &model.ServiceArchitecture{Dependencies: []model.Dependency{{BaseEntity: model.BaseEntity{
+		ID: "workflow", Type: "workflow_orchestration", Instance: "camunda",
+	}}}})
+	reg.AddArchitecture("workflow-service", &model.ServiceArchitecture{})
+	rule := knowledge.ResolutionRule{Name: "known workflow", DependencyType: "workflow_orchestration", TargetPattern: "^camunda$", TargetService: "workflow-service", Confidence: 1}
+
+	got, err := New(reg, util.NewLogger(util.LevelInfo), rule).Resolve()
+	if err != nil || len(got.Matches) != 1 || got.Matches[0].ToService != "workflow-service" {
+		t.Fatalf("explicit workflow mapping was not honored: %+v %v", got, err)
+	}
+}
+
 func setupTestRegistry() *registry.Registry {
 	reg := registry.New()
 

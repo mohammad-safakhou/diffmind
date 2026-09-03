@@ -74,6 +74,12 @@ regular expression and `target_service` may expand capture groups such as
 same-priority rules choose different services for one target, the run fails
 with an explicit conflict.
 
+Generic service-identity matching applies only to HTTP, RPC and queue/publish
+dependencies. Database/cache operations and workflow framework usage remain
+resource facts, preventing names such as `create_offer` or `camunda` from being
+guessed as service addresses. Use an explicit, tested resolution rule when an
+organization convention genuinely maps one of those facts to a service.
+
 Manifests are strictly parsed. Unknown fields, invalid regexes, absolute paths,
 path traversal, missing tests, and ambiguous duplicate pack IDs fail validation
 or testing.
