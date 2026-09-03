@@ -21,20 +21,28 @@ take effect without restart; reductions drain active work and preserve history.
 ## Start the service
 
 Requirements are Docker Engine with Compose and enough disk for repository
-clones plus analysis history.
+clones plus analysis history. Create `.env` only if it does not already exist;
+otherwise edit the existing configuration.
 
 ```bash
 cp .env.example .env
+chmod 600 .env
 openssl rand -hex 32
 # Put the generated value in .env as DIFFMIND_AUTH_TOKEN, then:
-docker compose up -d
+docker compose up -d --build
 docker compose ps
 ```
 
-The Compose file pulls the published `ghcr.io/mohammad-safakhou/diffmind:latest`
-image when available and can build the same image from the checkout. Use
-`docker compose up -d --build` to force a local build. Pin `DIFFMIND_IMAGE` to a
-version or immutable `sha-*` image tag for controlled upgrades.
+Do not overwrite an existing `.env`. The command builds the current checkout;
+plain `docker compose up -d` can pull an available
+`ghcr.io/mohammad-safakhou/diffmind:latest` image instead. For controlled upgrades,
+pin `DIFFMIND_IMAGE` to a published version or immutable `sha-*` tag and omit
+`--build`. Neither path includes unpushed changes from a different checkout.
+
+Compose publishes port 8090 on host interfaces. Restrict access before starting
+it and configure TLS/authenticated ingress before sharing it. Host source paths
+are not automatically mounted: use managed Git clones or deliberate mounts.
+`docker compose down` retains data; adding `-v` deletes the workspace volume.
 
 All state is under `/data` in the `diffmind-data` volume. This includes project
 registrations, managed Git clones, extraction artifacts, knowledge packs, and

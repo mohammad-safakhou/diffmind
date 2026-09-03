@@ -24,10 +24,10 @@ imports and syncs it, runs deterministic analysis, and builds the project graph.
 Progress is persisted under the project, so reloads show the current phase and
 the last result. The individual import, analysis, and graph actions remain
 available for advanced workflows. All state defaults to `~/.diffmind`; set
-`DIFFMIND_HOME` to relocate it.
+`DIFFMIND_HOME` to choose another workspace, not to relocate existing data.
 
 For the complete first-use and agent integration flow, see
-[the developer workflow](docs/SYSTEM_HANDOFF.md). For implementation details,
+[personal setup](../personal-setup.md). For implementation details,
 see [the architecture guide](../ARCHITECTURE.md).
 
 ## Ingestion API
