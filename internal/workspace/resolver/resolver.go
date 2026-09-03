@@ -201,6 +201,15 @@ func (r *Resolver) tryDeterministicMatch(fromService string, dep *model.Dependen
 			continue // skip self-references
 		}
 		confidence, reason, ok := matchIdentityTier(target, targetNorm, targetHost, entry)
+		// Stub-derived RPC service names are frequently short SDK type names
+		// (for example, CampaignServiceClient becomes "campaign"). A
+		// token-boundary match against a repository name is not enough evidence
+		// to claim that such an external SDK call targets an internal service.
+		// Exact identities, hostnames, and explicit knowledge rules remain
+		// eligible.
+		if ok && isRPCDependency(dep.Type) && confidence < 0.9 {
+			continue
+		}
 		if ok && (best == nil || confidence > best.Confidence) {
 			ambiguous = false
 			best = &ResolvedMatch{
@@ -495,6 +504,11 @@ func classifyMatchType(depType string) string {
 
 func isHTTPDependency(depType string) bool {
 	return strings.Contains(strings.ToLower(strings.TrimSpace(depType)), "http")
+}
+
+func isRPCDependency(depType string) bool {
+	lower := strings.ToLower(strings.TrimSpace(depType))
+	return strings.Contains(lower, "rpc") || strings.Contains(lower, "grpc")
 }
 
 func isHTTPExposure(expType string) bool {
