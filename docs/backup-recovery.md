@@ -33,6 +33,11 @@ configuration, installed packs, analysis artifacts, graphs, job/delivery receipt
 ingestion history, audit logs, and managed worktrees (including `.git`) when
 inside the home. Original JSON timestamps and record bytes are not rewritten.
 
+Project `limits.json` policies, revisions and update times are included. A
+restore reinstates the snapshot's caps, not later administrative changes; review
+them before admitting work. Effective caps still obey the restarted server's
+global configuration. Active in-memory operation counts restart at zero.
+
 Project `tokens.json` registries contain hashed credential verifiers, grants and
 creation/expiry/revocation history and are also included. **An older restore can
 reactivate tokens revoked after its snapshot.** Keep external access disabled

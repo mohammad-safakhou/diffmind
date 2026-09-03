@@ -227,37 +227,43 @@ func (s *Store) writeJob(j RefreshJob) error {
 	}
 	return s.jobTx.Commit()
 }
-func (s *Store) jobAdmission(pid, trigger string) (int, *RefreshJob, error) {
+func (s *Store) jobAdmission(pid, trigger string) (int, int, *RefreshJob, error) {
 	if s.jobTx != nil {
-		var count int
-		if err := s.jobTx.QueryRow("SELECT count(*) FROM jobs WHERE status IN ('queued','running')").Scan(&count); err != nil {
-			return 0, nil, err
+		var count, projectCount int
+		if err := s.jobTx.QueryRow("SELECT count(*), COALESCE(sum(CASE WHEN project_id=? THEN 1 ELSE 0 END),0) FROM jobs WHERE status IN ('queued','running')", pid).Scan(&count, &projectCount); err != nil {
+			return 0, 0, nil, err
+		}
+		if trigger == "" {
+			return count, projectCount, nil, nil
 		}
 		jobs, err := s.sqlJobs("SELECT body FROM jobs WHERE project_id=? AND trigger=? AND status='queued' ORDER BY created_at,id LIMIT 1", pid, trigger)
 		if err != nil {
-			return 0, nil, err
+			return 0, 0, nil, err
 		}
 		if len(jobs) > 0 {
-			return count, &jobs[0], nil
+			return count, projectCount, &jobs[0], nil
 		}
-		return count, nil, nil
+		return count, projectCount, nil, nil
 	}
 	all, err := s.jobs()
 	if err != nil {
-		return 0, nil, err
+		return 0, 0, nil, err
 	}
-	count := 0
+	count, projectCount := 0, 0
 	var duplicate *RefreshJob
 	for _, j := range all {
 		if j.Status == "queued" || j.Status == "running" {
 			count++
+			if j.ProjectID == pid {
+				projectCount++
+			}
 		}
 		if duplicate == nil && j.ProjectID == pid && j.Trigger == trigger && j.Status == "queued" {
 			copy := j
 			duplicate = &copy
 		}
 	}
-	return count, duplicate, nil
+	return count, projectCount, duplicate, nil
 }
 func (s *Store) nextJob(now time.Time) (*RefreshJob, error) {
 	if s.jobTx != nil {

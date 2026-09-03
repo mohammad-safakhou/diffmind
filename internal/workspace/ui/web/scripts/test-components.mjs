@@ -10,13 +10,13 @@ import { join } from 'node:path'
 const root = fileURLToPath(new URL('../', import.meta.url))
 const temp = await mkdtemp(join(root, 'node_modules', '.diffmind-component-tests-'))
 try {
-  const output = join(temp, 'tokens.test.mjs')
+  const names = ['ProjectTokens', 'ProjectLimits']
   await build({
-    entryPoints: [join(root, 'src/views/ProjectTokens.test.jsx')], outfile: output,
+    entryPoints: names.map((name) => join(root, `src/views/${name}.test.jsx`)), outdir: temp, outExtension: { '.js': '.mjs' },
     bundle: true, platform: 'node', format: 'esm', packages: 'external',
     jsx: 'automatic', jsxImportSource: 'preact', logLevel: 'warning',
   })
-  const result = spawnSync(process.execPath, ['--test', output], { stdio: 'inherit' })
+  const result = spawnSync(process.execPath, ['--test', ...names.map((name) => join(temp, `${name}.test.mjs`))], { stdio: 'inherit' })
   if (result.error) throw result.error
   process.exitCode = result.status ?? 1
 } finally {

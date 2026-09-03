@@ -40,8 +40,13 @@ func (s *Server) ConfigureOperations(cfg OperationsConfig) error {
 	if s.operationsStarted {
 		return errors.New("operations already started")
 	}
+	s.repositoryMu.Lock()
+	defer s.repositoryMu.Unlock()
+	if s.repositoryTotal != 0 {
+		return errors.New("repository operations already active")
+	}
 	s.operationsConfig = cfg
-	s.repositorySlots = make(chan struct{}, cfg.RepositoryWorkers)
+	s.notifyRepositoryWaiters()
 	return nil
 }
 
@@ -228,21 +233,6 @@ func (s *Server) enqueueRefresh(pid, trigger, delivery, digest string) (*store.R
 	}
 	return s.store.EnqueueJob(pid, trigger, delivery, digest, capacity)
 }
-func (s *Server) acquireRepository(ctx context.Context) (func(), error) {
-	s.operationsMu.Lock()
-	slots := s.repositorySlots
-	s.operationsMu.Unlock()
-	select {
-	case slots <- struct{}{}:
-		if ctx.Err() != nil {
-			<-slots
-			return nil, ctx.Err()
-		}
-		return func() { <-slots }, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
 func (s *Server) jobError(w http.ResponseWriter, err error) {
 	status := 500
 	switch {
@@ -253,6 +243,12 @@ func (s *Server) jobError(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrQueueFull):
 		status = 503
 		w.Header().Set("Retry-After", "10")
+	case errors.Is(err, store.ErrProjectQueueFull):
+		status = 429
+		w.Header().Set("Retry-After", "10")
+	case errors.Is(err, store.ErrLimitsUnavailable):
+		status = 503
+		err = store.ErrLimitsUnavailable
 	}
 	writeErr(w, status, err)
 }
@@ -378,9 +374,11 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	counts, attempts, duration := stats.Jobs, stats.Attempts, stats.Duration
 	s.operationsMu.Lock()
 	cfg := s.operationsConfig
-	active := len(s.repositorySlots)
 	healthy := s.operationsError == nil
 	s.operationsMu.Unlock()
+	s.repositoryMu.Lock()
+	active := s.repositoryTotal
+	s.repositoryMu.Unlock()
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	fmt.Fprintln(w, "# HELP diffmind_refresh_jobs Current retained jobs by status.\n# TYPE diffmind_refresh_jobs gauge")
 	sort.Strings(states)

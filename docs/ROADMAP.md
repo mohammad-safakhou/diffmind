@@ -43,7 +43,8 @@ against known relationships and contribute synthetic reproductions of gaps.
 1. Organization-scale metadata persistence/distributed workers. Indexed queue
    persistence and project permissions are delivered below; deployment still
    uses one process. Scoped agent/service tokens are delivered below; group
-   synchronization and project worker quotas remain future extensions.
+   synchronization remains a future extension. Project resource limits are
+   delivered below.
 2. Application-schema migration/relocation, automated backup scheduling/retention,
    and storage-provider integration. Offline recovery is delivered below.
 3. Publish and target-platform validate the next release, then promote its pinned
@@ -175,5 +176,23 @@ shared artifact storage and multi-replica deployment remain future work.
   real-analyzer graph/backup recovery tests for JSON and SQLite deployments.
 
 See [agent tokens](agent-tokens.md). Tokens are independent service identities,
-not personal tokens or SSO/group provisioning. Distributed workers, project
-worker quotas, automated backup lifecycle, and release publication remain open.
+not personal tokens or SSO/group provisioning. Project resource limits are
+delivered below; distributed workers, automated backup lifecycle and release
+publication remain open.
+
+## Per-project resource limit batch
+
+- [x] Persisted, revision-checked pending-job and repository-operation caps;
+  zero inherits the global ceiling without changing existing deployments.
+- [x] Atomic JSON/SQLite admission for all triggers and explicit retries;
+  accepted deduplication and original attempt history/timestamps preserved.
+- [x] Combined global/project sync-and-analysis limiter; saturated projects do
+  not reserve global slots, updates wake waiters and reductions drain safely.
+- [x] Authorized usage API and admin-only controls in both access modes;
+  validated drafts, conflict reload, fail-closed policies and retryable overflow.
+- [x] Concurrency, cancellation, direct actions, fleet/webhook, permission,
+  frontend, and real Go/Python/Java plus offline-recovery acceptance tests.
+
+See [project resource limits](operations.md#per-project-resource-limits). These
+are single-server admission/concurrency caps, not distributed scheduling,
+reserved throughput, OS isolation, CPU/memory quotas or automatic retention.

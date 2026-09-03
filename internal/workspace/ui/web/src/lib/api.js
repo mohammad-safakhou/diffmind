@@ -145,6 +145,8 @@ export const getRunArchGraphEntrypoints = (pid, rid, q = '', limit = 50) => {
 }
 export const runEventsURL = (pid, rid) => `/api/projects/${pid}/runs/${rid}/events`
 export const getCapabilities = (pid) => api(`/api/v1/projects/${encodeURIComponent(pid)}/capabilities`)
+export const getProjectLimits = (pid) => api(`/api/v1/projects/${encodeURIComponent(pid)}/limits`, { cache: 'no-store' })
+export const putProjectLimits = (pid, body) => api(`/api/v1/projects/${encodeURIComponent(pid)}/limits`, { method: 'PUT', body: j(body) })
 export const getProjectAccess = (pid) => api(`/api/v1/projects/${encodeURIComponent(pid)}/access`)
 export const putProjectAccess = (pid, body) => api(`/api/v1/projects/${encodeURIComponent(pid)}/access`, { method: 'PUT', body: j(body) })
 export const listProjectTokens = (pid) => api(`/api/v1/projects/${encodeURIComponent(pid)}/tokens`, { cache: 'no-store' })

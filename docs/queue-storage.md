@@ -8,8 +8,9 @@ Existing and new installations continue using JSON until explicitly migrated.
 This is queue persistence, **not distributed workers**. Projects, memberships,
 repositories, ingestions, checkouts and graph artifacts remain filesystem-backed.
 Use one server per home directory on local storage with reliable locks. Network
-filesystems, multiple replicas, remote workers and per-project quotas remain
-unsupported.
+filesystems, multiple replicas and remote workers remain unsupported.
+[Per-project admission/concurrency caps](operations.md#per-project-resource-limits)
+work with both JSON and SQLite, with policy files remaining filesystem-backed.
 
 ## Migrate
 

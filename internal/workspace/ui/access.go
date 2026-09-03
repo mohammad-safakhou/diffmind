@@ -126,7 +126,7 @@ func (s *Server) scopeControlled(next http.Handler) http.Handler {
 				s.writeAccessError(w, err)
 				return
 			}
-			if (strings.HasSuffix(r.Pattern, "/access") || strings.Contains(r.Pattern, "/tokens")) && identity.Role != RoleAdmin {
+			if (strings.HasSuffix(r.Pattern, "/access") || strings.Contains(r.Pattern, "/tokens") || (strings.HasSuffix(r.Pattern, "/limits") && !readMethod(r.Method))) && identity.Role != RoleAdmin {
 				writeErr(w, 403, errors.New("administrator required"))
 				return
 			}

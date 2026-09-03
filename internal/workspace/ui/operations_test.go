@@ -171,17 +171,17 @@ func TestRepositoryBudgetCancellationAndBusyDeferral(t *testing.T) {
 	if err := s.ConfigureOperations(OperationsConfig{RepositoryWorkers: 1}); err != nil {
 		t.Fatal(err)
 	}
-	release, err := s.acquireRepository(context.Background())
+	p, _ := s.store.CreateProject(store.Project{Name: "busy"})
+	release, err := s.acquireRepository(context.Background(), p.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	if _, err := s.acquireRepository(ctx); err == nil {
+	if _, err := s.acquireRepository(ctx, p.ID); err == nil {
 		t.Fatal("budget bypassed")
 	}
-	p, _ := s.store.CreateProject(store.Project{Name: "busy"})
 	_, err = s.store.CreateRepo(p.ID, store.Repo{Name: "repo", Path: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)

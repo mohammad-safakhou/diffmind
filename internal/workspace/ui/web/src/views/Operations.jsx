@@ -2,6 +2,7 @@ import { useEffect, useState } from 'preact/hooks'
 import { listJobs, enqueueRefresh, cancelJob, retryJob, ingestionHistory, getCapabilities } from '../lib/api.js'
 import { jobCanCancel, jobCanRetry, jobStatus } from '../lib/operations.js'
 import { navigate } from '../lib/router.js'
+import { ProjectLimits } from './ProjectLimits.jsx'
 import './Operations.css'
 
 const timestamp = (value) => !value || value.startsWith('0001-') ? '—' : new Date(value).toLocaleString()
@@ -50,6 +51,7 @@ export function Operations({ pid }) {
     {actionError && <p class="banner error" role="alert">{actionError}</p>}
     {notice && <p class="banner ok" role="status">{notice}</p>}
     {!data && !error && <p role="status">Loading operations…</p>}
+    <ProjectLimits key={pid} pid={pid} canManage={role === 'admin'} />
     {data && <>
       <p class="operations-limits">{data.workers} project workers · {data.repository_workers} global repository slots · queue capacity {data.capacity} · scheduler {data.healthy ? 'healthy' : 'stopped — check server logs'}</p>
       <section aria-label="Refresh jobs">

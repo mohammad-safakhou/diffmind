@@ -389,7 +389,7 @@ func (s *Server) handleSyncRepo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) syncGitRepo(ctx context.Context, pid string, repo store.Repo) (*store.Repo, error) {
-	release, err := s.acquireRepository(ctx)
+	release, err := s.acquireRepository(ctx, pid)
 	if err != nil {
 		return nil, err
 	}
@@ -643,7 +643,7 @@ func (s *Server) runDiffMindForRepoContext(ctx context.Context, pid, rid string,
 		}
 	}
 	binary := firstNonEmpty(os.Getenv("DIFFMIND_BINARY"), config.NewDefault().DiffMind.BinaryPath)
-	release, acquireErr := s.acquireRepository(ctx)
+	release, acquireErr := s.acquireRepository(ctx, pid)
 	if acquireErr != nil {
 		_, _ = s.store.UpdateRepo(pid, rid, func(r *store.Repo) { r.SyncStatus = "diffmind_failed"; r.SyncError = acquireErr.Error() })
 		return

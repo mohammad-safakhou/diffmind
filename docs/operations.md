@@ -37,6 +37,59 @@ editors/admins can queue, cancel, and retry. The screen polls every three second
 has separate history pagination, and links saved graph artifacts. The new
 operations are intentionally not agent MCP tools: MCP remains read-only.
 
+## Per-project resource limits
+
+In **Operations → Project resource limits**, a global administrator can set
+`max_pending_jobs` (0–10000) and `repository_workers` (0–32). **0 inherits the
+server ceiling**, not unlimited capacity or a disabled project. Effective limits
+are the smaller of the configured project cap and server ceiling. Existing
+projects inherit by default. Readers can inspect their project's configured and
+effective limits and a usage snapshot; reload the panel to refresh that snapshot.
+Only global admins can save limits, in both legacy and scoped access modes.
+
+Pending jobs means queued **plus running**, including delayed automatic retries.
+Manual, fleet/scheduled, signed webhook and explicit retry admissions enforce
+the cap atomically inside the queue store, on either JSON or SQLite. Project
+overflow returns **429** with `Retry-After: 10`; global overflow still returns
+503. If both caps are full, the global error takes precedence. Accepted duplicate
+requests still return their original job; rejected webhook deliveries leave no
+receipt and may be redelivered after capacity becomes available. Automatic
+attempts retain their already-admitted slot; explicitly retrying a terminal job
+requires a new slot and preserves earlier attempts and timestamps.
+
+The repository cap covers actual cloning/fetching and analyzer execution across
+direct actions, imports and queued refreshes. Admission acquires project and
+global capacity together: a project waiting at its cap does not consume global
+slots. Raising a cap wakes waiting work; lowering it lets active operations drain
+before admitting more. Lowering the pending cap below current usage likewise
+blocks new work without deleting or cancelling existing jobs.
+
+Settings are versioned in `projects/<id>/limits.json`, atomically persisted with
+optimistic revisions, and included in offline backups. Corrupt policies reject
+new admissions, never silently fall back to defaults. Already accepted duplicate
+requests and job history remain readable. Do not edit policy files while the
+server is running: use the API/UI so waiting repository work is notified.
+
+```text
+GET /api/v1/projects/PROJECT_ID/limits
+PUT /api/v1/projects/PROJECT_ID/limits
+{"revision":0,"max_pending_jobs":8,"repository_workers":2}
+```
+
+GET returns `limits`, `effective_pending_jobs`, `effective_repository_workers`,
+`pending_jobs`, and `active_repository_workers`. PUT requires all three fields
+shown above and returns the saved policy with its new revision and UTC update
+time. Read the current revision first; stale saves return 409. Invalid requests
+return 400 and unavailable policies/storage return 503. Reload after an uncertain
+save instead of blindly retrying the old revision. These settings are not MCP
+mutation tools.
+
+These are single-server concurrency/admission caps, not CPU/memory/disk quotas,
+OS isolation, fair-share scheduling, or reserved throughput. Direct graph builds
+are outside the repository budget; direct imports are outside the pending-job
+queue cap, but their sync/analyzer work uses the repository budget. Standalone
+CLI extraction in a separate process does not share the server's limiter.
+
 ## Queue semantics
 
 - A successful enqueue is persisted before returning 202. JSON jobs are stored
@@ -177,7 +230,7 @@ One server process must own the data directory; current CLI servers enforce a
 local server lock. JSON scans filesystem job records; SQLite uses indexes for
 polling/pagination and record aggregates for metrics. History and delivery receipts are
 retained without automatic pruning. Distributed leases, metadata database indexing,
-per-project worker quotas, and automated retention
+and automated retention
 remain future work. Use [offline backup/restore](backup-recovery.md) for a stopped
 workspace; do not share it between writers. See [distribution](distribution.md)
 for package-manager recipes and release limits.
@@ -188,3 +241,9 @@ signature vectors, branch/repository filtering, delivery deduplication, roles,
 metrics, and the real CLI queued incremental acceptance fixture. Frontend tests
 cover action eligibility and routing; the operations UI is also smoke-tested in
 a browser. See [the roadmap](ROADMAP.md) for remaining batches.
+
+Project-limit coverage includes both queue backends, independent SQLite writers,
+concurrent admission, dynamic increase/decrease, cancelled waiters, direct sync/
+analysis, fleet refresh, webhook redelivery, role/token isolation, revision
+conflicts, corruption, dashboard component tests, and real-analyzer backup
+recovery with a one-operation project cap.
