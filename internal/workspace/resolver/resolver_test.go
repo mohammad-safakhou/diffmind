@@ -131,6 +131,26 @@ func TestHTTPDependencyDoesNotGuessFromUnderSpecifiedTarget(t *testing.T) {
 	}
 }
 
+func TestHTTPDependencyPrefersMostSpecificContainedIdentity(t *testing.T) {
+	reg := registry.New()
+	reg.AddArchitecture("caller", &model.ServiceArchitecture{Dependencies: []model.Dependency{{BaseEntity: model.BaseEntity{
+		ID:      "httpcall.delete_flight",
+		Type:    "outbound_http",
+		Name:    "DELETE flight",
+		Details: map[string]any{"target_service": "cdp-dynamic-content-api-aws-sdlc-example-com"},
+	}}}})
+	reg.AddArchitecture("dynamic-content-api", &model.ServiceArchitecture{})
+	reg.AddArchitecture("cdp-dynamic-content-api", &model.ServiceArchitecture{})
+
+	got, err := New(reg, util.NewLogger(util.LevelInfo)).Resolve()
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	if len(got.Matches) != 1 || got.Matches[0].ToService != "cdp-dynamic-content-api" {
+		t.Fatalf("most specific identity was not selected: %+v", got)
+	}
+}
+
 func TestKnowledgeRuleCanExplicitlyResolveWorkflowService(t *testing.T) {
 	reg := registry.New()
 	reg.AddArchitecture("caller", &model.ServiceArchitecture{Dependencies: []model.Dependency{{BaseEntity: model.BaseEntity{

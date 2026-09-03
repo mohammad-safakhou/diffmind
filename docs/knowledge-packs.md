@@ -84,7 +84,9 @@ substring matching is intentionally disabled because external SDK clients often
 use generic names such as `campaign` that overlap internal repository names.
 For all protocols, a short target contained by a longer registered identity is
 under-specified and remains unresolved; a target may only use token matching
-when it contains the complete registered identity.
+when it contains the complete registered identity. If a target contains nested
+identities, the longest (most specific) identity wins; equally specific claims
+remain an ambiguity error.
 
 Manifests are strictly parsed. Unknown fields, invalid regexes, absolute paths,
 path traversal, missing tests, and ambiguous duplicate pack IDs fail validation
