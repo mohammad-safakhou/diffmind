@@ -79,6 +79,9 @@ dependencies. Database/cache operations and workflow framework usage remain
 resource facts, preventing names such as `create_offer` or `camunda` from being
 guessed as service addresses. Use an explicit, tested resolution rule when an
 organization convention genuinely maps one of those facts to a service.
+Stub-derived RPC service names require an exact identity or hostname match;
+substring matching is intentionally disabled because external SDK clients often
+use generic names such as `campaign` that overlap internal repository names.
 
 Manifests are strictly parsed. Unknown fields, invalid regexes, absolute paths,
 path traversal, missing tests, and ambiguous duplicate pack IDs fail validation

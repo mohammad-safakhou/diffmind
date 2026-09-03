@@ -92,6 +92,25 @@ func TestLocalResourceFactsDoNotResolveAsServices(t *testing.T) {
 	}
 }
 
+func TestRPCDependencyDoesNotGuessFromServiceNameSubstring(t *testing.T) {
+	reg := registry.New()
+	reg.AddArchitecture("caller", &model.ServiceArchitecture{Dependencies: []model.Dependency{{BaseEntity: model.BaseEntity{
+		ID:      "rpccall.campaign_mutatecampaigns",
+		Type:    "outbound_rpc",
+		Name:    "campaign.mutateCampaigns",
+		Details: map[string]any{"service": "campaign"},
+	}}}})
+	reg.AddArchitecture("campaign-api", &model.ServiceArchitecture{})
+
+	got, err := New(reg, util.NewLogger(util.LevelInfo)).Resolve()
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	if len(got.Matches) != 0 || len(got.Unresolved) != 1 {
+		t.Fatalf("short RPC service name should remain unresolved: %+v", got)
+	}
+}
+
 func TestKnowledgeRuleCanExplicitlyResolveWorkflowService(t *testing.T) {
 	reg := registry.New()
 	reg.AddArchitecture("caller", &model.ServiceArchitecture{Dependencies: []model.Dependency{{BaseEntity: model.BaseEntity{
