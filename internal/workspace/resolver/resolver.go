@@ -195,6 +195,7 @@ func (r *Resolver) tryDeterministicMatch(fromService string, dep *model.Dependen
 	targetNorm := normalizeIdentity(targetRaw)
 	targetHost := normalizeHostname(targetRaw)
 	var best *ResolvedMatch
+	bestSpecificity := 0
 	ambiguous := false
 	for _, entry := range index {
 		if entry.ServiceName == fromService {
@@ -210,8 +211,11 @@ func (r *Resolver) tryDeterministicMatch(fromService string, dep *model.Dependen
 		if ok && isRPCDependency(dep.Type) && confidence < 0.9 {
 			continue
 		}
-		if ok && (best == nil || confidence > best.Confidence) {
+		specificity := len(entry.Normalized)
+		if ok && (best == nil || confidence > best.Confidence ||
+			(confidence == best.Confidence && specificity > bestSpecificity)) {
 			ambiguous = false
+			bestSpecificity = specificity
 			best = &ResolvedMatch{
 				FromService:    fromService,
 				DependencyID:   dep.ID,
@@ -222,7 +226,7 @@ func (r *Resolver) tryDeterministicMatch(fromService string, dep *model.Dependen
 				Confidence:     confidence,
 				Reasoning:      reason,
 			}
-		} else if ok && confidence == best.Confidence && entry.ServiceName != best.ToService {
+		} else if ok && confidence == best.Confidence && specificity == bestSpecificity && entry.ServiceName != best.ToService {
 			ambiguous = true
 		}
 	}
