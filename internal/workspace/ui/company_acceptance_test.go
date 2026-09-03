@@ -41,10 +41,18 @@ func testCompanyAcceptance(t *testing.T, sqlite bool) {
 	binary := filepath.Join(t.TempDir(), "diffmind")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", binary, "./cmd/diffmind")
-	cmd.Dir = root
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build CLI: %v\n%s", err, out)
+	if supplied := os.Getenv("DIFFMIND_ACCEPTANCE_BINARY"); supplied != "" {
+		info, err := os.Stat(supplied)
+		if !filepath.IsAbs(supplied) || err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+			t.Fatal("DIFFMIND_ACCEPTANCE_BINARY must be an absolute executable file")
+		}
+		binary = supplied
+	} else {
+		cmd := exec.CommandContext(ctx, "go", "build", "-o", binary, "./cmd/diffmind")
+		cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("build CLI: %v\n%s", err, out)
+		}
 	}
 	home := t.TempDir()
 	t.Setenv("DIFFMIND_HOME", home)
@@ -311,6 +319,28 @@ func testCompanyAcceptance(t *testing.T, sqlite bool) {
 	if err := json.Unmarshal(body, &snapshot); err != nil {
 		t.Fatal(err)
 	}
+	// Exercise actual CLI catalog retention with real graph/queue/token/limit
+	// records. The standalone archive above is not owned by the catalog.
+	catalog := filepath.Join(t.TempDir(), "managed")
+	if err := os.Mkdir(catalog, 0700); err != nil {
+		t.Fatal(err)
+	}
+	var rotation backup.RotationReport
+	for iteration := 0; iteration < 2; iteration++ {
+		cmd := exec.CommandContext(ctx, binary, "backup", "rotate", "--offline", "--directory", catalog, "--keep-last", "1", "--json")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("rotate CLI: %v %s", err, out)
+		}
+		if err := json.Unmarshal(out, &rotation); err != nil || len(rotation.Retained) != 1 || len(rotation.Removed) != iteration {
+			t.Fatalf("rotation %+v %v", rotation, err)
+		}
+	}
+	if _, err := backup.Verify(archive, snapshot.SHA256, backup.DefaultMaxBytes); err != nil {
+		t.Fatalf("standalone archive affected by retention: %v", err)
+	}
+	archive = rotation.Created.Archive
+	snapshot = rotation.Created.Report
 	if err := os.Rename(home, home+"-original"); err != nil {
 		t.Fatal(err)
 	}

@@ -1,0 +1,2 @@
+#!/bin/sh
+test "$1" = -n && test "$2" = 9 && test "$TEST_FAIL" != lock

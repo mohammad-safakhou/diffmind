@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+case "$1" in
+  show)
+    case "$2" in
+      --property=LoadState) if [ "$TEST_FAIL" = load ]; then echo not-found; else echo loaded; fi ;;
+      --property=ActiveState) echo "$TEST_STATE" ;;
+      *) exit 2 ;;
+    esac ;;
+  stop|start)
+    test "$2" = diffmind-test.service
+    echo "$1" >> "$TEST_ROOT/actions"
+    test "$TEST_FAIL" != "$1" ;;
+  *) exit 2 ;;
+esac

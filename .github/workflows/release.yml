@@ -30,6 +30,8 @@ jobs:
         working-directory: internal/extractor/ui/web
       - run: git diff --exit-code -- internal/workspace/ui/web/dist internal/extractor/ui/web/dist
       - run: go test ./...
+      - run: go vet ./...
+      - run: go test -race ./internal/workspace/backup ./scripts/backup-maintenance
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
       - run: sh scripts/test-install.sh
       - run: sh scripts/test-demo.sh
@@ -70,8 +72,13 @@ jobs:
           go build -trimpath \
             -ldflags "-s -w -X main.version=${version} -X main.commit=${GITHUB_SHA} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -o dist/package/diffmind ./cmd/diffmind
-          cp LICENSE README.md dist/package/
-          tar -C dist/package -czf "dist/diffmind_${version}_${GOOS}_${GOARCH}.tar.gz" diffmind LICENSE README.md
+      - name: Verify native installed archive before publication
+        shell: bash
+        run: |
+          go run ./scripts/release-check \
+            --package-binary dist/package/diffmind \
+            --archive "dist/diffmind_${GITHUB_REF_NAME#v}_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz" \
+            --version "${GITHUB_REF_NAME#v}"
       - uses: actions/upload-artifact@v7
         with:
           name: diffmind-${{ matrix.goos }}-${{ matrix.goarch }}

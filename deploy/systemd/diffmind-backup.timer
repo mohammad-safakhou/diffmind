@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Diffmind offline backup window
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 UTC
+RandomizedDelaySec=5min
+Persistent=true
+Unit=diffmind-backup.service
+
+[Install]
+WantedBy=timers.target

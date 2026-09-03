@@ -47,5 +47,30 @@ jobs:
       - run: go run ./cmd/diffmind pack test ./packs
       - run: sh scripts/test-install.sh
       - run: sh scripts/test-demo.sh
+      - name: Validate scheduled maintenance units
+        run: |
+          sudo install -d -m 0755 /usr/local/libexec/diffmind
+          sudo install -m 0755 scripts/backup-systemd.sh /usr/local/libexec/diffmind/backup-systemd.sh
+          systemd-analyze verify deploy/systemd/diffmind-backup.service deploy/systemd/diffmind-backup.timer
       - run: ruby -c Formula/diffmind.rb
       - run: go build ./cmd/diffmind
+
+  native-release-check:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-15]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build and test native release candidate without publishing
+        shell: bash
+        run: |
+          mkdir -p dist/package
+          go build -trimpath -ldflags '-X main.version=0.0.0-ci' -o dist/package/diffmind ./cmd/diffmind
+          platform="$(go env GOOS)_$(go env GOARCH)"
+          go run ./scripts/release-check --package-binary dist/package/diffmind --archive "dist/diffmind_0.0.0-ci_${platform}.tar.gz" --version 0.0.0-ci

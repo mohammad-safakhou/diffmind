@@ -84,6 +84,8 @@ diffmind doctor [--json]         Check installation and graph readiness
 diffmind version [--json]        Print release/build information
 diffmind backup create --offline --output FILE  Save an offline snapshot
 diffmind backup verify --archive FILE           Verify without extracting
+diffmind backup rotate --offline --directory DIR --keep-last 7
+diffmind backup list --directory DIR --json      Verify/list managed snapshots
 diffmind backup restore --offline --archive FILE --destination NEW_DIR
 ```
 

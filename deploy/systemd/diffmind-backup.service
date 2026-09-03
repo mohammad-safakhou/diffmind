@@ -1,0 +1,19 @@
+[Unit]
+Description=Verified Diffmind offline backup and retention
+Documentation=https://github.com/mohammad-safakhou/diffmind/blob/master/docs/backup-automation.md
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/diffmind/backup.env
+ExecStart=/bin/sh /usr/local/libexec/diffmind/backup-systemd.sh
+ExecStopPost=/bin/sh /usr/local/libexec/diffmind/backup-systemd.sh --recover
+User=root
+Group=root
+UMask=0077
+RuntimeDirectory=diffmind-backup
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+TimeoutStartSec=2h
+TimeoutStopSec=5min
+KillMode=control-group
+PrivateTmp=true
