@@ -11,9 +11,13 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/store"
 )
 
-func (s *Server) handleV1Projects(w http.ResponseWriter, _ *http.Request) {
-	projects, err := s.query.Projects()
+func (s *Server) handleV1Projects(w http.ResponseWriter, r *http.Request) {
+	projects, err := s.queryFor(r).Projects()
 	if err != nil {
+		if errors.Is(err, errProjectAccessUnavailable) {
+			s.writeAccessError(w, err)
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -66,7 +70,7 @@ func writeV1Result(w http.ResponseWriter, value any, err error) {
 		return
 	}
 	status := http.StatusBadRequest
-	if errors.Is(err, store.ErrNotFound) || errors.Is(err, query.ErrServiceNotFound) {
+	if errors.Is(err, store.ErrNotFound) || errors.Is(err, query.ErrServiceNotFound) || errors.Is(err, query.ErrObjectNotFound) || errors.Is(err, query.ErrNodeNotFound) {
 		status = http.StatusNotFound
 	}
 	if errors.Is(err, query.ErrNoCompletedGraph) {

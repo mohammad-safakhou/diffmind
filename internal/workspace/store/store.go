@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,12 +20,13 @@ import (
 var ErrNotFound = errors.New("not found")
 var ErrConflict = errors.New("already exists")
 
-// Store is the filesystem-backed persistence layer. All methods are safe for
-// concurrent use; a single mutex serialises mutations (the data volume is tiny
-// — a handful of small JSON files per project).
+// Store persists workspace metadata/artifacts on the filesystem and optionally
+// refresh jobs in SQLite. A mutex serializes local mutations; queue transactions
+// additionally protect database operations across cooperating store handles.
 type Store struct {
-	root string // DiffMind home (projects live under <root>/projects)
-	mu   sync.Mutex
+	root  string // DiffMind home (projects live under <root>/projects)
+	mu    sync.Mutex
+	jobTx *sql.Tx // only set while mu is held by lockJobs
 }
 
 // New constructs a Store rooted at the given home directory. An empty home
@@ -74,6 +76,13 @@ func (s *Store) CreateIngestion(pid string, ingestion Ingestion) (*Ingestion, er
 		return nil, err
 	}
 	now := time.Now().UTC()
+	if prior, err := s.GetIngestion(pid); err == nil {
+		if err := s.archiveIngestion(*prior); err != nil {
+			return nil, err
+		}
+	} else if !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
 	ingestion.ID = now.Format("20060102T150405.000000000Z")
 	ingestion.ProjectID = pid
 	if ingestion.Status == "" {
@@ -83,7 +92,14 @@ func (s *Store) CreateIngestion(pid string, ingestion Ingestion) (*Ingestion, er
 		ingestion.Phase = "starting"
 	}
 	ingestion.StartedAt = now
+	ingestion.AttemptStartedAt = now
 	ingestion.UpdatedAt = now
+	if ingestion.Attempt < 1 {
+		ingestion.Attempt = 1
+	}
+	if err := s.archiveIngestion(ingestion); err != nil {
+		return nil, err
+	}
 	if err := writeJSON(s.ingestionPath(pid), ingestion); err != nil {
 		return nil, err
 	}
@@ -114,6 +130,47 @@ func (s *Store) SaveIngestion(pid string, ingestion Ingestion) error {
 	}
 	ingestion.ProjectID = pid
 	ingestion.UpdatedAt = time.Now().UTC()
+	if prior, err := s.GetIngestion(pid); err == nil {
+		if prior.ID != ingestion.ID {
+			return ErrConflict
+		}
+		if prior.Attempt > ingestion.Attempt {
+			return ErrConflict
+		}
+		if prior.Attempt != ingestion.Attempt {
+			if err := s.archiveIngestion(*prior); err != nil {
+				return err
+			}
+		}
+	}
+	// Cancellation intent is monotonic within an attempt. A worker may be
+	// saving a progress projection read before the HTTP cancellation request.
+	if current, err := s.GetIngestion(pid); err == nil && current.ID == ingestion.ID && current.Attempt == ingestion.Attempt {
+		ingestion.CancelRequested = ingestion.CancelRequested || current.CancelRequested
+	}
+	if err := s.archiveIngestion(ingestion); err != nil {
+		return err
+	}
+	return writeJSON(s.ingestionPath(pid), ingestion)
+}
+
+// RequestIngestionCancellation persists intent before stopping processes, so a
+// crash while cancellation drains cannot turn it into an automatically resumed job.
+func (s *Store) RequestIngestionCancellation(pid string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ingestion, err := s.GetIngestion(pid)
+	if err != nil {
+		return err
+	}
+	if ingestion.Status != IngestionRunning {
+		return ErrConflict
+	}
+	ingestion.CancelRequested = true
+	ingestion.UpdatedAt = time.Now().UTC()
+	if err := s.archiveIngestion(*ingestion); err != nil {
+		return err
+	}
 	return writeJSON(s.ingestionPath(pid), ingestion)
 }
 
@@ -147,6 +204,9 @@ func (s *Store) ListProjects() ([]Project, error) {
 
 // GetProject reads a single project.
 func (s *Store) GetProject(id string) (*Project, error) {
+	if !validID(id) {
+		return nil, ErrNotFound
+	}
 	var p Project
 	if err := readJSON(filepath.Join(s.projectDir(id), "project.json"), &p); err != nil {
 		if os.IsNotExist(err) {
@@ -542,5 +602,20 @@ func writeJSON(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o644)
+	file, err := os.CreateTemp(filepath.Dir(path), ".checkpoint-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	if _, err = file.Write(b); err == nil {
+		err = file.Sync()
+	}
+	closeErr := file.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return os.Rename(file.Name(), path)
 }

@@ -12,6 +12,9 @@ func IDsForFrameworkBinding(framework, kind, trigger, reason string) []string {
 
 	switch framework {
 	case "net/http":
+		if kind == "http_client" {
+			return []string{"golang.httpclient.nethttp"}
+		}
 		if kind == "http_handler" {
 			return []string{"golang.http.nethttp"}
 		}

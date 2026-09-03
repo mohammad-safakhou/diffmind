@@ -1,0 +1,15 @@
+.operations-page { max-width: 1120px; margin: 0 auto; padding: 28px; height: 100%; overflow: auto; }
+.operations-header { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 18px; margin-bottom: 24px; }
+.operations-header h1 { margin: 0 0 8px; }
+.operations-header p { margin: 0; }
+.operations-header > div { flex: 1; min-width: 240px; }
+.operations-page section { margin: 32px 0; }
+.operations-limits { padding: 16px; border: 1px solid var(--border, #334155); border-radius: 8px; }
+.operation-card { padding: 16px; margin: 12px 0; border: 1px solid var(--border, #334155); border-radius: 8px; overflow-wrap: anywhere; }
+.operation-title { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.operation-title > span { flex: 1; }
+.operation-card summary { cursor: pointer; line-height: 1.7; }
+.operation-attempt { padding: 16px 0; border-top: 1px solid var(--border, #334155); margin-top: 12px; }
+.operation-error { white-space: pre-wrap; overflow-wrap: anywhere; color: #fda4af; }
+.operations-pagination { display: flex; align-items: center; gap: 16px; margin: 20px 0; }
+@media(max-width: 720px) { .operations-page { padding: 16px; } }

@@ -1,0 +1,75 @@
+api_version: diffmind.dev/v1alpha1
+kind: KnowledgePack
+id: service-manifest
+name: Explicit service architecture manifest
+description: Portable, language-independent declarations for configuration or wrappers the AST detectors do not recognize.
+version: 1.0.0
+license: Apache-2.0
+compatibility: ">=0.2.0"
+applies_to:
+  kind: service_repo
+  match: {has_file: service-architecture.yaml}
+extractions:
+  - name: identity
+    source: {glob: service-architecture.yaml}
+    extract:
+      - {field: service.name, maps_to: service_name}
+      - {field: service.aliases, maps_to: dns_aliases}
+detectors:
+  - name: declared HTTP clients
+    type: outbound_http
+    source: {glob: service-architecture.yaml}
+    field: dependencies.http
+  - name: declared RPC clients
+    type: outbound_rpc
+    source: {glob: service-architecture.yaml}
+    field: dependencies.rpc
+  - name: published queues
+    type: queue_publish
+    platform: kafka
+    source: {glob: service-architecture.yaml}
+    field: queues.publish
+  - name: consumed queues
+    type: queue_consumer
+    platform: kafka
+    source: {glob: service-architecture.yaml}
+    field: queues.consume
+resolution_rules:
+  - name: RPC service mesh names
+    dependency_type: outbound_rpc
+    target_pattern: "^([a-z-]+)\\.rpc\\.example$"
+    target_service: "$1"
+tests:
+  - name: extracts gateway declarations with evidence
+    fixture: testdata/gateway
+    expected: {service_name: gateway}
+    dependencies:
+      - {type: outbound_http, target: "https://catalog.internal.example/products", file: service-architecture.yaml, line: 5}
+      - {type: outbound_http, target: "https://status.example.test/health", file: service-architecture.yaml, line: 6}
+      - {type: outbound_rpc, target: billing.rpc.example, file: service-architecture.yaml, line: 8}
+      - {type: queue_publish, target: order-events, file: service-architecture.yaml, line: 10}
+  - name: extracts consumer and alias
+    fixture: testdata/catalog
+    expected:
+      service_name: catalog
+      aliases: [{kind: dns, value: catalog.internal.example}]
+    exposures:
+      - {type: queue_consumer, target: order-events, file: service-architecture.yaml, line: 5}
+  - name: ignores unresolved and sensitive targets
+    fixture: testdata/negative
+    expected: {service_name: negative}
+graph_tests:
+  - name: exact HTTP RPC and queue graph
+    repositories:
+      - {name: gateway, fixture: testdata/gateway}
+      - {name: catalog, fixture: testdata/catalog}
+      - {name: billing, fixture: testdata/billing}
+    edges:
+      - {from: gateway, to: catalog, type: http}
+      - {from: gateway, to: status.example.test, type: http}
+      - {from: gateway, to: billing, type: rpc}
+      - {from: gateway, to: "queue:orderevents", type: queue_publish}
+      - {from: "queue:orderevents", to: catalog, type: queue_consume}
+  - name: no phantom relationships
+    repositories: [{name: negative, fixture: testdata/negative}]
+    edges: []

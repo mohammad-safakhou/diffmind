@@ -1,5 +1,9 @@
 # Plan: repositories-only UI + generate diffmind.yaml from runs
 
+> **Historical, superseded UI plan.** The current product uses project
+> workspaces. See [current architecture](../../ARCHITECTURE.md) and
+> [the roadmap](../../ROADMAP.md).
+
 > Status: proposed (not yet implemented). Captures the agreed design for the
 > next dashboard iteration.
 

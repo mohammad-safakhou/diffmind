@@ -389,13 +389,18 @@ func (s *Server) handleSyncRepo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) syncGitRepo(ctx context.Context, pid string, repo store.Repo) (*store.Repo, error) {
+	release, err := s.acquireRepository(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	_, _ = s.store.UpdateRepo(pid, repo.ID, func(rp *store.Repo) {
 		rp.SyncStatus = "syncing"
 		rp.SyncError = ""
 	})
 	clonePath := firstNonEmpty(repo.ClonePath, s.store.WorktreeDir(pid, repo.ID))
 	if err := os.MkdirAll(filepath.Dir(clonePath), 0o755); err != nil {
-		return nil, err
+		return s.markRepoSyncFailed(pid, repo.ID, err)
 	}
 	if _, err := os.Stat(filepath.Join(clonePath, ".git")); os.IsNotExist(err) {
 		if err := gitCommand(ctx, "", repo.GitURL, "clone", repo.GitURL, clonePath); err != nil {
@@ -405,17 +410,20 @@ func (s *Server) syncGitRepo(ctx context.Context, pid string, repo store.Repo) (
 		if err := gitCommand(ctx, clonePath, repo.GitURL, "fetch", "--prune", "origin"); err != nil {
 			return s.markRepoSyncFailed(pid, repo.ID, err)
 		}
-		info := inspectLocalGit(ctx, clonePath, repo.DefaultBranch)
-		if info.Dirty {
-			return s.markRepoSyncFailed(pid, repo.ID, fmt.Errorf("managed checkout has local changes; refusing to overwrite them"))
-		}
-		if info.RemoteHead != "" && info.Head != info.RemoteHead {
-			if err := gitCommand(ctx, clonePath, repo.GitURL, "checkout", "--detach", "origin/"+info.Branch); err != nil {
-				return s.markRepoSyncFailed(pid, repo.ID, err)
-			}
-		}
 	}
 	info := inspectLocalGit(ctx, clonePath, repo.DefaultBranch)
+	if info.Dirty {
+		return s.markRepoSyncFailed(pid, repo.ID, fmt.Errorf("managed checkout has local changes; refusing to overwrite them"))
+	}
+	if info.RemoteHead == "" {
+		return s.markRepoSyncFailed(pid, repo.ID, fmt.Errorf("configured remote branch %q is unavailable", info.Branch))
+	}
+	if info.Head != info.RemoteHead {
+		if err := gitCommand(ctx, clonePath, repo.GitURL, "checkout", "--detach", "origin/"+info.Branch); err != nil {
+			return s.markRepoSyncFailed(pid, repo.ID, err)
+		}
+		info = inspectLocalGit(ctx, clonePath, info.Branch)
+	}
 	return s.store.UpdateRepo(pid, repo.ID, func(rp *store.Repo) {
 		rp.SourceType = "git"
 		rp.GitURL = repo.GitURL
@@ -447,12 +455,15 @@ type gitInfo struct {
 
 func inspectLocalGit(ctx context.Context, path, branch string) gitInfo {
 	if branch == "" {
-		branch = firstNonEmpty(gitOutput(ctx, path, "rev-parse", "--abbrev-ref", "HEAD"), "main")
+		branch = gitOutput(ctx, path, "rev-parse", "--abbrev-ref", "HEAD")
+		if branch == "HEAD" || branch == "" {
+			branch = strings.TrimPrefix(gitOutput(ctx, path, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"), "origin/")
+		}
 	}
 	return gitInfo{
 		Branch:     branch,
 		Head:       gitOutput(ctx, path, "rev-parse", "HEAD"),
-		RemoteHead: gitOutput(ctx, path, "rev-parse", "origin/"+branch),
+		RemoteHead: gitOutput(ctx, path, "rev-parse", "--verify", "refs/remotes/origin/"+branch),
 		Dirty:      strings.TrimSpace(gitOutput(ctx, path, "status", "--porcelain")) != "",
 	}
 }
@@ -610,12 +621,16 @@ func decodeDiffMindRunOptions(r *http.Request) (orchestrator.DiffMindRunOptions,
 }
 
 func (s *Server) runDiffMindForRepo(pid, rid string, repo store.Repo, opts orchestrator.DiffMindRunOptions) {
+	s.runDiffMindForRepoContext(s.serverContext(), pid, rid, repo, opts)
+}
+
+func (s *Server) runDiffMindForRepoContext(ctx context.Context, pid, rid string, repo store.Repo, opts orchestrator.DiffMindRunOptions) {
 	repoPath := repo.Path
 	if repoPath == "" {
 		repoPath = repo.ClonePath
 	}
 	if _, statErr := os.Stat(repoPath); statErr != nil && repo.GitURL != "" {
-		if updated, syncErr := s.syncGitRepo(context.Background(), pid, repo); syncErr == nil && updated != nil {
+		if updated, syncErr := s.syncGitRepo(ctx, pid, repo); syncErr == nil && updated != nil {
 			repo = *updated
 			repoPath = repo.Path
 		} else if syncErr != nil {
@@ -628,7 +643,18 @@ func (s *Server) runDiffMindForRepo(pid, rid string, repo store.Repo, opts orche
 		}
 	}
 	binary := firstNonEmpty(os.Getenv("DIFFMIND_BINARY"), config.NewDefault().DiffMind.BinaryPath)
-	err := orchestrator.RunDiffMind(binary, repoPath, opts, s.log)
+	release, acquireErr := s.acquireRepository(ctx)
+	if acquireErr != nil {
+		_, _ = s.store.UpdateRepo(pid, rid, func(r *store.Repo) { r.SyncStatus = "diffmind_failed"; r.SyncError = acquireErr.Error() })
+		return
+	}
+	defer release()
+	previous, _ := s.diffmindRunsForRepo(repoPath)
+	previousIDs := make(map[string]bool, len(previous))
+	for _, run := range previous {
+		previousIDs[run.RunID] = true
+	}
+	err := orchestrator.RunDiffMindContext(ctx, binary, repoPath, opts, s.log)
 	runs, _ := s.diffmindRunsForRepo(repoPath)
 	var latest string
 	var team string
@@ -638,6 +664,9 @@ func (s *Server) runDiffMindForRepo(pid, rid string, repo store.Repo, opts orche
 			latest = runs[0].RunID
 			team = firstNonEmpty(runs[0].Team, "default")
 		}
+	}
+	if err == nil && (latest == "" || previousIDs[latest]) {
+		err = errors.New("analyzer did not produce a new matching run")
 	}
 	_, _ = s.store.UpdateRepo(pid, rid, func(rp *store.Repo) {
 		if err != nil {

@@ -1,0 +1,42 @@
+name: Missing architecture pattern
+description: Propose a synthetic detector or knowledge-pack improvement.
+title: "Pattern: "
+body:
+  - type: markdown
+    attributes:
+      value: "Do not include company source, internal hostnames, tokens, or customer data. Reduce the issue to synthetic files."
+  - type: input
+    id: version
+    attributes:
+      label: Diffmind version and platform
+      description: Output from diffmind version, without private paths.
+    validations:
+      required: true
+  - type: textarea
+    id: fixture
+    attributes:
+      label: Minimal synthetic fixture
+      description: Show source/config files and framework versions needed to reproduce.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected facts and evidence
+      description: State service identities, relationships, and supporting file/line locations.
+    validations:
+      required: true
+  - type: textarea
+    id: negative
+    attributes:
+      label: Negative cases and limits
+      description: What similar input must not match? What is out of scope?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result and checks tried
+      description: Include sanitized errors or graph differences, not a company backup archive.
+    validations:
+      required: true

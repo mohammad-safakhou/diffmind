@@ -6,8 +6,13 @@ import { GraphCanvas } from './GraphCanvas.jsx'
 import { GraphDetailBody } from './GraphDetails.jsx'
 import { StatusBadge } from './tabs/RunsTab.jsx'
 import { PacksTab } from './tabs/PacksTab.jsx'
+import { cancelIngestion, resumeIngestion } from '../lib/api.js'
+import { ingestionCanResume, ingestionProgress } from '../lib/ingestion.js'
+import { useProjectCapabilities } from '../lib/access.js'
+import { enqueueRefresh } from '../lib/api.js'
 
 export function ProjectWorkspace({ pid }) {
+  const { data: caps, error: accessError } = useProjectCapabilities(pid)
   const [workspace, setWorkspace] = useState(null)
   const [ingestion, setIngestion] = useState(null)
   const [selected, setSelected] = useState(null)
@@ -232,6 +237,7 @@ export function ProjectWorkspace({ pid }) {
     finally { setBusy('') }
   }
 
+  if (accessError) return <div class="page"><button class="btn ghost" onClick={() => navigate('/')}>Projects</button><p class="banner error">{accessError}</p></div>
   return (
     <div class="workspace">
       <header class="workspace-topbar">
@@ -241,15 +247,21 @@ export function ProjectWorkspace({ pid }) {
           {workspace?.latest_run && <StatusBadge status={workspace.latest_run.status} />}
         </div>
         <div class="workspace-actions">
+          <button class="btn ghost" onClick={() => navigate(`/projects/${encodeURIComponent(pid)}/operations`)}>Operations</button>
+          {caps?.can_manage_access && <button class="btn ghost" onClick={() => navigate(`/projects/${encodeURIComponent(pid)}/access`)}>Project access</button>}
+          <button class="btn ghost" onClick={() => navigate(`/projects/${encodeURIComponent(pid)}/compare`)}>Compare graphs</button>
           <button class="btn ghost" disabled={ingestionIsRunning} onClick={() => setPacksOpen(true)}>Knowledge packs</button>
           <button class="btn ghost" onClick={() => navigate(`/projects/${encodeURIComponent(pid)}/pull-requests`)}>
             PR impact{sumOpenPRs(live) > 0 ? ` · ${sumOpenPRs(live)}` : ''}
           </button>
           <button class="btn ghost" onClick={refresh}>Refresh</button>
-          <button class="btn" disabled={ingestionIsRunning} onClick={() => setImportOpen(true)}>{ingestionIsRunning ? 'Importing & building...' : 'Import & build'}</button>
-          <button class="btn ghost" disabled={ingestionIsRunning} onClick={() => setAddOpen(true)}>Add repo</button>
-          <button class="btn ghost" disabled={!repos.length || hasRunningDiffMind || ingestionIsRunning || busy === 'batch-diffmind'} onClick={() => setBatchOpen(true)}>{busy === 'batch-diffmind' ? 'Starting batch...' : 'Run DiffMind all'}</button>
-          <button class="btn ghost" disabled={busy === 'graph' || graphIsRunning || ingestionIsRunning} onClick={graphRun}>{graphIsRunning ? 'Building graph...' : busy === 'graph' ? 'Starting...' : 'Build graph'}</button>
+          {ingestionIsRunning && caps?.can_refresh && <button class="btn danger" disabled={busy === 'ingestion'} onClick={() => runAction('ingestion', async () => { await cancelIngestion(pid); await refresh() })}>Cancel ingestion</button>}
+          {caps?.can_configure && ingestionCanResume(ingestion) && <button class="btn" disabled={busy === 'ingestion'} onClick={() => runAction('ingestion', async () => { await resumeIngestion(pid); await refresh() })}>Resume / retry</button>}
+          <button class="btn ghost" disabled={!caps?.can_refresh || !repos.length || ingestionIsRunning || hasRunningDiffMind || graphIsRunning || busy === 'ingestion'} onClick={() => runAction('ingestion', async () => { if (caps?.mode === 'scoped') { await enqueueRefresh(pid); await refresh(); setNotice('Refresh queued. Open Operations to follow it.') } else { await startIngestion(pid); await refresh() } })}>Update graph</button>
+          <button class="btn" disabled={!caps?.can_configure || ingestionIsRunning} onClick={() => setImportOpen(true)}>{ingestionIsRunning ? 'Importing & building...' : 'Import & build'}</button>
+          <button class="btn ghost" disabled={!caps?.can_configure || ingestionIsRunning} onClick={() => setAddOpen(true)}>Add repo</button>
+          <button class="btn ghost" disabled={!caps?.can_configure || !repos.length || hasRunningDiffMind || ingestionIsRunning || busy === 'batch-diffmind'} onClick={() => setBatchOpen(true)}>{busy === 'batch-diffmind' ? 'Starting batch...' : 'Run DiffMind all'}</button>
+          <button class="btn ghost" disabled={!caps?.can_configure || busy === 'graph' || graphIsRunning || ingestionIsRunning} onClick={graphRun}>{graphIsRunning ? 'Building graph...' : busy === 'graph' ? 'Starting...' : 'Build graph'}</button>
         </div>
       </header>
 
@@ -257,11 +269,11 @@ export function ProjectWorkspace({ pid }) {
       {graphError && <div class="workspace-error banner error">Graph load failed: {graphError}</div>}
       {currentGraphRun?.status === 'failed' && currentGraphRun.error && <div class="workspace-error banner error">Graph build failed: {currentGraphRun.error}</div>}
       {notice && <div class="workspace-notice banner ok">{notice}</div>}
-      {ingestion && ['partial', 'failed'].includes(ingestion.status) && <IngestionResult ingestion={ingestion} />}
+      {ingestion && !['running', 'not_started'].includes(ingestion.status) && <IngestionResult ingestion={ingestion} />}
       {packsOpen && (
         <Modal title="Knowledge packs" onClose={() => setPacksOpen(false)} wide>
           <p class="muted">Teach DiffMind your organization’s repository conventions with deterministic, versioned extraction rules.</p>
-          <PacksTab pid={pid} />
+          <PacksTab pid={pid} capabilities={caps} />
         </Modal>
       )}
       <GraphQualityBanner quality={(currentGraphRun?.graph_quality || workspace?.latest_run?.graph_quality)} />
@@ -293,7 +305,7 @@ export function ProjectWorkspace({ pid }) {
           ? <GraphCanvas graph={graph} onSelect={handleGraphSelect} detailLoaded={graphDetailLoaded} onRequestFullDetail={loadFullGraph} />
           : graphLoading
             ? <GraphLoading run={workspace?.latest_run} />
-            : <EmptyBoard repos={repos} busy={ingestionIsRunning} onImport={() => setImportOpen(true)} onAdd={() => setAddOpen(true)} />}
+            : <EmptyBoard repos={repos} busy={ingestionIsRunning} canConfigure={caps?.can_configure} onImport={() => setImportOpen(true)} onAdd={() => setAddOpen(true)} />}
       </main>
 
       <aside class="workspace-right">
@@ -303,9 +315,9 @@ export function ProjectWorkspace({ pid }) {
           onSync={selectedRepo ? () => doSync(selectedRepo) : null}
           onDiffMind={selectedRepo ? () => setDiffMindRepo(selectedRepo) : null}
           onYaml={selectedRepo ? () => setYamlRepo(selectedRepo) : null}
-          onDelete={selectedRepo ? () => setDeleteTarget(selectedRepo) : null}
+          onDelete={selectedRepo && caps?.can_delete ? () => setDeleteTarget(selectedRepo) : null}
           busy={busy}
-          locked={ingestionIsRunning}
+          locked={ingestionIsRunning || !caps?.can_configure}
         />
       </aside>
 
@@ -394,7 +406,7 @@ function GraphActivity({ run }) {
 }
 
 function IngestionActivity({ ingestion }) {
-  const processed = ingestion.analyzed || ingestion.synced || 0
+  const processed = ingestionProgress(ingestion)
   const total = ingestion.repositories || ingestion.discovered || 0
   return (
     <div class="ingestion-activity" role="status" aria-live="polite">
@@ -402,6 +414,8 @@ function IngestionActivity({ ingestion }) {
       <div>
         <strong>{ingestionPhaseLabel(ingestion.phase)}</strong>
         <span>{total ? `${processed} of ${total} repositories processed` : 'Discovering repositories'}{ingestion.source ? ` · ${ingestion.source}` : ''}</span>
+        <span>{ingestion.reused || 0} unchanged repositories reused</span>
+        <details><summary>Repository progress</summary><ul>{(ingestion.repo_progress || []).map((repo) => <li key={repo.repo_id}>{repo.repo_id}: {repo.status}{repo.error ? ` — ${repo.error}` : ''}</li>)}</ul></details>
       </div>
     </div>
   )
@@ -409,12 +423,12 @@ function IngestionActivity({ ingestion }) {
 
 function IngestionResult({ ingestion }) {
   const errors = ingestion.errors || []
-  const failed = ingestion.status === 'failed'
+  const failed = ['failed', 'interrupted', 'cancelled'].includes(ingestion.status)
   return (
     <details class={'workspace-ingestion-result banner ' + (failed ? 'error' : ingestion.status === 'partial' ? 'warn' : 'ok')}>
       <summary>
         <strong>Last ingestion {ingestion.status}</strong>
-        <span>{ingestion.analyzed || 0}/{ingestion.repositories || 0} analyzed · {ingestion.graph_run_id ? 'graph built' : 'no graph'}</span>
+        <span>{ingestion.analyzed || 0} analyzed · {ingestion.reused || 0} reused · attempt {ingestion.attempt || 1} · {ingestion.graph_run_id ? 'graph run recorded' : 'no graph'}</span>
       </summary>
       {errors.length > 0 && <ul>{errors.map((message, index) => <li key={index}>{message}</li>)}</ul>}
     </details>
@@ -427,6 +441,7 @@ function ingestionPhaseLabel(phase) {
     case 'importing': return 'Importing repositories'
     case 'processing_repositories': return 'Syncing and analyzing repositories'
     case 'building_graph': return 'Building the system graph'
+    case 'resuming': return 'Resuming ingestion from saved checkpoints'
     default: return 'Starting repository ingestion'
   }
 }
@@ -439,14 +454,14 @@ function isGraphRunActive(run) {
   return run?.status === 'running' || run?.status === 'cancelling'
 }
 
-function EmptyBoard({ repos, busy, onImport, onAdd }) {
+function EmptyBoard({ repos, busy, canConfigure, onImport, onAdd }) {
   return (
     <div class="workspace-empty">
       <h2>Graph workspace</h2>
-      <p>{repos.length ? 'Import more repositories and rebuild everything in one operation, or use the manual controls above.' : 'Import your organization or a local repository directory to build the first graph.'}</p>
+      <p>{!canConfigure ? 'No saved graph yet. Ask an administrator to configure repositories and build the first graph.' : repos.length ? 'Import more repositories and rebuild everything in one operation, or use the manual controls above.' : 'Import your organization or a local repository directory to build the first graph.'}</p>
       <div class="actions">
-        <button class="btn" disabled={busy} onClick={onImport}>{busy ? 'Building graph...' : 'Import repositories and build graph'}</button>
-        <button class="btn ghost" disabled={busy} onClick={onAdd}>Add one repository</button>
+        <button class="btn" disabled={busy || !canConfigure} onClick={onImport}>{busy ? 'Building graph...' : 'Import repositories and build graph'}</button>
+        <button class="btn ghost" disabled={busy || !canConfigure} onClick={onAdd}>Add one repository</button>
       </div>
     </div>
   )
@@ -482,7 +497,7 @@ function Inspector({ selection, live, onSync, onDiffMind, onYaml, onDelete, busy
           <button class="btn ghost" disabled={locked || busy === 'sync:' + repo.id || isRunning} onClick={onSync}>Sync git</button>
           <button class="btn" disabled={locked || busy === 'diffmind:' + repo.id || isRunning} onClick={onDiffMind}>{isRunning ? 'DiffMind running...' : 'Configure run'}</button>
           <button class="btn ghost" disabled={locked} onClick={onYaml}>Configuration</button>
-          <button class="btn danger" disabled={locked} onClick={onDelete}>Remove</button>
+          <button class="btn danger" disabled={locked || !onDelete} onClick={onDelete}>Remove</button>
         </div>
         {isRunning && (
           <div class="run-progress-card">

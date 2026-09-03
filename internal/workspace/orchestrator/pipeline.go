@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mohammad-safakhou/diffmind/internal/workspace/archgraph"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/artifacts"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/config"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/graph"
@@ -30,10 +31,11 @@ type ProgressEvent struct {
 
 // Pipeline orchestrates the full DiffMind run.
 type Pipeline struct {
-	cfg *config.Config
-	log *util.Logger
-	reg *registry.Registry
-	bps []*knowledge.Pack
+	cfg         *config.Config
+	log         *util.Logger
+	reg         *registry.Registry
+	bps         []*knowledge.Pack
+	supplements map[string]archgraph.Supplement
 
 	// Progress, when set, receives phase transitions for live streaming.
 	Progress func(ProgressEvent)
@@ -45,9 +47,10 @@ type Pipeline struct {
 // NewPipeline creates a new pipeline.
 func NewPipeline(cfg *config.Config, log *util.Logger) *Pipeline {
 	return &Pipeline{
-		cfg: cfg,
-		log: log,
-		reg: registry.New(),
+		cfg:         cfg,
+		log:         log,
+		reg:         registry.New(),
+		supplements: map[string]archgraph.Supplement{},
 	}
 }
 
@@ -60,6 +63,7 @@ type RunResult struct {
 	EdgeCount     int
 	Warnings      []string
 	PackSetDigest string
+	Supplements   map[string]archgraph.Supplement
 }
 
 // Run executes the full pipeline with a background context (CLI entry point).
@@ -133,6 +137,14 @@ func (p *Pipeline) RunCtx(ctx context.Context) (*RunResult, error) {
 		p.emit("resolution", "failed", err.Error())
 		return nil, fmt.Errorf("phase 2 (resolution) failed: %w", err)
 	}
+	for _, match := range resolution.Matches {
+		supplement := p.supplements[match.FromService]
+		if supplement.Targets == nil {
+			supplement.Targets = map[string]archgraph.ResolvedTarget{}
+		}
+		supplement.Targets[match.DependencyID] = archgraph.ResolvedTarget{Service: match.ToService, Reason: match.Reasoning, Confidence: match.Confidence}
+		p.supplements[match.FromService] = supplement
+	}
 	p.emit("resolution", "completed", fmt.Sprintf("%d matches, %d unresolved", len(resolution.Matches), len(resolution.Unresolved)))
 	p.log.Info("resolution complete",
 		"matches", fmt.Sprintf("%d", len(resolution.Matches)),
@@ -175,6 +187,7 @@ func (p *Pipeline) RunCtx(ctx context.Context) (*RunResult, error) {
 		EdgeCount:     len(g.Edges),
 		Warnings:      warnings,
 		PackSetDigest: packSetDigest,
+		Supplements:   p.supplements,
 	}, nil
 }
 
@@ -207,7 +220,6 @@ func (p *Pipeline) phaseCollection(ctx context.Context) error {
 				arch = &model.ServiceArchitecture{ServiceName: repo.Name, RepoPath: repo.Path}
 			}
 
-			p.reg.AddArchitecture(repo.Name, arch)
 			p.log.Info("collected architecture",
 				"service", repo.Name,
 				"exposures", fmt.Sprintf("%d", len(arch.Exposures)),
@@ -218,9 +230,28 @@ func (p *Pipeline) phaseCollection(ctx context.Context) error {
 			matchedBPs = filterPacks(matchedBPs, repo.PackIDs)
 			engine := knowledge.NewEngine(p.log)
 			var allResults []knowledge.ExtractionResult
+			var supplement archgraph.Supplement
 			for _, bp := range matchedBPs {
 				allResults = append(allResults, engine.Run(bp, repo.Path)...)
+				detected, detectErr := knowledge.Detect(ctx, bp, repo.Path, repo.Name)
+				if detectErr != nil {
+					mu.Lock()
+					errors = append(errors, fmt.Errorf("detect relationships for %s: %w", repo.Name, detectErr))
+					mu.Unlock()
+					return
+				}
+				if len(detected.Skipped) > 0 {
+					p.warnf(fmt.Sprintf("knowledge pack %s skipped %d non-literal or unsafe targets in %s; use pack explain for file/line diagnostics", bp.ID, len(detected.Skipped), repo.Name))
+				}
+				supplement.Dependencies = append(supplement.Dependencies, detected.Dependencies...)
+				supplement.Exposures = append(supplement.Exposures, detected.Exposures...)
 			}
+			arch.Dependencies = append(arch.Dependencies, supplement.Dependencies...)
+			arch.Exposures = append(arch.Exposures, supplement.Exposures...)
+			p.reg.AddArchitecture(repo.Name, arch)
+			mu.Lock()
+			p.supplements[repo.Name] = supplement
+			mu.Unlock()
 			identity, identityErr := knowledge.ToIdentity(repo.Name, repo.Path, allResults)
 			if identityErr == nil {
 				var override *knowledge.ServiceOverride

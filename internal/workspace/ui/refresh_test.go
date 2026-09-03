@@ -194,6 +194,48 @@ func runGitForTest(t *testing.T, dir string, args ...string) {
 	}
 }
 
+func TestSyncHonorsConfiguredBranchOnInitialCloneAndFailsMissingBranch(t *testing.T) {
+	s := newAuthTestServer(t)
+	p, _ := s.store.CreateProject(store.Project{Name: "branch-test"})
+	source := t.TempDir()
+	runGitForTest(t, source, "init", "-b", "master")
+	runGitForTest(t, source, "config", "user.name", "Developer")
+	runGitForTest(t, source, "config", "user.email", "developer@example.test")
+	if err := os.WriteFile(filepath.Join(source, "version.txt"), []byte("master"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runGitForTest(t, source, "add", ".")
+	runGitForTest(t, source, "commit", "-m", "master")
+	runGitForTest(t, source, "checkout", "-b", "release")
+	if err := os.WriteFile(filepath.Join(source, "version.txt"), []byte("release"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runGitForTest(t, source, "commit", "-am", "release")
+	runGitForTest(t, source, "checkout", "master")
+	repo, err := s.store.CreateRepo(p.ID, store.Repo{Name: "configured", GitURL: source, DefaultBranch: "release"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned, err := s.syncGitRepo(context.Background(), p.ID, *repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFileContents(t, filepath.Join(cloned.Path, "version.txt"), "release")
+	cloned.DefaultBranch = "missing"
+	if _, err := s.syncGitRepo(context.Background(), p.ID, *cloned); err == nil {
+		t.Fatal("missing branch reported success")
+	}
+	assertFileContents(t, filepath.Join(cloned.Path, "version.txt"), "release")
+	cloned.DefaultBranch = "release"
+	if err := os.WriteFile(filepath.Join(cloned.Path, "version.txt"), []byte("local work"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.syncGitRepo(context.Background(), p.ID, *cloned); err == nil {
+		t.Fatal("dirty work was overwritten")
+	}
+	assertFileContents(t, filepath.Join(cloned.Path, "version.txt"), "local work")
+}
+
 func assertFileContents(t *testing.T, path, want string) {
 	t.Helper()
 	got, err := os.ReadFile(path)

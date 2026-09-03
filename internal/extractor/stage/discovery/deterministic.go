@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -438,6 +439,26 @@ func EntityFromFrameworkBinding(idx *astpkg.ProjectIndex, obj objectives.Objecti
 		e.Details["method"] = method
 		e.Details["path"] = path
 	case "outbound_http":
+		if b.Framework == "net/http" {
+			parts := strings.SplitN(trigger, " ", 2)
+			if len(parts) != 2 {
+				return candidate{}, false
+			}
+			u, err := url.Parse(parts[1])
+			if err != nil || u.Hostname() == "" {
+				return candidate{}, false
+			}
+			path := u.Path
+			if path == "" {
+				path = "/"
+			}
+			e.Name = parts[0] + " " + parts[1]
+			e.Summary = "net/http outbound call to a literal destination"
+			e.Details["method"], e.Details["path"] = parts[0], path
+			e.Details["host"], e.Details["target_service"] = u.Hostname(), u.Hostname()
+			e.Details["url_template"], e.Details["base_url"] = parts[1], u.Scheme+"://"+u.Host
+			return e, true
+		}
 		method, path := parseHTTPTrigger(trigger)
 		if method == "" || path == "" {
 			return candidate{}, false

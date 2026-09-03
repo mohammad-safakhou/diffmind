@@ -29,6 +29,8 @@ jobs:
         working-directory: internal/workspace/ui/web
       - run: npm run build
         working-directory: internal/workspace/ui/web
+      - run: npm test
+        working-directory: internal/workspace/ui/web
       - run: npm ci
         working-directory: internal/extractor/ui/web
       - run: npm audit --audit-level=low
@@ -38,10 +40,12 @@ jobs:
       - run: npm test
         working-directory: internal/extractor/ui/web
       - run: go test ./...
-      - run: go test -race ./internal/workspace/query ./internal/workspace/mcpserver ./internal/workspace/ui
+      - run: go test -race ./internal/workspace/query ./internal/workspace/mcpserver ./internal/workspace/ui ./internal/workspace/store ./internal/workspace/backup ./internal/workspace/homelock
       - run: go vet ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
       - run: go run ./cmd/diffmind pack lint ./packs
       - run: go run ./cmd/diffmind pack test ./packs
       - run: sh scripts/test-install.sh
+      - run: sh scripts/test-demo.sh
+      - run: ruby -c Formula/diffmind.rb
       - run: go build ./cmd/diffmind

@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/artifacts"
+	"github.com/mohammad-safakhou/diffmind/internal/workspace/runmgr"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/store"
 )
 
@@ -213,15 +215,29 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	defer cancel()
 
+	s.streamRunEvents(w, r, pid, ch, flusher)
+}
+
+func (s *Server) streamRunEvents(w http.ResponseWriter, r *http.Request, pid string, ch <-chan runmgr.Event, flusher http.Flusher) {
 	_, _ = fmt.Fprintf(w, ": connected\n\n")
 	flusher.Flush()
 
 	ctx := r.Context()
+	recheck := time.NewTicker(time.Second)
+	defer recheck.Stop()
+	canRead := func() bool { _, err := s.projectRole(identityFromContext(ctx), pid); return err == nil }
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-recheck.C:
+			if !canRead() {
+				return
+			}
 		case e, ok := <-ch:
+			if !canRead() {
+				return
+			}
 			if !ok {
 				_, _ = fmt.Fprintf(w, "event: eof\ndata: {}\n\n")
 				flusher.Flush()

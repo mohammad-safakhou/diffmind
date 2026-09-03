@@ -1,0 +1,52 @@
+api_version: diffmind.dev/v1alpha1
+kind: KnowledgePack
+id: spring-openfeign-config
+name: Spring Cloud OpenFeign configured URLs
+description: Opt-in configured HTTP relationships from base application files, not runtime client reachability.
+version: 1.0.0
+license: Apache-2.0
+compatibility: ">=0.2.0"
+applies_to:
+  kind: service_repo
+detectors:
+  - name: YAML Feign clients
+    type: outbound_http
+    platform: spring-openfeign
+    source: {glob: src/main/resources/application.yaml}
+    field: spring.cloud.openfeign.client.config.*.url
+  - name: YML Feign clients
+    type: outbound_http
+    platform: spring-openfeign
+    source: {glob: src/main/resources/application.yml}
+    field: spring.cloud.openfeign.client.config.*.url
+  - name: properties Feign clients
+    type: outbound_http
+    platform: spring-openfeign
+    source: {glob: src/main/resources/application.properties}
+    strategy: regex
+    pattern: '(?m)^[ \t]*spring\.cloud\.openfeign\.client\.config\.[A-Za-z0-9_-]+\.url[ \t]*=[ \t]*(?P<target>https?://[^\s\\]+)[ \t]*\r?$'
+tests:
+  - name: YAML literal and placeholder
+    fixture: testdata/yaml
+    expected: {service_name: gateway}
+    dependencies:
+      - {type: outbound_http, target: "https://catalog/products", file: src/main/resources/application.yaml, line: 8}
+  - name: properties comments and invalid values
+    fixture: testdata/properties
+    expected: {service_name: worker}
+    dependencies:
+      - {type: outbound_http, target: "https://catalog/items", file: src/main/resources/application.properties, line: 2}
+  - name: YML literal
+    fixture: testdata/yml
+    expected: {service_name: gateway}
+    dependencies:
+      - {type: outbound_http, target: "https://catalog/products", file: src/main/resources/application.yml, line: 8}
+graph_tests:
+  - name: only configured literal clients form edges
+    repositories:
+      - {name: gateway, fixture: testdata/yaml}
+      - {name: worker, fixture: testdata/properties}
+      - {name: catalog, fixture: testdata/catalog}
+    edges:
+      - {from: gateway, to: catalog, type: http}
+      - {from: worker, to: catalog, type: http}

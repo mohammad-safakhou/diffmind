@@ -35,12 +35,18 @@ export function useRoute() {
 export function parseRoute(path) {
   const [pathname, query = ''] = path.split('?')
   const params = Object.fromEntries(new URLSearchParams(query))
+  const access = pathname.match(/^\/projects\/([^/]+)\/access$/)
+  if (access) return { name: 'access', pid: decodeURIComponent(access[1]) }
   let m = pathname.match(/^\/projects\/([^/]+)\/runs\/([^/]+)\/trace$/)
   if (m) return { name: 'trace', pid: decodeURIComponent(m[1]), rid: decodeURIComponent(m[2]), params }
   m = pathname.match(/^\/projects\/([^/]+)\/runs\/([^/]+)$/)
   if (m) return { name: 'run', pid: decodeURIComponent(m[1]), rid: decodeURIComponent(m[2]) }
   m = pathname.match(/^\/projects\/([^/]+)\/pull-requests$/)
   if (m) return { name: 'pull-requests', pid: decodeURIComponent(m[1]), params }
+  m = pathname.match(/^\/projects\/([^/]+)\/compare$/)
+  if (m) return { name: 'compare', pid: decodeURIComponent(m[1]), params }
+  m = pathname.match(/^\/projects\/([^/]+)\/operations$/)
+  if (m) return { name: 'operations', pid: decodeURIComponent(m[1]) }
   m = pathname.match(/^\/projects\/([^/]+)$/)
   if (m) return { name: 'project', pid: decodeURIComponent(m[1]) }
   return { name: 'projects' }

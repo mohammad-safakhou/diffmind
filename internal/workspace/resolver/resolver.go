@@ -187,13 +187,16 @@ func (r *Resolver) tryDeterministicMatch(fromService string, dep *model.Dependen
 
 	targetNorm := normalizeIdentity(targetRaw)
 	targetHost := normalizeHostname(targetRaw)
+	var best *ResolvedMatch
+	ambiguous := false
 	for _, entry := range index {
 		if entry.ServiceName == fromService {
 			continue // skip self-references
 		}
 		confidence, reason, ok := matchIdentityTier(target, targetNorm, targetHost, entry)
-		if ok {
-			return &ResolvedMatch{
+		if ok && (best == nil || confidence > best.Confidence) {
+			ambiguous = false
+			best = &ResolvedMatch{
 				FromService:    fromService,
 				DependencyID:   dep.ID,
 				DependencyName: dep.Name,
@@ -202,10 +205,15 @@ func (r *Resolver) tryDeterministicMatch(fromService string, dep *model.Dependen
 				MatchType:      classifyMatchType(dep.Type),
 				Confidence:     confidence,
 				Reasoning:      reason,
-			}, nil
+			}
+		} else if ok && confidence == best.Confidence && entry.ServiceName != best.ToService {
+			ambiguous = true
 		}
 	}
-	return nil, nil
+	if ambiguous {
+		return nil, fmt.Errorf("ambiguous service identity for dependency %s in %s: multiple services match %q equally; add an explicit resolution rule", dep.ID, fromService, targetRaw)
+	}
+	return best, nil
 }
 
 func (r *Resolver) tryKnowledgeRule(fromService string, dep *model.Dependency, target string) (*ResolvedMatch, error) {

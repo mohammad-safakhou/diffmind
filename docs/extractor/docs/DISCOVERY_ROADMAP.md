@@ -1,5 +1,8 @@
 # Discovery After Detail Removal
 
+> **Historical, superseded roadmap.** References to LLM discovery and agents
+> describe a removed design. See the [current roadmap](../../ROADMAP.md).
+
 ## Current ownership
 
 The June 2026 pipeline has no LLM detail stage. The entity lifecycle is:

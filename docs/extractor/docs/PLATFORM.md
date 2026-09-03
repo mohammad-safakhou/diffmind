@@ -1,8 +1,11 @@
-# DiffMind — Platform, Goals & Roadmap
+# Historical platform design — superseded
 
-> Read this first if you're a new contributor (human or AI session). It captures
-> *what DiffMind is, why it's built the way it is, and where it's going* — so you
-> don't have to reconstruct the goals from the code every time.
+> **Archived design, not current instructions or backlog.** This document
+> describes the removed LLM/OpenCode design and the earlier extractor catalog.
+> Diffmind is now deterministic-only. Start with [current architecture](../../ARCHITECTURE.md)
+> and the [product roadmap](../../ROADMAP.md). The text below is historical context.
+
+> The original design follows; it must not be used to describe current behavior.
 
 ---
 

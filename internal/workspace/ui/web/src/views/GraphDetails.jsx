@@ -1,4 +1,5 @@
 import { navigate } from '../lib/router.js'
+import { knowledgeRows } from '../lib/knowledge.js'
 
 export function graphDetailTitle(sel) {
   const d = sel?.data || {}
@@ -248,8 +249,9 @@ function ObjectCard({ item }) {
     ['Table(s)', arrayOrString(details.target?.tables) || details.table || details.table_or_entity],
     ['Queue/topic', details.queue || details.topic || details.destination],
     ['Cache', details.cache || details.cache_name || details.target?.cache],
-    ['Confidence', details.confidence],
+    ['Confidence', details.confidence ?? details.detection_confidence],
     ['Origin', details.origin],
+    ...knowledgeRows(details),
   ])
   return (
     <div class="object-card">
@@ -263,6 +265,7 @@ function ObjectCard({ item }) {
       <DetailJSON title="ORM" value={details.orm} />
       <DetailRefs title="Observations" refs={details.observations} />
       <DetailRefs title="Evidence refs" refs={details.evidence_refs} />
+      <DetailJSON title="Source evidence" value={details.evidence} />
     </div>
   )
 }

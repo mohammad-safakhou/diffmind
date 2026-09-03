@@ -330,6 +330,12 @@ func firstPositive(vals ...int) int {
 // serviceRepoDirs maps a service name to the DiffMind run directory whose
 // exposures/dependencies/connections describe that service.
 func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
+	return BuildWithSupplements(runID, serviceRepoDirs, nil)
+}
+
+// BuildWithSupplements uses the same graph builder for pack fixtures, the UI,
+// and MCP. Supplements do not mutate extractor artifacts.
+func BuildWithSupplements(runID string, serviceRepoDirs map[string]string, supplements map[string]Supplement) *ArchGraph {
 	g := &ArchGraph{RunID: runID}
 
 	knownServices := serviceAliasMap(serviceRepoDirs)
@@ -345,6 +351,13 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 	for _, name := range sortedStringKeys(serviceRepoDirs) {
 		diffmindDir := serviceRepoDirs[name]
 		exposures, dependencies, connections := loadDiffMindData(diffmindDir)
+		if exposures == nil {
+			exposures = map[string][]map[string]any{}
+		}
+		if dependencies == nil {
+			dependencies = map[string][]map[string]any{}
+		}
+		supplementData(exposures, dependencies, supplements[name])
 
 		svc := &ServiceNode{
 			Name:  name,
@@ -375,7 +388,7 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 			qKey = scopedQueueKey(qKey, name, d)
 			kind := inferQueueKind(qName, d)
 			fifo := strings.Contains(strings.ToLower(qName), "fifo")
-			allQueueConsume[name] = append(allQueueConsume[name], queueRef{name: qDisplay, key: qKey, kind: kind, fifo: fifo})
+			allQueueConsume[name] = append(allQueueConsume[name], queueRef{name: qDisplay, key: qKey, kind: kind, fifo: fifo, summary: toSummary(item)})
 		}
 		for _, item := range exposures["scheduled_job"] {
 			svc.ScheduledJobs = append(svc.ScheduledJobs, toSummary(item))
@@ -426,7 +439,7 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 			qKey = scopedQueueKey(qKey, name, d)
 			kind := inferQueueKind(qName, d)
 			fifo := strings.Contains(strings.ToLower(qName), "fifo")
-			allQueuePublish[name] = append(allQueuePublish[name], queueRef{name: qDisplay, key: qKey, kind: kind, fifo: fifo})
+			allQueuePublish[name] = append(allQueuePublish[name], queueRef{name: qDisplay, key: qKey, kind: kind, fifo: fifo, summary: toSummary(item)})
 		}
 		for _, item := range dependencies["db_operation"] {
 			d := getDetails(item)
@@ -591,6 +604,7 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 	}
 
 	// Queues - publish
+	queueEdges := map[string]*GraphEdge{}
 	for _, svcName := range sortedStringKeys(allQueuePublish) {
 		pubs := allQueuePublish[svcName]
 		sortQueueRefs(pubs)
@@ -601,10 +615,7 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 				graphID := "queue:" + qID
 				resourceMap[graphID] = &ResourceNode{ID: qID, GraphID: graphID, Name: q.name, Kind: "queue_topic_stream", Platform: q.kind}
 			}
-			g.Edges = append(g.Edges, &GraphEdge{
-				From: svcName, To: "queue:" + qID, Type: "queue_publish",
-				Label: "publish",
-			})
+			addTargetEdge(queueEdges, svcName, "queue:"+qID, "queue_publish", "publish", q.summary)
 		}
 	}
 
@@ -619,11 +630,11 @@ func Build(runID string, serviceRepoDirs map[string]string) *ArchGraph {
 				graphID := "queue:" + qID
 				resourceMap[graphID] = &ResourceNode{ID: qID, GraphID: graphID, Name: q.name, Kind: "queue_topic_stream", Platform: q.kind}
 			}
-			g.Edges = append(g.Edges, &GraphEdge{
-				From: "queue:" + qID, To: svcName, Type: "queue_consume",
-				Label: "consume",
-			})
+			addTargetEdge(queueEdges, "queue:"+qID, svcName, "queue_consume", "consume", q.summary)
 		}
+	}
+	for _, key := range sortedStringKeys(queueEdges) {
+		g.Edges = append(g.Edges, queueEdges[key])
 	}
 
 	// Queue fan-out topology from infra repos: SNS topic → SQS queue
@@ -850,10 +861,11 @@ type outboundRef struct {
 }
 
 type queueRef struct {
-	name string
-	key  string
-	kind string
-	fifo bool
+	name    string
+	key     string
+	kind    string
+	fifo    bool
+	summary EntitySummary
 }
 
 type dbRef struct {
@@ -1396,6 +1408,9 @@ func addTargetEdge(edges map[string]*GraphEdge, from, to, edgeType, label string
 		edges[key] = &GraphEdge{From: from, To: to, Type: edgeType, Label: label, Confidence: 1.0}
 	}
 	edges[key].Details = append(edges[key].Details, summary)
+	if confidence, ok := summary.Details["detection_confidence"].(float64); ok && confidence < edges[key].Confidence {
+		edges[key].Confidence = confidence
+	}
 }
 
 func resourceEdgeLabel(edge *GraphEdge) string {

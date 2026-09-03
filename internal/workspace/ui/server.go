@@ -23,30 +23,39 @@ import (
 
 // Server hosts the DiffMind dashboard API + SPA.
 type Server struct {
-	store           *store.Store
-	query           *querysvc.Service
-	runs            *runmgr.Manager
-	diffmindRunsDir string
-	host            string
-	port            int
-	log             *util.Logger
-	version         string
-	authToken       string
-	proxySecret     string
-	auditLogPath    string
-	liveStatusMu    sync.Mutex
-	liveStatusCache map[string]liveStatusCacheEntry
-	archGraphMu     sync.Mutex
-	archGraphCache  map[string]archGraphCacheEntry
-	refreshMu       sync.Mutex
-	refreshConfig   RefreshConfig
-	refreshStatus   RefreshStatus
-	refreshContext  context.Context
-	refreshProject  func(context.Context, string) ProjectRefreshResult
-	ingestionMu     sync.Mutex
-	ingestionActive map[string]bool
-	projectOpsMu    sync.Mutex
-	projectOps      map[string]bool
+	operationsMu        sync.Mutex
+	operationsConfig    OperationsConfig
+	operationsStarted   bool
+	operationsStop      context.CancelFunc
+	operationsWG        sync.WaitGroup
+	operationsError     error
+	repositorySlots     chan struct{}
+	store               *store.Store
+	query               *querysvc.Service
+	runs                *runmgr.Manager
+	diffmindRunsDir     string
+	host                string
+	port                int
+	log                 *util.Logger
+	version             string
+	authToken           string
+	proxySecret         string
+	projectAccessScoped bool
+	auditLogPath        string
+	liveStatusMu        sync.Mutex
+	liveStatusCache     map[string]liveStatusCacheEntry
+	archGraphMu         sync.Mutex
+	archGraphCache      map[string]archGraphCacheEntry
+	refreshMu           sync.Mutex
+	refreshConfig       RefreshConfig
+	refreshStatus       RefreshStatus
+	refreshContext      context.Context
+	refreshProject      func(context.Context, string) ProjectRefreshResult
+	ingestionMu         sync.Mutex
+	ingestionActive     map[string]bool
+	ingestionCancel     map[string]context.CancelCauseFunc
+	projectOpsMu        sync.Mutex
+	projectOps          map[string]bool
 }
 
 type liveStatusCacheEntry struct {
@@ -77,6 +86,9 @@ func New(st *store.Store, runs *runmgr.Manager, diffmindRunsDir, host string, po
 	}
 	server := &Server{store: st, query: querysvc.New(st), runs: runs, diffmindRunsDir: diffmindRunsDir, host: host, port: port, log: log, auditLogPath: filepath.Join(st.HomeDir(), "audit", "http.jsonl"), liveStatusCache: map[string]liveStatusCacheEntry{}, archGraphCache: map[string]archGraphCacheEntry{}, ingestionActive: map[string]bool{}, projectOps: map[string]bool{}}
 	server.recoverInterruptedIngestions()
+	server.ingestionCancel = map[string]context.CancelCauseFunc{}
+	server.operationsConfig = OperationsConfig{Workers: 2, Capacity: 256, RepositoryWorkers: 4}
+	server.repositorySlots = make(chan struct{}, 4)
 	return server
 }
 
@@ -97,7 +109,8 @@ func (s *Server) Handler() http.Handler {
 	return s.accessControlled(http.NewCrossOriginProtection().Handler(mux))
 }
 
-func (s *Server) routes(mux *http.ServeMux) {
+func (s *Server) routes(raw *http.ServeMux) {
+	mux := routedMux{mux: raw, server: s}
 	// Health.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -117,6 +130,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/projects/{pid}/repo-imports", s.requireProjectIdle(s.handleImportRepos))
 	mux.HandleFunc("GET /api/projects/{pid}/ingestion", s.handleGetIngestion)
 	mux.HandleFunc("POST /api/projects/{pid}/ingestion", s.handleStartIngestion)
+	mux.HandleFunc("POST /api/projects/{pid}/ingestion/cancel", s.handleCancelIngestion)
+	mux.HandleFunc("POST /api/projects/{pid}/ingestion/resume", s.handleResumeIngestion)
 	mux.HandleFunc("GET /api/projects/{pid}/repos/{rid}", s.handleGetRepo)
 	mux.HandleFunc("PATCH /api/projects/{pid}/repos/{rid}", s.requireProjectIdle(s.handlePatchRepo))
 	mux.HandleFunc("DELETE /api/projects/{pid}/repos/{rid}", s.requireProjectIdle(s.handleDeleteRepo))
@@ -133,8 +148,25 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 	// Stable, read-only query API for integrations and company-wide clients.
 	mux.HandleFunc("GET /api/v1/projects", s.handleV1Projects)
+	mux.HandleFunc("GET /api/v1/jobs", s.handleJobs)
+	mux.HandleFunc("POST /api/v1/projects/{pid}/refresh-jobs", s.handleEnqueueJob)
+	mux.HandleFunc("POST /api/v1/jobs/{jid}/cancel", s.handleCancelJob)
+	mux.HandleFunc("POST /api/v1/jobs/{jid}/retry", s.handleRetryJob)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/ingestion-history", s.handleIngestionHistory)
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
+	mux.HandleFunc("POST /api/v1/projects/{pid}/webhooks/github", s.handleGitHubWebhook)
 	mux.HandleFunc("GET /api/v1/session", s.handleSession)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/capabilities", s.handleCapabilities)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/access", s.handleGetAccess)
+	mux.HandleFunc("PUT /api/v1/projects/{pid}/access", s.handlePutAccess)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/tokens", s.handleListTokens)
+	mux.HandleFunc("POST /api/v1/projects/{pid}/tokens", s.handleIssueToken)
+	mux.HandleFunc("POST /api/v1/projects/{pid}/tokens/{tid}/revoke", s.handleRevokeToken)
 	mux.HandleFunc("GET /api/v1/projects/{pid}/graph/summary", s.handleV1GraphSummary)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/graph/runs", s.handleV1GraphRuns)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/graph/compare", s.handleV1GraphCompare)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/graph/path", s.handleV1GraphPath)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/graph/trace", s.handleV1ObjectTrace)
 	mux.HandleFunc("GET /api/v1/projects/{pid}/services", s.handleV1Services)
 	mux.HandleFunc("GET /api/v1/projects/{pid}/services/{service}", s.handleV1Service)
 	mux.HandleFunc("GET /api/v1/projects/{pid}/dependencies", s.handleV1Dependencies)
@@ -144,9 +176,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/refresh", s.handleRefreshNow)
 
 	// Remote Model Context Protocol endpoint for company-wide coding agents.
-	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
-		return mcpserver.New(s.query, "", s.version).MCPServer()
-	}, &mcp.StreamableHTTPOptions{SessionTimeout: 30 * time.Minute}))
+	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+		return mcpserver.New(s.queryFor(r), "", s.version).MCPServer()
+	}, &mcp.StreamableHTTPOptions{SessionTimeout: 30 * time.Minute, Stateless: s.projectAccessScoped, JSONResponse: s.projectAccessScoped}))
 
 	// Packs (G4).
 	mux.HandleFunc("GET /api/projects/{pid}/packs", s.handleListPacks)
@@ -173,7 +205,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/projects/{pid}/runs/{rid}/archgraph/entrypoints", s.handleRunArchGraphEntrypoints)
 	mux.HandleFunc("GET /api/projects/{pid}/runs/{rid}/archgraph/impact", s.handleRunArchGraphImpact)
 	mux.HandleFunc("POST /api/projects/{pid}/runs/{rid}/cancel", s.handleCancelRun)
-	mux.HandleFunc("DELETE /api/projects/{pid}/runs/{rid}", s.handleDeleteRun)
+	mux.HandleFunc("DELETE /api/projects/{pid}/runs/{rid}", s.requireProjectIdle(s.handleDeleteRun))
 
 	// SPA (catch-all).
 	mux.HandleFunc("/", s.handleStatic)
@@ -181,9 +213,14 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 // Start runs the HTTP server until ctx is cancelled.
 func (s *Server) Start(ctx context.Context) error {
+	if err := s.StartOperations(ctx); err != nil {
+		return err
+	}
+	defer s.StopOperations()
 	s.refreshMu.Lock()
 	s.refreshContext = ctx
 	s.refreshMu.Unlock()
+	s.resumeInterruptedIngestions(ctx)
 	s.startRefreshLoop(ctx)
 	srv := &http.Server{Addr: s.Addr(), Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	errCh := make(chan error, 1)

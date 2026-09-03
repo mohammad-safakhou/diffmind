@@ -24,32 +24,32 @@ func New(q *query.Service, defaultProject, version string) *Server {
 }
 
 type projectInput struct {
-	Project string `json:"project,omitempty" jsonschema:"Project ID. Optional only when DiffMind has exactly one project."`
+	Project string `json:"project,omitempty" jsonschema:"Project ID. Defaults to the configured or sole accessible project."`
 	Run     string `json:"run,omitempty" jsonschema:"Completed graph run ID. Omit to use the latest completed run."`
 }
 
 type serviceInput struct {
-	Project string `json:"project,omitempty" jsonschema:"Project ID. Optional only when DiffMind has exactly one project."`
+	Project string `json:"project,omitempty" jsonschema:"Project ID. Defaults to the configured or sole accessible project."`
 	Run     string `json:"run,omitempty" jsonschema:"Completed graph run ID. Omit to use the latest completed run."`
 	Service string `json:"service" jsonschema:"Exact service name from list_services."`
 }
 
 type dependenciesInput struct {
-	Project   string `json:"project,omitempty" jsonschema:"Project ID. Optional only when DiffMind has exactly one project."`
+	Project   string `json:"project,omitempty" jsonschema:"Project ID. Defaults to the configured or sole accessible project."`
 	Run       string `json:"run,omitempty" jsonschema:"Completed graph run ID. Omit to use the latest completed run."`
 	Service   string `json:"service" jsonschema:"Exact service name from list_services."`
 	Direction string `json:"direction,omitempty" jsonschema:"Dependency direction: inbound, outbound, or both. Defaults to both."`
 }
 
 type searchInput struct {
-	Project string `json:"project,omitempty" jsonschema:"Project ID. Optional only when DiffMind has exactly one project."`
+	Project string `json:"project,omitempty" jsonschema:"Project ID. Defaults to the configured or sole accessible project."`
 	Run     string `json:"run,omitempty" jsonschema:"Completed graph run ID. Omit to use the latest completed run."`
 	Query   string `json:"query" jsonschema:"Case-insensitive text to find in services, entrypoints, dependencies, and resources."`
 	Limit   int    `json:"limit,omitempty" jsonschema:"Maximum matches, from 1 to 200. Defaults to 50."`
 }
 
 type impactInput struct {
-	Project string `json:"project,omitempty" jsonschema:"Project ID. Optional only when DiffMind has exactly one project."`
+	Project string `json:"project,omitempty" jsonschema:"Project ID. Defaults to the configured or sole accessible project."`
 	Run     string `json:"run,omitempty" jsonschema:"Completed graph run ID. Omit to use the latest completed run."`
 	Target  string `json:"target" jsonschema:"Service name or resource graph ID whose blast radius should be calculated."`
 	Depth   int    `json:"depth,omitempty" jsonschema:"Maximum graph traversal depth, from 1 to 20. Defaults to 6."`
@@ -58,7 +58,7 @@ type impactInput struct {
 func (s *Server) MCPServer() *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "diffmind", Title: "DiffMind Architecture Graph", Version: s.version, WebsiteURL: "https://github.com/mohammad-safakhou/diffmind"}, nil)
 	readOnly := &mcp.ToolAnnotations{Title: "List DiffMind projects", ReadOnlyHint: true, OpenWorldHint: boolPtr(false)}
-	mcp.AddTool(server, &mcp.Tool{Name: "list_projects", Title: "List projects", Description: "List every DiffMind project and whether it has a queryable architecture graph.", Annotations: readOnly},
+	mcp.AddTool(server, &mcp.Tool{Name: "list_projects", Title: "List projects", Description: "List DiffMind projects accessible to this connection and whether each has a queryable architecture graph.", Annotations: readOnly},
 		func(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
 			projects, err := s.query.Projects()
 			return nil, map[string]any{"projects": projects}, err
@@ -118,6 +118,7 @@ func (s *Server) MCPServer() *mcp.Server {
 			out, err := s.query.Impact(project, in.Run, in.Target, in.Depth)
 			return nil, out, err
 		})
+	s.addHistoryTools(server)
 	return server
 }
 

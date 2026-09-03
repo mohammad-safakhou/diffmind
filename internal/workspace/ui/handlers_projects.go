@@ -9,13 +9,24 @@ import (
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/store"
 )
 
-func (s *Server) handleListProjects(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	ps, err := s.store.ListProjects()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"projects": ps})
+	visible := make([]store.Project, 0, len(ps))
+	for _, p := range ps {
+		if _, err := s.projectRole(identityFromContext(r.Context()), p.ID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				continue
+			}
+			s.writeAccessError(w, err)
+			return
+		}
+		visible = append(visible, p)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"projects": visible})
 }
 
 type createProjectRequest struct {

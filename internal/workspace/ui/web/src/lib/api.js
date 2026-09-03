@@ -28,6 +28,14 @@ async function api(path, opts = {}) {
 
 const j = (v) => JSON.stringify(v)
 
+// Durable operations, shared by manual, scheduled, and webhook refreshes.
+export const getSession = () => api('/api/v1/session')
+export const listJobs = (pid, offset = 0) => api(`/api/v1/jobs?${new URLSearchParams({ project: pid, offset, limit: 25 })}`)
+export const enqueueRefresh = (pid) => api(`/api/v1/projects/${encodeURIComponent(pid)}/refresh-jobs`, { method: 'POST' })
+export const cancelJob = (id) => api(`/api/v1/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
+export const retryJob = (id) => api(`/api/v1/jobs/${encodeURIComponent(id)}/retry`, { method: 'POST' })
+export const ingestionHistory = (pid, offset = 0) => api(`/api/v1/projects/${encodeURIComponent(pid)}/ingestion-history?${new URLSearchParams({ offset, limit: 25 })}`)
+
 // Projects
 export const listProjects = () => api('/api/projects')
 export const createProject = (p) => api('/api/projects', { method: 'POST', body: j(p) })
@@ -41,6 +49,8 @@ export const createRepo = (pid, r) => api(`/api/projects/${pid}/repos`, { method
 export const importRepos = (pid, body) => api(`/api/projects/${pid}/repo-imports`, { method: 'POST', body: j(body) })
 export const getIngestion = (pid) => api(`/api/projects/${pid}/ingestion`)
 export const startIngestion = (pid, body = {}) => api(`/api/projects/${pid}/ingestion`, { method: 'POST', body: j(body) })
+export const cancelIngestion = (pid) => api(`/api/projects/${pid}/ingestion/cancel`, { method: 'POST' })
+export const resumeIngestion = (pid) => api(`/api/projects/${pid}/ingestion/resume`, { method: 'POST' })
 export const patchRepo = (pid, rid, r) => api(`/api/projects/${pid}/repos/${rid}`, { method: 'PATCH', body: j(r) })
 export const deleteRepo = (pid, rid) => api(`/api/projects/${pid}/repos/${rid}`, { method: 'DELETE' })
 export const repoSuggestions = (pid) => api(`/api/projects/${pid}/repo-suggestions`)
@@ -75,6 +85,8 @@ export const deletePack = (pid, bid) => api(`/api/projects/${pid}/packs/${bid}`,
 export const diffmindRuns = (repoPath) => api('/api/diffmind-runs' + (repoPath ? `?repo_path=${encodeURIComponent(repoPath)}` : ''))
 
 // Graph runs
+export const listGraphRuns = (pid, offset = 0) => api(`/api/v1/projects/${encodeURIComponent(pid)}/graph/runs?${new URLSearchParams({ offset, limit: 100 })}`)
+export const compareGraphs = (pid, from, to, offset = 0) => api(`/api/v1/projects/${encodeURIComponent(pid)}/graph/compare?${new URLSearchParams({ from, to, offset, limit: 50 })}`)
 export const listRuns = (pid) => api(`/api/projects/${pid}/runs`)
 export const createRun = (pid, body) => api(`/api/projects/${pid}/runs`, { method: 'POST', body: j(body) })
 export const getRun = (pid, rid) => api(`/api/projects/${pid}/runs/${rid}`)
@@ -132,3 +144,9 @@ export const getRunArchGraphEntrypoints = (pid, rid, q = '', limit = 50) => {
   return api(`/api/projects/${pid}/runs/${rid}/archgraph/entrypoints${query ? `?${query}` : ''}`)
 }
 export const runEventsURL = (pid, rid) => `/api/projects/${pid}/runs/${rid}/events`
+export const getCapabilities = (pid) => api(`/api/v1/projects/${encodeURIComponent(pid)}/capabilities`)
+export const getProjectAccess = (pid) => api(`/api/v1/projects/${encodeURIComponent(pid)}/access`)
+export const putProjectAccess = (pid, body) => api(`/api/v1/projects/${encodeURIComponent(pid)}/access`, { method: 'PUT', body: j(body) })
+export const listProjectTokens = (pid) => api(`/api/v1/projects/${encodeURIComponent(pid)}/tokens`, { cache: 'no-store' })
+export const issueProjectToken = (pid, body) => api(`/api/v1/projects/${encodeURIComponent(pid)}/tokens`, { method: 'POST', body: j(body) })
+export const revokeProjectToken = (pid, tid) => api(`/api/v1/projects/${encodeURIComponent(pid)}/tokens/${encodeURIComponent(tid)}/revoke`, { method: 'POST' })

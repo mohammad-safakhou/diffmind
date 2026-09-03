@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/config"
+	"github.com/mohammad-safakhou/diffmind/internal/workspace/homelock"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/runmgr"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/store"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/ui"
@@ -39,6 +40,8 @@ Usage:
   diffmind mcp [--project <id>]       Run the stdio MCP server for coding agents
   diffmind doctor [--json]            Check local installation and graph readiness
   diffmind version [--json]           Print build version information
+  diffmind backup <command>          Create, verify, and restore offline snapshots
+  diffmind storage <command>         Migrate or verify refresh queue storage
   diffmind help                       Show this help
 
 Flags (ui):
@@ -47,10 +50,14 @@ Flags (ui):
   --log-level   Log level: info, debug, trace (default info)
   --no-spa-rebuild  Skip automatic SPA rebuild on startup
   --auth-token  Require this token via Bearer, Basic password, or X-DiffMind-Token
+  --project-access  legacy (default) or scoped per-project user memberships
   --allow-unauthenticated  Allow a non-loopback bind without authentication
   --refresh-interval  Refresh every duration such as 15m or 1h (disabled by default)
   --refresh-on-start  Refresh all projects immediately after startup
-  --refresh-concurrency  Maximum concurrent repository operations (default 4)
+  --refresh-concurrency  Maximum repository operations per project (default 4)
+  --job-workers  Concurrent queued project jobs (default 2)
+  --queue-capacity  Maximum queued and running jobs (default 256)
+  --repository-workers  Global concurrent sync/analyzer operations (default 4)
 `
 
 func main() {
@@ -61,7 +68,7 @@ func main() {
 		case "help", "--help", "-h":
 			fmt.Print(usage)
 			return
-		case "ui", "list", "graph", "run", "validate", "list-runs", "extractor-ui", "pack", "mcp", "doctor", "version":
+		case "ui", "list", "graph", "run", "validate", "list-runs", "extractor-ui", "pack", "mcp", "doctor", "version", "backup", "storage":
 			cmd = args[0]
 			args = args[1:]
 		default:
@@ -69,7 +76,27 @@ func main() {
 		}
 	}
 
+	// All data-using CLI commands participate, including analyzer subprocesses.
+	// Backup owns its exclusive lease; version/help need no workspace access.
+	if cmd != "version" && cmd != "backup" && cmd != "storage" {
+		release, err := homelock.Acquire(config.Home(), false)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		defer release()
+	}
 	switch cmd {
+	case "storage":
+		if err := runStorage(args, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	case "backup":
+		if err := runBackup(args, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "ui":
 		cmdUI(args)
 	case "list":
@@ -99,6 +126,13 @@ func main() {
 }
 
 type repeatFlag []string
+
+func envString(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return fallback
+}
 
 func (f *repeatFlag) String() string {
 	return strings.Join(*f, ",")
@@ -223,7 +257,11 @@ func cmdUI(args []string) {
 	allowUnauthenticated := fs.Bool("allow-unauthenticated", false, "allow a non-loopback bind without authentication")
 	refreshInterval := fs.String("refresh-interval", strings.TrimSpace(os.Getenv("DIFFMIND_REFRESH_INTERVAL")), "fleet refresh interval, for example 15m or 1h")
 	refreshOnStart := fs.Bool("refresh-on-start", envBool("DIFFMIND_REFRESH_ON_START"), "refresh every project immediately after startup")
-	refreshConcurrency := fs.Int("refresh-concurrency", envInt("DIFFMIND_REFRESH_CONCURRENCY", 4), "maximum concurrent repository refresh operations")
+	refreshConcurrency := fs.Int("refresh-concurrency", envInt("DIFFMIND_REFRESH_CONCURRENCY", 4), "maximum concurrent repository refresh operations per project")
+	jobWorkers := fs.Int("job-workers", envInt("DIFFMIND_JOB_WORKERS", 2), "concurrent queued project refresh jobs")
+	queueCapacity := fs.Int("queue-capacity", envInt("DIFFMIND_QUEUE_CAPACITY", 256), "maximum queued and running refresh jobs")
+	repoWorkers := fs.Int("repository-workers", envInt("DIFFMIND_REPOSITORY_WORKERS", 4), "global concurrent sync/analyzer operations")
+	projectAccess := fs.String("project-access", envString("DIFFMIND_PROJECT_ACCESS", "legacy"), "project authorization: legacy global roles or scoped explicit grants")
 	_ = fs.Parse(args)
 	if err := validateUIExposure(*host, *authToken, *trustedProxySecret, *allowUnauthenticated); err != nil {
 		fmt.Fprintf(os.Stderr, "UI server configuration error: %v\n", err)
@@ -232,6 +270,12 @@ func cmdUI(args []string) {
 
 	log := newLogger(*logLevel)
 
+	releaseServer, err := homelock.AcquireServer(config.Home())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	defer releaseServer()
 	st, err := store.New(config.Home())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "store init failed: %v\n", err)
@@ -247,6 +291,14 @@ func cmdUI(args []string) {
 	srv.SetVersion(version)
 	srv.SetAuthToken(*authToken)
 	srv.SetTrustedProxySecret(*trustedProxySecret)
+	if err := srv.ConfigureProjectAccess(*projectAccess); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	if err := srv.ConfigureOperations(ui.OperationsConfig{Workers: *jobWorkers, Capacity: *queueCapacity, RepositoryWorkers: *repoWorkers, WebhookSecret: os.Getenv("DIFFMIND_WEBHOOK_SECRET")}); err != nil {
+		fmt.Fprintf(os.Stderr, "UI server configuration error: %v\n", err)
+		os.Exit(2)
+	}
 	interval, err := parseOptionalDuration(*refreshInterval)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "UI server configuration error: invalid refresh interval: %v\n", err)
