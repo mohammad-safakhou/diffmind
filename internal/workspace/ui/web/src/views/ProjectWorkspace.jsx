@@ -265,26 +265,27 @@ export function ProjectWorkspace({ pid }) {
         </div>
       </header>
 
-      {error && <div class="workspace-error banner error">{error}</div>}
-      {graphError && <div class="workspace-error banner error">Graph load failed: {graphError}</div>}
-      {currentGraphRun?.status === 'failed' && currentGraphRun.error && <div class="workspace-error banner error">Graph build failed: {currentGraphRun.error}</div>}
-      {notice && <div class="workspace-notice banner ok">{notice}</div>}
-      {ingestion && !['running', 'not_started'].includes(ingestion.status) && <IngestionResult ingestion={ingestion} />}
+      <section class="workspace-alerts" aria-live="polite">
+        {error && <div class="workspace-error banner error">{error}</div>}
+        {graphError && <div class="workspace-error banner error">Graph load failed: {graphError}</div>}
+        {currentGraphRun?.status === 'failed' && currentGraphRun.error && <div class="workspace-error banner error">Graph build failed: {currentGraphRun.error}</div>}
+        {notice && <div class="workspace-notice banner ok">{notice}</div>}
+        {ingestion && !['running', 'not_started'].includes(ingestion.status) && <IngestionResult ingestion={ingestion} />}
+        <GraphQualityBanner quality={(currentGraphRun?.graph_quality || workspace?.latest_run?.graph_quality)} />
+        {(ingestionIsRunning || (!ingestionIsRunning && (hasRunningDiffMind || graphIsRunning))) && (
+          <div class="workspace-activity-stack">
+            {ingestionIsRunning
+              ? <IngestionActivity ingestion={ingestion} />
+              : <>{hasRunningDiffMind && <DiffMindActivity repos={repos} />}{graphIsRunning && <GraphActivity run={activeGraphRun} />}</>}
+          </div>
+        )}
+      </section>
       {packsOpen && (
         <Modal title="Knowledge packs" onClose={() => setPacksOpen(false)} wide>
           <p class="muted">Teach DiffMind your organization’s repository conventions with deterministic, versioned extraction rules.</p>
           <PacksTab pid={pid} capabilities={caps} />
         </Modal>
       )}
-      <GraphQualityBanner quality={(currentGraphRun?.graph_quality || workspace?.latest_run?.graph_quality)} />
-      {(ingestionIsRunning || (!ingestionIsRunning && (hasRunningDiffMind || graphIsRunning))) && (
-        <div class="workspace-activity-stack">
-          {ingestionIsRunning
-            ? <IngestionActivity ingestion={ingestion} />
-            : <>{hasRunningDiffMind && <DiffMindActivity repos={repos} />}{graphIsRunning && <GraphActivity run={activeGraphRun} />}</>}
-        </div>
-      )}
-
       <aside class="workspace-left">
         <div class="rail-title">Teams</div>
         {(workspace?.teams || []).map((team) => (
@@ -328,6 +329,8 @@ export function ProjectWorkspace({ pid }) {
         <span>{currentGraphRun ? `graph ${currentGraphRun.status}` : 'graph idle'}</span>
         <span>{ingestion?.status && ingestion.status !== 'not_started' ? `ingestion ${ingestion.status}` : 'ingestion idle'}</span>
         <span>{repos.filter((r) => r.freshness === 'stale').length} stale</span>
+		<span>{repos.filter((r) => r.freshness === 'dirty').length} dirty</span>
+		<span>{repos.filter((r) => !r.freshness || r.freshness === 'unknown').length} unknown</span>
       </footer>
 
       {addOpen && <AddRepoModal pid={pid} onClose={() => setAddOpen(false)} onDone={() => { setAddOpen(false); refresh() }} />}

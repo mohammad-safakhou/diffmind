@@ -147,3 +147,8 @@ queries retain saved edge evidence and report incomplete searches explicitly.
 Object traces only attach exact-ID local connections and dependency details;
 they do not infer execution continuity from neighboring services. See
 [graph history and tracing](graph-history.md) for the contract and limits.
+
+Protocol evidence references are hydrated into snapshot graph facts with file,
+line, snippet hash and repository revision metadata. MCP service responses are
+compact by default and dependency edges are paginated; callers opt into full
+fact/evidence detail when needed.

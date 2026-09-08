@@ -4,7 +4,36 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/mohammad-safakhou/diffmind/protocol"
 )
+
+func TestProtocolEvidenceIsHydratedIntoGraphFacts(t *testing.T) {
+	doc := &protocol.Document{
+		Repository: protocol.Repository{Commit: "abc123", Branch: "main"},
+		Objects: protocol.Objects{HTTPCalls: []protocol.HTTPCall{{
+			ObjectiveBase: protocol.ObjectiveBase{ID: "call", Name: "GET /invoices", Confidence: protocol.ConfidenceHigh, EvidenceRefs: []string{"ev.call"}},
+			Method:        "GET", URLTemplate: "https://external.example.test/invoices",
+		}}},
+		Evidence: []protocol.Evidence{{ID: "ev.call", File: "main.go", StartLine: 3, EndLine: 3, SnippetHash: "sha256:test"}},
+	}
+	arch := protocolToArchitecture(doc)
+	if len(arch.Dependencies) != 1 {
+		t.Fatalf("dependencies = %d", len(arch.Dependencies))
+	}
+	dep := arch.Dependencies[0]
+	if len(dep.Locations) != 1 || dep.Locations[0].File != "main.go" || dep.Locations[0].StartLine != 3 {
+		t.Fatalf("locations were not hydrated: %+v", dep.Locations)
+	}
+	evidence, ok := dep.Details["evidence"].([]protocol.Evidence)
+	if !ok || len(evidence) != 1 || evidence[0].ID != "ev.call" {
+		t.Fatalf("evidence registry was not hydrated: %#v", dep.Details["evidence"])
+	}
+	revision, ok := dep.Details["repository_revision"].(map[string]any)
+	if !ok || revision["commit"] != "abc123" {
+		t.Fatalf("snapshot revision missing: %#v", dep.Details["repository_revision"])
+	}
+}
 
 func testdataDir(t *testing.T) string {
 	t.Helper()

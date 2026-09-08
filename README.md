@@ -168,6 +168,9 @@ The same stdio server works with Claude Code, Cursor and other MCP clients.
 configuration and connection checks. MCP offers service discovery, search,
 dependency traversal, change impact, graph comparison and exact-ID local tracing.
 It reads persisted artifacts; it does not refresh repositories or modify code.
+`get_service` returns a compact summary by default; request `detail: "full"`
+when you need object-level facts and hydrated source locations. `get_dependencies`
+supports `offset` and `limit` so large services can be inspected incrementally.
 
 Local stdio is trusted workspace access. `--project` chooses a default,
 **not an authorization boundary**. For restricted shared access, use HTTP MCP
@@ -184,7 +187,9 @@ with a [project-scoped viewer token](docs/agent-tokens.md).
 - `DIFFMIND_HOME` defaults to `~/.diffmind`. Keep company workspaces and backups
   private, outside Git and public file-sharing folders. Backups are not encrypted.
 - Static analysis is not a runtime inventory or a guarantee of full coverage.
-  Dynamic URLs, wrappers and unsupported conventions can leave gaps. Check the
+  Literal same-file Python URL constants are resolved and recognized dynamic
+  `requests` calls are retained as unresolved; wrappers and broader runtime
+  configuration can still leave gaps. Check the
   [tested support matrix](docs/supported-patterns.md) and validate known
   relationships before relying on the graph at work.
 - One server writes each workspace. Distributed workers, automatic SSO group

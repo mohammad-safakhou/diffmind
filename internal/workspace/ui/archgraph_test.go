@@ -838,7 +838,7 @@ func TestArchitectureGraphLayoutIsStableAndRanksSharedResourceFlow(t *testing.T)
       "name": "Write Redis",
       "platform": "redis",
       "operation": "write",
-      "target": {"cache": "redis"},
+      "target": {"cache": "shared-cache"},
       "status": "confirmed",
       "confidence": "high",
       "origin": "deterministic"
@@ -858,7 +858,7 @@ func TestArchitectureGraphLayoutIsStableAndRanksSharedResourceFlow(t *testing.T)
       "name": "Read Redis",
       "platform": "redis",
       "operation": "read",
-      "target": {"cache": "redis"},
+      "target": {"cache": "shared-cache"},
       "status": "confirmed",
       "confidence": "high",
       "origin": "deterministic"
@@ -900,8 +900,8 @@ func TestArchitectureGraphLayoutIsStableAndRanksSharedResourceFlow(t *testing.T)
 	}
 	assertBefore("pricing-service", "db:dynamodb_traffic-info")
 	assertBefore("db:dynamodb_traffic-info", "sync-service")
-	assertBefore("sync-service", "resource:redis_redis")
-	assertBefore("resource:redis_redis", "gateway-service")
+	assertBefore("sync-service", "resource:redis_shared-cache")
+	assertBefore("resource:redis_shared-cache", "gateway-service")
 }
 
 func writeProtocolRun(t *testing.T, runDir, body string) {

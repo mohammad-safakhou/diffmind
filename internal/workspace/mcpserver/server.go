@@ -8,6 +8,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/agentapi"
+	"github.com/mohammad-safakhou/diffmind/internal/workspace/archgraph"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/query"
 )
 
@@ -40,6 +41,7 @@ type serviceInput struct {
 	Project string `json:"project,omitempty" jsonschema:"Project ID. Defaults to the configured or sole accessible project."`
 	Run     string `json:"run,omitempty" jsonschema:"Completed graph run ID. Omit to use the latest completed run."`
 	Service string `json:"service" jsonschema:"Exact service name from list_services."`
+	Detail  string `json:"detail,omitempty" jsonschema:"Response detail: summary (default) or full."`
 }
 
 type dependenciesInput struct {
@@ -47,6 +49,8 @@ type dependenciesInput struct {
 	Run       string `json:"run,omitempty" jsonschema:"Completed graph run ID. Omit to use the latest completed run."`
 	Service   string `json:"service" jsonschema:"Exact service name from list_services."`
 	Direction string `json:"direction,omitempty" jsonschema:"Dependency direction: inbound, outbound, or both. Defaults to both."`
+	Offset    int    `json:"offset,omitempty" jsonschema:"Zero-based edge offset. Defaults to 0."`
+	Limit     int    `json:"limit,omitempty" jsonschema:"Maximum edges to return, from 1 to 200. Defaults to 50."`
 }
 
 type searchInput struct {
@@ -90,14 +94,20 @@ func (s *Server) MCPServer() *mcp.Server {
 			services, err := s.query.Services(project, in.Run)
 			return nil, map[string]any{"project_id": project, "services": services}, err
 		})
-	mcp.AddTool(server, tool("get_service", "Get service", "Inspect one service, its entrypoints, evidence summaries, neighbors, resources, and inbound/outbound edges."),
+	mcp.AddTool(server, tool("get_service", "Get service", "Return a compact service summary by default. Use detail=full to inspect entrypoints, hydrated source evidence, neighbors, resources, and edges."),
 		func(_ context.Context, _ *mcp.CallToolRequest, in serviceInput) (*mcp.CallToolResult, any, error) {
 			project, err := s.project(in.Project)
 			if err != nil {
 				return nil, nil, err
 			}
 			out, err := s.query.Service(project, in.Run, in.Service)
-			return nil, out, err
+			if err != nil || in.Detail == "full" {
+				return nil, out, err
+			}
+			if in.Detail != "" && in.Detail != "summary" {
+				return nil, nil, fmt.Errorf("detail must be summary or full")
+			}
+			return nil, compactService(out), nil
 		})
 	mcp.AddTool(server, tool("get_dependencies", "Get dependencies", "Return typed inbound, outbound, or bidirectional graph edges for a service."),
 		func(_ context.Context, _ *mcp.CallToolRequest, in dependenciesInput) (*mcp.CallToolResult, any, error) {
@@ -106,7 +116,10 @@ func (s *Server) MCPServer() *mcp.Server {
 				return nil, nil, err
 			}
 			out, err := s.query.Dependencies(project, in.Run, in.Service, in.Direction)
-			return nil, out, err
+			if err != nil {
+				return nil, nil, err
+			}
+			return nil, pageDependencies(out, in.Offset, in.Limit), nil
 		})
 	mcp.AddTool(server, tool("search_architecture", "Search architecture", "Search services, endpoints, dependencies, resources, and external systems in the current graph."),
 		func(_ context.Context, _ *mcp.CallToolRequest, in searchInput) (*mcp.CallToolResult, any, error) {
@@ -131,6 +144,50 @@ func (s *Server) MCPServer() *mcp.Server {
 		agentapi.AddTools(server, s.management)
 	}
 	return server
+}
+
+func compactService(view *archgraph.ServiceView) map[string]any {
+	service := view.Service
+	return map[string]any{
+		"run_id": view.RunID,
+		"service": map[string]any{
+			"name": service.Name, "team": service.Team, "repo_id": service.RepoID,
+			"repo_path": service.RepoPath, "freshness": service.DiffMindFreshness,
+			"entrypoints": service.EntrypointCount, "dependencies": service.DownstreamCount,
+		},
+		"counts": map[string]int{
+			"inbound_edges": len(view.InboundEdges), "outbound_edges": len(view.OutboundEdges),
+			"neighbor_services": len(view.NeighborServices), "resources": len(view.ResourceNodes),
+			"external_systems": len(view.ExternalNodes), "traces": len(view.AvailableTraceIDs),
+		},
+		"available_trace_ids": view.AvailableTraceIDs,
+		"next":                "Call get_service with detail=full for facts and source evidence; use get_dependencies with offset/limit for edges.",
+	}
+}
+
+func pageDependencies(result *query.DependencyResult, offset, limit int) map[string]any {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	total := len(result.Edges)
+	if offset > total {
+		offset = total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return map[string]any{
+		"project_id": result.ProjectID, "run_id": result.RunID, "service": result.Service,
+		"direction": result.Direction, "edges": result.Edges[offset:end], "offset": offset,
+		"limit": limit, "total": total, "has_more": end < total,
+	}
 }
 
 func (s *Server) Run(ctx context.Context) error {

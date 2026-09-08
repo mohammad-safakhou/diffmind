@@ -1,4 +1,4 @@
-# Readiness verification — 2026-09-03
+# Readiness verification — 2026-09-08
 
 This records the checks for the managed-backup and native-release-validation
 batch. It is a local implementation checkpoint, not a declaration that every
@@ -63,10 +63,19 @@ by these tests. Initial host-client approval/reconnection is still a client
 boundary, not something DiffMind can grant itself. Other native platforms and
 actual company deployments remain subject to the checks below.
 
+The 7 September release-readiness audit additionally exercised 468 local
+repositories and a focused 16-repository project. The reviewed revision's
+remote native gates passed for Linux amd64/arm64 and macOS Intel/ARM64 in
+[CI](https://github.com/mohammad-safakhou/diffmind/actions/runs/33855168938),
+and the [image workflow](https://github.com/mohammad-safakhou/diffmind/actions/runs/33855168973)
+also passed. Those workflow results do not replace a live container
+startup/persistence/restart drill or verification of published archives.
+
 ## Not certified by this checkpoint
 
-- Linux amd64/arm64 and macOS Intel native gates: configured in CI, not executed
-  from this Mac. No remote CI run or release was triggered here.
+- Linux amd64/arm64 and macOS Intel native gates were not executed locally;
+  the reviewed revision's remote CI gates passed as recorded above. No release
+  was published by this verification.
 - Actual systemd timer execution: lifecycle and failure handling were tested
   against isolated fake services. Unit verification is wired into Linux CI;
   production stop/restart/restore drills remain necessary. Docker was unavailable

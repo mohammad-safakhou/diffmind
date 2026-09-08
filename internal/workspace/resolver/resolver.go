@@ -160,7 +160,10 @@ func (r *Resolver) tryDeterministicMatch(fromService string, dep *model.Dependen
 	if !serviceAddressDependency(dep.Type) {
 		return nil, nil
 	}
-	if isHTTPDependency(dep.Type) {
+	// A route can identify a service only when the call has no destination
+	// identity of its own. An explicit hostname/service is a constraint: a
+	// coincidentally identical route on another service must never replace it.
+	if isHTTPDependency(dep.Type) && !hasExplicitHTTPDestination(dep) {
 		if match := r.tryHTTPExposureMatch(fromService, dep); match != nil {
 			return match, nil
 		}
@@ -234,6 +237,27 @@ func (r *Resolver) tryDeterministicMatch(fromService string, dep *model.Dependen
 		return nil, fmt.Errorf("ambiguous service identity for dependency %s in %s: multiple services match %q equally; add an explicit resolution rule", dep.ID, fromService, targetRaw)
 	}
 	return best, nil
+}
+
+func hasExplicitHTTPDestination(dep *model.Dependency) bool {
+	if dep == nil {
+		return false
+	}
+	if isUsefulTarget(dep.Instance) {
+		return true
+	}
+	for _, key := range []string{"target_ref", "target_service", "target_host", "host", "url", "base_url", "target_url", "default_url", "production_url"} {
+		if isUsefulTarget(detailString(dep.Details[key])) {
+			return true
+		}
+	}
+	for _, key := range []string{"url_template", "path"} {
+		raw := detailString(dep.Details[key])
+		if strings.Contains(raw, "://") {
+			return true
+		}
+	}
+	return false
 }
 
 func serviceAddressDependency(depType string) bool {

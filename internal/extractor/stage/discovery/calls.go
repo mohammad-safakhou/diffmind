@@ -513,7 +513,7 @@ func DeterministicOutboundHTTP(idx *astpkg.ProjectIndex) []candidate {
 			return
 		}
 		if fa.Language == "python" {
-			method, path, targetName, ok := pythonHTTPCall(fa, cs)
+			method, path, targetName, ok := pythonHTTPCall(idx, fa, cs)
 			if !ok {
 				return
 			}
@@ -527,6 +527,10 @@ func DeterministicOutboundHTTP(idx *astpkg.ProjectIndex) []candidate {
 				"url_template":   path,
 				"target_service": targetName,
 				"discovered_by":  "ast_python_http_call",
+			}
+			if path == "" {
+				details["target_unresolved"] = true
+				details["url_expression"] = firstHTTPURLArgument(cs).Source
 			}
 			target := configuredHTTPTargetForOperation(idx, cs.Caller, path)
 			if target.serviceRef == "" && targetName != "" {
@@ -543,6 +547,9 @@ func DeterministicOutboundHTTP(idx *astpkg.ProjectIndex) []candidate {
 				name = targetName + " " + name
 			}
 			key := strings.ToLower(firstNonEmptyString(stringAny(details["target_service"]), targetName) + "|" + method + "|" + path)
+			if path == "" {
+				key += fmt.Sprintf("|%s:%d", cs.File, loc.StartLine)
+			}
 			if _, dup := seen[key]; dup {
 				return
 			}
@@ -1269,7 +1276,7 @@ func DeterministicJavaScriptAxiosHTTP(idx *astpkg.ProjectIndex) []candidate {
 	return out
 }
 
-func pythonHTTPCall(fa *astpkg.FileAST, cs astpkg.CallSite) (method, path, target string, ok bool) {
+func pythonHTTPCall(idx *astpkg.ProjectIndex, fa *astpkg.FileAST, cs astpkg.CallSite) (method, path, target string, ok bool) {
 	receiver, callee := splitCall(cs)
 	r := strings.ToLower(strings.TrimSpace(receiver))
 	c := strings.ToLower(strings.TrimSpace(callee))
@@ -1280,10 +1287,16 @@ func pythonHTTPCall(fa *astpkg.FileAST, cs astpkg.CallSite) (method, path, targe
 		}
 		method = strings.ToUpper(strings.Trim(firstLiteralArg(cs.Arguments[:1]), "\"'`"))
 		path = pythonURLTemplateFromArg(cs.Arguments[1])
+		if path == "" {
+			path = pythonModuleURLConstant(idx, cs.File, cs.Arguments[1])
+		}
 	case r == "requests" && isHTTPVerb(c):
 		method = strings.ToUpper(c)
 		if len(cs.Arguments) > 0 {
 			path = pythonURLTemplateFromArg(cs.Arguments[0])
+			if path == "" {
+				path = pythonModuleURLConstant(idx, cs.File, cs.Arguments[0])
+			}
 		}
 	case r == "self" && isHTTPVerb(c) && looksLikePythonAPIClientFile(cs.File):
 		method = strings.ToUpper(c)
@@ -1293,14 +1306,49 @@ func pythonHTTPCall(fa *astpkg.FileAST, cs astpkg.CallSite) (method, path, targe
 	default:
 		return "", "", "", false
 	}
-	if method == "" || path == "" {
+	if method == "" {
 		return "", "", "", false
 	}
-	if !strings.HasPrefix(path, "/") && !strings.HasPrefix(strings.ToLower(path), "http://") && !strings.HasPrefix(strings.ToLower(path), "https://") {
+	if path != "" && !strings.HasPrefix(path, "/") && !strings.HasPrefix(strings.ToLower(path), "http://") && !strings.HasPrefix(strings.ToLower(path), "https://") {
 		return "", "", "", false
 	}
-	target = serviceNameFromPythonHTTPPath(cs.File)
+	if strings.HasPrefix(strings.ToLower(path), "http://") || strings.HasPrefix(strings.ToLower(path), "https://") {
+		target = serviceNameFromURLTemplate(path)
+	} else {
+		target = serviceNameFromPythonHTTPPath(cs.File)
+	}
 	return method, path, target, true
+}
+
+func pythonModuleURLConstant(idx *astpkg.ProjectIndex, file string, arg astpkg.ArgumentExpr) string {
+	name := strings.TrimSpace(arg.Source)
+	if !regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`).MatchString(name) {
+		return ""
+	}
+	src, ok := readIndexedSource(idx, file)
+	if !ok {
+		return ""
+	}
+	// Column-zero assignment deliberately excludes local shadowing. Only a
+	// plain same-file string constant is resolved; aliases and expressions stay
+	// visible as unresolved calls.
+	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(name) + `\s*=\s*([rRuUbBfF]{0,2}["'][^"'\n]+["'])\s*(?:#.*)?$`)
+	match := re.FindStringSubmatch(src)
+	if len(match) < 2 {
+		return ""
+	}
+	return normalizePythonStringTemplate(match[1])
+}
+
+func firstHTTPURLArgument(cs astpkg.CallSite) astpkg.ArgumentExpr {
+	_, callee := splitCall(cs)
+	if strings.EqualFold(callee, "request") && len(cs.Arguments) > 1 {
+		return cs.Arguments[1]
+	}
+	if len(cs.Arguments) > 0 {
+		return cs.Arguments[0]
+	}
+	return astpkg.ArgumentExpr{}
 }
 
 func pythonSQSConsumerCall(cs astpkg.CallSite) (string, bool) {

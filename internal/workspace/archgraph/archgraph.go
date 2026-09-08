@@ -700,7 +700,7 @@ func BuildWithSupplements(runID string, serviceRepoDirs map[string]string, suppl
 					matched = true
 				}
 			}
-			if !matched {
+			if !matched && strings.TrimSpace(targetName) == "" {
 				// Second chance: the outbound call's METHOD+path uniquely
 				// identifies one known service's exposed route.
 				if owner, ok := matchRouteOwner(routeIndex, svcName, t.endpoints); ok {
@@ -1322,7 +1322,7 @@ func isGenericResourceInstanceName(category, platform, name string) bool {
 		return strings.HasPrefix(lower, "get") && strings.Contains(lower, "bucket")
 	}
 	if category == "cache" || strings.Contains(strings.ToLower(platform), "redis") {
-		if lower == "cache" {
+		if lower == "cache" || lower == "redis" || lower == "memcached" {
 			return true
 		}
 		switch {
@@ -1405,12 +1405,34 @@ func addResourceEdge(edges map[string]*GraphEdge, from, to, edgeType, op string,
 func addTargetEdge(edges map[string]*GraphEdge, from, to, edgeType, label string, summary EntitySummary) {
 	key := from + "|" + to + "|" + edgeType
 	if _, ok := edges[key]; !ok {
-		edges[key] = &GraphEdge{From: from, To: to, Type: edgeType, Label: label, Confidence: 1.0}
+		edges[key] = &GraphEdge{From: from, To: to, Type: edgeType, Label: label}
 	}
 	edges[key].Details = append(edges[key].Details, summary)
-	if confidence, ok := summary.Details["detection_confidence"].(float64); ok && confidence < edges[key].Confidence {
+	if confidence, ok := relationshipConfidence(summary); ok && (edges[key].Confidence == 0 || confidence < edges[key].Confidence) {
 		edges[key].Confidence = confidence
 	}
+}
+
+func relationshipConfidence(summary EntitySummary) (float64, bool) {
+	if summary.Details == nil {
+		return 0, false
+	}
+	var values []float64
+	for _, key := range []string{"detection_confidence", "resolution_confidence"} {
+		if value, ok := summary.Details[key].(float64); ok && value > 0 {
+			values = append(values, value)
+		}
+	}
+	if len(values) == 0 {
+		return 0, false
+	}
+	confidence := values[0]
+	for _, value := range values[1:] {
+		if value < confidence {
+			confidence = value
+		}
+	}
+	return confidence, true
 }
 
 func resourceEdgeLabel(edge *GraphEdge) string {

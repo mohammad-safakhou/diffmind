@@ -1105,34 +1105,39 @@ textarea { resize: vertical; }
   font-size: 12px;
 }
 .workspace-error {
-  position: fixed;
   z-index: 20;
-  top: 66px;
-  left: 310px;
-  right: 360px;
+}
+.workspace-alerts {
+  grid-column: 2;
+  grid-row: 2;
+  display: grid;
+  gap: 8px;
+  padding: 8px 16px 0;
+  max-height: min(220px, 30vh);
+  overflow: auto;
+  z-index: 18;
+}
+.workspace-alerts > .workspace-error,
+.workspace-alerts > .workspace-notice,
+.workspace-alerts > .workspace-ingestion-result,
+.workspace-alerts > .workspace-activity-stack,
+.workspace-alerts > .graph-quality {
+  position: static;
+  inset: auto;
+  margin: 0;
 }
 .workspace-notice {
-  position: fixed;
   z-index: 20;
-  top: 66px;
-  left: 310px;
-  right: 360px;
 }
 .workspace-activity-stack {
-  position: fixed;
   z-index: 21;
-  top: 112px;
-  left: 310px;
-  right: 360px;
   display: grid;
   gap: 8px;
 }
-.workspace > .graph-quality {
-  grid-column: 2;
-  grid-row: 2;
+.workspace-alerts > .graph-quality {
   position: static;
   z-index: 22;
-  margin: 10px 16px 0;
+  margin: 0;
   max-height: min(156px, 24vh);
   overflow: auto;
   box-shadow: 0 16px 42px rgba(0,0,0,0.36);
@@ -1173,11 +1178,7 @@ textarea { resize: vertical; }
   margin-top: 2px;
 }
 .workspace-ingestion-result {
-  position: fixed;
   z-index: 19;
-  top: 112px;
-  left: 310px;
-  right: 360px;
   max-height: 180px;
   overflow: auto;
 }
@@ -1334,6 +1335,10 @@ textarea { resize: vertical; }
   border-color: #f59e0b77;
   color: #f59e0b;
 }
+.freshness.dirty {
+  border-color: #f9731677;
+  color: #fb923c;
+}
 .freshness.unknown {
   border-color: #7d8ca366;
   color: #9aa6c0;
@@ -1466,17 +1471,13 @@ textarea { resize: vertical; }
   .workspace-status {
     grid-row: 5;
   }
-  .workspace-error,
-  .workspace-notice,
-  .workspace-ingestion-result,
-  .workspace-activity-stack {
-    left: 258px;
-    right: 16px;
-  }
-  .workspace > .graph-quality {
-    grid-column: 2;
-    grid-row: 2;
-    margin: 8px 16px 0;
+	.workspace-alerts {
+		grid-column: 2;
+		grid-row: 2;
+		padding: 8px 16px 0;
+	}
+  .workspace-alerts > .graph-quality {
+		margin: 0;
   }
 }
 
@@ -1560,35 +1561,19 @@ textarea { resize: vertical; }
     padding: 0 10px;
     white-space: nowrap;
   }
-  .workspace-error {
-    left: 10px;
-    right: 10px;
-    top: 74px;
-  }
-  .workspace-notice {
-    left: 10px;
-    right: 10px;
-    top: 74px;
-  }
-  .workspace-ingestion-result {
-    left: 10px;
-    right: 10px;
-    top: 122px;
-  }
-  .workspace-activity-stack {
-    left: 10px;
-    right: 10px;
-    top: 122px;
-  }
-  .workspace > .graph-quality {
+	.workspace-alerts {
+		grid-column: 1;
+		grid-row: 2;
+		padding: 8px 10px 0;
+		max-height: min(132px, 28vh);
+	}
+  .workspace-alerts > .graph-quality {
     position: static;
-    grid-column: 1;
-    grid-row: 2;
-    margin: 8px 10px;
+		margin: 0;
     max-height: min(132px, 28vh);
     overflow: auto;
   }
-  .workspace > .graph-quality summary strong {
+  .workspace-alerts > .graph-quality summary strong {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
