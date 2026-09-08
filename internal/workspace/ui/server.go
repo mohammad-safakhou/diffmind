@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -113,7 +114,43 @@ func (s *Server) SetVersion(version string) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	s.routes(mux)
-	return s.accessControlled(http.NewCrossOriginProtection().Handler(mux))
+	return s.hostValidated(s.accessControlled(http.NewCrossOriginProtection().Handler(mux)))
+}
+
+// hostValidated prevents DNS rebinding from turning the credential-free local
+// server into an authenticated same-origin endpoint. Authenticated shared
+// deployments rely on their configured credential/proxy and may legitimately
+// receive a public Host through a reverse proxy.
+func (s *Server) hostValidated(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Direct in-process handler calls have no listener address. The real HTTP
+		// server always supplies LocalAddrContextKey, which is the security
+		// boundary this check protects.
+		_, servedByListener := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+		if servedByListener && s.authToken == "" && s.proxySecret == "" && !s.allowedUnauthenticatedHost(r.Host) {
+			writeErr(w, http.StatusForbidden, fmt.Errorf("untrusted request host"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) allowedUnauthenticatedHost(raw string) bool {
+	host := strings.TrimSpace(raw)
+	if parsed, _, err := net.SplitHostPort(host); err == nil {
+		host = parsed
+	} else {
+		host = strings.Trim(host, "[]")
+	}
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return true
+	}
+	configured := strings.TrimSuffix(strings.ToLower(strings.Trim(strings.TrimSpace(s.host), "[]")), ".")
+	return configured != "" && configured != "0.0.0.0" && configured != "::" && host == configured
 }
 
 func (s *Server) routes(raw *http.ServeMux) {

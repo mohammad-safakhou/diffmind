@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -38,6 +39,28 @@ func testMCPServer(t *testing.T) (*Server, string) {
 		t.Fatal(err)
 	}
 	return New(query.New(st), "", "test"), project.ID
+}
+
+func TestCompactServiceAndDependencyPagination(t *testing.T) {
+	view := &archgraph.ServiceView{
+		RunID:        "run-1",
+		Service:      &archgraph.ServiceNode{Name: "orders", Team: "payments", EntrypointCount: 3, DownstreamCount: 80},
+		InboundEdges: make([]*archgraph.GraphEdge, 2), OutboundEdges: make([]*archgraph.GraphEdge, 80),
+		AvailableTraceIDs: []string{"http.orders"},
+	}
+	compact := compactService(view)
+	service := compact["service"].(map[string]any)
+	if service["name"] != "orders" || service["dependencies"] != 80 {
+		t.Fatalf("unexpected compact service: %#v", compact)
+	}
+	edges := make([]*archgraph.GraphEdge, 75)
+	for i := range edges {
+		edges[i] = &archgraph.GraphEdge{From: "orders", To: fmt.Sprintf("service-%d", i)}
+	}
+	page := pageDependencies(&query.DependencyResult{ProjectID: "p", RunID: "r", Service: "orders", Edges: edges}, 50, 20)
+	if page["total"] != 75 || page["has_more"] != true || len(page["edges"].([]*archgraph.GraphEdge)) != 20 {
+		t.Fatalf("unexpected dependency page: %#v", page)
+	}
 }
 
 func TestMCPProtocolListsAndCallsTools(t *testing.T) {

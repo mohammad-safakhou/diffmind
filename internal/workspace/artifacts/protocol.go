@@ -49,6 +49,7 @@ func readProtocolRunDir(repoPath, runDir string) (*model.ServiceArchitecture, er
 
 func protocolToArchitecture(doc *protocol.Document) *model.ServiceArchitecture {
 	arch := &model.ServiceArchitecture{Protocol: doc, ServiceName: doc.Service.Name, RepoPath: doc.Repository.Path}
+	evidence := protocolEvidenceIndex(doc)
 	for _, r := range doc.Objects.DBResources {
 		arch.Resources = append(arch.Resources, model.Resource{
 			ID:       r.ID,
@@ -63,7 +64,7 @@ func protocolToArchitecture(doc *protocol.Document) *model.ServiceArchitecture {
 		})
 	}
 	for _, o := range doc.Objects.HTTPEndpoints {
-		arch.Exposures = append(arch.Exposures, model.Exposure{BaseEntity: baseFromProtocol(o.ObjectiveBase, "http_route", o.Name, "http", mapFromAny(o))})
+		arch.Exposures = append(arch.Exposures, model.Exposure{BaseEntity: baseFromProtocol(o.ObjectiveBase, "http_route", o.Name, "http", mapFromAny(o), evidence, doc.Repository)})
 	}
 	for _, o := range doc.Objects.QueueConsumers {
 		platform := normalizeQueuePlatform(o.Platform, o.Topic, o.Queue, o.Name)
@@ -71,18 +72,18 @@ func protocolToArchitecture(doc *protocol.Document) *model.ServiceArchitecture {
 		details := mapFromAny(o)
 		details["platform"] = platform
 		details["destination"] = instance
-		base := baseFromProtocol(o.ObjectiveBase, "queue_consumer", o.Name, platform, details)
+		base := baseFromProtocol(o.ObjectiveBase, "queue_consumer", o.Name, platform, details, evidence, doc.Repository)
 		base.Instance = instance
 		arch.Exposures = append(arch.Exposures, model.Exposure{BaseEntity: base})
 	}
 	for _, o := range doc.Objects.CLICommands {
-		arch.Exposures = append(arch.Exposures, model.Exposure{BaseEntity: baseFromProtocol(o.ObjectiveBase, "cli_command", o.Name, "process", mapFromAny(o))})
+		arch.Exposures = append(arch.Exposures, model.Exposure{BaseEntity: baseFromProtocol(o.ObjectiveBase, "cli_command", o.Name, "process", mapFromAny(o), evidence, doc.Repository)})
 	}
 	for _, o := range doc.Objects.Activations {
-		arch.Exposures = append(arch.Exposures, model.Exposure{BaseEntity: baseFromProtocol(o.ObjectiveBase, "scheduled_job", o.Name, "scheduler", mapFromAny(o))})
+		arch.Exposures = append(arch.Exposures, model.Exposure{BaseEntity: baseFromProtocol(o.ObjectiveBase, "scheduled_job", o.Name, "scheduler", mapFromAny(o), evidence, doc.Repository)})
 	}
 	for _, o := range doc.Objects.RPCEndpoints {
-		arch.Exposures = append(arch.Exposures, model.Exposure{BaseEntity: baseFromProtocol(o.ObjectiveBase, "rpc_endpoint", o.Name, o.Protocol, mapFromAny(o))})
+		arch.Exposures = append(arch.Exposures, model.Exposure{BaseEntity: baseFromProtocol(o.ObjectiveBase, "rpc_endpoint", o.Name, o.Protocol, mapFromAny(o), evidence, doc.Repository)})
 	}
 	for _, o := range doc.Objects.HTTPCalls {
 		details := mapFromAny(o)
@@ -95,12 +96,12 @@ func protocolToArchitecture(doc *protocol.Document) *model.ServiceArchitecture {
 		details["target_service"] = target
 		details["url_template"] = o.URLTemplate
 		details["method"] = o.Method
-		base := baseFromProtocol(o.ObjectiveBase, "outbound_http", o.Name, "http", details)
+		base := baseFromProtocol(o.ObjectiveBase, "outbound_http", o.Name, "http", details, evidence, doc.Repository)
 		base.Instance = target
 		arch.Dependencies = append(arch.Dependencies, model.Dependency{BaseEntity: base})
 	}
 	for _, o := range doc.Objects.DBQueries {
-		base := baseFromProtocol(o.ObjectiveBase, "db_operation", o.Name, o.Engine, mapFromAny(o))
+		base := baseFromProtocol(o.ObjectiveBase, "db_operation", o.Name, o.Engine, mapFromAny(o), evidence, doc.Repository)
 		if o.Target != nil {
 			base.Instance = firstString(o.Target.Database, strings.Join(o.Target.Tables, ","))
 		}
@@ -114,7 +115,7 @@ func protocolToArchitecture(doc *protocol.Document) *model.ServiceArchitecture {
 		details := mapFromAny(o)
 		details["platform"] = platform
 		details["destination"] = instance
-		base := baseFromProtocol(o.ObjectiveBase, "queue_publish", o.Name, platform, details)
+		base := baseFromProtocol(o.ObjectiveBase, "queue_publish", o.Name, platform, details, evidence, doc.Repository)
 		base.Instance = instance
 		arch.Dependencies = append(arch.Dependencies, model.Dependency{BaseEntity: base})
 	}
@@ -125,13 +126,13 @@ func protocolToArchitecture(doc *protocol.Document) *model.ServiceArchitecture {
 		details["cache"] = cacheName
 		details["cache_name"] = cacheName
 		details["cache_type"] = platform
-		base := baseFromProtocol(o.ObjectiveBase, "cache_operation", o.Name, platform, details)
+		base := baseFromProtocol(o.ObjectiveBase, "cache_operation", o.Name, platform, details, evidence, doc.Repository)
 		base.Instance = cacheName
 		base.Operation = o.Operation
 		arch.Dependencies = append(arch.Dependencies, model.Dependency{BaseEntity: base})
 	}
 	for _, o := range doc.Objects.RPCCalls {
-		base := baseFromProtocol(o.ObjectiveBase, "outbound_rpc", o.Name, o.Protocol, mapFromAny(o))
+		base := baseFromProtocol(o.ObjectiveBase, "outbound_rpc", o.Name, o.Protocol, mapFromAny(o), evidence, doc.Repository)
 		base.Instance = targetName(o.Target, o.Service)
 		arch.Dependencies = append(arch.Dependencies, model.Dependency{BaseEntity: base})
 	}
@@ -145,7 +146,7 @@ func protocolToArchitecture(doc *protocol.Document) *model.ServiceArchitecture {
 		details["value"] = o.Value
 		details["source"] = o.Source
 		platform := firstString(stringFromAny(details["orchestrator"]), stringFromAny(details["platform"]), "workflow")
-		base := baseFromProtocol(o.ObjectiveBase, "workflow_orchestration", o.Name, platform, details)
+		base := baseFromProtocol(o.ObjectiveBase, "workflow_orchestration", o.Name, platform, details, evidence, doc.Repository)
 		base.Instance = firstString(stringFromAny(details["target_service"]), stringFromAny(details["url_template"]), o.Value, platform)
 		arch.Dependencies = append(arch.Dependencies, model.Dependency{BaseEntity: base})
 	}
@@ -170,9 +171,20 @@ func readManifestForProtocol(runDir, repoPath string) *model.RunManifest {
 	return &m
 }
 
-func baseFromProtocol(base protocol.ObjectiveBase, typ, name, platform string, details map[string]any) model.BaseEntity {
+func baseFromProtocol(base protocol.ObjectiveBase, typ, name, platform string, details map[string]any, evidence map[string]protocol.Evidence, repository protocol.Repository) model.BaseEntity {
 	if name == "" {
 		name = base.Name
+	}
+	locations, hydratedEvidence := hydrateProtocolEvidence(base.EvidenceRefs, evidence)
+	if confidence := confidenceFloat(base.Confidence); confidence > 0 {
+		details["detection_confidence"] = confidence
+	}
+	if len(hydratedEvidence) > 0 {
+		details["evidence"] = hydratedEvidence
+		details["source_locations"] = locations
+	}
+	if repository.Commit != "" || repository.Branch != "" {
+		details["repository_revision"] = map[string]any{"commit": repository.Commit, "branch": repository.Branch, "dirty": repository.Dirty}
 	}
 	return model.BaseEntity{
 		ID:           base.ID,
@@ -180,13 +192,46 @@ func baseFromProtocol(base protocol.ObjectiveBase, typ, name, platform string, d
 		Name:         name,
 		Platform:     platform,
 		Summary:      stringMeta(base.Metadata, "summary"),
-		Locations:    nil,
-		Evidence:     nil,
+		Locations:    locations,
+		Evidence:     modelEvidence(hydratedEvidence),
 		Confidence:   confidenceFloat(base.Confidence),
 		Tags:         []string{"protocol", string(base.Origin)},
 		Details:      details,
 		PluginSource: string(base.Origin),
 	}
+}
+
+func protocolEvidenceIndex(doc *protocol.Document) map[string]protocol.Evidence {
+	out := make(map[string]protocol.Evidence, len(doc.Evidence))
+	for _, item := range doc.Evidence {
+		out[item.ID] = item
+	}
+	return out
+}
+
+func hydrateProtocolEvidence(refs []string, index map[string]protocol.Evidence) ([]model.Location, []protocol.Evidence) {
+	locations := make([]model.Location, 0, len(refs))
+	evidence := make([]protocol.Evidence, 0, len(refs))
+	for _, ref := range refs {
+		item, ok := index[ref]
+		if !ok {
+			continue
+		}
+		evidence = append(evidence, item)
+		locations = append(locations, model.Location{File: item.File, StartLine: item.StartLine, EndLine: item.EndLine})
+	}
+	return locations, evidence
+}
+
+func modelEvidence(items []protocol.Evidence) []model.Evidence {
+	out := make([]model.Evidence, 0, len(items))
+	for _, item := range items {
+		out = append(out, model.Evidence{
+			Location: model.Location{File: item.File, StartLine: item.StartLine, EndLine: item.EndLine},
+			Source:   firstString(item.Source, item.ID),
+		})
+	}
+	return out
 }
 
 func connectionFromProtocolFlow(flow protocol.Flow, arch *model.ServiceArchitecture) (model.Connection, bool) {

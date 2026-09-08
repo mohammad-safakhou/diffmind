@@ -460,6 +460,24 @@ func TestResolutionMatchesHTTPRouteAfterPrefixNormalization(t *testing.T) {
 	}
 }
 
+func TestResolutionRouteCannotOverrideExplicitHTTPDestination(t *testing.T) {
+	reg := registry.New()
+	reg.AddArchitecture("caller", &model.ServiceArchitecture{Dependencies: []model.Dependency{{BaseEntity: model.BaseEntity{
+		ID: "call", Type: "outbound_http", Instance: "external.example.test",
+		Details: map[string]any{"method": "GET", "url_template": "https://external.example.test/invoices", "target_service": "external.example.test"},
+	}}}})
+	reg.AddArchitecture("route-owner", &model.ServiceArchitecture{Exposures: []model.Exposure{{BaseEntity: model.BaseEntity{
+		ID: "route", Type: "http_route", Name: "GET /invoices",
+	}}}})
+	resolution, err := New(reg, util.NewLogger(util.LevelInfo)).Resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolution.Matches) != 0 || len(resolution.Unresolved) != 1 || resolution.Unresolved[0].Target != "external.example.test" {
+		t.Fatalf("explicit destination was overridden: %+v", resolution)
+	}
+}
+
 func TestResolutionDoesNotGuessAmbiguousHTTPRoute(t *testing.T) {
 	reg := registry.New()
 	reg.AddArchitecture("caller", &model.ServiceArchitecture{

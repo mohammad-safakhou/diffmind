@@ -864,6 +864,8 @@ function normalizeSharedName(raw) {
 export function GraphCanvas({ graph, onSelect, detailLoaded = true, onRequestFullDetail }) {
   const svgRef = useRef(null)
   const transformRef = useRef(d3.zoomIdentity)
+	const zoomRef = useRef(null)
+	const fitTransformRef = useRef(d3.zoomIdentity)
   const graphLayoutKeyRef = useRef('')
   const graphViewKeyRef = useRef('')
   const userMovedRef = useRef(false)
@@ -904,6 +906,15 @@ export function GraphCanvas({ graph, onSelect, detailLoaded = true, onRequestFul
     setActiveSelection({ kind: 'service', data: match, id: match.name })
     onSelect && onSelect({ kind: 'service', data: match, id: match.name })
   }
+	const changeZoom = (factor) => {
+		if (!svgRef.current || !zoomRef.current) return
+		d3.select(svgRef.current).transition().duration(160).call(zoomRef.current.scaleBy, factor)
+	}
+	const resetZoom = () => {
+		if (!svgRef.current || !zoomRef.current) return
+		userMovedRef.current = false
+		d3.select(svgRef.current).transition().duration(180).call(zoomRef.current.transform, fitTransformRef.current)
+	}
 
   useEffect(() => {
     if (!graph || !svgRef.current) return
@@ -978,6 +989,7 @@ export function GraphCanvas({ graph, onSelect, detailLoaded = true, onRequestFul
       if (!programmaticZoomRef.current && ev.sourceEvent) userMovedRef.current = true
       rootG.attr('transform', ev.transform)
     })
+	zoomRef.current = zoom
     svg.call(zoom)
     svg.on('click', () => selectThing(null))
 
@@ -1146,15 +1158,16 @@ export function GraphCanvas({ graph, onSelect, detailLoaded = true, onRequestFul
       const graphW = top.graph().width || 1000
       const graphH = top.graph().height || 700
       const pad = 60
-      const overlayTopPad = 320
+		const overlayTopPad = 92
       const availableW = Math.max(240, W - pad * 2)
       const availableH = Math.max(240, H - overlayTopPad - pad)
       const fitScale = Math.min(availableW / graphW, availableH / graphH, 1.05)
-      const minScale = mode === 'detail' ? 0.04 : 0.12
+		const minScale = mode === 'detail' ? 0.04 : 0.18
       const scale = Math.min(Math.max(fitScale, minScale), 1.05)
       const tx = (W - graphW * scale) / 2
       const ty = overlayTopPad + (H - overlayTopPad - graphH * scale) / 2
       transformRef.current = d3.zoomIdentity.translate(tx, ty).scale(scale)
+		fitTransformRef.current = transformRef.current
       userMovedRef.current = false
       svg.call(zoom.transform, transformRef.current)
     }
@@ -1179,6 +1192,9 @@ export function GraphCanvas({ graph, onSelect, detailLoaded = true, onRequestFul
           onKeyDown={(e) => { if (e.key === 'Enter') runSearch() }}
         />
         <button type="button" onClick={runSearch}>Focus</button>
+		<button type="button" aria-label="Zoom out" onClick={() => changeZoom(0.8)}>−</button>
+		<button type="button" aria-label="Reset graph view" onClick={resetZoom}>Reset</button>
+		<button type="button" aria-label="Zoom in" onClick={() => changeZoom(1.25)}>+</button>
         <select class="graph-team-select" value={teamFilter} onInput={(e) => setTeamFilter(e.currentTarget.value)}>
           <option value="">All teams</option>
           {teamOptions.map((team) => <option key={team} value={team}>{team}</option>)}

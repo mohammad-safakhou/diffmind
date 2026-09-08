@@ -663,7 +663,7 @@ def handle():
 	}
 	ops := map[string]bool{}
 	for _, e := range got {
-		if e.Type != "cache_operation" || e.Details["cache"] != "redis" || e.Details["cache_type"] != "redis" {
+		if e.Type != "cache_operation" || e.Details["cache"] != "localhost:6379" || e.Details["cache_type"] != "redis" {
 			t.Fatalf("unexpected cache entity: %+v", e)
 		}
 		ops[e.Details["operation"].(string)] = true
@@ -675,6 +675,55 @@ def handle():
 		if !ops[op] {
 			t.Fatalf("missing redis %s operation in %+v", op, got)
 		}
+	}
+}
+
+func TestDeterministicRedisCacheOperationsPreserveServerIdentity(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"cache.py": `import redis
+def handle():
+    alpha_redis_client = redis.Redis(host="alpha.example.test", port=6380, db=2)
+    beta_redis_client = redis.Redis(host="beta.example.test")
+    alpha_redis_client.get("a")
+    beta_redis_client.get("b")
+`,
+	})
+	got := DeterministicCacheOperations(idx)
+	if len(got) != 2 {
+		t.Fatalf("expected distinct operations for two Redis servers, got %+v", got)
+	}
+	names := map[string]bool{}
+	for _, item := range got {
+		names[stringAny(item.Details["cache"])] = true
+	}
+	if !names["alpha.example.test:6380/2"] || !names["beta.example.test:6379"] {
+		t.Fatalf("Redis server identities were not preserved: %+v", names)
+	}
+}
+
+func TestDeterministicPythonHTTPResolvesModuleURLConstantAndRetainsUnknown(t *testing.T) {
+	idx := buildAgentsIndex(t, map[string]string{
+		"app.py": `import requests
+API_ENDPOINT = "https://external.example.test/events"
+requests.post(API_ENDPOINT, json={})
+requests.get(dynamic_url)
+`,
+	})
+	got := DeterministicOutboundHTTP(idx)
+	if len(got) != 2 {
+		t.Fatalf("expected resolved and unresolved Python HTTP calls, got %+v", got)
+	}
+	var resolved, unresolved bool
+	for _, item := range got {
+		if item.Details["url_template"] == "https://external.example.test/events" {
+			resolved = true
+		}
+		if item.Details["target_unresolved"] == true && item.Details["url_expression"] == "dynamic_url" {
+			unresolved = true
+		}
+	}
+	if !resolved || !unresolved {
+		t.Fatalf("missing resolved=%v or unresolved=%v call in %+v", resolved, unresolved, got)
 	}
 }
 
@@ -901,7 +950,7 @@ func TestDeterministicPythonSQSConsumer(t *testing.T) {
 }
 
 func TestPythonHTTPClientKeepsAPIServiceSuffix(t *testing.T) {
-	method, path, target, ok := pythonHTTPCall(&astpkg.FileAST{Language: "python"}, astpkg.CallSite{
+	method, path, target, ok := pythonHTTPCall(nil, &astpkg.FileAST{Language: "python"}, astpkg.CallSite{
 		File:        "clients/catalogue_management_api_client.py",
 		ReceiverRaw: "self",
 		CalleeRaw:   "get",

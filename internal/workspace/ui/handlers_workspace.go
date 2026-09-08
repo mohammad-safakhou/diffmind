@@ -148,6 +148,7 @@ func (s *Server) workspaceReposWithRuns(pid string, runGroups map[string][]artif
 			metrics = latest.RepoMetrics
 		}
 		freshness := diffmindFreshness(repo, latest)
+		repo.DiffMindFreshness = freshness
 		out = append(out, workspaceRepo{Repo: repo, LatestDiffMindRun: latest, RepoMetrics: metrics, EffectiveTeam: team, Freshness: freshness})
 	}
 	return out, nil
@@ -166,6 +167,14 @@ func diffmindFreshness(repo store.Repo, latest *artifacts.DiffMindRunInfo) strin
 		return "unknown"
 	}
 	remote := firstNonEmpty(repo.RemoteHeadSHA, repo.HeadSHA)
+	if repo.SourceType == "local" || (repo.GitURL == "" && repo.Path != "") {
+		if head, dirty := localGitRevision(repo.Path); head != "" {
+			if dirty {
+				return "dirty"
+			}
+			remote = head
+		}
+	}
 	if remote == "" {
 		return "unknown"
 	}
@@ -173,6 +182,22 @@ func diffmindFreshness(repo store.Repo, latest *artifacts.DiffMindRunInfo) strin
 		return "fresh"
 	}
 	return "stale"
+}
+
+func localGitRevision(path string) (string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out := gitOutput(ctx, path, "status", "--porcelain=v2", "--branch")
+	var head string
+	dirty := false
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "# branch.oid ") {
+			head = strings.TrimSpace(strings.TrimPrefix(line, "# branch.oid "))
+		} else if line != "" && !strings.HasPrefix(line, "# ") {
+			dirty = true
+		}
+	}
+	return head, dirty
 }
 
 func (s *Server) latestWorkspaceGraph(pid string, repos []workspaceRepo) (*store.RunManifest, *ArchGraph) {

@@ -226,11 +226,26 @@ func catalogInfoOwner(repoPath string) string {
 		}
 		if strings.EqualFold(strings.TrimSpace(doc.Kind), "Component") {
 			if owner := strings.TrimSpace(doc.Spec.Owner); owner != "" {
-				return owner
+				return normalizeBackstageOwner(owner)
 			}
 		}
 	}
 	return ""
+}
+
+func normalizeBackstageOwner(owner string) string {
+	owner = strings.TrimSpace(owner)
+	parts := strings.SplitN(owner, ":", 2)
+	if len(parts) == 2 && strings.EqualFold(parts[0], "group") {
+		if strings.HasPrefix(strings.ToLower(parts[1]), "default/") {
+			return parts[1][len("default/"):]
+		}
+		return owner
+	}
+	if !strings.Contains(owner, ":") && strings.HasPrefix(strings.ToLower(owner), "default/") {
+		owner = owner[len("default/"):]
+	}
+	return owner
 }
 
 func CollectRepoMetrics(repoPath string, facts *extraction.RepoFacts) *model.RepoMetrics {

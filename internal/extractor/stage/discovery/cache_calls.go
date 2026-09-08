@@ -42,6 +42,7 @@ func DeterministicCacheOperations(idx *astpkg.ProjectIndex) []candidate {
 	}
 	type agg struct {
 		op        string
+		cache     string
 		locations []candidateLocation
 		evidence  []candidateEvidence
 		seenLoc   map[string]struct{}
@@ -65,10 +66,14 @@ func DeterministicCacheOperations(idx *astpkg.ProjectIndex) []candidate {
 		if loc.File == "" {
 			return
 		}
-		key := "redis|" + op
+		cache := pythonRedisIdentity(idx, cs.File, receiver)
+		if cache == "" {
+			cache = "redis"
+		}
+		key := "redis|" + cache + "|" + op
 		a, exists := seen[key]
 		if !exists {
-			a = &agg{op: op, seenLoc: map[string]struct{}{}}
+			a = &agg{op: op, cache: cache, seenLoc: map[string]struct{}{}}
 			seen[key] = a
 			order = append(order, key)
 		}
@@ -89,7 +94,7 @@ func DeterministicCacheOperations(idx *astpkg.ProjectIndex) []candidate {
 		if _, exists := seen[key]; exists {
 			continue
 		}
-		a := &agg{op: op, seenLoc: map[string]struct{}{}}
+		a := &agg{op: op, cache: "redis", seenLoc: map[string]struct{}{}}
 		a.locations = append(a.locations, e.Locations...)
 		a.evidence = append(a.evidence, e.Evidence...)
 		seen[key] = a
@@ -141,12 +146,12 @@ func DeterministicCacheOperations(idx *astpkg.ProjectIndex) []candidate {
 		}
 		out = append(out, candidate{
 			Type:       "cache_operation",
-			Name:       a.op + " redis",
+			Name:       a.op + " " + firstNonEmpty(a.cache, "redis"),
 			Summary:    fmt.Sprintf("AST-derived Redis cache %s", a.op),
 			Confidence: 1.0,
 			Tags:       []string{"deterministic", "cache:redis"},
 			Details: map[string]any{
-				"cache":         "redis",
+				"cache":         firstNonEmpty(a.cache, "redis"),
 				"cache_type":    "redis",
 				"operation":     a.op,
 				"platform":      "redis",
@@ -157,6 +162,53 @@ func DeterministicCacheOperations(idx *astpkg.ProjectIndex) []candidate {
 		})
 	}
 	return out
+}
+
+// pythonRedisIdentity conservatively binds a Redis receiver to a literal
+// constructor host. Different explicit servers can then remain distinct in the
+// workspace graph; dynamic/unknown clients intentionally fall back to a
+// service-scoped generic cache.
+func pythonRedisIdentity(idx *astpkg.ProjectIndex, file, receiver string) string {
+	src, ok := readIndexedSource(idx, file)
+	if !ok {
+		return ""
+	}
+	receiver = strings.TrimSpace(receiver)
+	if receiver == "" {
+		return ""
+	}
+	for depth := 0; depth < 2; depth++ {
+		constructor := regexp.MustCompile(`(?m)\b` + regexp.QuoteMeta(receiver) + `\s*=\s*(?:redis\.)?(?:Redis|StrictRedis)\s*\(([^)]*)\)`)
+		if match := constructor.FindStringSubmatch(src); len(match) > 1 {
+			host := pythonLiteralKeyword(match[1], "host")
+			if host == "" {
+				return ""
+			}
+			port := firstNonEmpty(pythonLiteralKeyword(match[1], "port"), "6379")
+			database := pythonLiteralKeyword(match[1], "db")
+			identity := host + ":" + port
+			if database != "" {
+				identity += "/" + database
+			}
+			return identity
+		}
+		pipeline := regexp.MustCompile(`(?m)\b` + regexp.QuoteMeta(receiver) + `\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.pipeline\s*\(`)
+		match := pipeline.FindStringSubmatch(src)
+		if len(match) < 2 {
+			return ""
+		}
+		receiver = match[1]
+	}
+	return ""
+}
+
+func pythonLiteralKeyword(arguments, key string) string {
+	re := regexp.MustCompile(`\b` + regexp.QuoteMeta(key) + `\s*=\s*(?:[rRuUbBfF]{0,2})?["']([^"']+)["']|\b` + regexp.QuoteMeta(key) + `\s*=\s*([0-9]+)`)
+	match := re.FindStringSubmatch(arguments)
+	if len(match) < 2 {
+		return ""
+	}
+	return firstNonEmpty(match[1], match[2])
 }
 
 func deterministicS3StorageOperations(idx *astpkg.ProjectIndex) []candidate {

@@ -137,6 +137,20 @@ func TestLocalReposRecursiveSkipsInsideRepo(t *testing.T) {
 	}
 }
 
+func TestLocalImportLimitAppliesAfterFiltering(t *testing.T) {
+	root := t.TempDir()
+	mkdirGit(t, filepath.Join(root, "aaa-ignored"))
+	mkdirGit(t, filepath.Join(root, "route-owner"))
+	req := importReposRequest{Root: root, Include: `^route-owner$`, Limit: 1, DryRun: true}
+	repos, err := localRepos(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repos) != 1 || repos[0].Name != "route-owner" {
+		t.Fatalf("filtered import limit selected %+v", repos)
+	}
+}
+
 func mkdirGit(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {

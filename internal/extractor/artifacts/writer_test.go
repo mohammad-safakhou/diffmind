@@ -12,6 +12,21 @@ import (
 	"github.com/mohammad-safakhou/diffmind/protocol"
 )
 
+func TestNormalizeBackstageOwner(t *testing.T) {
+	tests := map[string]string{
+		"bar":               "bar",
+		"group:default/bar": "bar",
+		"default/bar":       "bar",
+		"group:other/bar":   "group:other/bar",
+		"user:default/bar":  "user:default/bar",
+	}
+	for input, want := range tests {
+		if got := normalizeBackstageOwner(input); got != want {
+			t.Errorf("normalizeBackstageOwner(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestWriteDoesNotEmitLegacyArtifactDirectories(t *testing.T) {
 	baseDir := t.TempDir()
 	_, err := Write(WriteInput{

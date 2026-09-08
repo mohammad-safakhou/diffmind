@@ -1,8 +1,10 @@
 package ui
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -230,5 +232,28 @@ func TestCrossOriginMutationIsRejected(t *testing.T) {
 	s.Handler().ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("cross-origin mutation status=%d, want 403", recorder.Code)
+	}
+}
+
+func TestUnauthenticatedLocalServerRejectsDNSRebindingHost(t *testing.T) {
+	s := newAuthTestServer(t)
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		req := httptest.NewRequest(method, "http://rebinding.example.test/api/projects", nil)
+		req.Header.Set("Origin", "http://rebinding.example.test")
+		req = req.WithContext(context.WithValue(req.Context(), http.LocalAddrContextKey, &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8090}))
+		recorder := httptest.NewRecorder()
+		s.Handler().ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("%s with rebinding host status=%d, want 403", method, recorder.Code)
+		}
+	}
+	for _, host := range []string{"localhost:8090", "127.0.0.1:8090", "[::1]:8090"} {
+		req := httptest.NewRequest(http.MethodGet, "http://"+host+"/healthz", nil)
+		req = req.WithContext(context.WithValue(req.Context(), http.LocalAddrContextKey, &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8090}))
+		recorder := httptest.NewRecorder()
+		s.Handler().ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("local host %q status=%d, want 200", host, recorder.Code)
+		}
 	}
 }

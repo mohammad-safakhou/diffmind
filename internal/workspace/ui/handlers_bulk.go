@@ -169,9 +169,6 @@ func githubOrgRepos(ctx context.Context, req importReposRequest) ([]githubRepo, 
 				continue
 			}
 			out = append(out, repo)
-			if req.Limit > 0 && len(out) >= req.Limit {
-				return out, nil
-			}
 		}
 		if len(pageRepos) < 100 {
 			break
@@ -225,19 +222,17 @@ func localRepos(req importReposRequest) ([]localRepo, error) {
 	if !info.IsDir() {
 		return nil, fmt.Errorf("root is not a directory: %s", root)
 	}
-	limit := req.Limit
 	maxDepth := req.MaxDepth
 	if maxDepth <= 0 {
 		maxDepth = 2
 	}
 	var out []localRepo
-	addRepo := func(path string) bool {
+	addRepo := func(path string) {
 		out = append(out, localRepo{Name: filepath.Base(path), Path: path})
-		return limit > 0 && len(out) >= limit
 	}
 	if looksLikeRepo(root) {
 		addRepo(root)
-		return out, nil
+		return selectLocalRepos(out, req), nil
 	}
 	if !req.Recursive {
 		entries, err := os.ReadDir(root)
@@ -249,11 +244,11 @@ func localRepos(req importReposRequest) ([]localRepo, error) {
 				continue
 			}
 			path := filepath.Join(root, e.Name())
-			if looksLikeRepo(path) && addRepo(path) {
-				break
+			if looksLikeRepo(path) {
+				addRepo(path)
 			}
 		}
-		return out, nil
+		return selectLocalRepos(out, req), nil
 	}
 	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -274,9 +269,7 @@ func localRepos(req importReposRequest) ([]localRepo, error) {
 			return filepath.SkipDir
 		}
 		if looksLikeRepo(path) {
-			if addRepo(path) {
-				return filepath.SkipAll
-			}
+			addRepo(path)
 			return filepath.SkipDir
 		}
 		return nil
@@ -284,7 +277,26 @@ func localRepos(req importReposRequest) ([]localRepo, error) {
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	return selectLocalRepos(out, req), nil
+}
+
+func selectLocalRepos(repos []localRepo, req importReposRequest) []localRepo {
+	include := compileOptionalRegexp(req.Include)
+	exclude := compileOptionalRegexp(req.Exclude)
+	out := make([]localRepo, 0, len(repos))
+	for _, repo := range repos {
+		if include != nil && !include.MatchString(repo.Name) {
+			continue
+		}
+		if exclude != nil && exclude.MatchString(repo.Name) {
+			continue
+		}
+		out = append(out, repo)
+		if req.Limit > 0 && len(out) >= req.Limit {
+			break
+		}
+	}
+	return out
 }
 
 func relDepth(root, path string) int {
@@ -312,6 +324,9 @@ func (s *Server) importLocalRepos(pid string, req importReposRequest, repos []lo
 		}
 		if exclude != nil && exclude.MatchString(local.Name) {
 			continue
+		}
+		if req.Limit > 0 && len(results) >= req.Limit {
+			break
 		}
 		clean := filepath.Clean(local.Path)
 		result := importedRepoResult{Name: local.Name, Path: clean, Status: "candidate"}
@@ -362,6 +377,9 @@ func (s *Server) importGitHubRepos(pid string, req importReposRequest, repos []g
 		}
 		if exclude != nil && exclude.MatchString(gh.Name) {
 			continue
+		}
+		if req.Limit > 0 && len(results) >= req.Limit {
+			break
 		}
 		gitURL := githubCloneURL(gh, req)
 		result := importedRepoResult{Name: gh.Name, GitURL: gitURL, Status: "candidate"}
