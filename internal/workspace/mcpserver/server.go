@@ -67,6 +67,19 @@ type impactInput struct {
 	Depth   int    `json:"depth,omitempty" jsonschema:"Maximum graph traversal depth, from 1 to 20. Defaults to 6."`
 }
 
+type contractsInput struct {
+	Project string `json:"project,omitempty" jsonschema:"Project ID. Defaults to configured or sole project."`
+	Run     string `json:"run,omitempty" jsonschema:"Completed graph run ID; omit for latest."`
+	Service string `json:"service,omitempty" jsonschema:"Optional exact service name."`
+}
+
+type contractDiffInput struct {
+	Project string `json:"project,omitempty" jsonschema:"Project ID."`
+	From    string `json:"from" jsonschema:"Baseline completed run ID."`
+	To      string `json:"to" jsonschema:"Comparison completed run ID."`
+	Service string `json:"service,omitempty" jsonschema:"Optional exact service name."`
+}
+
 func (s *Server) MCPServer() *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "diffmind", Title: "DiffMind Architecture Graph", Version: s.version, WebsiteURL: "https://github.com/mohammad-safakhou/diffmind"}, nil)
 	readOnly := &mcp.ToolAnnotations{Title: "List DiffMind projects", ReadOnlyHint: true, OpenWorldHint: boolPtr(false)}
@@ -130,6 +143,24 @@ func (s *Server) MCPServer() *mcp.Server {
 			out, err := s.query.Search(project, in.Run, in.Query, in.Limit)
 			return nil, out, err
 		})
+	mcp.AddTool(server, tool("get_contracts", "Get endpoint contracts", "Return bounded request-field facts for HTTP endpoints, preserving declared/static source and evidence. Empty fields means no supported contract facts were recorded, not that the endpoint accepts no fields."),
+		func(_ context.Context, _ *mcp.CallToolRequest, in contractsInput) (*mcp.CallToolResult, any, error) {
+			project, err := s.project(in.Project)
+			if err != nil {
+				return nil, nil, err
+			}
+			out, err := s.query.Contracts(project, in.Run, in.Service)
+			return nil, out, err
+		})
+	mcp.AddTool(server, tool("compare_contracts", "Compare endpoint contracts", "Compare request fields between two immutable graph runs. Required additions, removals, narrowing, and type changes are potentially breaking; renames appear as remove plus add unless explicit alias evidence exists."),
+		func(_ context.Context, _ *mcp.CallToolRequest, in contractDiffInput) (*mcp.CallToolResult, any, error) {
+			project, err := s.project(in.Project)
+			if err != nil {
+				return nil, nil, err
+			}
+			out, err := s.query.CompareContracts(project, in.From, in.To, in.Service)
+			return nil, out, err
+		})
 	mcp.AddTool(server, tool("get_impact", "Get impact", "Calculate the deterministic blast radius of changing a service or resource."),
 		func(_ context.Context, _ *mcp.CallToolRequest, in impactInput) (*mcp.CallToolResult, any, error) {
 			project, err := s.project(in.Project)
@@ -153,7 +184,8 @@ func compactService(view *archgraph.ServiceView) map[string]any {
 		"service": map[string]any{
 			"name": service.Name, "team": service.Team, "repo_id": service.RepoID,
 			"repo_path": service.RepoPath, "freshness": service.DiffMindFreshness,
-			"entrypoints": service.EntrypointCount, "dependencies": service.DownstreamCount,
+			"analysis_status": service.AnalysisStatus,
+			"entrypoints":     service.EntrypointCount, "dependencies": service.DownstreamCount,
 		},
 		"counts": map[string]int{
 			"inbound_edges": len(view.InboundEdges), "outbound_edges": len(view.OutboundEdges),

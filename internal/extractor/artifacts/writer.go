@@ -324,7 +324,8 @@ func languageMetricWeight(m model.LanguageMetric) int {
 
 func skipMetricsDir(name string) bool {
 	switch name {
-	case ".git", "node_modules", "vendor", "target", "build", "dist", ".gradle", ".idea", ".gocache", ".diffmind", "coverage", ".cache":
+	case ".git", "node_modules", "vendor", "target", "build", "dist", ".gradle", ".idea", ".gocache", ".diffmind", "coverage", ".cache",
+		".venv", "venv", ".tox", ".nox", "__pycache__", "site-packages":
 		return true
 	default:
 		return false

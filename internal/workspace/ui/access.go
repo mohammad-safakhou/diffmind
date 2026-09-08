@@ -87,7 +87,7 @@ func (m routedMux) HandleFunc(pattern string, h http.HandlerFunc) { m.Handle(pat
 
 func (s *Server) scopeControlled(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		for _, key := range []string{"pid", "rid", "repo_id", "pack_id", "jid", "tid"} {
+		for _, key := range []string{"pid", "rid", "repo_id", "pack_id", "jid", "tid", "gid"} {
 			if id := r.PathValue(key); id != "" && !store.ValidID(id) {
 				writeErr(w, 404, store.ErrNotFound)
 				return
@@ -163,7 +163,7 @@ func readMethod(method string) bool {
 }
 func editorOperation(pattern string) bool {
 	switch pattern {
-	case "POST /api/v1/projects/{pid}/refresh-jobs", "POST /api/v1/jobs/{jid}/cancel", "POST /api/v1/jobs/{jid}/retry", "POST /api/projects/{pid}/ingestion/cancel", "POST /api/projects/{pid}/runs/{rid}/cancel":
+	case "POST /api/v1/projects/{pid}/refresh-jobs", "POST /api/v1/jobs/{jid}/cancel", "POST /api/v1/jobs/{jid}/retry", "POST /api/projects/{pid}/ingestion/cancel", "POST /api/projects/{pid}/runs/{rid}/cancel", "POST /api/v1/projects/{pid}/improvement-gaps", "PATCH /api/v1/projects/{pid}/improvement-gaps/{gid}":
 		return true
 	}
 	return false

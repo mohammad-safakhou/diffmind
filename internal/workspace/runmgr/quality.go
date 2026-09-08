@@ -61,6 +61,10 @@ func (m *Manager) architectureStats(pid string, manifest store.RunManifest) arch
 		_, dependencies, _ := artifacts.ReadDiffMindFileMaps(runPath)
 
 		for _, item := range dependencies["outbound_http"] {
+			if statsTargetUnresolved(item) {
+				unresolved[statsString(item, "id")+"|explicit"] = true
+				continue
+			}
 			target, rawWasPath := statsHTTPServiceTarget(item)
 			if rawWasPath {
 				pathShaped[target] = true
@@ -82,6 +86,18 @@ func (m *Manager) architectureStats(pid string, manifest store.RunManifest) arch
 	stats.quality.UnresolvedExternalServices = len(unresolved)
 	stats.quality.Warnings = graphQualityWarnings(stats.quality)
 	return stats
+}
+
+func statsTargetUnresolved(item map[string]any) bool {
+	details := statsMap(item, "details")
+	if value, ok := details["target_unresolved"].(bool); ok && value {
+		return true
+	}
+	if value, ok := statsMap(details, "target")["unresolved"].(bool); ok && value {
+		return true
+	}
+	value, _ := statsMap(statsMap(details, "metadata"), "details")["target_unresolved"].(bool)
+	return value
 }
 
 func (m *Manager) persistArchitectureGraph(pid string, manifest store.RunManifest, supplements map[string]archgraph.Supplement) (*archgraph.ArchGraph, error) {

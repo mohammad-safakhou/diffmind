@@ -117,8 +117,8 @@ func TestAgentAcceptance(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if len(listed.Tools) != 16 {
-		t.Fatalf("tools=%d want 16", len(listed.Tools))
+	if len(listed.Tools) != 18 {
+		t.Fatalf("tools=%d want 18", len(listed.Tools))
 	}
 	for _, tool := range listed.Tools {
 		if tool.Name == "manage_workspace" && tool.Annotations.ReadOnlyHint {

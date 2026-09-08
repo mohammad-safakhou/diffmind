@@ -68,7 +68,11 @@ func (e *Engine) runFieldPath(pack *Pack, repoPath string, ext Extraction, files
 				e.log.Debug("field extraction failed", "file", f, "field", ef.Field, "error", err.Error())
 				continue
 			}
-			values[ef.MapsTo] = val
+			if prior, exists := values[ef.MapsTo]; exists && (ef.MapsTo == "dns_aliases" || ef.MapsTo == "resource_names") {
+				values[ef.MapsTo] = appendExtractionValues(prior, val)
+			} else {
+				values[ef.MapsTo] = val
+			}
 		}
 		if len(values) > 0 {
 			source, _ := filepath.Rel(repoPath, f)
@@ -83,6 +87,18 @@ func (e *Engine) runFieldPath(pack *Pack, repoPath string, ext Extraction, files
 		}
 	}
 	return results
+}
+
+func appendExtractionValues(values ...any) []any {
+	var out []any
+	for _, value := range values {
+		if list, ok := value.([]any); ok {
+			out = append(out, list...)
+		} else {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func (e *Engine) runRegex(pack *Pack, repoPath string, ext Extraction, files []string) []ExtractionResult {

@@ -64,6 +64,16 @@ func (s *Server) handleV1Search(w http.ResponseWriter, r *http.Request) {
 	writeV1Result(w, out, err)
 }
 
+func (s *Server) handleV1Contracts(w http.ResponseWriter, r *http.Request) {
+	out, err := s.query.Contracts(r.PathValue("pid"), r.URL.Query().Get("run"), r.URL.Query().Get("service"))
+	writeV1Result(w, out, err)
+}
+
+func (s *Server) handleV1ContractCompare(w http.ResponseWriter, r *http.Request) {
+	out, err := s.query.CompareContracts(r.PathValue("pid"), r.URL.Query().Get("from"), r.URL.Query().Get("to"), r.URL.Query().Get("service"))
+	writeV1Result(w, out, err)
+}
+
 func writeV1Result(w http.ResponseWriter, value any, err error) {
 	if err == nil {
 		writeJSON(w, http.StatusOK, value)
