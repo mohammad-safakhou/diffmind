@@ -47,8 +47,8 @@ The full-management connection exposes:
 - **agent_command**: scaffold/lint/test/explain/install packs, run doctor, and
   perform backups or queue maintenance. It drains/restarts the backend around
   commands; it is a bounded DiffMind command interface, not an arbitrary shell.
-- The existing **11 graph tools** for services, evidence, dependencies, impact,
-  search, history and tracing.
+- The existing **13 graph tools** for services, evidence, dependencies, impact,
+  nested contract search/comparison, history and tracing.
 
 You authorize repository access and any client/system installation permissions;
 the agent does the operational work. An MCP server cannot grant itself initial
@@ -166,7 +166,8 @@ Ask your agent:
 The same stdio server works with Claude Code, Cursor and other MCP clients.
 [Agent setup examples](docs/personal-setup.md#connect-an-agent) include their
 configuration and connection checks. MCP offers service discovery, search,
-dependency traversal, change impact, graph comparison and exact-ID local tracing.
+dependency traversal, change impact, graph and request-contract comparison, and
+exact-ID local tracing.
 It reads persisted artifacts; it does not refresh repositories or modify code.
 `get_service` returns a compact summary by default; request `detail: "full"`
 when you need object-level facts and hydrated source locations. `get_dependencies`
@@ -217,6 +218,12 @@ sanitized rules and synthetic fixtures. Language semantics belong in AST
 detectors, not broad source regexes. See [pack authoring](docs/knowledge-packs.md),
 [service manifests](packs/service-manifest/README.md), and
 [OpenFeign configuration](packs/spring-openfeign-config/README.md).
+
+Agents can record concrete extraction gaps through the revisioned
+`list_improvement_gaps`, `record_improvement_gap`, and
+`transition_improvement_gap` management operations. Follow the
+[agent improvement playbook](docs/agent-improvement-loop.md): proposals remain
+separate from graph facts until deterministic tests and human acceptance.
 
 ## Team deployment
 

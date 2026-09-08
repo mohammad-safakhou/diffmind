@@ -868,6 +868,7 @@ export function GraphCanvas({ graph, onSelect, detailLoaded = true, onRequestFul
 	const fitTransformRef = useRef(d3.zoomIdentity)
   const graphLayoutKeyRef = useRef('')
   const graphViewKeyRef = useRef('')
+  const initialScopeKeyRef = useRef('')
   const userMovedRef = useRef(false)
   const programmaticZoomRef = useRef(false)
   const [mode, setMode] = useState('overview')
@@ -895,6 +896,23 @@ export function GraphCanvas({ graph, onSelect, detailLoaded = true, onRequestFul
     setMode(nextMode)
   }
   const teamOptions = graphTeamOptions(graph)
+  useEffect(() => {
+    if (!graph || initialScopeKeyRef.current === renderKey) return
+    initialScopeKeyRef.current = renderKey
+    const services = graph.services || []
+    if (services.length < LARGE_GRAPH_SERVICE_THRESHOLD) {
+      setTeamFilter('')
+      return
+    }
+    const counts = new Map()
+    services.forEach((svc) => {
+      const team = svc.team || 'default'
+      counts.set(team, (counts.get(team) || 0) + 1)
+    })
+    const firstTeam = Array.from(counts.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] || ''
+    setTeamFilter(firstTeam)
+    setTeamScope('team')
+  }, [renderKey])
   const runSearch = () => {
     const q = normalizeKey(searchQuery)
     if (!q) return

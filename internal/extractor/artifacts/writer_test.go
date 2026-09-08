@@ -510,3 +510,20 @@ func TestIgnoredDeterministicDirtyPath(t *testing.T) {
 		t.Fatal("source file dirt must not be ignored")
 	}
 }
+
+func TestRepoMetricsExcludeDependencyAndPythonEnvironmentTrees(t *testing.T) {
+	repo := t.TempDir()
+	for _, path := range []string{"app.py", ".venv/lib/site-packages/dependency.py", "node_modules/pkg/generated.js", "vendor/example/vendor.go"} {
+		full := filepath.Join(repo, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("line one\nline two\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	metrics := CollectRepoMetrics(repo, nil)
+	if metrics.FileCount != 1 || metrics.TotalLOC != 2 || len(metrics.Languages) != 1 || metrics.Languages[0].Language != "python" {
+		t.Fatalf("metrics included dependency trees: %+v", metrics)
+	}
+}

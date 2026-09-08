@@ -155,6 +155,7 @@ func (o *orchestrator) runDeterministicOnly(
 	exposures, dependencies := o.seedsToEntities(seeds, &unresolved)
 	exposures = reconcile.DedupeExposures(exposures)
 	dependencies = reconcile.DedupeDependencies(dependencies)
+	warnings = append(warnings, discoverystage.EnrichHTTPContractsFromOpenAPI(o.repoPath, exposures)...)
 	provenance.NormalizeDeterministic(exposures, dependencies, nil)
 	state.Exposures = append([]model.Exposure(nil), exposures...)
 	state.Dependencies = append([]model.Dependency(nil), dependencies...)

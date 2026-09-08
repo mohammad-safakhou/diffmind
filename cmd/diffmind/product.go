@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -144,6 +145,19 @@ func runDoctor(args []string, stdout io.Writer) (int, error) {
 	} else {
 		add("git", "pass", path)
 	}
+	if executable, err := os.Executable(); err != nil {
+		add("executable", "warn", "cannot identify the running binary: "+err.Error())
+	} else {
+		if resolved, resolveErr := filepath.EvalSymlinks(executable); resolveErr == nil {
+			executable = resolved
+		}
+		candidates := executableCandidates("diffmind")
+		status := "pass"
+		if len(candidates) > 1 {
+			status = "warn"
+		}
+		add("executable", status, fmt.Sprintf("running %s; PATH candidates: %s", executable, strings.Join(candidates, ", ")))
+	}
 	if path, err := exec.LookPath("docker"); err != nil {
 		add("docker", "warn", "Docker is optional; install it for containerized analysis and company deployment")
 	} else {
@@ -199,4 +213,30 @@ func runDoctor(args []string, stdout io.Writer) (int, error) {
 		return 1, nil
 	}
 	return 0, nil
+}
+
+func executableCandidates(name string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if strings.TrimSpace(dir) == "" {
+			continue
+		}
+		candidate := filepath.Join(dir, name)
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+			continue
+		}
+		if resolved, err := filepath.EvalSymlinks(candidate); err == nil {
+			candidate = resolved
+		}
+		if !seen[candidate] {
+			seen[candidate] = true
+			out = append(out, candidate)
+		}
+	}
+	if len(out) == 0 {
+		return []string{"none"}
+	}
+	return out
 }

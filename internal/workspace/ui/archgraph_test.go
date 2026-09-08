@@ -33,7 +33,7 @@ func TestBuildArchitectureGraphUsesProtocolTargetsAndResourceKinds(t *testing.T)
         "name": "Get ATS score",
         "method": "GET",
         "url_template": "http://routing-service/score/{storeCode}",
-        "target": {"type": "unresolved", "ref": "service.routing_service", "unresolved": true},
+        "target": {"type": "service", "ref": "service.routing_service", "unresolved": false},
         "status": "confirmed",
         "confidence": "high",
         "origin": "deterministic"
@@ -56,6 +56,18 @@ func TestBuildArchitectureGraphUsesProtocolTargetsAndResourceKinds(t *testing.T)
         "url_template": "ANY /contents/{id}",
         "status": "confirmed",
         "confidence": "medium",
+        "origin": "deterministic"
+      },
+      {
+        "id": "httpcall.dynamic_url",
+        "kind": "http_call",
+        "name": "redis-migrate",
+        "method": "GET",
+        "url_template": "url + /-/all-cached-entities",
+        "target": {"type": "unresolved", "ref": "service.redis_migrate", "unresolved": true},
+        "metadata": {"details": {"target_unresolved": true, "url_expression": "url + '/-/all-cached-entities'"}},
+        "status": "confirmed",
+        "confidence": "high",
         "origin": "deterministic"
       }
     ],
@@ -119,6 +131,14 @@ func TestBuildArchitectureGraphUsesProtocolTargetsAndResourceKinds(t *testing.T)
 		}
 		if n.Name == "unresolved-service-target" || n.Name == "any-contents-id" {
 			t.Fatalf("placeholder target became external service node: %+v", n)
+		}
+		if n.Name == "redis-migrate" {
+			t.Fatalf("unresolved expression became an external service: %+v", n)
+		}
+	}
+	for _, edge := range graph.Edges {
+		if edge.To == "redis-migrate" {
+			t.Fatalf("unresolved expression became a graph edge: %+v", edge)
 		}
 	}
 	foundRedis := false

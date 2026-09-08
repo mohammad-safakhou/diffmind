@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/archgraph"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/store"
@@ -76,16 +77,17 @@ type GraphSummary struct {
 }
 
 type ServiceSummary struct {
-	Name          string `json:"name"`
-	Team          string `json:"team,omitempty"`
-	RepoID        string `json:"repo_id,omitempty"`
-	RepoPath      string `json:"repo_path,omitempty"`
-	ComponentKind string `json:"component_kind,omitempty"`
-	Freshness     string `json:"freshness,omitempty"`
-	Entrypoints   int    `json:"entrypoints"`
-	Dependencies  int    `json:"dependencies"`
-	InboundEdges  int    `json:"inbound_edges"`
-	OutboundEdges int    `json:"outbound_edges"`
+	Name           string                              `json:"name"`
+	Team           string                              `json:"team,omitempty"`
+	RepoID         string                              `json:"repo_id,omitempty"`
+	RepoPath       string                              `json:"repo_path,omitempty"`
+	ComponentKind  string                              `json:"component_kind,omitempty"`
+	Freshness      string                              `json:"freshness,omitempty"`
+	AnalysisStatus *archgraph.RepositoryAnalysisStatus `json:"analysis_status,omitempty"`
+	Entrypoints    int                                 `json:"entrypoints"`
+	Dependencies   int                                 `json:"dependencies"`
+	InboundEdges   int                                 `json:"inbound_edges"`
+	OutboundEdges  int                                 `json:"outbound_edges"`
 }
 
 type DependencyResult struct {
@@ -227,7 +229,51 @@ func (s *Service) loadGraph(projectID, runID string) (*store.RunManifest, *archg
 		return nil, nil, fmt.Errorf("graph run ID %q does not match requested run %q", graph.RunID, run.ID)
 	}
 	graph.RunID = run.ID
+	s.enrichCurrentRepositoryStatus(projectID, graph)
 	return run, graph, nil
+}
+
+func (s *Service) enrichCurrentRepositoryStatus(projectID string, graph *archgraph.ArchGraph) {
+	if graph == nil {
+		return
+	}
+	repos, err := s.store.ListRepos(projectID)
+	if err != nil {
+		return
+	}
+	byName, byPath := map[string]store.Repo{}, map[string]store.Repo{}
+	for _, repo := range repos {
+		byName[repo.Name] = repo
+		if repo.Path != "" {
+			byPath[filepath.Clean(repo.Path)] = repo
+		}
+	}
+	for _, svc := range graph.Services {
+		if svc == nil {
+			continue
+		}
+		repo, ok := byName[svc.Name]
+		if !ok && svc.RepoPath != "" {
+			repo, ok = byPath[filepath.Clean(svc.RepoPath)]
+		}
+		status := svc.AnalysisStatus
+		if status == nil {
+			status = &archgraph.RepositoryAnalysisStatus{State: "legacy_unknown"}
+		} else {
+			copy := *status
+			status = &copy
+		}
+		if ok {
+			svc.RepoID, svc.DiffMindFreshness = repo.ID, repo.DiffMindFreshness
+			status.CurrentState = repo.DiffMindFreshness
+			if !repo.UpdatedAt.IsZero() {
+				status.CheckedAt = repo.UpdatedAt.UTC().Format(time.RFC3339Nano)
+			}
+		} else {
+			status.CurrentState = "unavailable"
+		}
+		svc.AnalysisStatus = status
+	}
 }
 
 func (s *Service) Summary(projectID, runID string) (*GraphSummary, error) {
@@ -275,7 +321,7 @@ func (s *Service) Services(projectID, runID string) ([]ServiceSummary, error) {
 			entrypoints = len(svc.HTTPRoutes) + len(svc.RPCEndpoints) + len(svc.QueueConsumers) + len(svc.ScheduledJobs) + len(svc.Webhooks) + len(svc.CLICommands)
 		}
 		out = append(out, ServiceSummary{Name: svc.Name, Team: svc.Team, RepoID: svc.RepoID, RepoPath: svc.RepoPath,
-			ComponentKind: svc.ComponentKind, Freshness: svc.DiffMindFreshness, Entrypoints: entrypoints,
+			ComponentKind: svc.ComponentKind, Freshness: svc.DiffMindFreshness, AnalysisStatus: svc.AnalysisStatus, Entrypoints: entrypoints,
 			Dependencies: len(svc.Dependencies), InboundEdges: inbound[svc.Name], OutboundEdges: outbound[svc.Name]})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -374,6 +420,13 @@ func (s *Service) Search(projectID, runID, text string, limit int) (*SearchRespo
 		}
 		return false
 	}
+	matchDetails := func(details map[string]any) bool {
+		if len(details) == 0 {
+			return false
+		}
+		body, err := json.Marshal(details)
+		return err == nil && strings.Contains(strings.ToLower(string(body)), q)
+	}
 	add := func(r SearchResult) {
 		if len(results) < limit {
 			results = append(results, r)
@@ -398,7 +451,7 @@ func (s *Service) Search(projectID, runID, text string, limit int) (*SearchRespo
 				if len(results) >= limit {
 					break
 				}
-				if match(item.ID, item.Name, item.Summary) {
+				if match(item.ID, item.Name, item.Summary) || matchDetails(item.Details) {
 					add(SearchResult{Kind: group.kind, ID: item.ID, Name: item.Name, Service: svc.Name, Team: svc.Team, Summary: item.Summary})
 				}
 			}

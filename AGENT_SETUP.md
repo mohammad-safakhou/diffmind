@@ -85,7 +85,7 @@ action; never claim tools are live before discovery succeeds. Do not ask the
 user to launch a server. Their client launches DiffMind, and DiffMind launches
 its own backend.
 
-Verify discovery of 16 tools: 11 graph tools plus `describe_management`,
+Verify discovery of 18 tools: 13 graph tools plus `describe_management`,
 `inspect_workspace`, `manage_workspace`, `agent_runtime` and `agent_command`.
 Use `agent_runtime(action="status")` to confirm the intended home/backend.
 If another process owns the workspace, inspect it; do not kill it or unlink its

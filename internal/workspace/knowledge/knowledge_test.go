@@ -137,6 +137,27 @@ func TestMatcherEngineIgnoreAndRelativeEvidence(t *testing.T) {
 	}
 }
 
+func TestIdentityFieldPathTraversesArraysAndMappings(t *testing.T) {
+	repo := t.TempDir()
+	body := "servers:\n  - url: https://first.example.test/api\n  - url: https://second.example.test/api\naliases:\n  primary:\n    host: primary.example.test\n  secondary:\n    host: secondary.example.test\n"
+	if err := os.WriteFile(filepath.Join(repo, "service.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pack := validPack()
+	pack.Extractions[0].Extract = []ExtractField{
+		{Field: "servers.*.url", MapsTo: "dns_aliases"},
+		{Field: "aliases.*.host", MapsTo: "dns_aliases"},
+	}
+	results := NewEngine(util.NewLogger(util.LevelInfo)).Run(pack, repo)
+	identity, err := ToIdentity("fallback", repo, results)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(identity.Aliases) != 4 {
+		t.Fatalf("wildcard aliases = %+v", identity.Aliases)
+	}
+}
+
 func TestRegexExtraction(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.WriteFile(filepath.Join(repo, "Dockerfile"), []byte("LABEL service=payments\n"), 0o644); err != nil {

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/artifacts"
 	"github.com/mohammad-safakhou/diffmind/internal/workspace/model"
@@ -138,27 +139,41 @@ type ResourceNode struct {
 }
 
 type ServiceNode struct {
-	Name              string              `json:"name"`
-	Known             bool                `json:"known"`
-	RepoID            string              `json:"repo_id,omitempty"`
-	RepoPath          string              `json:"repo_path,omitempty"`
-	Team              string              `json:"team,omitempty"`
-	ComponentKind     string              `json:"component_kind,omitempty"`
-	ComponentType     string              `json:"component_type,omitempty"`
-	DiffMindFreshness string              `json:"diffmind_freshness,omitempty"`
-	RepoMetrics       *model.RepoMetrics  `json:"repo_metrics,omitempty"`
-	HTTPRoutes        []EntitySummary     `json:"http_routes"`
-	RPCEndpoints      []EntitySummary     `json:"rpc_endpoints"`
-	QueueConsumers    []EntitySummary     `json:"queue_consumers"`
-	ScheduledJobs     []EntitySummary     `json:"scheduled_jobs"`
-	Webhooks          []EntitySummary     `json:"webhooks"`
-	CLICommands       []EntitySummary     `json:"cli_commands"`
-	Databases         []string            `json:"databases"`
-	Dependencies      []EntitySummary     `json:"dependencies"`
-	Connections       []ConnectionSummary `json:"connections"`
-	EntrypointCount   int                 `json:"entrypoint_count,omitempty"`
-	DownstreamCount   int                 `json:"downstream_count,omitempty"`
-	TraceCount        int                 `json:"trace_count,omitempty"`
+	Name              string                    `json:"name"`
+	Known             bool                      `json:"known"`
+	RepoID            string                    `json:"repo_id,omitempty"`
+	RepoPath          string                    `json:"repo_path,omitempty"`
+	Team              string                    `json:"team,omitempty"`
+	ComponentKind     string                    `json:"component_kind,omitempty"`
+	ComponentType     string                    `json:"component_type,omitempty"`
+	DiffMindFreshness string                    `json:"diffmind_freshness,omitempty"`
+	AnalysisStatus    *RepositoryAnalysisStatus `json:"analysis_status,omitempty"`
+	RepoMetrics       *model.RepoMetrics        `json:"repo_metrics,omitempty"`
+	HTTPRoutes        []EntitySummary           `json:"http_routes"`
+	RPCEndpoints      []EntitySummary           `json:"rpc_endpoints"`
+	QueueConsumers    []EntitySummary           `json:"queue_consumers"`
+	ScheduledJobs     []EntitySummary           `json:"scheduled_jobs"`
+	Webhooks          []EntitySummary           `json:"webhooks"`
+	CLICommands       []EntitySummary           `json:"cli_commands"`
+	Databases         []string                  `json:"databases"`
+	Dependencies      []EntitySummary           `json:"dependencies"`
+	Connections       []ConnectionSummary       `json:"connections"`
+	EntrypointCount   int                       `json:"entrypoint_count,omitempty"`
+	DownstreamCount   int                       `json:"downstream_count,omitempty"`
+	TraceCount        int                       `json:"trace_count,omitempty"`
+}
+
+// RepositoryAnalysisStatus is immutable snapshot metadata. Current checkout
+// freshness is a separate live concern and must not rewrite historical graphs.
+type RepositoryAnalysisStatus struct {
+	State            string `json:"state"`
+	AnalyzedRevision string `json:"analyzed_revision,omitempty"`
+	Branch           string `json:"branch,omitempty"`
+	Dirty            bool   `json:"dirty"`
+	AnalyzedAt       string `json:"analyzed_at,omitempty"`
+	SchemaVersion    string `json:"schema_version,omitempty"`
+	CurrentState     string `json:"current_state,omitempty"`
+	CheckedAt        string `json:"checked_at,omitempty"`
 }
 
 type ConnectionSummary struct {
@@ -258,6 +273,7 @@ func Overview(g *ArchGraph) *ArchGraph {
 			ComponentKind:     svc.ComponentKind,
 			ComponentType:     svc.ComponentType,
 			DiffMindFreshness: svc.DiffMindFreshness,
+			AnalysisStatus:    svc.AnalysisStatus,
 			RepoMetrics:       svc.RepoMetrics,
 			EntrypointCount:   firstPositive(svc.EntrypointCount, len(svc.HTTPRoutes)+len(svc.RPCEndpoints)+len(svc.QueueConsumers)+len(svc.ScheduledJobs)+len(svc.Webhooks)+len(svc.CLICommands)),
 			DownstreamCount:   firstPositive(svc.DownstreamCount, len(svc.Dependencies)),
@@ -369,6 +385,7 @@ func BuildWithSupplements(runID string, serviceRepoDirs map[string]string, suppl
 		svc.ComponentKind = meta.componentKind
 		svc.ComponentType = meta.componentType
 		svc.RepoMetrics = meta.repoMetrics
+		svc.AnalysisStatus = meta.analysisStatus
 
 		// Extract exposures
 		for _, item := range exposures["http_route"] {
@@ -405,8 +422,9 @@ func BuildWithSupplements(runID string, serviceRepoDirs map[string]string, suppl
 			// Keep refs without a resolvable target: they get a second chance
 			// via cross-service route matching once all services are loaded.
 			allOutboundHTTP[name] = append(allOutboundHTTP[name], outboundRef{
-				target:    graphServiceTarget(item),
-				endpoints: toSummary(item),
+				target:     graphServiceTarget(item),
+				unresolved: graphTargetUnresolved(item),
+				endpoints:  toSummary(item),
 			})
 		}
 		for _, item := range dependencies["outbound_rpc"] {
@@ -691,6 +709,11 @@ func BuildWithSupplements(runID string, serviceRepoDirs map[string]string, suppl
 		targets := allOutboundHTTP[svcName]
 		sortOutboundRefs(targets)
 		for _, t := range targets {
+			if t.unresolved {
+				// Keep the fact in ServiceNode.Dependencies for inspection, but an
+				// unresolved expression is not evidence for a destination node.
+				continue
+			}
 			targetName := t.target
 			summary := t.endpoints
 			matched := false
@@ -856,8 +879,9 @@ func BuildWithSupplements(runID string, serviceRepoDirs map[string]string, suppl
 // ---- Internal Types ----
 
 type outboundRef struct {
-	target    string
-	endpoints EntitySummary
+	target     string
+	unresolved bool
+	endpoints  EntitySummary
 }
 
 type queueRef struct {
@@ -878,11 +902,12 @@ type dbRef struct {
 }
 
 type serviceRunMetadata struct {
-	team          string
-	repoPath      string
-	componentKind string
-	componentType string
-	repoMetrics   *model.RepoMetrics
+	team           string
+	repoPath       string
+	componentKind  string
+	componentType  string
+	repoMetrics    *model.RepoMetrics
+	analysisStatus *RepositoryAnalysisStatus
 }
 
 // ---- Data Loading ----
@@ -914,6 +939,18 @@ func serviceMetadataForRun(serviceName, runDir string) serviceRunMetadata {
 	meta.team = firstNonEmpty(meta.team, manifest.Team, "default")
 	meta.repoPath = firstNonEmpty(meta.repoPath, manifest.RepoPath)
 	meta.repoMetrics = manifest.RepoMetrics
+	state := "legacy_unknown"
+	if manifest.RepoGitSHA != "" {
+		state = "analyzed_clean"
+	}
+	if manifest.RepoGitDirty {
+		state = "analyzed_dirty"
+	}
+	analyzedAt := ""
+	if !manifest.FinishedAt.IsZero() {
+		analyzedAt = manifest.FinishedAt.UTC().Format(time.RFC3339Nano)
+	}
+	meta.analysisStatus = &RepositoryAnalysisStatus{State: state, AnalyzedRevision: manifest.RepoGitSHA, Branch: manifest.RepoGitBranch, Dirty: manifest.RepoGitDirty, AnalyzedAt: analyzedAt, SchemaVersion: manifest.SchemaVersion}
 	kind, typ := catalogComponent(meta.repoPath)
 	meta.componentKind = kind
 	meta.componentType = typ
@@ -1140,6 +1177,18 @@ func graphServiceTarget(item map[string]any) string {
 		}
 	}
 	return ""
+}
+
+func graphTargetUnresolved(item map[string]any) bool {
+	details := getMap(item, "details")
+	if value, ok := details["target_unresolved"].(bool); ok && value {
+		return true
+	}
+	if value, ok := getMap(details, "target")["unresolved"].(bool); ok && value {
+		return true
+	}
+	value, _ := getMap(getMap(details, "metadata"), "details")["target_unresolved"].(bool)
+	return value
 }
 
 func graphWorkflowTarget(item map[string]any) string {

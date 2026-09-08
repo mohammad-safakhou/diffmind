@@ -28,7 +28,7 @@ func testQueryService(t *testing.T) (*Service, string, string) {
 	graph := &archgraph.ArchGraph{
 		RunID: run.ID,
 		Services: []*archgraph.ServiceNode{
-			{Name: "catalog", Known: true, Team: "commerce", HTTPRoutes: []archgraph.EntitySummary{{ID: "get-product", Name: "GET /products/{id}", Summary: "Reads one product"}}, Dependencies: []archgraph.EntitySummary{{ID: "dep-db", Name: "products"}}},
+			{Name: "catalog", Known: true, Team: "commerce", HTTPRoutes: []archgraph.EntitySummary{{ID: "get-product", Name: "GET /products/{id}", Summary: "Reads one product", Details: map[string]any{"request_fields": []any{map[string]any{"name": "experimentGroup", "type": "string", "required": false}}}}}, Dependencies: []archgraph.EntitySummary{{ID: "dep-db", Name: "products"}}},
 			{Name: "checkout", Known: true, Team: "commerce", Dependencies: []archgraph.EntitySummary{{ID: "call-catalog", Name: "catalog", Summary: "Loads product prices"}}},
 		},
 		ResourceNodes: []*archgraph.ResourceNode{{ID: "db:products", GraphID: "db:products", Name: "products", Kind: "database", OwnerService: "catalog"}},
@@ -73,6 +73,30 @@ func TestQueryDeveloperLoop(t *testing.T) {
 	search, err := q.Search(projectID, "", "product", 20)
 	if err != nil || len(search.Results) < 2 {
 		t.Fatalf("search=%+v err=%v", search, err)
+	}
+	fieldSearch, err := q.Search(projectID, "", "experimentGroup", 20)
+	if err != nil || len(fieldSearch.Results) != 1 || fieldSearch.Results[0].Kind != "http_endpoint" {
+		t.Fatalf("field search=%+v err=%v", fieldSearch, err)
+	}
+	contracts, err := q.Contracts(projectID, runID, "catalog")
+	if err != nil || len(contracts.Fields) != 1 || contracts.Fields[0].Name != "experimentGroup" || contracts.Fields[0].Required {
+		t.Fatalf("contracts=%+v err=%v", contracts, err)
+	}
+	nextRun, err := q.store.CreateRun(projectID, store.RunManifest{Status: store.RunCompleted, StartedAt: time.Now().UTC(), FinishedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextGraph := &archgraph.ArchGraph{RunID: nextRun.ID, Services: []*archgraph.ServiceNode{{Name: "catalog", Known: true, HTTPRoutes: []archgraph.EntitySummary{{ID: "get-product", Name: "GET /products/{id}", Details: map[string]any{"request_fields": []any{map[string]any{"name": "experimentGroup", "type": "string", "required": true}, map[string]any{"name": "market", "type": "string", "required": false}}}}}}}}
+	nextData, _ := json.Marshal(nextGraph)
+	if err := os.WriteFile(filepath.Join(q.store.RunDir(projectID, nextRun.ID), "graph.json"), nextData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	diff, err := q.CompareContracts(projectID, runID, nextRun.ID, "catalog")
+	if err != nil || len(diff.Changes) != 2 {
+		t.Fatalf("contract diff=%+v err=%v", diff, err)
+	}
+	if diff.Changes[0].Compatibility != "potentially_breaking" || diff.Changes[1].Compatibility != "compatible" {
+		t.Fatalf("classification=%+v", diff.Changes)
 	}
 }
 

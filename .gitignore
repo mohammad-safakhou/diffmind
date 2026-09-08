@@ -4,6 +4,7 @@
 .gocache/
 .gomodcache/
 .diffmind/
+.artifacts/
 .env
 bin/
 coverage/

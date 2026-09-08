@@ -187,6 +187,9 @@ func (s *Server) routes(raw *http.ServeMux) {
 	mux.HandleFunc("GET /api/projects/{pid}/repo-suggestions", s.handleRepoSuggestions)
 	mux.HandleFunc("GET /api/projects/{pid}/workspace", s.handleWorkspace)
 	mux.HandleFunc("GET /api/projects/{pid}/live-status", s.handleLiveStatus)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/improvement-gaps", s.handleListGaps)
+	mux.HandleFunc("POST /api/v1/projects/{pid}/improvement-gaps", s.handleCreateGap)
+	mux.HandleFunc("PATCH /api/v1/projects/{pid}/improvement-gaps/{gid}", s.handleTransitionGap)
 	mux.HandleFunc("GET /api/projects/{pid}/pull-requests", s.handlePullRequests)
 	mux.HandleFunc("GET /api/projects/{pid}/pull-requests/{repo_id}/{number}/impact", s.handlePullRequestImpact)
 
@@ -218,6 +221,8 @@ func (s *Server) routes(raw *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/projects/{pid}/dependencies", s.handleV1Dependencies)
 	mux.HandleFunc("GET /api/v1/projects/{pid}/impact", s.handleV1Impact)
 	mux.HandleFunc("GET /api/v1/projects/{pid}/search", s.handleV1Search)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/contracts", s.handleV1Contracts)
+	mux.HandleFunc("GET /api/v1/projects/{pid}/contracts/compare", s.handleV1ContractCompare)
 	mux.HandleFunc("GET /api/v1/refresh/status", s.handleRefreshStatus)
 	mux.HandleFunc("POST /api/v1/refresh", s.handleRefreshNow)
 

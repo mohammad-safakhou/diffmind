@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -12,7 +13,9 @@ import (
 )
 
 // ExtractFieldPath reads a JSON or YAML file and traverses a dot-separated
-// path. Numeric components index arrays (for example ingress.hosts.0).
+// path. Numeric components index arrays (for example ingress.hosts.0). A '*'
+// component traverses every mapping value or sequence element and returns the
+// flattened matches, matching the relationship-detector field-path contract.
 func ExtractFieldPath(filePath, fieldPath string) (any, error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
@@ -24,24 +27,59 @@ func ExtractFieldPath(filePath, fieldPath string) (any, error) {
 			return nil, fmt.Errorf("parse %s as JSON or YAML: %w", filePath, err)
 		}
 	}
-	current := document
-	for _, part := range strings.Split(fieldPath, ".") {
+	return extractPath(document, strings.Split(fieldPath, "."))
+}
+
+func extractPath(current any, parts []string) (any, error) {
+	if len(parts) == 0 {
+		return current, nil
+	}
+	part := parts[0]
+	if part == "*" {
+		var values []any
 		switch value := current.(type) {
 		case map[string]any:
-			next, exists := value[part]
-			if !exists {
-				return nil, fmt.Errorf("field %q not found", part)
+			keys := make([]string, 0, len(value))
+			for key := range value {
+				keys = append(keys, key)
 			}
-			current = next
+			sort.Strings(keys)
+			for _, key := range keys {
+				values = append(values, value[key])
+			}
 		case []any:
-			index, err := strconv.Atoi(part)
-			if err != nil || index < 0 || index >= len(value) {
-				return nil, fmt.Errorf("invalid array index %q", part)
-			}
-			current = value[index]
+			values = append(values, value...)
 		default:
-			return nil, fmt.Errorf("cannot navigate into %T at %q", current, part)
+			return nil, fmt.Errorf("wildcard cannot navigate into %T", current)
 		}
+		out := make([]any, 0, len(values))
+		for _, value := range values {
+			match, err := extractPath(value, parts[1:])
+			if err != nil {
+				return nil, err
+			}
+			if nested, ok := match.([]any); ok {
+				out = append(out, nested...)
+			} else {
+				out = append(out, match)
+			}
+		}
+		return out, nil
 	}
-	return current, nil
+	switch value := current.(type) {
+	case map[string]any:
+		next, exists := value[part]
+		if !exists {
+			return nil, fmt.Errorf("field %q not found", part)
+		}
+		return extractPath(next, parts[1:])
+	case []any:
+		index, err := strconv.Atoi(part)
+		if err != nil || index < 0 || index >= len(value) {
+			return nil, fmt.Errorf("invalid array index %q", part)
+		}
+		return extractPath(value[index], parts[1:])
+	default:
+		return nil, fmt.Errorf("cannot navigate into %T at %q", current, part)
+	}
 }

@@ -8,9 +8,9 @@ registration. Users provide intent and access; the agent operates the platform.
 
 | Connection | Tools | Authority/lifecycle |
 | --- | --- | --- |
-| Local `diffmind agent` | 11 graph + 3 management + 2 host tools | Full local workspace control; starts backend automatically, owns it until disconnect/crash |
-| Local `diffmind mcp` | 11 graph tools | Original trusted read-only integration; no backend ownership |
-| HTTP `/mcp`, viewer | 11 graph tools | Read-only, restricted to accessible projects |
+| Local `diffmind agent` | 13 graph + 3 management + 2 host tools | Full local workspace control; starts backend automatically, owns it until disconnect/crash |
+| Local `diffmind mcp` | 13 graph tools | Original trusted read-only integration; no backend ownership |
+| HTTP `/mcp`, viewer | 13 graph tools | Read-only, restricted to accessible projects |
 | HTTP `/mcp`, editor/admin | Graph and management tools | Same role/membership/host-operation checks as the HTTP API; no local lifecycle/CLI tools |
 
 Local mode is trusted OS-level access, not a sandbox. Its backend binds only
