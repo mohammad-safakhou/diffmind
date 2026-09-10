@@ -1,4 +1,4 @@
-.PHONY: build install test test-race test-packs test-integration test-distribution test-acceptance test-agent test-showcase demo-media test-release-native readiness-report ui-build ui-test ui-audit vulncheck verify run container-build company-up company-down clean
+.PHONY: build install test test-race test-packs test-integration test-distribution test-acceptance test-agent test-showcase enterprise-showcase demo-media test-release-native readiness-report ui-build ui-test ui-audit vulncheck verify run container-build company-up company-down clean
 
 GOCACHE_DIR := $(CURDIR)/.gocache
 
@@ -45,6 +45,11 @@ test-agent:
 
 test-showcase: build
 	sh scripts/test-showcase.sh
+	GOCACHE=$(GOCACHE_DIR) go test ./scripts/enterprise-showcase
+
+enterprise-showcase: build
+	test -n "$(DEST)"
+	GOCACHE=$(GOCACHE_DIR) go run ./scripts/enterprise-showcase --home "$(DEST)"
 
 demo-media:
 	sh scripts/build-demo-gif.sh

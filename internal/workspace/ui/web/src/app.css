@@ -1092,6 +1092,29 @@ textarea { resize: vertical; }
   border-left: 1px solid #1d2735;
 }
 .workspace-board { min-width: 0; min-height: 0; position: relative; }
+.graph-scope-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid #28364b;
+  border-radius: 999px;
+  background: rgba(14, 23, 39, 0.92);
+  color: #9aa9c2;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.graph-scope-summary strong { color: #f3f7ff; font-size: 12px; }
+.graph-scope-summary.large { border-color: rgba(114, 145, 255, 0.52); }
+.graph-scope-summary em {
+  margin-left: 3px;
+  padding-left: 8px;
+  border-left: 1px solid #33445f;
+  color: #8fa8ff;
+  font-style: normal;
+  font-weight: 700;
+}
 .workspace-status {
   grid-column: 1 / 4;
   grid-row: 4;

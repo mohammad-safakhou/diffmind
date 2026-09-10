@@ -5,6 +5,8 @@ private code. They complement the curated [Demo Shop](../demo-shop/README.md):
 Demo Shop is the stable product story; these larger projects are evolving gap
 finders and contribution targets.
 
+![Public benchmark results alongside the curated and scale fixtures](../../docs/assets/readme/public-proof.png)
+
 ## Pinned sources
 
 | Project | Revision tested | License | Why it is useful |
@@ -70,3 +72,8 @@ An agent can use the results without being allowed to invent architecture:
 Generated benchmark artifacts and cloned repositories belong outside Git. They
 may contain many upstream files and absolute local paths; commit only sanitized
 fixtures, detector changes and aggregate verification notes.
+
+For UI and navigation behavior beyond these real repositories, use the
+[generated 150-service enterprise fixture](../enterprise-showcase/README.md).
+Its topology is synthetic by design and must not be mixed with these detector
+coverage results.

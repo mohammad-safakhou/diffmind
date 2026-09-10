@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="720" viewBox="0 0 1600 720" role="img" aria-labelledby="title desc">
+  <title id="title">DiffMind public proof at four scales</title>
+  <desc id="desc">A comparison of the curated Demo Shop, Google Online Boutique and OpenTelemetry compatibility benchmarks, and the 150-service synthetic enterprise scale fixture.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#070b14"/>
+      <stop offset="0.55" stop-color="#0c1323"/>
+      <stop offset="1" stop-color="#111933"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#53a5ff"/>
+      <stop offset="1" stop-color="#8d7dff"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="16" stdDeviation="22" flood-color="#02050c" flood-opacity="0.65"/>
+    </filter>
+    <style>
+      .eyebrow { font: 700 15px Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: 2.6px; fill: #7fa6ff; }
+      .title { font: 760 43px Inter, ui-sans-serif, system-ui, sans-serif; fill: #f6f8ff; }
+      .subtitle { font: 400 19px Inter, ui-sans-serif, system-ui, sans-serif; fill: #9eabc4; }
+      .card-title { font: 720 23px Inter, ui-sans-serif, system-ui, sans-serif; fill: #f4f7ff; }
+      .card-kicker { font: 700 12px Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: 1.8px; fill: #7585a5; }
+      .metric { font: 760 39px Inter, ui-sans-serif, system-ui, sans-serif; fill: #ffffff; }
+      .metric-label { font: 500 13px Inter, ui-sans-serif, system-ui, sans-serif; fill: #8998b7; }
+      .body { font: 450 15px Inter, ui-sans-serif, system-ui, sans-serif; fill: #b6c1d7; }
+      .tag { font: 700 12px Inter, ui-sans-serif, system-ui, sans-serif; fill: #d8e6ff; }
+    </style>
+  </defs>
+  <rect width="1600" height="720" fill="url(#bg)"/>
+  <circle cx="1420" cy="80" r="260" fill="#594cff" opacity="0.08"/>
+  <circle cx="130" cy="680" r="260" fill="#18c3a0" opacity="0.055"/>
+  <text x="84" y="78" class="eyebrow">PUBLIC, REPRODUCIBLE, HONEST</text>
+  <text x="84" y="134" class="title">One graph model. Four levels of proof.</text>
+  <text x="84" y="171" class="subtitle">A polished walkthrough, real-world compatibility checks, and a generated company-scale stress case.</text>
+  <rect x="84" y="202" width="1432" height="3" rx="2" fill="url(#accent)" opacity="0.82"/>
+
+  <g transform="translate(84 244)" filter="url(#shadow)">
+    <rect width="338" height="392" rx="20" fill="#111a2d" stroke="#285c9b" stroke-width="1.5"/>
+    <rect x="22" y="22" width="114" height="28" rx="14" fill="#173b66"/>
+    <text x="79" y="41" text-anchor="middle" class="tag">CURATED</text>
+    <text x="24" y="91" class="card-title">DiffMind Demo Shop</text>
+    <text x="24" y="117" class="card-kicker">END-TO-END PRODUCT STORY</text>
+    <g transform="translate(24 154)">
+      <text class="metric">6</text><text x="0" y="24" class="metric-label">services</text>
+      <text x="108" class="metric">9</text><text x="108" y="24" class="metric-label">relationships</text>
+      <text x="232" class="metric">4</text><text x="232" y="24" class="metric-label">protocols</text>
+    </g>
+    <path d="M37 254 H91 M112 254 H166 M187 254 H241 M262 254 H301" fill="none" stroke="#4c9fff" stroke-width="3"/>
+    <g fill="#142b4d" stroke="#55a7ff" stroke-width="2"><circle cx="37" cy="254" r="10"/><circle cx="102" cy="254" r="10"/><circle cx="177" cy="254" r="10"/><circle cx="252" cy="254" r="10"/><circle cx="301" cy="254" r="10"/></g>
+    <text x="24" y="312" class="body">Known topology, source evidence</text>
+    <text x="24" y="337" class="body">and a contract-change comparison.</text>
+    <text x="24" y="372" class="tag" fill="#59d8bd">✓ COMPLETE EXPECTED GRAPH</text>
+  </g>
+
+  <g transform="translate(448 244)" filter="url(#shadow)">
+    <rect width="338" height="392" rx="20" fill="#111a2d" stroke="#414f70"/>
+    <rect x="22" y="22" width="114" height="28" rx="14" fill="#232c42"/>
+    <text x="79" y="41" text-anchor="middle" class="tag">REAL OSS</text>
+    <text x="24" y="91" class="card-title">Google Online Boutique</text>
+    <text x="24" y="117" class="card-kicker">GRPC COMPATIBILITY BENCHMARK</text>
+    <g transform="translate(24 154)">
+      <text class="metric">12</text><text x="0" y="24" class="metric-label">targets scanned</text>
+      <text x="146" class="metric">6</text><text x="146" y="24" class="metric-label">with entities</text>
+      <text x="260" class="metric">0</text><text x="260" y="24" class="metric-label">connections</text>
+    </g>
+    <rect x="24" y="244" width="290" height="9" rx="5" fill="#222d43"/><rect x="24" y="244" width="145" height="9" rx="5" fill="#9b7cf9"/>
+    <text x="24" y="288" class="body">Reveals protobuf, gRPC and</text>
+    <text x="24" y="313" class="body">configuration-resolution gaps.</text>
+    <text x="24" y="372" class="tag" fill="#c2aaff">→ CONTRIBUTION TARGET</text>
+  </g>
+
+  <g transform="translate(812 244)" filter="url(#shadow)">
+    <rect width="338" height="392" rx="20" fill="#111a2d" stroke="#414f70"/>
+    <rect x="22" y="22" width="114" height="28" rx="14" fill="#232c42"/>
+    <text x="79" y="41" text-anchor="middle" class="tag">REAL OSS</text>
+    <text x="24" y="91" class="card-title">OpenTelemetry Demo</text>
+    <text x="24" y="117" class="card-kicker">POLYGLOT COVERAGE BENCHMARK</text>
+    <g transform="translate(24 154)">
+      <text class="metric">32</text><text x="0" y="24" class="metric-label">targets scanned</text>
+      <text x="146" class="metric">4</text><text x="146" y="24" class="metric-label">with entities</text>
+      <text x="260" class="metric">0</text><text x="260" y="24" class="metric-label">connections</text>
+    </g>
+    <rect x="24" y="244" width="290" height="9" rx="5" fill="#222d43"/><rect x="24" y="244" width="36" height="9" rx="5" fill="#22c997"/>
+    <text x="24" y="288" class="body">Exercises 15 recorded languages</text>
+    <text x="24" y="313" class="body">and makes missing support visible.</text>
+    <text x="24" y="372" class="tag" fill="#55dbbe">→ CONTRIBUTION TARGET</text>
+  </g>
+
+  <g transform="translate(1176 244)" filter="url(#shadow)">
+    <rect width="338" height="392" rx="20" fill="#121a32" stroke="#786cff" stroke-width="1.5"/>
+    <rect x="22" y="22" width="124" height="28" rx="14" fill="#352d76"/>
+    <text x="84" y="41" text-anchor="middle" class="tag">GENERATED</text>
+    <text x="24" y="91" class="card-title">Northstar Enterprise</text>
+    <text x="24" y="117" class="card-kicker">NAVIGATION + SCALE FIXTURE</text>
+    <g transform="translate(24 154)">
+      <text class="metric">150</text><text x="0" y="24" class="metric-label">services</text>
+      <text x="126" class="metric">10</text><text x="126" y="24" class="metric-label">teams</text>
+      <text x="223" class="metric">230</text><text x="223" y="24" class="metric-label">relationships</text>
+    </g>
+    <g transform="translate(24 242)" fill="#283261">
+      <rect width="51" height="20" rx="5"/><rect x="59" width="51" height="20" rx="5"/><rect x="118" width="51" height="20" rx="5"/><rect x="177" width="51" height="20" rx="5"/><rect x="236" width="51" height="20" rx="5"/>
+      <rect y="29" width="51" height="20" rx="5"/><rect x="59" y="29" width="51" height="20" rx="5"/><rect x="118" y="29" width="51" height="20" rx="5"/><rect x="177" y="29" width="51" height="20" rx="5"/><rect x="236" y="29" width="51" height="20" rx="5"/>
+    </g>
+    <text x="24" y="326" class="body">Team scope, connected scope, search</text>
+    <text x="24" y="351" class="body">and a company-wide portfolio map.</text>
+    <text x="24" y="372" class="tag" fill="#aaa0ff">✓ DETERMINISTIC SEED</text>
+  </g>
+
+  <text x="1516" y="687" text-anchor="end" class="card-kicker">DIFFMIND · NO COMPANY DATA · NO LLM REQUIRED TO BUILD</text>
+</svg>

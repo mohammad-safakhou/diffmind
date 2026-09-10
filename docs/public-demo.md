@@ -1,7 +1,7 @@
 # Public demo and media
 
-This is the canonical public story for DiffMind. It uses only synthetic Demo
-Shop repositories and pinned Apache-2.0 upstream projects. No company source,
+This is the canonical public story for DiffMind. It uses only synthetic
+repositories and pinned Apache-2.0 upstream projects. No company source,
 service name, hostname, credential or workspace is needed.
 
 ![DiffMind public demo overview](assets/readme/diffmind-demo.gif)
@@ -34,6 +34,34 @@ deliberate external call to `status.example.test` shows how an external service
 appears without pretending it is owned by the workspace.
 
 ![The complete Demo Shop architecture graph](assets/readme/demo-shop-graph.jpg)
+
+## Demonstrate company scale without company data
+
+The Northstar Enterprise fixture separates a scale demonstration from an
+extraction-accuracy claim. It generates a deterministic workspace with 10
+teams, 150 services, 30 resources and 230 relationships. Languages, file counts
+and lines of code are generated metadata—not runtime telemetry and not claims
+about real repositories.
+
+```bash
+make enterprise-showcase DEST=/tmp/diffmind-enterprise
+DIFFMIND_HOME=/tmp/diffmind-enterprise \
+  ./bin/diffmind ui --no-spa-rebuild
+```
+
+The graph does not attempt to show 150 readable labels at once. It starts with
+one 15-service bounded context and visibly reports `15 of 150 services`. From
+there a user can:
+
+1. switch between all ten teams;
+2. expand to **Team + connected** for immediate cross-team dependencies;
+3. search for a service and focus its direct relationships;
+4. select **All teams** for the company portfolio map.
+
+![Fifteen readable services scoped from a generated 150-service workspace](assets/readme/enterprise-overview.png)
+
+The generator is tested, refuses non-empty destinations and accepts an explicit
+seed. See the [scale-fixture guide](../examples/enterprise-showcase/README.md).
 
 ## Reproduce it from a clean checkout
 
@@ -118,34 +146,39 @@ A useful prompt for Demo Shop is:
 > downstream payment call and published event with source evidence. Compare the
 > two saved runs, classify the request-field changes, and state any uncertainty.
 
-## Why there are three public examples
+## Why there are four public examples
 
 | Example | Purpose | Expected result |
 | --- | --- | --- |
 | Demo Shop | Stable product walkthrough and media source | Complete known topology and contract story |
 | OpenTelemetry Demo | Broad polyglot compatibility benchmark | Finds detector gaps across many languages and frameworks |
 | Google Online Boutique | Familiar gRPC-focused benchmark | Exposes protobuf, gRPC and configuration-resolution gaps |
+| Northstar Enterprise | Deterministic navigation and scale fixture | Proves team scoping, search and layout with 150 services |
 
 The real-world projects are intentionally not used as polished proof that every
 framework is supported. At the pinned revisions, all 44 `src/*` scans and both
-whole-monorepo scans completed, but many relationships were not resolved. See
-[the benchmark record](../examples/public-benchmarks/README.md) for exact
+whole-monorepo scans completed, but many relationships were not resolved. The
+generated enterprise fixture is intentionally not used as detector evidence.
+See [the benchmark record](../examples/public-benchmarks/README.md) for exact
 revisions, counts and the prioritized contribution areas.
+
+![The four distinct public proof levels and their verified counts](assets/readme/public-proof.png)
 
 ## Media provenance and regeneration
 
 The checked-in captures were produced on 10 September 2026 from the generated
-`DiffMind Demo Shop` workspace at 1920×1080. They contain synthetic names only.
-Frames that exposed an absolute user path were rejected rather than redacted.
+Demo Shop and Northstar workspaces. They contain synthetic or public upstream
+names only. Frames that exposed a private path were rejected rather than
+redacted.
 
 The animation is derived from these four captures:
 
-- `project-list.jpg` — local project selection;
+- `public-proof.png` — the four-level public evidence summary;
 - `demo-shop-graph.jpg` — complete six-service graph;
 - `graph-comparison.jpg` — saved graph comparison;
-- `operations-history.jpg` — durable ingestion history.
+- `enterprise-overview.png` — 15 readable services selected from 150.
 
-After replacing the sanitized JPEG captures, rebuild the GIF with:
+After replacing the sanitized source captures, rebuild the GIF with:
 
 ```bash
 make demo-media

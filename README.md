@@ -6,7 +6,7 @@ and data stores; follow source evidence; compare saved graphs; and ask questions
 through MCP. Your agent can also install, configure and operate the workspace.
 Analysis is deterministic: no LLM or model API key is needed to build the graph.
 
-![DiffMind public Demo Shop: project setup, architecture graph, graph comparison, and operation history](docs/assets/readme/diffmind-demo.gif)
+![DiffMind across a curated demo, public compatibility benchmarks, graph comparison, and a 150-service synthetic company](docs/assets/readme/diffmind-demo.gif)
 
 DiffMind is built for the questions that become expensive once work crosses
 repository boundaries:
@@ -33,7 +33,18 @@ covered in [distribution](docs/distribution.md).
 [Knowledge packs](#teach-your-conventions) · [Team deployment](#team-deployment) ·
 [Public demo](docs/public-demo.md) · [Contribute](#contribute) · [Documentation](#documentation)
 
-## See the workflow on public data
+## See it work—from 6 to 150 services
+
+![DiffMind public proof: Demo Shop, Google Online Boutique, OpenTelemetry Demo, and a 150-service generated company](docs/assets/readme/public-proof.png)
+
+The public proof is deliberately split into four jobs. No single fixture is
+allowed to blur product behavior, framework coverage and scalability:
+
+- **Demo Shop** is the polished, end-to-end extraction and change story.
+- **Google Online Boutique** is the pinned gRPC compatibility benchmark.
+- **OpenTelemetry Demo** is the pinned polyglot compatibility benchmark.
+- **Northstar Enterprise** is a deterministic 10-team, 150-service navigation
+  fixture with generated metrics and topology—never presented as runtime data.
 
 The [DiffMind Demo Shop](examples/demo-shop/README.md) is a public-safe,
 six-repository system designed to make the core workflow obvious: import a
@@ -52,10 +63,26 @@ The expected topology and contract fields are checked into the repository, and
 For a less curated view, the [public compatibility benchmarks](examples/public-benchmarks/README.md)
 pin OpenTelemetry Demo and Google Online Boutique revisions and record what
 DiffMind currently detects—and, just as importantly, what still needs framework
-support. Public GIFs and screenshots should be recorded from Demo Shop rather
-than from private company repositories.
+support. The benchmarks are visible here precisely because zero resolved
+connections is useful evidence: it identifies protobuf/gRPC and
+configuration-resolution work without exaggerating current coverage.
+
+To exercise a company with ten teams and fifteen services per team, generate
+the [synthetic enterprise workspace](examples/enterprise-showcase/README.md):
+
+```bash
+make enterprise-showcase DEST=/tmp/diffmind-enterprise
+DIFFMIND_HOME=/tmp/diffmind-enterprise ./bin/diffmind ui --no-spa-rebuild
+```
+
+Large workspaces open in a readable team scope. The graph states how many
+services and relationships are visible, can include immediate cross-team
+neighbors, supports direct service search, and still offers the complete
+portfolio map.
 
 ![Six-service Demo Shop graph with HTTP, Kafka, Redis, and database relationships](docs/assets/readme/demo-shop-graph.jpg)
+
+![A readable team scope selected from a generated 150-service company](docs/assets/readme/enterprise-overview.png)
 
 The complete, reproducible walkthrough—including the topology, contract-change
 result, capture provenance, and the role of the two real-world benchmarks—is in
