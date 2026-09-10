@@ -55,7 +55,7 @@ func (o *orchestrator) runASTIndexStage(ctx context.Context) error {
 		Kind: events.KindStageStarted, Stage: "ast_index",
 		Status: events.StatusRunning,
 		Payload: map[string]any{
-			"source_root": o.sourceRoot,
+			"source_root": o.repoPath,
 			"tip":         "Building language-agnostic AST index of the project source.",
 		},
 	})
@@ -70,7 +70,10 @@ func (o *orchestrator) runASTIndexStage(ctx context.Context) error {
 		primaryLang = o.cfg.Indexer.Languages[0]
 	}
 	out, err := (astindex.Runner{}).Run(ctx, astindex.Input{
-		SourceRoot: o.sourceRoot, PrimaryLanguage: primaryLang,
+		// A monorepo subdirectory is a first-class analysis target. sourceRoot is
+		// retained for repository/session operations, but indexing it here would
+		// silently analyze every sibling service as part of each subdirectory run.
+		SourceRoot: o.repoPath, PrimaryLanguage: primaryLang,
 		Workers: o.cfg.Runtime.Workers,
 	})
 	if err != nil {

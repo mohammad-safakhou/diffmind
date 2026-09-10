@@ -1,4 +1,4 @@
-.PHONY: build install test test-race test-packs test-integration test-distribution test-acceptance test-agent test-release-native readiness-report ui-build ui-test ui-audit vulncheck verify run container-build company-up company-down clean
+.PHONY: build install test test-race test-packs test-integration test-distribution test-acceptance test-agent test-showcase test-release-native readiness-report ui-build ui-test ui-audit vulncheck verify run container-build company-up company-down clean
 
 GOCACHE_DIR := $(CURDIR)/.gocache
 
@@ -42,6 +42,9 @@ test-agent:
 	GOCACHE=$(GOCACHE_DIR) go test ./cmd/diffmind -run TestAgentAcceptance -count=1 -v
 	GOCACHE=$(GOCACHE_DIR) go test ./internal/workspace/agentapi ./internal/workspace/agenthost ./scripts/agent-setup
 	GOCACHE=$(GOCACHE_DIR) go test ./internal/workspace/ui -run 'TestAgent|TestManagement|TestAllAgent' -count=1
+
+test-showcase: build
+	sh scripts/test-showcase.sh
 
 readiness-report:
 	mkdir -p .artifacts

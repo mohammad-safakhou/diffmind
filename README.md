@@ -19,6 +19,28 @@ covered in [distribution](docs/distribution.md).
 [Knowledge packs](#teach-your-conventions) · [Team deployment](#team-deployment) ·
 [Contribute](#contribute) · [Documentation](#documentation)
 
+## See the workflow on public data
+
+The [DiffMind Demo Shop](examples/demo-shop/README.md) is a public-safe,
+six-repository system designed to make the core workflow obvious: import a
+storefront, gateway, catalog, checkout, payment and notification service;
+inspect HTTP, queue, cache and database relationships; then change the checkout
+request contract and compare the two graph runs. It uses synthetic names and
+hostnames, so it is safe for screenshots, talks and social posts.
+
+```bash
+make build
+sh scripts/prepare-showcase.sh /tmp/diffmind-demo-shop
+```
+
+The expected topology and contract fields are checked into the repository, and
+`make test-showcase` verifies the generator and every individual service scan.
+For a less curated view, the [public compatibility benchmarks](examples/public-benchmarks/README.md)
+pin OpenTelemetry Demo and Google Online Boutique revisions and record what
+DiffMind currently detects—and, just as importantly, what still needs framework
+support. Public GIFs and screenshots should be recorded from Demo Shop rather
+than from private company repositories.
+
 ## Start with your agent
 
 You do not need to run a terminal command, start a server, create a project or
@@ -129,9 +151,9 @@ server using approved secret handling. Do not paste it into source files or
 agent settings. See [personal setup](docs/personal-setup.md) for exact credential,
 daily refresh, backup and troubleshooting steps.
 
-Want to test without company data? Follow the
-[synthetic three-service quickstart](docs/contributor-quickstart.md): a Go gateway
-calls Python catalog and Java billing services.
+Want to test without company data? Use the six-service Demo Shop above for the
+complete public workflow, or follow the smaller
+[three-service contributor quickstart](docs/contributor-quickstart.md).
 
 ## Manual read-only agent connection
 

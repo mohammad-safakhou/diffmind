@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -45,5 +46,40 @@ func TestDetectMonorepoNoGitRoot(t *testing.T) {
 	s, sub := detectMonorepo(dir)
 	if s != dir || sub != "" {
 		t.Fatalf("expected fallback (repoPath, '') when no .git found, got (%q, %q)", s, sub)
+	}
+}
+
+func TestASTIndexScopesMonorepoRunToRequestedSubdirectory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	serviceA := filepath.Join(root, "services", "a")
+	serviceB := filepath.Join(root, "services", "b")
+	if err := os.MkdirAll(serviceA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(serviceB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(serviceA, "main.go"), []byte("package main\nfunc ServiceA() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(serviceB, "app.py"), []byte("def service_b():\n    pass\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sourceRoot, subDir := detectMonorepo(serviceA)
+	o := &orchestrator{repoPath: serviceA, sourceRoot: sourceRoot, subDir: subDir}
+	if err := o.runASTIndexStage(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if o.astIndex == nil || len(o.astIndex.Files) != 1 {
+		t.Fatalf("index escaped requested service: %+v", o.astIndex)
+	}
+	for _, file := range o.astIndex.Files {
+		if file.Language != "go" {
+			t.Fatalf("index escaped requested service: %+v", o.astIndex)
+		}
 	}
 }
