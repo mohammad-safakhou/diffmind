@@ -85,10 +85,10 @@ against known relationships and contribute synthetic reproductions of gaps.
   off-host copies, credential handling, lifecycle/immutability and restore drills.
   Local managed retention/systemd scheduling are delivered below; cloud storage,
   zero-downtime backups and Compose/launchd scheduler adapters are not.
-- [ ] Execute the four native CI release checks on the committed candidate,
-  choose a release version, publish its tag/assets, verify downloads and promote
-  the generated pinned Homebrew formula. Local macOS ARM64 validation is not
-  evidence for the other platforms or for a published release.
+- [x] Execute the four native CI release checks on the committed candidate,
+  choose `v0.1.0`, publish its tag and checksummed assets, and verify the release
+  download. The generated pinned Homebrew formula is attached to the release;
+  repository formula promotion remains a normal follow-up PR.
 - [ ] Run a real-company accuracy/operations pilot against known relationships;
   contribute sanitized pattern gaps. Synthetic tests cannot certify every stack.
 
@@ -168,8 +168,8 @@ or an unlimited-scale job database. No automatic history pruning is enabled.
 
 See [recovery](backup-recovery.md), [distribution](distribution.md), and
 [contributor quickstart](contributor-quickstart.md). Archives are unencrypted;
-paths are not migrated. Recipes are implemented, not proof a release has been
-published or installed on every target platform.
+paths are not migrated. Release publication verifies native archives on all four
+supported targets; it is not proof of every host distribution or deployment.
 
 ## Project access batch
 

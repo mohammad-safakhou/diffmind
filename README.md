@@ -24,10 +24,10 @@ and agents can use while planning and implementing changes.
 One repository, one `diffmind` command. Run it privately on your laptop or as a
 continuously refreshed, single-server workspace for a team.
 
-**Release status:** the current implementation is available from source. A
-public binary release has not yet been published. Your agent can install the
-source checkout now; future release downloads and pinned Homebrew installation are
-covered in [distribution](docs/distribution.md).
+**Release status:** `v0.1.0` is the first public release. Checksummed native
+binaries are available for macOS and Linux on Intel/AMD64 and ARM64. The source
+workflow remains available, and pinned Homebrew installation is documented in
+[distribution](docs/distribution.md).
 
 [Agent-first setup](#start-with-your-agent) · [Manual setup](#manual-installation-alternative) ·
 [Knowledge packs](#teach-your-conventions) · [Team deployment](#team-deployment) ·
@@ -149,6 +149,24 @@ rather than assuming the OS package is recent enough.
 Node.js and Docker are **not needed for normal local use**. Both web interfaces
 are embedded. Node.js 24 is needed only to rebuild them; Docker is optional for
 containerized indexing or shared deployment.
+
+Install the latest checksummed release without a Go or Node.js toolchain:
+
+```bash
+diffmind_install_tmp=$(mktemp -d)
+curl -fsSL https://raw.githubusercontent.com/mohammad-safakhou/diffmind/master/install.sh \
+  -o "$diffmind_install_tmp/install.sh"
+# Review the downloaded script before running it.
+DIFFMIND_INSTALL_DIR="$HOME/.local/bin" sh "$diffmind_install_tmp/install.sh"
+export PATH="$HOME/.local/bin:$PATH"
+diffmind version --json
+diffmind doctor
+```
+
+The installer verifies the archive checksum before installation. Set
+`DIFFMIND_VERSION=0.1.0` on the installer command to pin this release.
+
+To build from source instead:
 
 ```bash
 git clone https://github.com/mohammad-safakhou/diffmind.git

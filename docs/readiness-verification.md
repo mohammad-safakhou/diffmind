@@ -1,8 +1,8 @@
 # Readiness verification — 2026-09-08
 
 This records the checks for the managed-backup and native-release-validation
-batch. It is a local implementation checkpoint, not a declaration that every
-roadmap project, deployment or published artifact is complete.
+batch, followed by the `v0.1.0` release gate. It is not a declaration that every
+roadmap project or deployment is complete.
 
 ## Passed locally
 
@@ -74,8 +74,7 @@ startup/persistence/restart drill or verification of published archives.
 ## Not certified by this checkpoint
 
 - Linux amd64/arm64 and macOS Intel native gates were not executed locally;
-  the reviewed revision's remote CI gates passed as recorded above. No release
-  was published by this verification.
+  release CI executes the native verifier on each published `v0.1.0` archive.
 - Actual systemd timer execution: lifecycle and failure handling were tested
   against isolated fake services. Unit verification is wired into Linux CI;
   production stop/restart/restore drills remain necessary. Docker was unavailable
@@ -87,6 +86,6 @@ startup/persistence/restart drill or verification of published archives.
 - Distributed workers, group provisioning and application-schema/path migration:
   remain unimplemented engineering projects in [the roadmap](ROADMAP.md).
 
-No live service was stopped, backup schedule enabled, Git history rewritten,
-release tagged, remote branch pushed or package published during these checks.
-Only disposable test snapshots were pruned; real workspace history was untouched.
+No live service was stopped, backup schedule enabled or Git history rewritten
+during the local checks. Only disposable test snapshots were pruned; real
+workspace history was untouched.
