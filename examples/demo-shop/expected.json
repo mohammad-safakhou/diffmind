@@ -1,0 +1,30 @@
+{
+  "services": [
+    "catalog",
+    "checkout",
+    "gateway",
+    "notification",
+    "payment",
+    "storefront"
+  ],
+  "service_edges": [
+    "checkout -> payment",
+    "gateway -> catalog",
+    "gateway -> checkout",
+    "storefront -> gateway"
+  ],
+  "queue_flows": [
+    "checkout -> orders.created",
+    "orders.created -> notification"
+  ],
+  "resources": ["catalog-cache", "orders.created", "payments"],
+  "external_services": ["status-example-test"],
+  "baseline_checkout_fields": ["customerId", "items", "postalCode"],
+  "changed_checkout_fields": [
+    "customerId",
+    "deliveryPostalCode",
+    "deliveryWindow",
+    "items",
+    "market"
+  ]
+}

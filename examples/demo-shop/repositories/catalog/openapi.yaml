@@ -1,0 +1,16 @@
+openapi: 3.0.3
+info:
+  title: Demo Catalog
+  version: 1.0.0
+paths:
+  /products:
+    get:
+      parameters:
+        - name: market
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Product list

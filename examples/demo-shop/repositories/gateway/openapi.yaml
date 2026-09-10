@@ -1,0 +1,28 @@
+openapi: 3.0.3
+info:
+  title: Demo Gateway
+  version: 1.0.0
+paths:
+  /api/checkout:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
+      responses:
+        '202':
+          description: Accepted
+components:
+  schemas:
+    CheckoutRequest:
+      type: object
+      required: [customerId, postalCode, items]
+      properties:
+        customerId:
+          type: string
+        postalCode:
+          type: string
+        items:
+          type: array

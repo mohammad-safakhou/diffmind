@@ -1,0 +1,33 @@
+openapi: 3.0.3
+info:
+  title: Demo Checkout
+  version: 2.0.0
+paths:
+  /v1/checkout:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
+      responses:
+        '202':
+          description: Accepted
+components:
+  schemas:
+    CheckoutRequest:
+      type: object
+      required: [customerId, deliveryPostalCode, market, items]
+      properties:
+        customerId:
+          type: string
+        deliveryPostalCode:
+          type: string
+        deliveryWindow:
+          type: string
+          nullable: true
+        market:
+          type: string
+        items:
+          type: array

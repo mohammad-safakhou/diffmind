@@ -100,6 +100,35 @@ func TestQueryDeveloperLoop(t *testing.T) {
 	}
 }
 
+func TestContractsReadDetectorFieldsRetainedByGraphNormalization(t *testing.T) {
+	endpoint := archgraph.EntitySummary{
+		ID:   "http.post_v1_checkout",
+		Name: "POST /v1/checkout",
+		Details: map[string]any{
+			"method": "POST",
+			"path":   "/v1/checkout",
+			"inputs": map[string]any{
+				"body": map[string]any{"required": true},
+			},
+			"metadata": map[string]any{
+				"details": map[string]any{
+					"request_fields": []any{
+						map[string]any{"name": "customerId", "type": "string", "required": true, "source": "openapi_3_0"},
+						map[string]any{"name": "postalCode", "type": "string", "required": true, "source": "openapi_3_0"},
+					},
+				},
+			},
+		},
+	}
+	fields := endpointContractFields("checkout", endpoint)
+	if len(fields) != 3 {
+		t.Fatalf("fields=%+v", fields)
+	}
+	if fields[0].Name != "customerId" || fields[0].Source != "openapi_3_0" || fields[1].Name != "postalCode" || fields[2].Name != "body" {
+		t.Fatalf("fields=%+v", fields)
+	}
+}
+
 func TestResolveProjectRequiresSelectionWhenAmbiguous(t *testing.T) {
 	q, _, _ := testQueryService(t)
 	if _, err := q.store.CreateProject(store.Project{Name: "Second"}); err != nil {

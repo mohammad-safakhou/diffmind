@@ -1,0 +1,6 @@
+spring:
+  cloud:
+    stream:
+      bindings:
+        order-out-0:
+          destination: orders.created

@@ -132,7 +132,7 @@ func (s *Service) CompareContracts(projectID, fromRun, toRun, service string) (*
 }
 
 func endpointContractFields(service string, endpoint archgraph.EntitySummary) []ContractField {
-	d := endpoint.Details
+	d := contractDetails(endpoint.Details)
 	method, path := stringValue(d["method"]), stringValue(d["path"])
 	if method == "" || path == "" {
 		parts := strings.SplitN(endpoint.Name, " ", 2)
@@ -165,6 +165,25 @@ func endpointContractFields(service string, endpoint archgraph.EntitySummary) []
 	add("header", "static", d["headers"])
 	add("input", "declared_or_static", d["inputs"])
 	return out
+}
+
+// contractDetails presents normalized graph fields and the original detector
+// details as one view. Graph normalization deliberately retains detector-specific
+// contract evidence under metadata.details, while query callers should not need
+// to know which representation supplied a field.
+func contractDetails(details map[string]any) map[string]any {
+	merged := map[string]any{}
+	if metadata, ok := details["metadata"].(map[string]any); ok {
+		if original, ok := metadata["details"].(map[string]any); ok {
+			for key, value := range original {
+				merged[key] = value
+			}
+		}
+	}
+	for key, value := range details {
+		merged[key] = value
+	}
+	return merged
 }
 
 func normalizeContractFields(raw any) []ContractField {
