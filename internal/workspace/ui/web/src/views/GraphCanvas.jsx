@@ -64,7 +64,7 @@ const TEAM_RESOURCE_GAP_Y = 24
 const TEAM_ATTACH_GAP_X = 54
 const TEAM_ATTACH_GAP_Y = 18
 const TEAM_LEFT_ATTACH_W = 310
-const TEAM_RIGHT_ATTACH_W = 430
+const TEAM_RIGHT_ATTACH_W = 330
 
 function cleanLabel(s) {
   if (!s) return ''
@@ -869,6 +869,7 @@ export function GraphCanvas({ graph, onSelect, detailLoaded = true, onRequestFul
   const graphLayoutKeyRef = useRef('')
   const graphViewKeyRef = useRef('')
   const initialScopeKeyRef = useRef('')
+  const focusServiceRef = useRef('')
   const userMovedRef = useRef(false)
   const programmaticZoomRef = useRef(false)
   const [mode, setMode] = useState('overview')
@@ -896,6 +897,12 @@ export function GraphCanvas({ graph, onSelect, detailLoaded = true, onRequestFul
     setMode(nextMode)
   }
   const teamOptions = graphTeamOptions(graph)
+  const teamServiceCounts = graphTeamServiceCounts(graph)
+  const totalServiceCount = (graph?.services || []).length
+  const toolbarView = graphScopedView(graph, teamFilter, teamScope)
+  const visibleServiceCount = toolbarView.services?.length || 0
+  const visibleRelationshipCount = toolbarView.edges?.length || 0
+  const largeWorkspace = totalServiceCount >= LARGE_GRAPH_SERVICE_THRESHOLD
   useEffect(() => {
     if (!graph || initialScopeKeyRef.current === renderKey) return
     initialScopeKeyRef.current = renderKey
@@ -919,6 +926,7 @@ export function GraphCanvas({ graph, onSelect, detailLoaded = true, onRequestFul
     const match = (graph?.services || []).find((svc) => normalizeKey(`${svc.name} ${svc.id || ''} ${svc.team || ''}`).includes(q))
     if (!match) return
     userMovedRef.current = false
+    focusServiceRef.current = match.name
     setTeamFilter(match.team || '')
     setTeamScope('connected')
     setActiveSelection({ kind: 'service', data: match, id: match.name })
@@ -1185,9 +1193,20 @@ export function GraphCanvas({ graph, onSelect, detailLoaded = true, onRequestFul
       const tx = (W - graphW * scale) / 2
       const ty = overlayTopPad + (H - overlayTopPad - graphH * scale) / 2
       transformRef.current = d3.zoomIdentity.translate(tx, ty).scale(scale)
-		fitTransformRef.current = transformRef.current
+      fitTransformRef.current = transformRef.current
       userMovedRef.current = false
       svg.call(zoom.transform, transformRef.current)
+    }
+    const focusName = focusServiceRef.current
+    const focusNode = focusName && top.hasNode(focusName) ? top.node(focusName) : null
+    if (focusNode) {
+      const focusScale = mode === 'detail' ? 0.5 : 0.9
+      const focusTransform = d3.zoomIdentity
+        .translate(W / 2 - focusNode.x * focusScale, H / 2 - focusNode.y * focusScale)
+        .scale(focusScale)
+      transformRef.current = focusTransform
+      svg.call(zoom.transform, focusTransform)
+      focusServiceRef.current = ''
     }
     programmaticZoomRef.current = false
 
@@ -1199,6 +1218,14 @@ export function GraphCanvas({ graph, onSelect, detailLoaded = true, onRequestFul
   return (
     <div class="graph-canvas-shell">
       <div class="graph-mode-toolbar" aria-label="Graph detail mode">
+        <span class={'graph-scope-summary' + (largeWorkspace ? ' large' : '')} title={largeWorkspace ? 'Large workspaces open team-scoped so service names and relationships remain readable.' : ''}>
+          <strong>{visibleServiceCount}</strong>{visibleServiceCount !== totalServiceCount ? ` of ${totalServiceCount}` : ''} services
+          <span>·</span>
+          {teamOptions.length} {teamOptions.length === 1 ? 'team' : 'teams'}
+          <span>·</span>
+          {visibleRelationshipCount} relationships
+          {largeWorkspace && teamFilter && <em>team-scoped for clarity</em>}
+        </span>
         <button type="button" class={mode === 'overview' ? 'active' : ''} onClick={() => changeMode('overview')}>Overview</button>
         <button type="button" class={mode === 'detail' ? 'active' : ''} onClick={() => changeMode('detail')}>Full detail</button>
         <span class="graph-toolbar-divider" />
@@ -1214,8 +1241,8 @@ export function GraphCanvas({ graph, onSelect, detailLoaded = true, onRequestFul
 		<button type="button" aria-label="Reset graph view" onClick={resetZoom}>Reset</button>
 		<button type="button" aria-label="Zoom in" onClick={() => changeZoom(1.25)}>+</button>
         <select class="graph-team-select" value={teamFilter} onInput={(e) => setTeamFilter(e.currentTarget.value)}>
-          <option value="">All teams</option>
-          {teamOptions.map((team) => <option key={team} value={team}>{team}</option>)}
+          <option value="">All {teamOptions.length} teams · {totalServiceCount} services</option>
+          {teamOptions.map((team) => <option key={team} value={team}>{team} · {teamServiceCounts.get(team) || 0} services</option>)}
         </select>
         <select class="graph-scope-select" value={teamScope} disabled={!teamFilter} onInput={(e) => setTeamScope(e.currentTarget.value)}>
           <option value="team">Team only</option>
@@ -1270,6 +1297,15 @@ function resourceNodeType(n) {
 
 function graphTeamOptions(graph) {
   return Array.from(new Set((graph?.services || []).map((svc) => svc.team || 'default'))).sort((a, b) => a.localeCompare(b))
+}
+
+function graphTeamServiceCounts(graph) {
+  const counts = new Map()
+  ;(graph?.services || []).forEach((svc) => {
+    const team = svc.team || 'default'
+    counts.set(team, (counts.get(team) || 0) + 1)
+  })
+  return counts
 }
 
 function graphScopedView(graph, teamFilter, teamScope) {
@@ -1580,7 +1616,10 @@ function buildTeamLayoutBlock(top, team, resources, serviceDegree, serviceAffini
     if (ao !== bo) return ao.localeCompare(bo)
     return a.localeCompare(b)
   })
-  const compactCols = compactIDs.length ? clamp(Math.ceil(Math.sqrt(compactIDs.length * 1.25)), 2, 6) : 0
+  // Prefer a taller, three-column bounded-context map. Wide five/six-column
+  // blocks technically fit more nodes, but make labels unreadable after the
+  // initial fit—especially in the common 10 teams × 15 services case.
+  const compactCols = compactIDs.length ? clamp(Math.ceil(Math.sqrt(compactIDs.length / 2)), 2, 4) : 0
   const compactRows = compactCols ? Math.ceil(compactIDs.length / compactCols) : 0
   const compactCellW = COMPACT_SERVICE_W + TEAM_RIGHT_ATTACH_W + TEAM_SERVICE_GAP_X
   const compactCellH = COMPACT_SERVICE_H + TEAM_SERVICE_GAP_Y
