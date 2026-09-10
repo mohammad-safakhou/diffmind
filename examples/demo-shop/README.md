@@ -4,6 +4,8 @@ This synthetic e-commerce system is DiffMind's canonical public demonstration.
 Every name, hostname, source file and expected relationship is owned by this
 repository and safe to use in screenshots, recordings, tests and documentation.
 
+![DiffMind Demo Shop architecture graph](../../docs/assets/readme/demo-shop-graph.jpg)
+
 The generator creates six independent Git repositories:
 
 ```text
@@ -48,6 +50,9 @@ DIFFMIND_HOME=/tmp/diffmind-demo-shop/workspace \
 ```
 
 The expected graph is recorded in [expected.json](expected.json).
+
+For a guided tour of the resulting graph, saved-run comparison, operation
+history and agent workflow, see [Public demo and media](../../docs/public-demo.md).
 
 ## Contract-change story
 
