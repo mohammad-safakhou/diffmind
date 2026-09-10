@@ -83,7 +83,6 @@ jobs:
         with:
           name: diffmind-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*.tar.gz
-          archive: false
 
   publish:
     needs: build
