@@ -1,14 +1,13 @@
 # Distribution and release maintenance
 
-Packaging stays in this repository; no second hosted tap is required. These
-recipes are ready for the next release. Adding them does not publish anything.
-No public binary release has been published yet; use the
-[source installation](personal-setup.md#install-the-current-checkout) now.
+Packaging stays in this repository; no second hosted tap is required. The first
+public release is [`v0.1.0`](https://github.com/mohammad-safakhou/diffmind/releases/tag/v0.1.0),
+with checksummed native archives for macOS and Linux on Intel/AMD64 and ARM64.
+The [source installation](personal-setup.md#install-from-source) remains available.
 
-## Binary installer (after release publication)
+## Binary installer
 
-Once a release with matching platform assets exists, install without Go, Node or
-a compiler (Git is still needed for repositories):
+Install without Go, Node or a compiler (Git is still needed for repositories):
 
 ```bash
 diffmind_install_tmp=$(mktemp -d)
@@ -21,10 +20,10 @@ diffmind version --json
 diffmind doctor
 ```
 
-The installer checks the published archive checksum. Set `DIFFMIND_VERSION` to
-an actual published version to pin it; an unset version selects latest. Until
-assets exist, this command fails to download them. It does not install unpushed
-local commits. Do not run the script with sudo; choose a user-writable directory.
+The installer checks the published archive checksum. Set
+`DIFFMIND_VERSION=0.1.0` to pin the first release; an unset version selects the
+latest release. It does not install unpushed local commits. Do not run the script
+with sudo; choose a user-writable directory.
 
 ## Homebrew development build
 

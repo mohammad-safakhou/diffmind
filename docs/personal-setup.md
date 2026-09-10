@@ -9,13 +9,35 @@ Start with one local workspace and a few services whose relationships you know.
 Validate their evidence before expanding to the whole organization. You do not
 need Docker, a server deployment, or a model API key for this workflow.
 
-## Install the current checkout
+## Install a release
 
-Public release assets are not yet published. Build the committed source with
-Go 1.26.6 or newer, Git and a C compiler (CGO enabled). On macOS, run
-`xcode-select --install` if the Command Line Tools are missing. On Linux, install
-Git and your distribution's C build tools. Node is unnecessary unless you are
-changing the embedded web interfaces.
+The recommended path installs a checksum-verified native `v0.1.0` binary on
+macOS or Linux, for Intel/AMD64 or ARM64. Git is still required for repository
+work; Go, Node.js and a compiler are not.
+
+```bash
+diffmind_install_tmp=$(mktemp -d)
+curl -fsSL https://raw.githubusercontent.com/mohammad-safakhou/diffmind/master/install.sh \
+  -o "$diffmind_install_tmp/install.sh"
+# Review the downloaded script before running it.
+DIFFMIND_VERSION=0.1.0 DIFFMIND_INSTALL_DIR="$HOME/.local/bin" \
+  sh "$diffmind_install_tmp/install.sh"
+export PATH="$HOME/.local/bin:$PATH"
+command -v diffmind
+diffmind version --json
+diffmind doctor
+```
+
+Do not use `sudo`; select a user-writable install directory. See
+[distribution](distribution.md) for release assets, supported platforms and the
+Homebrew development formula.
+
+## Install from source
+
+Build the committed source with Go 1.26.6 or newer, Git and a C compiler (CGO
+enabled). On macOS, run `xcode-select --install` if the Command Line Tools are
+missing. On Linux, install Git and your distribution's C build tools. Node is
+unnecessary unless you are changing the embedded web interfaces.
 
 ```bash
 git clone https://github.com/mohammad-safakhou/diffmind.git
