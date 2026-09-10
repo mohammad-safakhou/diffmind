@@ -4,8 +4,22 @@ DiffMind turns your source repositories into an explorable architecture graph
 for you and your coding agent. Inspect services, endpoints, dependencies, queues
 and data stores; follow source evidence; compare saved graphs; and ask questions
 through MCP. Your agent can also install, configure and operate the workspace.
-Analysis is deterministic: no LLM or model API
-key is needed to build the graph.
+Analysis is deterministic: no LLM or model API key is needed to build the graph.
+
+![DiffMind public Demo Shop: project setup, architecture graph, graph comparison, and operation history](docs/assets/readme/diffmind-demo.gif)
+
+DiffMind is built for the questions that become expensive once work crosses
+repository boundaries:
+
+- What calls this endpoint, publishes this event, or writes this table?
+- Which services and contracts may be affected by the change I am planning?
+- What source evidence supports each relationship, and how fresh is it?
+- Can my coding agent query the same architecture instead of guessing from one
+  checkout at a time?
+
+It combines a local dashboard, persisted graph history, contract comparison and
+an MCP interface. The result is an evidence-backed map that humans can inspect
+and agents can use while planning and implementing changes.
 
 One repository, one `diffmind` command. Run it privately on your laptop or as a
 continuously refreshed, single-server workspace for a team.
@@ -17,7 +31,7 @@ covered in [distribution](docs/distribution.md).
 
 [Agent-first setup](#start-with-your-agent) · [Manual setup](#manual-installation-alternative) ·
 [Knowledge packs](#teach-your-conventions) · [Team deployment](#team-deployment) ·
-[Contribute](#contribute) · [Documentation](#documentation)
+[Public demo](docs/public-demo.md) · [Contribute](#contribute) · [Documentation](#documentation)
 
 ## See the workflow on public data
 
@@ -40,6 +54,12 @@ pin OpenTelemetry Demo and Google Online Boutique revisions and record what
 DiffMind currently detects—and, just as importantly, what still needs framework
 support. Public GIFs and screenshots should be recorded from Demo Shop rather
 than from private company repositories.
+
+![Six-service Demo Shop graph with HTTP, Kafka, Redis, and database relationships](docs/assets/readme/demo-shop-graph.jpg)
+
+The complete, reproducible walkthrough—including the topology, contract-change
+result, capture provenance, and the role of the two real-world benchmarks—is in
+[Public demo and media](docs/public-demo.md).
 
 ## Start with your agent
 
