@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:24-bookworm-slim AS web
+FROM node:26-bookworm-slim AS web
 WORKDIR /src
 
 COPY internal/workspace/ui/web/package*.json internal/workspace/ui/web/
@@ -13,7 +13,7 @@ RUN npm --prefix internal/extractor/ui/web ci
 COPY internal/extractor/ui/web internal/extractor/ui/web
 RUN npm --prefix internal/extractor/ui/web run build
 
-FROM golang:1.26.6-bookworm AS build
+FROM golang:1.27.1-bookworm AS build
 WORKDIR /src
 
 COPY go.mod go.sum ./
